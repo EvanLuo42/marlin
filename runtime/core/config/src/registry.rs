@@ -41,7 +41,8 @@ pub fn register(cvar: &'static Cvar) -> Result<(), Error> {
 
 /// Whether `name` continues `prefix` with a dot, ignoring case.
 fn is_prefix(prefix: &str, name: &str) -> bool {
-    utf8::starts_with_ignore_ascii_case(name, prefix) && name.as_bytes().get(prefix.len()) == Some(&b'.')
+    utf8::starts_with_ignore_ascii_case(name, prefix)
+        && name.as_bytes().get(prefix.len()) == Some(&b'.')
 }
 
 /// Registers every cvar it can and returns the first error.

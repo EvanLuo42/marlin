@@ -1,8 +1,9 @@
-//! Config files, command-line overrides and archiving. One test: archives cover the registry.
+//! TOML config files, command-line overrides and archiving. One test: archives cover the registry.
 
 use marlin_config::{
-    ApplyError, CvarBool, CvarEnum, CvarF64, CvarI64, CvarString, Error, Expected, Location,
-    Source, apply_command_line, apply_config, archive_string, finish_startup, register_all,
+    ApplyError, Bounds, Cause, CvarBool, CvarEnum, CvarF64, CvarI64, CvarString, Error, Expected,
+    Location, Source, apply_command_line, apply_config, archive_string, finish_startup,
+    register_all,
 };
 
 static VSYNC: CvarBool = CvarBool::new("r.vsync", true, "Wait for vertical blank.").archive();
@@ -23,7 +24,7 @@ fn err(location: Location, key: &str, source: Error) -> ApplyError {
     ApplyError {
         location,
         key: key.into(),
-        source,
+        source: Cause::Set(source),
     }
 }
 
@@ -31,76 +32,84 @@ fn err(location: Location, key: &str, source: Error) -> ApplyError {
 fn files_and_command_line() {
     register_all(&[&VSYNC, &FPS, &SCALE, &NAME, &QUALITY, &WINDOW, &DEBUG]).unwrap();
 
-    let config = "\u{feff}# Settings
-; also a comment
-// and this
+    let config = r#"# Settings
+player.name = "Ann \"The\" # One\\"   # trailing comment
+debug.draw = true
+unknown.key = 3
 
-r.vsync = off            # trailing comment
-R.MAXFPS=144
-r.scale = 1.5;comment needs whitespace, so this is part of the value
-player.name = \"Ann \\\"The\\\" # One\\\\\"   ; comment after a string
-r.quality = HIGH
-debug.draw = 1
-r.unknown = 3
-just some words
-= 5
-r.maxFps = 5000
-player.name = \"unterminated
-player.name = \"ok\" trailing
-r.width = 1920
-";
+[r]
+vsync = false
+maxFps = 5000
+scale = 2                 # an integer for a float
+quality = "HIGH"
+width = 1920
+
+[R]                       # names ignore case
+MAXFPS = 144
+SCALE = "big"
+QUALITY = [1]
+"#;
     let errors = apply_config(config, Source::ConfigFile);
     assert_eq!(
         errors,
         [
+            err(Location::Line(4), "unknown.key", Error::Unknown),
             err(
-                Location::Line(7),
-                "r.scale",
-                Error::Invalid(Expected::Float)
-            ),
-            err(Location::Line(11), "r.unknown", Error::Unknown),
-            err(
-                Location::Line(12),
-                "just",
-                Error::Syntax("expected `name = value`")
-            ),
-            err(
-                Location::Line(13),
-                "",
-                Error::Syntax("expected `name = value`")
-            ),
-            err(
-                Location::Line(14),
+                Location::Line(8),
                 "r.maxFps",
-                Error::OutOfRange(marlin_config::Bounds::Int(0, 1000))
+                Error::OutOfRange(Bounds::Int(0, 1000))
             ),
             err(
                 Location::Line(15),
-                "player.name",
-                Error::Syntax("unterminated string")
+                "R.SCALE",
+                Error::Invalid(Expected::Float)
             ),
             err(
                 Location::Line(16),
-                "player.name",
-                Error::Syntax("text after the closing quote")
+                "R.QUALITY",
+                Error::Invalid(Expected::Enum(&["low", "medium", "high"]))
             ),
         ]
     );
-    assert_eq!(errors[1].to_string(), "line 11: `r.unknown`");
+    assert_eq!(errors[0].to_string(), "line 4: `unknown.key`");
+    assert_eq!(errors[0].source.to_string(), "unknown cvar");
     assert!(!VSYNC.get());
     assert_eq!(FPS.get(), 144);
-    assert_eq!(SCALE.get(), 1.0);
+    assert_eq!(SCALE.get(), 2.0);
     assert_eq!(NAME.get(), "Ann \"The\" # One\\");
     assert_eq!(QUALITY.get_name(), "high");
     assert!(DEBUG.get());
     assert_eq!(WINDOW.get(), 1920, "startup: takes effect at once");
 
+    // Inline tables and enum indices; strings are not bools in TOML.
+    let errors = apply_config("r = { quality = 0, vsync = \"on\" }", Source::ConfigFile);
+    assert_eq!(
+        errors,
+        [err(
+            Location::Line(1),
+            "r.vsync",
+            Error::Invalid(Expected::Bool)
+        )]
+    );
+    assert_eq!(QUALITY.get_name(), "low");
+
+    // Malformed TOML: the syntax error is reported, and what parses still applies.
+    let errors = apply_config("r.maxFps = 60\nthis is not toml\n", Source::ConfigFile);
+    assert!(!errors.is_empty());
+    assert!(
+        errors
+            .iter()
+            .all(|e| { e.location == Location::Line(2) && matches!(e.source, Cause::Syntax(_)) })
+    );
+    assert!(errors[0].source.to_string().starts_with("syntax error: "));
+    assert_eq!(FPS.get(), 60);
+
     let args = [
         "game.exe",
         "+r.maxFps",
-        "60",
+        "70",
         "positional",
-        "+r.scale=2",
+        "+r.scale=2.5",
         "+player.name",
         "+not a cvar",
         "+r.nope",
@@ -114,16 +123,20 @@ r.width = 1920
         errors,
         [
             err(Location::Arg(7), "r.nope", Error::Unknown),
-            err(
-                Location::Arg(9),
-                "",
-                Error::Syntax("expected `+name value`")
-            ),
-            err(Location::Arg(11), "r.vsync", Error::Syntax("missing value")),
+            ApplyError {
+                location: Location::Arg(9),
+                key: String::new(),
+                source: Cause::Syntax("expected `+name value`".into()),
+            },
+            ApplyError {
+                location: Location::Arg(11),
+                key: "r.vsync".into(),
+                source: Cause::Syntax("missing value".into()),
+            },
         ]
     );
-    assert_eq!(FPS.get(), 60);
-    assert_eq!(SCALE.get(), 2.0);
+    assert_eq!(FPS.get(), 70);
+    assert_eq!(SCALE.get(), 2.5);
     // The value is the next argument verbatim.
     assert_eq!(NAME.get(), "+not a cvar");
     // Owned strings work too.
@@ -137,31 +150,32 @@ r.width = 1920
 
     // Archive: only archived cvars that differ from the default, pending values included.
     NAME.set("Ann \"The\" # One\\\n\t ");
-    VSYNC.set(true);
+    QUALITY.set(2);
+    SCALE.set(2.0);
     let archive = archive_string();
     assert_eq!(
         archive,
-        "# Archived cvars that differ from their defaults.
+        r#"# Archived cvars that differ from their defaults.
 # Display name.
 # Shown to others.
-player.name = \"Ann \\\"The\\\" # One\\\\\\n\\t \"
+player.name = "Ann \"The\" # One\\\n\t "
 # Frame cap.
-r.maxFps = 60
-r.quality = high
-r.scale = 2
+r.maxFps = 70
+r.quality = "high"
+r.scale = 2.0
 r.width = 2560
-"
+"#
     );
 
     // Round trip.
     for cvar in [&*NAME, &FPS, &QUALITY, &SCALE] {
         cvar.reset(Source::Code).unwrap();
     }
-    assert!(apply_config(&archive, Source::ConfigFile).is_empty());
+    assert_eq!(apply_config(&archive, Source::ConfigFile), []);
     assert_eq!(NAME.get(), "Ann \"The\" # One\\\n\t ");
     assert_eq!(
         (FPS.get(), QUALITY.get_name(), SCALE.get()),
-        (60, "high", 2.0)
+        (70, "high", 2.0)
     );
     assert_eq!(archive_string(), archive);
 }

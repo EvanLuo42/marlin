@@ -153,9 +153,15 @@ fn registry() {
     static B: CvarI64 = CvarI64::new("reg.beta", 1, "");
     static C: CvarString = CvarString::new("reg.gamma", "", "");
     static CLASH: CvarBool = CvarBool::new("REG.ALPHA", false, "");
+    static UNDER: CvarBool = CvarBool::new("reg.alpha.sub", false, "");
+    static OVER: CvarBool = CvarBool::new("REG", false, "");
     register_all(&[&A, &B, &C]).unwrap();
     register(&A).unwrap();
     assert_eq!(register(&CLASH), Err(Error::Duplicate("REG.ALPHA")));
+    // TOML cannot hold `reg.Alpha` as a value and as a table.
+    assert_eq!(register(&UNDER), Err(Error::Conflict("reg.Alpha")));
+    assert!(matches!(register(&OVER), Err(Error::Conflict(_))));
+    assert!(find("reg.alpha.sub").is_none() && find("reg").is_none());
     assert_eq!(
         Error::Duplicate("x").to_string(),
         "`x` is already registered"
