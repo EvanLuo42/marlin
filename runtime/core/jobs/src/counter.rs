@@ -46,7 +46,7 @@ impl Counter {
         let mut fiber = {
             let mut waiters = self.waiters.lock();
             self.zero.notify_all();
-            core::mem::replace(&mut waiters.0, null_mut())
+            core::mem::take(&mut waiters.0)
         };
         while !fiber.is_null() {
             // SAFETY: parked fibers are only reachable through this list until made ready.

@@ -158,6 +158,12 @@ dependencies = [
 [[package]]
 name = "marlin-ecs"
 version = "0.1.0"
+dependencies = [
+ "marlin-containers",
+ "marlin-jobs",
+ "marlin-reflect",
+ "marlin-std",
+]
 
 [[package]]
 name = "marlin-editor"

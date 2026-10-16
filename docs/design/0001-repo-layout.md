@@ -516,3 +516,11 @@ runtime/<layer>/<name>/
 - `core::simd` 没有向量 sqrt（它在 std 的 `std_float` 里），所以需要开方的地方都先归约成标量再用 `core::f32::math::sqrt`。
 - 几何：`Aabb`（Arvo 变换）、`Sphere`、`Plane`、`Ray`（slab / 平面 / 球求交）、`Frustum`（按 reverse-Z 的 Gribb/Hartmann 提取平面；无限远投影的远平面退化为"总在内侧"）。
 - **PC minimum CPU: x86-64-v3** (AVX2/FMA/BMI1/2, i.e. Intel Haswell 2013 / AMD Zen 2017 and later). Set in `platforms/*/platform.toml` with `target-cpu = { x86_64 = "x86-64-v3" }`; xtask passes it to both `.cargo/config.toml` and `xtask build` as `-Ctarget-cpu`. aarch64 is unaffected. In the Steam hardware survey for September 2026, about 96% of users support AVX2. Consoles (PS5/Xbox Series, Zen 2) all support it. Rust doesn't contract floating-point ops, so FMA isn't generated implicitly; the math library's cross-platform bit-for-bit consistency is unaffected. `marlin_rt::cpu::check()` checks at startup every instruction set the build enabled. The game returns exit code 1 when one is missing, and the editor prints a message and exits. This check is best-effort: it is itself compiled with AVX2. A guaranteed message would need a launcher compiled for baseline x86-64.
+- **marlin-ecs**（archetype ECS）：
+  - **存储**：component 类型集合相同的实体共用一个 `Archetype`，每个 component 一列，列是类型擦除的 `Column`（只记布局和 drop 函数，SoA）。增删 component 时把实体搬到对应的 archetype，原位置用 swap-remove 填补，并修正被换过来的那个实体的位置；add/remove 的迁移结果缓存成 archetype 之间的边。
+  - **实体与资源**：实体用带世代号的 `Entity`，旧 id 不会和复用的槽位混淆。资源是按类型存的单例，放在 `UnsafeCell` 里，通过指针 cast 访问，不额外创建引用。
+  - **Query**：`QueryData` 由 `&T`/`&mut T`/`Option<…>`/`Entity`/元组组合，过滤器是 `With`/`Without`。构造 query 时会检查自身是否有冲突，比如同时出现 `&mut A` 和 `&A`。`par_for_each` 把 archetype 的行切成批，交给 job 系统执行。
+  - **System**：每个 system 显式声明读写的类型，`.reads::<T>()` / `.writes::<T>()` 对 component 和资源都适用。`Schedule` 把每个 system 放进"晚于所有与它冲突的已加入 system"的最早一个 wave，同一个 wave 内的 system 在 job 系统上并行；冲突的 system 保持加入顺序；exclusive system 拿到 `&mut World`，独占一个 wave。运行时，system 的每次 query、资源访问和 `get`/`get_mut` 都会和它的声明比对，越权就 panic，并行访问共享 World 的正确性就靠这个保证。
+  - **Commands**：结构性修改都要经过 `Commands`。每个 system 有自己的缓冲，wave 结束后按 system 的加入顺序应用，结果是确定的，和完成顺序无关。
+  - 注册 component 时可以附带反射信息（`register_reflected`），供 VM 和 editor 使用。
+  - **尚未实现**：change detection、query 缓存（目前每次 query 都要重新匹配所有 archetype）、bundle 信息缓存、Commands 里 spawn 时预留实体 id、函数式 system 参数（类似 Bevy 的 `fn(Query, Res)`）、性能基准。另外，system 内部的 job 一旦 panic 会直接 abort；越权访问的 panic 只有在 system 单独占一个 wave 时才能被测试捕获。
