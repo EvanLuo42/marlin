@@ -99,6 +99,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Tools only: memory-mapped index snapshots.
 memmap2 = "0.9"
+# Tools only: parsers for external source formats (0003: third-party parsers, our own processing).
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tga", "hdr", "exr"] }
+gltf = { version = "1.4", default-features = false, features = ["names", "utils"] }
 # toml and toml_writer are no_std with default features off. Never enable their `std` feature in
 # this workspace: features unify, and std would reach the no_std game binary via marlin-config.
 toml = { version = "1", default-features = false }

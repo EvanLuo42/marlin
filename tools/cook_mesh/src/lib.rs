@@ -1,1 +1,26 @@
-//! Mesh optimization, LODs and meshlets.
+//! glTF content for the cook pipeline: meshes, skeletons and animation clips.
+//!
+//! - [`import`]: glTF 2.0 geometry, skins and animations into plain arrays, every byte read
+//!   through the cook context's declared sources.
+//! - [`simplify`]: quadric edge-collapse simplification with attribute costs, seams kept and
+//!   borders locked, for LOD chains.
+//! - [`optimize`]: welding, vertex cache order (Forsyth) and vertex fetch order.
+//! - [`meshlet`]: meshlets of up to 64 vertices and 124 triangles with bounding spheres and
+//!   normal cones.
+//! - [`tangent`]: tangent frames for meshes imported without them.
+//! - [`MeshCooker`], [`SkeletonCooker`], [`AnimationCooker`]: the cookers for
+//!   `marlin_render::asset::Mesh` and `marlin_anim::asset::{Skeleton, AnimationClip}`.
+//!
+//! Every algorithm here is our own (0003); the `gltf` crate only parses the file.
+
+mod build;
+mod cooker;
+pub mod import;
+mod math;
+pub mod meshlet;
+pub mod optimize;
+pub mod simplify;
+pub mod tangent;
+
+pub use build::{Built, build};
+pub use cooker::{AnimationCooker, MeshCooker, SkeletonCooker};

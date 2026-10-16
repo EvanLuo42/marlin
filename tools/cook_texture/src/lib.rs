@@ -12,12 +12,17 @@
 //! - [`EncodedTexture::upload_layout`]: the staging layout marlin-rhi's buffer-to-texture copies
 //!   take.
 //! - [`TextureTiling`]: the hook console platforms tile textures through.
+//! - [`import`]: decoding PNG, TGA, JPEG, EXR and HDR sources; [`equirect_to_cube`]: cube maps.
+//! - [`TextureCooker`]: the cook pipeline's cooker for `marlin_render::asset::Texture`.
 
 mod bc;
 pub mod color;
+mod cooker;
+mod cube;
 mod encode;
 mod format;
 mod image;
+pub mod import;
 mod layout;
 pub mod metrics;
 mod mip;
@@ -25,6 +30,8 @@ mod par;
 mod tiling;
 
 pub use bc::block_mode;
+pub use cooker::{MIP_TAIL_BYTES, TextureCooker, choose_format, lay_out};
+pub use cube::{equirect_coords, equirect_to_cube, face_direction};
 pub use encode::{EncodedTexture, Subresource, decode, decode_with, encode, encode_texture};
 pub use format::{EncodeOptions, Format, Interpolation, Quality};
 pub use image::{ColorSpace, Image, Pixels, Usage};

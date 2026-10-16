@@ -1,11 +1,17 @@
 [package]
 name = "marlin-cook-texture"
-description = "Texture compression and platform swizzling."
+description = "Texture import, compression and platform swizzling."
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+image.workspace = true
+marlin-asset.workspace = true
+marlin-cook-core.workspace = true
+marlin-reflect.workspace = true
+marlin-render.workspace = true
+marlin-serial.workspace = true
 
 # Console texture tiling, from the private platform repositories cloned into platforms/<name>/
 # (see platforms/README.md and src/tiling.rs). Enabling one without its repository fails to build.
@@ -17,6 +23,7 @@ switch2 = []
 [dev-dependencies]
 # The GPU conformance test uploads encoded textures, and the layout tests check the RHI's rules.
 marlin-rhi.workspace = true
+marlin-asset-db.workspace = true
 
 [lints]
 workspace = true

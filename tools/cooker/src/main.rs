@@ -1,6 +1,9 @@
-//! Command-line asset cooker. Cooking arrives with the rest of
-//! `docs/design/0003-asset-pipeline.md`; so far:
+//! Command-line asset cooker (`docs/design/0003-asset-pipeline.md`).
 //!
+//! - `marlin-cook cook <root> [--platform <name>] [--threads <n>]`: brings the index up to date,
+//!   cooks every unit whose inputs changed (the rest come from the local cache in
+//!   `<root>/.marlin/ddc`) and publishes the build manifest to
+//!   `<root>/.marlin/build/<platform>.manifest`. Fails if any unit fails.
 //! - `marlin-cook index <root>`: brings the asset index of `root` up to date and saves it.
 //! - `marlin-cook validate <root>`: the same, then reports content problems (dangling and stale
 //!   links, UUID collisions, parse errors, missing source files). Fails on errors.
@@ -15,21 +18,24 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
 
+use marlin_anim::asset::{AnimationClip, Skeleton};
 use marlin_asset_db::{AssetDb, Options};
 use marlin_cook_audio as _;
-use marlin_cook_core as _;
+use marlin_cook_core::{CookOptions, Cookers, LocalDdc, cook_all, publish_manifest};
 use marlin_cook_level as _;
-use marlin_cook_mesh as _;
+use marlin_cook_mesh::{AnimationCooker, MeshCooker, SkeletonCooker};
 use marlin_cook_script as _;
 use marlin_cook_shader as _;
-use marlin_cook_texture as _;
+use marlin_cook_texture::TextureCooker;
 use marlin_masset::{NodeKind, parse};
+use marlin_render::asset::{Mesh, Texture};
 
-const USAGE: &str = "usage:\n  marlin-cook index <root>\n  marlin-cook validate <root>\n  marlin-cook check <file-or-directory>...";
+const USAGE: &str = "usage:\n  marlin-cook cook <root> [--platform <name>] [--threads <n>]\n  marlin-cook index <root>\n  marlin-cook validate <root> [--pre-submit]\n  marlin-cook install-hook <root>\n  marlin-cook check <file-or-directory>...";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.split_first() {
+        Some((command, rest)) if command == "cook" && !rest.is_empty() => cook(rest),
         Some((command, paths)) if command == "check" && !paths.is_empty() => check(paths),
         Some((command, [root])) if command == "index" => index(root, Validate::No),
         Some((command, [root])) if command == "validate" => index(root, Validate::All),
@@ -232,5 +238,92 @@ fn install_hook(root: &str) -> ExitCode {
             eprintln!("{root}: {}", marlin_error_chain(&e));
             ExitCode::FAILURE
         }
+    }
+}
+
+/// Every asset type the engine knows, with its cooker.
+fn engine_cookers() -> Cookers {
+    let mut cookers = Cookers::new();
+    let registered = cookers
+        .register::<Texture>(TextureCooker)
+        .and_then(|()| cookers.register::<Mesh>(MeshCooker))
+        .and_then(|()| cookers.register::<Skeleton>(SkeletonCooker))
+        .and_then(|()| cookers.register::<AnimationClip>(AnimationCooker));
+    if let Err(e) = registered {
+        // Two engine types with one text name: a programming error, caught by any run.
+        panic!("engine asset types: {e}");
+    }
+    cookers
+}
+
+fn cook(args: &[String]) -> ExitCode {
+    let root = &args[0];
+    let mut options = CookOptions::default();
+    let mut rest = args[1..].iter();
+    while let Some(flag) = rest.next() {
+        match (flag.as_str(), rest.next()) {
+            ("--platform", Some(p)) => options.platform = p.clone(),
+            ("--threads", Some(n)) => match n.parse() {
+                Ok(n) => options.threads = n,
+                Err(_) => {
+                    eprintln!("--threads: not a number: {n}");
+                    return ExitCode::from(2);
+                }
+            },
+            _ => {
+                eprintln!("{USAGE}");
+                return ExitCode::from(2);
+            }
+        }
+    }
+    let start = Instant::now();
+    let (mut db, _) = match AssetDb::open(root, Options::default()) {
+        Ok(opened) => opened,
+        Err(e) => {
+            eprintln!("{root}: {}", marlin_error_chain(&e));
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Err(e) = db.save() {
+        eprintln!("saving the index: {}", marlin_error_chain(&e));
+        return ExitCode::FAILURE;
+    }
+    let ddc = match LocalDdc::open(Path::new(root).join(".marlin").join("ddc")) {
+        Ok(ddc) => ddc,
+        Err(e) => {
+            eprintln!("opening the cache: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let cookers = engine_cookers();
+    let (report, manifest) = cook_all(&db, &cookers, &ddc, &options);
+    for unit in &report.units {
+        for warning in &unit.warnings {
+            eprintln!("warning: {}: {warning}", unit.path);
+        }
+    }
+    for error in &report.errors {
+        eprintln!("error: {}", marlin_error_chain(error));
+    }
+    let key = match publish_manifest(Path::new(root), &ddc, &manifest) {
+        Ok(key) => key,
+        Err(e) => {
+            eprintln!("publishing the manifest: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    println!(
+        "{}: {} units ({} cooked, {} cached), {} failed; build {key:032x}; {:.2?}",
+        options.platform,
+        report.units.len(),
+        report.cooked(),
+        report.cached(),
+        report.errors.len(),
+        start.elapsed()
+    );
+    if report.errors.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
     }
 }

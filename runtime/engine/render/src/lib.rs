@@ -10,6 +10,7 @@
 
 extern crate alloc;
 
+pub mod asset;
 mod mesh;
 mod renderer;
 mod shaders;

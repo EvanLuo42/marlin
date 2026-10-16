@@ -134,7 +134,7 @@ Texture
 
 ### 4.1 单元与键
 
-- 一个 `.masset` 文件对应一个 **cook 单元**，单元 ID 是 UUID 派生的 64 位稳定哈希。它的输入包括：文件文本、它引用的源文件内容，以及**构建依赖**（cooker 需要读取其 cook 结果的其他单元，例如材质依赖 shader）。
+- 一个 `.masset` 文件对应一个 **cook 单元**，单元 ID 是资产路径（不含扩展名）的 64 位 xxh3 哈希。对象按 UUID 寻址，构建清单记录每个对象所在的单元，所以文件改名只换单元 ID，不影响链接。它的输入包括：文件文本、它引用的源文件内容，以及**构建依赖**（cooker 需要读取其 cook 结果的其他单元，例如材质依赖 shader）。
 - 跨文件链接分两种：
   - **运行时引用**：只在运行时加载目标，不影响本单元的 cook 结果。
   - **构建依赖**：会影响 cook 结果。
@@ -274,6 +274,27 @@ bulk        GPU 数据（顶点、纹理 mip），对齐到 4 KiB，直接上传
   - `Vcs` trait 带 Git 后端（porcelain v2 -z、批量查询、LFS 锁、pre-commit 挂钩），能识别 Perforce 和 Lore 工作区（目前报 Unsupported）。
   - `AssetDb::validate_submit` 检查三件事：提交内容里的错误；链接或源文件指向既未跟踪、也不在本次提交里的文件；剩下的文件链接到本次提交删除的文件。
   - `marlin-cook validate --pre-submit` 与 `install-hook` 已在真实 Git 仓库里验证过：能挡住"只提交了链接"的那种提交。
+- **P3 · cook 管线完成**：
+  - `marlin-asset::cooked`：MCU1 单元格式，零拷贝读取 `UnitView`，所有偏移都检查范围，随机损坏输入不 panic。
+  - `tools/cook_core`：
+    - cook 键（xxh3-128）覆盖 cook 格式版本、平台、单元路径、源文本、每个对象类型的 reflect 结构指纹与 cooker 版本、每个 `source:` 文件的内容哈希、每个链接目标所在的单元。
+    - cooker 只能读取对象用 `source:` 声明过的文件，杜绝"字符串魔法"依赖。
+    - 没有专用 cooker 的类型走 marlin-serial 通用 cooker。
+    - `LocalDdc`：追加写、带校验和的 pack 文件，崩溃时截断不完整的尾部，读出校验失败的条目视为未命中。
+    - 单元并行 cook，结果逐字节确定（与线程数无关）。
+    - 构建清单（MMAN）同时写入 DDC 与 `.marlin/build/<platform>.manifest`。
+  - 资产类型与 cooked 布局都是 marlin-serial cooked 布局（相对指针、就地读取），带校验的 view：
+    - `marlin-render::asset::Texture`：用法、格式、立方体、mip、`MaxSize`、alpha 覆盖率。cooked 为 RHI 拷贝布局（行 256、子资源 512 对齐）；mip 尾以上每级一个 bulk（流送页），64 KiB 以下的级别合成常驻的 mip 尾。
+    - `marlin-render::asset::Mesh`：0006 §2 的格式。16 位量化位置；法线、切线和副切线符号打包进 32 位（八面体法线 2×10 位，切线角 11 位）；UV 为 f16；蒙皮为 4×u16 加 unorm8 权重，和为 255；每个 LOD 一页，含 meshlet、meshlet 顶点与三角形，以及给 BLAS 和无 mesh shader 路径用的索引。
+    - `marlin-anim::asset::{Skeleton, AnimationClip}`：关节按父先子后排列；动画按固定采样率重采样，常量通道只存一个键，旋转用 48 位 smallest-three 量化（误差 < 0.01°）。网格的蒙皮关节和动画轨道都**按名字**绑定骨骼，所以网格、骨骼和动画可以来自不同文件。
+  - `tools/cook_texture`：解码 PNG/TGA/JPEG/EXR/HDR（解析用 `image`），经纬图转立方体（线性空间超采样），然后生成 mip 并做 BC 编码（这两步是 P1 的成果）。
+  - `tools/cook_mesh`（glTF 2.0 用 `gltf` 解析；以下算法全部自研）：
+    - 导入：GLB、外部 buffer（必须写进 `ExtraSources`）、data URI；三角形、strip 和 fan；缺法线时按 glTF 规定用平面法线；缺切线时生成切线，镜像 UV 处按手性拆分顶点。
+    - 二次误差简化器：半边折叠，带属性代价；UV 和法线接缝只沿接缝折叠；开放边界、材质边界和非流形边锁定；每级 LOD 都从 LOD 0 简化，误差不会累积。
+    - Forsyth 顶点缓存优化与顶点取用顺序优化。
+    - meshlet 生成：64 顶点、124 三角形；优先不增加顶点的三角形和悬空三角形，再按距离和法线锥选；遇到孤岛就吸收附近的三角形。在规则网格上平均每个 meshlet 82 个三角形（理论上限约 98）。包围球用 Ritter 算法；法线锥量化保守，测试验证了被剔除的 meshlet 没有正面三角形。
+  - `marlin-cook cook <root> [--platform] [--threads]`：更新索引、cook、发布清单，并报告 cook 数、命中缓存数和错误。
 - **待做**：
   - Linux 和 macOS 的变更源（fanotify、FSEvents）。
   - 共享缓存中的 extract（P5）。
+  - cook：MikkTSpace 逐位一致的切线（现在是 Lengyel 加按角度加权，与 MikkTSpace 很接近，但拆分处不完全一致）、morph target、主机纹理 tiling 单元、cluster DAG（格式里已经预留了字段）、DDC 的 LRU 淘汰。

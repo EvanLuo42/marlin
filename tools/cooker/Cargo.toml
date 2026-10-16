@@ -10,6 +10,7 @@ name = "marlin-cook"
 path = "src/main.rs"
 
 [dependencies]
+marlin-anim.workspace = true
 marlin-asset.workspace = true
 marlin-asset-db.workspace = true
 marlin-cook-audio.workspace = true
@@ -20,7 +21,12 @@ marlin-cook-script.workspace = true
 marlin-cook-shader.workspace = true
 marlin-cook-texture.workspace = true
 marlin-masset.workspace = true
+marlin-render.workspace = true
 marlin-vcs.workspace = true
+
+[dev-dependencies]
+# Writes the test project's source image.
+image.workspace = true
 
 [lints]
 workspace = true

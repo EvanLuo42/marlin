@@ -1,11 +1,21 @@
 [package]
 name = "marlin-cook-mesh"
-description = "Mesh optimization, LODs and meshlets."
+description = "glTF import, mesh optimization, LODs, meshlets, skeletons and animation clips."
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+gltf.workspace = true
+marlin-anim.workspace = true
+marlin-asset.workspace = true
+marlin-cook-core.workspace = true
+marlin-reflect.workspace = true
+marlin-render.workspace = true
+marlin-serial.workspace = true
+
+[dev-dependencies]
+marlin-asset-db.workspace = true
 
 [lints]
 workspace = true

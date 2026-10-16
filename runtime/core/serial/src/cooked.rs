@@ -328,6 +328,15 @@ impl<T> SlicePos<T> {
     pub fn is_empty(self) -> bool {
         self.len == 0
     }
+
+    /// Element `index` of the slice, to link pointers inside it. Panics when out of range.
+    pub fn at(self, index: usize) -> Pos<T> {
+        assert!(index < self.len, "slice element out of range");
+        Pos {
+            offset: self.offset + index * size_of::<T>(),
+            _target: PhantomData,
+        }
+    }
 }
 
 /// Appends `Pod` values to a buffer and links relative pointers between them.
