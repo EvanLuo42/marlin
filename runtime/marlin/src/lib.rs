@@ -8,6 +8,7 @@ pub use marlin_app as app;
 pub use marlin_asset as asset;
 pub use marlin_audio as audio;
 pub use marlin_audio_device as audio_device;
+pub use marlin_compress as compress;
 pub use marlin_config as config;
 pub use marlin_containers as containers;
 pub use marlin_ecs as ecs;
