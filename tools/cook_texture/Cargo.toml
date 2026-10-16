@@ -7,5 +7,16 @@ publish.workspace = true
 
 [dependencies]
 
+# Console texture tiling, from the private platform repositories cloned into platforms/<name>/
+# (see platforms/README.md and src/tiling.rs). Enabling one without its repository fails to build.
+[features]
+ps5 = []
+xbox = []
+switch2 = []
+
+[dev-dependencies]
+# The GPU conformance test uploads encoded textures, and the layout tests check the RHI's rules.
+marlin-rhi.workspace = true
+
 [lints]
 workspace = true
