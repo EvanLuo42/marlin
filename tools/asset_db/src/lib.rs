@@ -266,7 +266,6 @@ impl AssetDb {
         let mut report = UpdateReport::default();
         if let (Some(j), Some(position)) = (journal, position)
             && self.state.valid
-            && !self.dirs.is_empty()
             && let Ok(Some((records, end))) = j.read(&self.state)
         {
             report.mode = UpdateMode::Journal;
@@ -778,4 +777,13 @@ impl marlin_masset::Links for AssetDb {
 /// A stable key for a relative path, as stored by the index (for tools keeping their own maps).
 pub fn path_hash(path: &str) -> u128 {
     path_key(path)
+}
+
+impl AssetDb {
+    /// Pre-submit validation: errors in the files `vcs` would submit, links and source files
+    /// they use that would not reach anyone else (neither tracked nor submitted), and links into
+    /// files the submit deletes. The index should be up to date first ([`update`](Self::update)).
+    pub fn validate_submit(&mut self, vcs: &dyn marlin_vcs::Vcs) -> marlin_vcs::Result<Vec<Issue>> {
+        validate::run_submit(self, vcs)
+    }
 }

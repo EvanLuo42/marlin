@@ -20,6 +20,7 @@ marlin-cook-script.workspace = true
 marlin-cook-shader.workspace = true
 marlin-cook-texture.workspace = true
 marlin-masset.workspace = true
+marlin-vcs.workspace = true
 
 [lints]
 workspace = true

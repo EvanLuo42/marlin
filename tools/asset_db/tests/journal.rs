@@ -101,3 +101,22 @@ fn changes_outside_the_tree_are_ignored() {
     assert_eq!(report.mode, UpdateMode::Journal, "{report:?}");
     assert_eq!((report.checked, report.read), (0, 0), "{report:?}");
 }
+
+#[test]
+fn a_root_without_subdirectories_uses_the_journal() {
+    let p = Project::new("flat");
+    p.write(
+        "a.masset",
+        &format!("!Version 1\n{}", object("Thing", U3, "A", "")),
+    );
+    let mut db = AssetDb::build(&p.root, journal_options()).unwrap();
+    assert!(db.has_journal());
+    db.save().unwrap();
+    p.write("b.png", "x");
+    let report = db.update().unwrap();
+    assert_eq!(
+        (report.mode, report.added),
+        (UpdateMode::Journal, 1),
+        "{report:?}"
+    );
+}

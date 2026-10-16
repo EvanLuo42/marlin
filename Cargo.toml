@@ -80,6 +80,7 @@ marlin-editor-script-tools = { path = "editor/script_tools" }
 # --- tools ---
 marlin-masset = { path = "tools/masset" }
 marlin-asset-db = { path = "tools/asset_db" }
+marlin-vcs = { path = "tools/vcs" }
 marlin-cook-core = { path = "tools/cook_core" }
 marlin-cook-texture = { path = "tools/cook_texture" }
 marlin-cook-mesh = { path = "tools/cook_mesh" }

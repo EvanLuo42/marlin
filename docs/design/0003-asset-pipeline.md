@@ -270,7 +270,10 @@ bulk        GPU 数据（顶点、纹理 mip），对齐到 4 KiB，直接上传
   - 校验：解析错误、UUID 冲突、悬空链接、过期的 path:name、缺 UUID 的链接、缺失的源文件。
   - 规模（release，5 万文件 / 20 万对象）：完整构建 0.62 s，打开加无变化更新 30 ms，搜索 10 ms，反向引用热查询 2 µs，校验 135 ms。
 - **`marlin-cook index|validate <root>`** 已接上索引。
+- **P2 · `tools/vcs` 与提交前校验完成**：
+  - `Vcs` trait 带 Git 后端（porcelain v2 -z、批量查询、LFS 锁、pre-commit 挂钩），能识别 Perforce 和 Lore 工作区（目前报 Unsupported）。
+  - `AssetDb::validate_submit` 检查三件事：提交内容里的错误；链接或源文件指向既未跟踪、也不在本次提交里的文件；剩下的文件链接到本次提交删除的文件。
+  - `marlin-cook validate --pre-submit` 与 `install-hook` 已在真实 Git 仓库里验证过：能挡住"只提交了链接"的那种提交。
 - **待做**：
-  - `tools/vcs`（Git 后端）以及提交前校验（链接目标未提交）。
   - Linux 和 macOS 的变更源（fanotify、FSEvents）。
   - 共享缓存中的 extract（P5）。

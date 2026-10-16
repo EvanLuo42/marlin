@@ -10,6 +10,7 @@ marlin-asset.workspace = true
 marlin-error.workspace = true
 marlin-hash.workspace = true
 marlin-masset.workspace = true
+marlin-vcs.workspace = true
 memmap2.workspace = true
 
 # The NTFS change journal, for finding changed files without scanning.

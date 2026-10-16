@@ -88,6 +88,7 @@ dependencies = [
  "marlin-error",
  "marlin-hash",
  "marlin-masset",
+ "marlin-vcs",
  "memmap2",
  "windows-sys",
 ]
@@ -174,6 +175,7 @@ dependencies = [
  "marlin-cook-shader",
  "marlin-cook-texture",
  "marlin-masset",
+ "marlin-vcs",
 ]
 
 [[package]]
@@ -498,6 +500,14 @@ dependencies = [
 [[package]]
 name = "marlin-ui-render"
 version = "0.1.0"
+
+[[package]]
+name = "marlin-vcs"
+version = "0.1.0"
+dependencies = [
+ "marlin-error",
+ "serde_json",
+]
 
 [[package]]
 name = "marlin-vfx"
