@@ -9,8 +9,12 @@
 //!   platform, endianness, compiler and run, and computable in `const fn`. Use them for anything
 //!   that leaves the process: asset IDs and GUIDs, name hashes in cooked data, network IDs.
 #![cfg_attr(not(test), no_std)]
+#![feature(const_eval_select, core_intrinsics, portable_simd)]
+// `const_eval_select` is an intrinsic: the const and runtime paths are tested to agree.
+#![allow(internal_features)]
 
 mod fast;
+mod simd;
 pub mod stable;
 
 pub use fast::{FastHasher, FastState, PrehashedHasher, PrehashedState, fast_hash};

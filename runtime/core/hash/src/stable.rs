@@ -1,6 +1,10 @@
 //! Stable hashes: the same output on every platform, endianness, compiler and run, forever.
 //!
-//! Everything here is a `const fn`, so IDs can be computed at compile time:
+//! Everything here is a `const fn`, so IDs can be computed at compile time. At runtime, XXH3 on
+//! inputs over 240 bytes runs its accumulation loop on portable SIMD (8 × u64 lanes, as the
+//! reference implementation's SSE2/AVX2/NEON paths do); short inputs are scalar in the reference
+//! too. Both produce the same bits; [`scalar`] forces the scalar loop.
+//!
 //!
 //! ```
 //! const PLAYER: u64 = marlin_hash::xxh3_64(b"Player");
@@ -58,7 +62,7 @@ pub const fn fnv1a_32(bytes: &[u8]) -> u32 {
 
 // --- XXH3 ---
 
-const P32_1: u64 = 0x9e37_79b1;
+pub(crate) const P32_1: u64 = 0x9e37_79b1;
 const P32_2: u64 = 0x85eb_ca77;
 const P32_3: u64 = 0xc2b2_ae3d;
 const P64_1: u64 = 0x9e37_79b1_85eb_ca87;
@@ -69,8 +73,8 @@ const P64_5: u64 = 0x27d4_eb2f_1656_67c5;
 const PMX_1: u64 = 0x1656_6791_9e37_79f9;
 const PMX_2: u64 = 0x9fb2_1c65_1e98_df25;
 
-const SECRET_LEN: usize = 192;
-type Secret = [u8; SECRET_LEN];
+pub(crate) const SECRET_LEN: usize = 192;
+pub(crate) type Secret = [u8; SECRET_LEN];
 
 /// The reference implementation's default secret (`XXH3_kSecret`).
 #[rustfmt::skip]
@@ -89,10 +93,10 @@ const SECRET: Secret = [
     0x45, 0xcb, 0x3a, 0x8f, 0x95, 0x16, 0x04, 0x28, 0xaf, 0xd7, 0xfb, 0xca, 0xbb, 0x4b, 0x40, 0x7e,
 ];
 
-const STRIPE_LEN: usize = 64;
-const STRIPES_PER_BLOCK: usize = (SECRET_LEN - STRIPE_LEN) / 8;
-const BLOCK_LEN: usize = STRIPE_LEN * STRIPES_PER_BLOCK;
-const INIT_ACC: [u64; 8] = [P32_3, P64_1, P64_2, P64_3, P64_4, P32_2, P64_5, P32_1];
+pub(crate) const STRIPE_LEN: usize = 64;
+pub(crate) const STRIPES_PER_BLOCK: usize = (SECRET_LEN - STRIPE_LEN) / 8;
+pub(crate) const BLOCK_LEN: usize = STRIPE_LEN * STRIPES_PER_BLOCK;
+pub(crate) const INIT_ACC: [u64; 8] = [P32_3, P64_1, P64_2, P64_3, P64_4, P32_2, P64_5, P32_1];
 
 /// XXH3 64-bit with seed 0.
 #[inline]
@@ -102,7 +106,7 @@ pub const fn xxh3_64(bytes: &[u8]) -> u64 {
 
 /// XXH3 64-bit (`XXH3_64bits_withSeed`).
 pub const fn xxh3_64_with_seed(input: &[u8], seed: u64) -> u64 {
-    xxh3_64_impl::<false>(input, seed)
+    xxh3_64_impl::<false, false>(input, seed)
 }
 
 /// XXH3 64-bit of `input` with ASCII `A-Z` mapped to `a-z`, without a temporary copy:
@@ -110,11 +114,11 @@ pub const fn xxh3_64_with_seed(input: &[u8], seed: u64) -> u64 {
 /// hash used for names. Bytes >= 0x80 are untouched, so UTF-8 passes through intact.
 #[inline]
 pub const fn xxh3_64_ascii_lowercase(input: &[u8]) -> u64 {
-    xxh3_64_impl::<true>(input, 0)
+    xxh3_64_impl::<true, false>(input, 0)
 }
 
 // `L`: lowercase ASCII while reading the input (monomorphized, so free when false).
-const fn xxh3_64_impl<const L: bool>(input: &[u8], seed: u64) -> u64 {
+const fn xxh3_64_impl<const L: bool, const S: bool>(input: &[u8], seed: u64) -> u64 {
     let len = input.len();
     if len <= 16 {
         if len > 8 {
@@ -174,7 +178,7 @@ const fn xxh3_64_impl<const L: bool>(input: &[u8], seed: u64) -> u64 {
         avalanche(acc)
     } else {
         let secret = derive_secret(seed);
-        let acc = long_accumulate::<L>(input, &secret);
+        let acc = accumulate_long::<L, S>(input, &secret);
         merge_accs(&acc, &secret, 11, (len as u64).wrapping_mul(P64_1))
     }
 }
@@ -187,10 +191,10 @@ pub const fn xxh3_128(bytes: &[u8]) -> u128 {
 
 /// XXH3 128-bit (`XXH3_128bits_withSeed`).
 pub const fn xxh3_128_with_seed(input: &[u8], seed: u64) -> u128 {
-    xxh3_128_impl::<false>(input, seed)
+    xxh3_128_impl::<false, false>(input, seed)
 }
 
-const fn xxh3_128_impl<const L: bool>(input: &[u8], seed: u64) -> u128 {
+const fn xxh3_128_impl<const L: bool, const S: bool>(input: &[u8], seed: u64) -> u128 {
     let len = input.len();
     let (lo, hi) = if len <= 16 {
         if len > 8 {
@@ -276,7 +280,7 @@ const fn xxh3_128_impl<const L: bool>(input: &[u8], seed: u64) -> u128 {
         (avalanche(lo), 0u64.wrapping_sub(avalanche(hi)))
     } else {
         let secret = derive_secret(seed);
-        let acc = long_accumulate::<L>(input, &secret);
+        let acc = accumulate_long::<L, S>(input, &secret);
         (
             merge_accs(&acc, &secret, 11, (len as u64).wrapping_mul(P64_1)),
             merge_accs(
@@ -431,6 +435,38 @@ const fn derive_secret(seed: u64) -> Secret {
         i += 16;
     }
     out
+}
+
+/// The long-input accumulation: this file's scalar loop in const evaluation (or when `S` forces
+/// it), [`crate::simd`]'s vector version at runtime. Both produce identical lanes.
+#[inline(always)]
+const fn accumulate_long<const L: bool, const S: bool>(input: &[u8], secret: &Secret) -> [u64; 8] {
+    if S {
+        return long_accumulate::<L>(input, secret);
+    }
+    core::intrinsics::const_eval_select(
+        (input, secret),
+        long_accumulate::<L>,
+        crate::simd::long_accumulate::<L>,
+    )
+}
+
+/// The same hashes with the long-input path forced to scalar code at runtime: the portable
+/// reference the SIMD path is verified and benchmarked against. Prefer the functions above.
+pub mod scalar {
+    use super::{xxh3_64_impl, xxh3_128_impl};
+
+    pub fn xxh3_64_with_seed(input: &[u8], seed: u64) -> u64 {
+        xxh3_64_impl::<false, true>(input, seed)
+    }
+
+    pub fn xxh3_64_ascii_lowercase(input: &[u8]) -> u64 {
+        xxh3_64_impl::<true, true>(input, 0)
+    }
+
+    pub fn xxh3_128_with_seed(input: &[u8], seed: u64) -> u128 {
+        xxh3_128_impl::<false, true>(input, seed)
+    }
 }
 
 /// Inputs over 240 bytes: eight lanes over 64-byte stripes, scrambled after every 1 KiB block.
