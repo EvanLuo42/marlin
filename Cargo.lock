@@ -144,6 +144,9 @@ version = "0.1.0"
 [[package]]
 name = "marlin-cook-texture"
 version = "0.1.0"
+dependencies = [
+ "marlin-rhi",
+]
 
 [[package]]
 name = "marlin-cooker"
