@@ -77,6 +77,7 @@ marlin-editor-world-tools = { path = "editor/world_tools" }
 marlin-editor-asset-tools = { path = "editor/asset_tools" }
 marlin-editor-script-tools = { path = "editor/script_tools" }
 # --- tools ---
+marlin-masset = { path = "tools/masset" }
 marlin-cook-core = { path = "tools/cook_core" }
 marlin-cook-texture = { path = "tools/cook_texture" }
 marlin-cook-mesh = { path = "tools/cook_mesh" }

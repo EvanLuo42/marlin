@@ -10,6 +10,7 @@ name = "marlin-cook"
 path = "src/main.rs"
 
 [dependencies]
+marlin-asset.workspace = true
 marlin-cook-audio.workspace = true
 marlin-cook-core.workspace = true
 marlin-cook-level.workspace = true
@@ -17,6 +18,7 @@ marlin-cook-mesh.workspace = true
 marlin-cook-script.workspace = true
 marlin-cook-shader.workspace = true
 marlin-cook-texture.workspace = true
+marlin-masset.workspace = true
 
 [lints]
 workspace = true

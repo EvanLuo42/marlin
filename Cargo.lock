@@ -74,6 +74,10 @@ dependencies = [
 [[package]]
 name = "marlin-asset"
 version = "0.1.0"
+dependencies = [
+ "marlin-error",
+ "marlin-reflect",
+]
 
 [[package]]
 name = "marlin-audio"
@@ -135,6 +139,7 @@ version = "0.1.0"
 name = "marlin-cooker"
 version = "0.1.0"
 dependencies = [
+ "marlin-asset",
  "marlin-cook-audio",
  "marlin-cook-core",
  "marlin-cook-level",
@@ -142,6 +147,7 @@ dependencies = [
  "marlin-cook-script",
  "marlin-cook-shader",
  "marlin-cook-texture",
+ "marlin-masset",
 ]
 
 [[package]]
@@ -292,6 +298,15 @@ name = "marlin-jobs"
 version = "0.1.0"
 dependencies = [
  "marlin-std",
+]
+
+[[package]]
+name = "marlin-masset"
+version = "0.1.0"
+dependencies = [
+ "marlin-asset",
+ "marlin-error",
+ "marlin-reflect",
 ]
 
 [[package]]
