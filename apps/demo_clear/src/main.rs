@@ -7,11 +7,11 @@
 #![no_std]
 #![no_main]
 
-use core::fmt::{self, Write};
+use core::fmt::Write;
 use core::time::Duration;
 
 use marlin_app::{App, Event, Surface, WindowDesc};
-use marlin_diag::{FixedBuf, info, warn};
+use marlin_diag::{FixedBuf, chain, info, warn};
 use marlin_input::{GamepadButton, Input, Key};
 use marlin_math::scalar::sin;
 use marlin_rhi::{
@@ -27,36 +27,19 @@ fn demo_main() -> i32 {
     match run() {
         Ok(()) => 0,
         Err(error) => {
-            marlin_diag::error!("demo_clear: {error}");
+            marlin_diag::error!("demo_clear: {}", chain(&error));
             1
         }
     }
 }
 
+// Each message names only the failing layer; `chain` appends the cause.
+#[derive(Debug, marlin_error::Error)]
 enum Failure {
-    Platform(marlin_app::Error),
-    Gpu(marlin_rhi::Error),
-}
-
-impl From<marlin_app::Error> for Failure {
-    fn from(e: marlin_app::Error) -> Self {
-        Self::Platform(e)
-    }
-}
-
-impl From<marlin_rhi::Error> for Failure {
-    fn from(e: marlin_rhi::Error) -> Self {
-        Self::Gpu(e)
-    }
-}
-
-impl fmt::Display for Failure {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Platform(e) => write!(f, "platform: {e}"),
-            Self::Gpu(e) => write!(f, "gpu: {e}"),
-        }
-    }
+    #[error("platform")]
+    Platform(#[from] marlin_app::Error),
+    #[error("gpu")]
+    Gpu(#[from] marlin_rhi::Error),
 }
 
 fn run() -> Result<(), Failure> {

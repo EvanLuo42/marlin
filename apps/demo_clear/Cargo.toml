@@ -15,6 +15,7 @@ bench = false
 [dependencies]
 marlin-app.workspace = true
 marlin-diag.workspace = true
+marlin-error.workspace = true
 marlin-input.workspace = true
 marlin-math.workspace = true
 marlin-rhi.workspace = true

@@ -1,10 +1,9 @@
-use core::fmt;
-
 pub type Result<T, E = Error> = core::result::Result<T, E>;
 
 /// An RHI failure: a portable [`ErrorKind`] plus the API's raw code (`HRESULT`, `VkResult`, ...).
 /// `Copy` and allocation-free, like `marlin_pal::Error`.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, marlin_error::Error)]
+#[error(code = "{:#010x}")]
 pub struct Error {
     kind: ErrorKind,
     raw: i32,
@@ -34,43 +33,24 @@ impl Error {
 }
 
 #[non_exhaustive]
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, marlin_error::ErrorKind)]
 pub enum ErrorKind {
     /// The GPU was removed, reset or hung, or the driver was updated. Every object of the device
     /// is dead; recreate the device and everything made from it.
+    #[error("device lost")]
     DeviceLost,
     /// The OS, driver or GPU lacks something required (API version, feature level, format).
+    #[error("unsupported")]
     Unsupported,
+    #[error("out of memory")]
     OutOfMemory,
     /// No adapter matched the request.
+    #[error("not found")]
     NotFound,
+    #[error("invalid input")]
     InvalidInput,
+    #[error("timed out")]
     TimedOut,
+    #[error("other error")]
     Other,
 }
-
-impl ErrorKind {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::DeviceLost => "device lost",
-            Self::Unsupported => "unsupported",
-            Self::OutOfMemory => "out of memory",
-            Self::NotFound => "not found",
-            Self::InvalidInput => "invalid input",
-            Self::TimedOut => "timed out",
-            Self::Other => "other error",
-        }
-    }
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.raw == 0 {
-            f.write_str(self.kind.as_str())
-        } else {
-            write!(f, "{} ({:#010x})", self.kind.as_str(), self.raw as u32)
-        }
-    }
-}
-
-impl core::error::Error for Error {}

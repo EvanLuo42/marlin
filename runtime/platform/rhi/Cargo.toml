@@ -5,6 +5,9 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
+[dependencies]
+marlin-error.workspace = true
+
 # D3D12 and DXGI are not in windows-sys; their COM interfaces are bound by hand in
 # src/backend/d3d12/com.rs. windows-sys covers the Win32 parts. marlin-diag carries the debug
 # layer's messages; it moves to [dependencies] once another backend logs.

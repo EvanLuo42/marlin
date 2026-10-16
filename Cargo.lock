@@ -158,6 +158,7 @@ version = "0.1.0"
 dependencies = [
  "marlin-app",
  "marlin-diag",
+ "marlin-error",
  "marlin-input",
  "marlin-math",
  "marlin-rhi",
@@ -351,6 +352,7 @@ version = "0.1.0"
 dependencies = [
  "marlin-app",
  "marlin-diag",
+ "marlin-error",
  "windows-sys",
 ]
 
