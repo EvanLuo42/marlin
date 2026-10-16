@@ -7,6 +7,7 @@ publish.workspace = true
 
 [dependencies]
 marlin-diag.workspace = true
+marlin-error.workspace = true
 marlin-io.workspace = true
 marlin-mem.workspace = true
 marlin-sync.workspace = true

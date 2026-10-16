@@ -6,6 +6,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+marlin-diag.workspace = true
 marlin-mem.workspace = true
 marlin-pal.workspace = true
 

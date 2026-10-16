@@ -16,6 +16,9 @@ pub use marlin_sync as sync;
 pub use marlin_thread as thread;
 pub use marlin_time as time;
 
+/// `#[derive(marlin_std::Error)]` and `#[derive(marlin_std::ErrorKind)]`; see `marlin_error`.
+pub use marlin_error::{Error, ErrorKind};
+
 pub mod prelude {
     pub use alloc::borrow::ToOwned;
     pub use alloc::boxed::Box;
