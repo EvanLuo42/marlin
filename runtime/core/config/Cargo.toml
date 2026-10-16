@@ -1,6 +1,6 @@
 [package]
 name = "marlin-config"
-description = "Console variables (cvars), config files and command-line overrides."
+description = "Console variables (cvars), TOML config files and command-line overrides."
 version.workspace = true
 edition.workspace = true
 publish.workspace = true

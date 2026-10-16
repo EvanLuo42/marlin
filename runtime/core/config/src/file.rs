@@ -10,7 +10,7 @@ use alloc::vec::Vec;
 use core::fmt::{self, Write};
 
 use toml::de::{DeTable, DeValue};
-use toml_writer::TomlWrite;
+use toml_writer::{TomlStringBuilder, TomlWrite};
 
 use crate::cvar::{Archived, Flags, Source, Typed};
 use crate::error::{ApplyError, Cause, Error, Location};
@@ -19,13 +19,19 @@ use crate::registry;
 /// 1-based line of a byte offset.
 fn line_of(text: &str, offset: usize) -> u32 {
     let offset = offset.min(text.len());
-    text.as_bytes()[..offset].iter().filter(|&&b| b == b'\n').count() as u32 + 1
+    text.as_bytes()[..offset]
+        .iter()
+        .filter(|&&b| b == b'\n')
+        .count() as u32
+        + 1
 }
 
 fn typed<'a>(value: &'a DeValue<'_>) -> Typed<'a> {
     match value {
         DeValue::Boolean(b) => Typed::Bool(*b),
-        DeValue::Integer(i) => i64::from_str_radix(i.as_str(), i.radix()).map_or(Typed::Other, Typed::Int),
+        DeValue::Integer(i) => {
+            i64::from_str_radix(i.as_str(), i.radix()).map_or(Typed::Other, Typed::Int)
+        }
         DeValue::Float(f) => f.as_str().parse().map_or(Typed::Other, Typed::Float),
         DeValue::String(s) => Typed::Str(s),
         _ => Typed::Other,
@@ -79,7 +85,13 @@ pub fn apply_config(text: &str, source: Source) -> Vec<ApplyError> {
             source: Cause::Syntax(e.message().into()),
         })
         .collect();
-    apply_table(text, table.get_ref(), &mut String::new(), source, &mut errors);
+    apply_table(
+        text,
+        table.get_ref(),
+        &mut String::new(),
+        source,
+        &mut errors,
+    );
     // Tables iterate by key; report in file order.
     errors.sort_by_key(|e| match e.location {
         Location::Line(n) | Location::Arg(n) => n,
@@ -154,7 +166,8 @@ pub fn write_archive(out: &mut impl Write) -> fmt::Result {
             Archived::Bool(b) => out.value(b)?,
             Archived::Int(i) => out.value(i)?,
             Archived::Float(f) => out.value(f)?,
-            Archived::Str(s) => out.value(s.as_str())?,
+            // One line per cvar: toml_writer would pick a multi-line literal for some strings.
+            Archived::Str(s) => out.value(TomlStringBuilder::new(&s).as_basic())?,
         }
         out.newline()?;
     }

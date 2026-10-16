@@ -331,7 +331,9 @@ impl Cvar {
             Spec::Int { .. } => Archived::Int(bits as i64),
             Spec::Float { .. } => Archived::Float(f64::from_bits(bits)),
             Spec::Enum { names, .. } => Archived::Str(names[bits as usize].into()),
-            Spec::Str(_) => Archived::Str(if pending { &text.pending } else { &text.live }.clone()?),
+            Spec::Str(_) => {
+                Archived::Str(if pending { &text.pending } else { &text.live }.clone()?)
+            }
         })
     }
 

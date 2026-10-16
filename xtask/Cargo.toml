@@ -8,7 +8,9 @@ publish.workspace = true
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
-toml = { workspace = true, features = ["default"] }
+# Only `parse` (no std, no serde): features unify across the workspace, and anything more would
+# reach the no_std game binary through marlin-config.
+toml = { workspace = true, features = ["parse"] }
 
 [lints]
 workspace = true

@@ -1,4 +1,9 @@
-//! Console variables (cvars), config files and command-line overrides.
+//! Console variables (cvars), TOML config files and command-line overrides.
+//!
+//! No IO: config text comes in as `&str` and archives go out through `fmt::Write`; reading and
+//! writing the files is up to the caller. The `toml` crate (no_std) only does TOML syntax; this
+//! crate owns the cvars, their rules and change tracking, the registry, and the mapping between
+//! TOML documents (tables and dotted keys spell cvar names) and cvars.
 //!
 //! A cvar is a typed static ([`CvarBool`], [`CvarI64`], [`CvarF64`], [`CvarString`],
 //! [`CvarEnum`]) with a name, default, help text, [`Flags`] and, for numbers, a range. Reading a
@@ -19,7 +24,8 @@
 //! # Who may set what
 //!
 //! Code (the typed `set` methods, [`Source::Code`]) may set anything; it clamps to the range
-//! instead of failing. String sets ([`Cvar::set_str`]) parse, check the range and the flags:
+//! instead of failing. String sets ([`Cvar::set_str`], the console and the command line) and
+//! config files check the type, the range and the flags:
 //!
 //! - [`Flags::READ_ONLY`]: only from code and the command line.
 //! - [`Flags::CHEAT`]: from outside code only while [`cheats_enabled`].
