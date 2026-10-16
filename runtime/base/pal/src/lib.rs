@@ -12,6 +12,7 @@
 //! - [`ext`] — capability extensions. Compile time (`cfg(marlin_ext = "...")`, from the platform
 //!   manifest) says whether the platform has the API; a run-time `get()` says whether this
 //!   process can use it.
+//! - [`os`] — platform-specific helpers for the L1 backends (Win32 error mapping).
 //! - `backend` — exactly one backend, chosen by `cfg(marlin_platform = "...")`. Console backends
 //!   are pulled in from `platforms/<name>/pal/`.
 #![cfg_attr(not(test), no_std)]
@@ -25,6 +26,7 @@ pub mod ext;
 pub mod fiber;
 pub mod file;
 pub mod futex;
+pub mod os;
 pub mod process;
 pub mod sysinfo;
 pub mod thread;

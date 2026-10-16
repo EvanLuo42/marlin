@@ -1,0 +1,25 @@
+[package]
+name = "marlin-demo-clear"
+description = "Demo: a window cleared to an animated color through the RHI, driven by input."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+# no_std binary: a std test harness would bring a second panic handler.
+[[bin]]
+name = "marlin-demo-clear"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+marlin-app.workspace = true
+marlin-diag.workspace = true
+marlin-input.workspace = true
+marlin-math.workspace = true
+marlin-rhi.workspace = true
+marlin-rt.workspace = true
+marlin-time.workspace = true
+
+[lints]
+workspace = true

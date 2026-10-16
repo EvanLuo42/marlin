@@ -1,7 +1,7 @@
 //! Win32 backend. The Xbox backend reuses most of it.
 
 mod debug;
-mod error;
+pub(crate) mod error;
 mod fiber;
 mod file;
 mod futex;

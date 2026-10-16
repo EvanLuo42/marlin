@@ -82,6 +82,10 @@ version = "0.1.0"
 [[package]]
 name = "marlin-app"
 version = "0.1.0"
+dependencies = [
+ "marlin-pal",
+ "windows-sys",
+]
 
 [[package]]
 name = "marlin-asset"
@@ -146,6 +150,19 @@ dependencies = [
  "marlin-cook-script",
  "marlin-cook-shader",
  "marlin-cook-texture",
+]
+
+[[package]]
+name = "marlin-demo-clear"
+version = "0.1.0"
+dependencies = [
+ "marlin-app",
+ "marlin-diag",
+ "marlin-input",
+ "marlin-math",
+ "marlin-rhi",
+ "marlin-rt",
+ "marlin-time",
 ]
 
 [[package]]
@@ -231,6 +248,11 @@ version = "0.1.0"
 [[package]]
 name = "marlin-input"
 version = "0.1.0"
+dependencies = [
+ "marlin-app",
+ "marlin-pal",
+ "windows-sys",
+]
 
 [[package]]
 name = "marlin-io"
@@ -309,6 +331,11 @@ version = "0.1.0"
 [[package]]
 name = "marlin-rhi"
 version = "0.1.0"
+dependencies = [
+ "marlin-app",
+ "marlin-diag",
+ "windows-sys",
+]
 
 [[package]]
 name = "marlin-rt"
