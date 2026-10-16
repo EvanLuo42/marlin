@@ -2,9 +2,10 @@ use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use windows_sys::Win32::System::Memory::{
-    MEM_COMMIT, MEM_DECOMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE,
-    PAGE_NOACCESS, PAGE_PROTECTION_FLAGS, PAGE_READONLY, PAGE_READWRITE, VirtualAlloc, VirtualFree,
-    VirtualProtect,
+    MEM_ADDRESS_REQUIREMENTS, MEM_COMMIT, MEM_DECOMMIT, MEM_EXTENDED_PARAMETER, MEM_RELEASE,
+    MEM_RESERVE, MemExtendedParameterAddressRequirements, PAGE_EXECUTE_READ,
+    PAGE_EXECUTE_READWRITE, PAGE_NOACCESS, PAGE_PROTECTION_FLAGS, PAGE_READONLY, PAGE_READWRITE,
+    VirtualAlloc, VirtualAlloc2, VirtualFree, VirtualProtect,
 };
 use windows_sys::Win32::System::SystemInformation::{GetSystemInfo, SYSTEM_INFO};
 
@@ -59,6 +60,31 @@ unsafe impl VMem for Backend {
     fn reserve(size: usize) -> Result<NonNull<u8>> {
         // SAFETY: reserving fresh address space has no preconditions.
         let p = unsafe { VirtualAlloc(ptr::null(), size, MEM_RESERVE, PAGE_NOACCESS) };
+        NonNull::new(p.cast()).ok_or_else(last_error)
+    }
+
+    fn reserve_aligned(size: usize, align: usize) -> Result<NonNull<u8>> {
+        let mut requirements = MEM_ADDRESS_REQUIREMENTS {
+            Alignment: align,
+            ..Default::default()
+        };
+        let mut parameter = MEM_EXTENDED_PARAMETER::default();
+        // The parameter type sits in the low 8 bits of the bitfield.
+        parameter.Anonymous1._bitfield = MemExtendedParameterAddressRequirements as u64;
+        parameter.Anonymous2.Pointer = (&raw mut requirements).cast();
+        // SAFETY: a null process means the current one; `parameter` and `requirements` outlive the
+        // call.
+        let p = unsafe {
+            VirtualAlloc2(
+                ptr::null_mut(),
+                ptr::null(),
+                size,
+                MEM_RESERVE,
+                PAGE_NOACCESS,
+                &mut parameter,
+                1,
+            )
+        };
         NonNull::new(p.cast()).ok_or_else(last_error)
     }
 

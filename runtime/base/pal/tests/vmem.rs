@@ -69,3 +69,23 @@ fn large_pages_when_available() {
         vmem::release(p, size).unwrap();
     }
 }
+
+#[test]
+fn reserve_aligned_is_aligned_and_usable() {
+    let page = vmem::page_size();
+    for align in [vmem::allocation_granularity(), 1 << 22, 1 << 24] {
+        let size = (1 << 22) + page;
+        let base = vmem::reserve_aligned(size, align).unwrap();
+        assert_eq!(base.addr().get() % align, 0, "align {align:#x}");
+        unsafe {
+            let last = base.add(size - page);
+            vmem::commit(last, page, Protection::ReadWrite).unwrap();
+            last.write(1);
+            vmem::release(base, size).unwrap();
+        }
+    }
+    assert_eq!(
+        vmem::reserve_aligned(1 << 20, 3 << 20).unwrap_err().kind(),
+        ErrorKind::InvalidInput
+    );
+}

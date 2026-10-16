@@ -220,7 +220,10 @@ runtime/base/mem/src/
 ├── lib.rs
 ├── vrange.rs        # Reservation RAII、commit 跟踪
 ├── page/            # 页级分配器、大页池
-├── heap/            # 通用堆（mimalloc 式）：segment / page / size class / 线程本地 heap / 跨线程 free list
+├── heap.rs          # 通用堆（mimalloc 式）：线程本地 heap、alloc/free 快慢路径、跨线程 free、线程退出 abandon/reclaim
+├── segment.rs       #   4 MiB 对齐 segment 与 page、huge 分配、segment 缓存
+├── layout.rs        #   segment 几何与 48 个 size class
+├── lock.rs / list.rs#   futex 锁、侵入式链表（mem 不能依赖 sync，后者可能分配）
 ├── arena/           # 线性/帧/栈分配器
 ├── pool/            # 定长池
 ├── tag.rs           # 内存标签（Render/Asset/VM/…）
@@ -470,7 +473,7 @@ runtime/<layer>/<name>/
 已实现：
 
 - `marlin-pal`：契约 `VMem`、`Process`、`Debug`、`Time`、`Thread`（含亲和性与优先级）、`Futex`、`Tls`、`SysInfo`（目前只有 CPU 拓扑），以及 ext `LargePages`、`HybridCores`（仅 Windows）。Windows、Linux、macOS 都有实现（Linux/macOS 共享 `backend/unix`，futex 和调试器检测各自实现）。
-- `marlin-mem::MarlinHeap`：**占位实现**，每次分配都是一次独立的 OS reservation（Windows 上为 64 KiB 粒度），后续由 mimalloc 式堆替换。
+- `marlin-mem::MarlinHeap`：mimalloc 式通用堆（见 §2.3 与 `MarlinHeap` 文档）。单线程 alloc+free 约 3.5 ns，同一测试下 Windows 系统分配器约 52 ns（release）。另提供 `stats()` 和 `collect_abandoned()`。
 - `marlin-rt`：`start` / `game_entry!` / `panic::report` / `hosted::init`。
 - xtask：`platforms`、`gen-cfg`、`build`、`check-layers`。
 
@@ -492,3 +495,11 @@ runtime/<layer>/<name>/
 - Linux 优先级通过对 tid 调 `setpriority` 设置 nice。降低 nice 值需要 `CAP_SYS_NICE` 或足够的 `RLIMIT_NICE`，否则返回 `PermissionDenied`，包括从 `Background` 改回 `Normal`。
 - macOS 只提供各性能等级的数量（`hw.perflevelN.*`），无法知道每个 CPU 属于哪个等级。因此拓扑中的数量和各等级的 CPU 数是准确的，但 id 是合成的：从最省电的等级开始编号；Intel Mac 的 SMT 兄弟假定相邻。macOS 没有硬亲和性，亲和性 API 返回 `Unsupported`；优先级映射到 QoS class，QoS 本身决定 P/E 核（`Background` 只跑在 E 核上）。
 - `hybrid_cores` ext 只在 Windows 实现（EcoQoS，`SetThreadInformation(ThreadPowerThrottling)`），运行期用无副作用的 `GetThreadInformation` 探测是否可用。macOS 不声明这个 ext：它的 QoS 已经由 `ThreadPriority` 使用，再暴露一次会让两个 API 互相覆盖。
+- `vmem::reserve_aligned(size, align)`：Windows 用 `VirtualAlloc2` 的 `MEM_ADDRESS_REQUIREMENTS`（Windows 10 1803+），POSIX 多 reserve 一段再 unmap 头尾。分配器靠它让 segment 按 4 MiB 对齐。
+- 堆的所有权模型：small/medium segment 归某个线程的 heap 所有，只有它能动 owner 侧字段。其他线程释放时 CAS 压入 page 的 `thread_free`，由 owner 稍后收集。page 进入 full 队列与外线程释放之间用 SeqCst 的 Dekker 配对防止丢唤醒：要么 owner 看到被释放的块，要么释放方看到 `in_full` 并留下 hint。
+- 线程退出时，TLS 析构把 heap 的 segment 交给全局 abandoned 列表；其他线程需要新 segment 时最多接手 8 个。块全被外线程释放的 abandoned segment 只在这时，或调用 `collect_abandoned()` 时才释放。
+- heap 结构体从 OS chunk 里切出、循环复用、从不 unmap，因为正在和 abandon 竞争的外线程可能还会往旧 heap 写 hint。
+- 空 segment 进全局缓存（16 个），除 header 外全部 decommit；huge 分配因此天然拿到清零的内存。
+- 对齐 > 16 的小分配：在 page 内多分配一些，返回块内对齐后的指针，并给该 page 打 `has_aligned` 标记，`free` 时回推到块起点。对齐 > 2 MiB 不支持，返回 null。
+- mem 用了 nightly 的 `#[thread_local]`；没有原生 TLS 的主机平台需要换成 PAL TLS key 的慢路径。
+- 尚未实现：purge（延迟 decommit 空闲 page）、内存标签与预算、`Allocator` trait（allocator_api）、arena/pool、mem-debug（guard page、泄漏追踪）、free list 指针编码（防止 heap 被利用）。

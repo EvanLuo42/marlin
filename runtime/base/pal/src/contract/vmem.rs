@@ -20,6 +20,9 @@ pub(crate) unsafe trait VMem {
     fn allocation_granularity() -> usize;
 
     fn reserve(size: usize) -> Result<NonNull<u8>>;
+    /// `align` is a power of two above the allocation granularity (checked by the caller). The
+    /// result is released with `release(base, size)` like any other reservation.
+    fn reserve_aligned(size: usize, align: usize) -> Result<NonNull<u8>>;
     /// # Safety
     /// `base`/`size` describe exactly one live reservation.
     unsafe fn release(base: NonNull<u8>, size: usize) -> Result<()>;

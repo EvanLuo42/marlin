@@ -32,12 +32,29 @@ pub fn reserve(size: usize) -> Result<NonNull<u8>> {
     Backend::reserve(size)
 }
 
+/// Like [`reserve`], but the result is aligned to `align`, a power of two. Lets allocators find a
+/// region's header by masking a pointer.
+///
+/// Windows uses `VirtualAlloc2` (Windows 10 1803+); POSIX over-reserves and unmaps the excess.
+#[inline]
+pub fn reserve_aligned(size: usize, align: usize) -> Result<NonNull<u8>> {
+    check_size(size)?;
+    if !align.is_power_of_two() {
+        return Err(Error::from_kind(ErrorKind::InvalidInput));
+    }
+    if align <= allocation_granularity() {
+        return Backend::reserve(size);
+    }
+    Backend::reserve_aligned(size, align)
+}
+
 /// Releases a whole reservation.
 ///
 /// # Safety
 ///
-/// `base` and `size` must be exactly what a previous [`reserve`] returned and was given (or an
-/// allocation from an extension whose docs point here). Nothing may access the region afterwards.
+/// `base` and `size` must be exactly what a previous [`reserve`] or [`reserve_aligned`] returned
+/// and was given (or an allocation from an extension whose docs point here). Nothing may access
+/// the region afterwards.
 #[inline]
 pub unsafe fn release(base: NonNull<u8>, size: usize) -> Result<()> {
     check_size(size)?;

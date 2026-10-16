@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<module type="EMPTY_MODULE" version="4">
+  <component name="NewModuleRootManager">
+    <content url="file://$MODULE_DIR$">
+      <sourceFolder url="file://$MODULE_DIR$/apps/editor/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/apps/game/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/editor/asset_tools/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/editor/core/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/editor/script_tools/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/editor/ui_core/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/editor/ui_theme/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/editor/ui_widgets/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/editor/viewport/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/editor/world_tools/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/runtime/base/diag/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/runtime/base/io/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/runtime/base/mem/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/runtime/base/mem/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/runtime/base/pal/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/runtime/base/pal/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/runtime/base/rt/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/runtime/base/std/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/runtime/base/sync/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/runtime/base/thread/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/runtime/base/time/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/runtime/core/config/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/runtime/core/containers/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/runtime/core/ecs/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/runtime/core/hash/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/runtime/core/jobs/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/runtime/core/math/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/runtime/core/profile/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/runtime/core/reflect/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/runtime/core/serial/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/runtime/core/text/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/runtime/engine/anim/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/runtime/engine/asset/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/runtime/engine/audio/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/runtime/engine/font/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/runtime/engine/framework/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/runtime/engine/nav/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/runtime/engine/physics/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/runtime/engine/render/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/runtime/engine/render_graph/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/runtime/engine/script/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/runtime/engine/shader/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/runtime/engine/ui_render/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/runtime/engine/vfx/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/runtime/engine/vm/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/runtime/engine/vm_bytecode/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/runtime/engine/world/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/runtime/marlin/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/runtime/platform/app/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/runtime/platform/audio_device/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/runtime/platform/input/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/runtime/platform/net/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/runtime/platform/rhi/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/runtime/platform/services/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/tools/cook_audio/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/tools/cook_core/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/tools/cook_level/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/tools/cook_mesh/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/tools/cook_script/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/tools/cook_shader/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/tools/cook_texture/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/tools/cooker/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/tools/vm_compiler/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/tools/vm_lsp/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/xtask/src" isTestSource="false" />
+      <excludeFolder url="file://$MODULE_DIR$/target" />
+    </content>
+    <orderEntry type="inheritedJdk" />
+    <orderEntry type="sourceFolder" forTests="false" />
+  </component>
+</module>

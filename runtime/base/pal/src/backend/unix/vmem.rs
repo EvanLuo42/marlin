@@ -59,6 +59,27 @@ unsafe impl VMem for Backend {
         Ok(NonNull::new(p.cast()).unwrap())
     }
 
+    fn reserve_aligned(size: usize, align: usize) -> Result<NonNull<u8>> {
+        // Over-reserve, then unmap the misaligned head and the excess tail.
+        let size = size.next_multiple_of(Self::page_size());
+        let Some(total) = size.checked_add(align - Self::page_size()) else {
+            return Err(crate::Error::from_kind(crate::ErrorKind::OutOfMemory));
+        };
+        let base = Self::reserve(total)?.as_ptr();
+        let head = base.addr().next_multiple_of(align) - base.addr();
+        let tail = total - head - size;
+        // SAFETY: both ranges lie inside the mapping just made and are page aligned.
+        unsafe {
+            if head > 0 {
+                libc::munmap(base.cast(), head);
+            }
+            if tail > 0 {
+                libc::munmap(base.add(head + size).cast(), tail);
+            }
+            Ok(NonNull::new_unchecked(base.add(head)))
+        }
+    }
+
     unsafe fn release(base: NonNull<u8>, size: usize) -> Result<()> {
         // SAFETY: the caller guarantees this is exactly one live reservation.
         check(unsafe { libc::munmap(base.as_ptr().cast(), size) })
