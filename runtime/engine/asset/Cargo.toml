@@ -7,6 +7,7 @@ publish.workspace = true
 
 [dependencies]
 marlin-error.workspace = true
+marlin-hash.workspace = true
 marlin-reflect.workspace = true
 
 [lints]

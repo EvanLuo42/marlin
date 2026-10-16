@@ -77,6 +77,7 @@ name = "marlin-asset"
 version = "0.1.0"
 dependencies = [
  "marlin-error",
+ "marlin-hash",
  "marlin-reflect",
 ]
 
@@ -137,6 +138,15 @@ version = "0.1.0"
 [[package]]
 name = "marlin-cook-core"
 version = "0.1.0"
+dependencies = [
+ "marlin-asset",
+ "marlin-asset-db",
+ "marlin-error",
+ "marlin-hash",
+ "marlin-masset",
+ "marlin-reflect",
+ "marlin-serial",
+]
 
 [[package]]
 name = "marlin-cook-level"

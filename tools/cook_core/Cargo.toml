@@ -6,6 +6,13 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+marlin-asset.workspace = true
+marlin-asset-db.workspace = true
+marlin-error.workspace = true
+marlin-hash.workspace = true
+marlin-masset.workspace = true
+marlin-reflect.workspace = true
+marlin-serial.workspace = true
 
 [lints]
 workspace = true

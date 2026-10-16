@@ -383,7 +383,9 @@ impl Reader<'_> {
                 let value = match &node.kind {
                     NodeKind::Int(v) => <$ty>::try_from(*v).ok(),
                     // Values beyond i128 are written as decimal strings.
-                    NodeKind::Str(s) => s.parse::<$ty>().ok(),
+                    NodeKind::Str(s) if !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()) => {
+                        s.parse::<$ty>().ok()
+                    }
                     _ => {
                         self.mismatch(node, "an integer");
                         return;
