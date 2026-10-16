@@ -13,6 +13,7 @@ use marlin_cook_mesh::{AnimationCooker, MeshCooker, SkeletonCooker};
 use marlin_cook_script as _;
 use marlin_cook_shader as _;
 use marlin_cook_texture::TextureCooker;
+use marlin_framework::Level;
 use marlin_render::asset::{Mesh, Texture};
 use marlin_store::RemoteDdc;
 
@@ -23,7 +24,8 @@ pub fn engine_cookers() -> Cookers {
         .register::<Texture>(TextureCooker)
         .and_then(|()| cookers.register::<Mesh>(MeshCooker))
         .and_then(|()| cookers.register::<Skeleton>(SkeletonCooker))
-        .and_then(|()| cookers.register::<AnimationClip>(AnimationCooker));
+        .and_then(|()| cookers.register::<AnimationClip>(AnimationCooker))
+        .and_then(|()| cookers.register_generic::<Level>());
     if let Err(e) = registered {
         // Two engine types with one text name: a programming error, caught by any run.
         panic!("engine asset types: {e}");

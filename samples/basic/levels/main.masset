@@ -1,0 +1,70 @@
+!Version 1
+
+Level
+{
+    !Uuid = "01992d00-0000-7000-8000-000000000001"
+    !Name = "Main"
+    Environment = { ClearColor = (0.02, 0.03, 0.05, 1.0) }
+    Entities = [
+        {
+            Name = "Camera"
+            Transform = { Translation = (0.0, 3.0, 9.0), Rotation = (0.0, -15.0, 0.0) }
+            Components = [Camera { FovY = 60.0, Near = 0.1 }, FlyCamera { Speed = 8.0 }]
+        },
+        {
+            Name = "Ground"
+            Transform = { Translation = (0.0, -0.6, 0.0), Scale = (20.0, 0.2, 20.0) }
+            Components = [StaticMesh { Mesh = <meshes/cube:Cube #01992d00-0000-7000-8000-000000000101>, Color = (0.35, 0.36, 0.38, 1.0) }]
+        },
+        {
+            Name = "Sphere"
+            Transform = { Translation = (0.0, 0.6, 0.0), Scale = (2.2, 2.2, 2.2) }
+            Components = [StaticMesh { Mesh = <meshes/sphere:Sphere #01992d00-0000-7000-8000-000000000102>, Color = (0.9, 0.55, 0.2, 1.0) }]
+        },
+        {
+            Name = "Torus"
+            Transform = { Translation = (0.0, 0.6, 0.0), Scale = (4.0, 4.0, 4.0) }
+            Components = [StaticMesh { Mesh = <meshes/torus:Torus #01992d00-0000-7000-8000-000000000103>, Color = (0.2, 0.6, 0.9, 1.0) }, Spin { Axis = (1.0, 0.0, 0.3), Speed = 40.0 }]
+        },
+        {
+            Name = "Cube0"
+            Transform = { Translation = (4.500, 0.0, 0.000), Scale = (0.8, 0.8, 0.8) }
+            Components = [StaticMesh { Mesh = <meshes/cube:Cube #01992d00-0000-7000-8000-000000000101>, Color = (0.50, 0.93, 0.07, 1.0) }, Spin { Axis = (0.0, 1.0, 0.0), Speed = 30.0 }]
+        },
+        {
+            Name = "Cube1"
+            Transform = { Translation = (3.182, 0.0, 3.182), Scale = (0.8, 0.8, 0.8) }
+            Components = [StaticMesh { Mesh = <meshes/cube:Cube #01992d00-0000-7000-8000-000000000101>, Color = (0.85, 0.63, 0.02, 1.0) }, Spin { Axis = (0.0, 1.0, 0.0), Speed = 40.0 }]
+        },
+        {
+            Name = "Cube2"
+            Transform = { Translation = (-0.000, 0.0, 4.500), Scale = (0.8, 0.8, 0.8) }
+            Components = [StaticMesh { Mesh = <meshes/cube:Cube #01992d00-0000-7000-8000-000000000101>, Color = (1.00, 0.25, 0.25, 1.0) }, Spin { Axis = (0.0, 1.0, 0.0), Speed = 50.0 }]
+        },
+        {
+            Name = "Cube3"
+            Transform = { Translation = (-3.182, 0.0, 3.182), Scale = (0.8, 0.8, 0.8) }
+            Components = [StaticMesh { Mesh = <meshes/cube:Cube #01992d00-0000-7000-8000-000000000101>, Color = (0.85, 0.02, 0.63, 1.0) }, Spin { Axis = (0.0, 1.0, 0.0), Speed = 60.0 }]
+        },
+        {
+            Name = "Cube4"
+            Transform = { Translation = (-4.500, 0.0, -0.000), Scale = (0.8, 0.8, 0.8) }
+            Components = [StaticMesh { Mesh = <meshes/cube:Cube #01992d00-0000-7000-8000-000000000101>, Color = (0.50, 0.07, 0.93, 1.0) }, Spin { Axis = (0.0, 1.0, 0.0), Speed = 70.0 }]
+        },
+        {
+            Name = "Cube5"
+            Transform = { Translation = (-3.182, 0.0, -3.182), Scale = (0.8, 0.8, 0.8) }
+            Components = [StaticMesh { Mesh = <meshes/cube:Cube #01992d00-0000-7000-8000-000000000101>, Color = (0.15, 0.37, 0.98, 1.0) }, Spin { Axis = (0.0, 1.0, 0.0), Speed = 80.0 }]
+        },
+        {
+            Name = "Cube6"
+            Transform = { Translation = (0.000, 0.0, -4.500), Scale = (0.8, 0.8, 0.8) }
+            Components = [StaticMesh { Mesh = <meshes/cube:Cube #01992d00-0000-7000-8000-000000000101>, Color = (0.00, 0.75, 0.75, 1.0) }, Spin { Axis = (0.0, 1.0, 0.0), Speed = 90.0 }]
+        },
+        {
+            Name = "Cube7"
+            Transform = { Translation = (3.182, 0.0, -3.182), Scale = (0.8, 0.8, 0.8) }
+            Components = [StaticMesh { Mesh = <meshes/cube:Cube #01992d00-0000-7000-8000-000000000101>, Color = (0.15, 0.98, 0.37, 1.0) }, Spin { Axis = (0.0, 1.0, 0.0), Speed = 100.0 }]
+        },
+    ]
+}

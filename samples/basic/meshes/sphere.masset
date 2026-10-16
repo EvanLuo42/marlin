@@ -1,0 +1,8 @@
+!Version 1
+
+Mesh
+{
+    !Uuid = "01992d00-0000-7000-8000-000000000102"
+    !Name = "Sphere"
+    Source = `source:meshes/sphere.glb`
+}

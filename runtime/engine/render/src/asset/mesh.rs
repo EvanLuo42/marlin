@@ -629,3 +629,54 @@ pub fn f32_to_f16(v: f32) -> u16 {
     let round = u32::from(rest > 0x1000 || (rest == 0x1000 && half & 1 != 0));
     sign | (half + round) as u16
 }
+
+impl MeshView<'_> {
+    /// LOD `lod`'s triangles in the forward renderer's form: positions and normals, 32-bit
+    /// indices. A CPU decode of its page (checked first), for the forward path until the
+    /// visibility buffer consumes pages as they are (0006 §2).
+    pub fn decode_lod(
+        &self,
+        lod: usize,
+        page: &[u8],
+    ) -> Result<(Vec<crate::mesh::Vertex>, Vec<u32>), MeshError> {
+        self.check_page(lod, page)?;
+        let h = self.header;
+        let l = &self.lods[lod];
+        let slice = |r: &PageRange| &page[r.offset as usize..][..r.size as usize];
+        let (positions, attributes, indices) =
+            (slice(&l.positions), slice(&l.attributes), slice(&l.indices));
+        let float = h.flags & MeshFlags::POSITION_FLOAT != 0;
+        let f32_at =
+            |b: &[u8], at: usize| f32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]]);
+        let vertices = (0..l.vertex_count as usize)
+            .map(|v| {
+                let position = if float {
+                    core::array::from_fn(|i| f32_at(positions, v * 12 + i * 4))
+                } else {
+                    let q = core::array::from_fn(|i| {
+                        u16::from_le_bytes([positions[v * 8 + i * 2], positions[v * 8 + i * 2 + 1]])
+                    });
+                    dequantize_position(q, h.position_offset, h.position_scale)
+                };
+                let normal = read_attributes(attributes, h.attribute_stride as usize, v, 0).normal;
+                crate::mesh::Vertex { position, normal }
+            })
+            .collect();
+        let indices = if l.index_size == 2 {
+            indices
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|i| u32::from(u16::from_le_bytes([i[0], i[1]])))
+                .collect()
+        } else {
+            indices
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|i| u32::from_le_bytes([i[0], i[1], i[2], i[3]]))
+                .collect()
+        };
+        Ok((vertices, indices))
+    }
+}

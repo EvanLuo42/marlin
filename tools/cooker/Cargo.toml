@@ -24,6 +24,7 @@ marlin-cook-mesh.workspace = true
 marlin-cook-script.workspace = true
 marlin-cook-shader.workspace = true
 marlin-cook-texture.workspace = true
+marlin-framework.workspace = true
 marlin-masset.workspace = true
 marlin-render.workspace = true
 marlin-store.workspace = true

@@ -17,5 +17,6 @@ mod shaders;
 
 pub use mesh::{MeshData, Vertex, cube};
 pub use renderer::{
-    Camera, Environment, MeshHandle, MeshRenderer, RenderStats, Renderer, RendererDesc,
+    Camera, Environment, MeshHandle, MeshRenderer, RenderStats, Renderer, RendererDesc, Scene,
+    SceneInstance,
 };

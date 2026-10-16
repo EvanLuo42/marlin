@@ -60,10 +60,39 @@ macro_rules! game_entry {
 
         #[unsafe(export_name = "main")]
         extern "C" fn __marlin_main(
-            _argc: ::core::ffi::c_int,
-            _argv: *const *const ::core::ffi::c_char,
+            argc: ::core::ffi::c_int,
+            argv: *const *const ::core::ffi::c_char,
         ) -> ::core::ffi::c_int {
+            // SAFETY: the C runtime passes `argc` valid strings that live as long as the process.
+            unsafe { $crate::set_args(argc, argv) };
             $crate::start($main)
         }
     };
+}
+
+static ARGC: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+static ARGV: core::sync::atomic::AtomicPtr<*const core::ffi::c_char> =
+    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
+
+/// Records the process arguments for [`args`]. Called by [`game_entry!`].
+///
+/// # Safety
+/// `argv` points to `argc` NUL-terminated strings that stay valid and unchanged for the rest of
+/// the process.
+#[doc(hidden)]
+pub unsafe fn set_args(argc: core::ffi::c_int, argv: *const *const core::ffi::c_char) {
+    ARGV.store(argv.cast_mut(), core::sync::atomic::Ordering::Release);
+    ARGC.store(argc.max(0) as usize, core::sync::atomic::Ordering::Release);
+}
+
+/// The process arguments after the program name, as the C runtime passed them; ones that are
+/// not UTF-8 are left out. Empty in binaries that did not start through [`game_entry!`].
+pub fn args() -> impl Iterator<Item = &'static str> {
+    let argc = ARGC.load(core::sync::atomic::Ordering::Acquire);
+    let argv = ARGV.load(core::sync::atomic::Ordering::Acquire);
+    (1..argc).filter_map(move |i| {
+        // SAFETY: `set_args`' contract: `argc` valid, immortal strings.
+        let s = unsafe { core::ffi::CStr::from_ptr(*argv.add(i)) };
+        s.to_str().ok()
+    })
 }

@@ -1,0 +1,8 @@
+!Version 1
+
+Mesh
+{
+    !Uuid = "01992d00-0000-7000-8000-000000000103"
+    !Name = "Torus"
+    Source = `source:meshes/torus.glb`
+}

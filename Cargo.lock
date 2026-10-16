@@ -420,6 +420,7 @@ dependencies = [
  "marlin-cook-script",
  "marlin-cook-shader",
  "marlin-cook-texture",
+ "marlin-framework",
  "marlin-masset",
  "marlin-render",
  "marlin-store",
@@ -435,23 +436,6 @@ dependencies = [
  "marlin-error",
  "marlin-input",
  "marlin-math",
- "marlin-rhi",
- "marlin-rt",
- "marlin-time",
-]
-
-[[package]]
-name = "marlin-demo-cubes"
-version = "0.1.0"
-dependencies = [
- "marlin-app",
- "marlin-diag",
- "marlin-ecs",
- "marlin-error",
- "marlin-input",
- "marlin-jobs",
- "marlin-math",
- "marlin-render",
  "marlin-rhi",
  "marlin-rt",
  "marlin-time",
@@ -540,12 +524,39 @@ version = "0.1.0"
 [[package]]
 name = "marlin-framework"
 version = "0.1.0"
+dependencies = [
+ "marlin-anim",
+ "marlin-app",
+ "marlin-asset",
+ "marlin-asset-db",
+ "marlin-config",
+ "marlin-containers",
+ "marlin-cook-core",
+ "marlin-cookd",
+ "marlin-cooker",
+ "marlin-diag",
+ "marlin-ecs",
+ "marlin-error",
+ "marlin-input",
+ "marlin-io",
+ "marlin-jobs",
+ "marlin-math",
+ "marlin-reflect",
+ "marlin-render",
+ "marlin-rhi",
+ "marlin-serial",
+ "marlin-sync",
+ "marlin-time",
+]
 
 [[package]]
 name = "marlin-game"
 version = "0.1.0"
 dependencies = [
  "marlin",
+ "marlin-diag",
+ "marlin-framework",
+ "marlin-io",
  "marlin-rt",
 ]
 

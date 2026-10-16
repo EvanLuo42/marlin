@@ -1,11 +1,37 @@
 [package]
 name = "marlin-framework"
-description = "Game framework: main loop, frame pipeline and subsystem registration."
+description = "Game framework: startup, the frame loop and subsystem wiring."
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+marlin-anim.workspace = true
+marlin-app.workspace = true
+marlin-asset.workspace = true
+marlin-config.workspace = true
+marlin-containers.workspace = true
+marlin-diag.workspace = true
+marlin-ecs.workspace = true
+marlin-error.workspace = true
+marlin-input.workspace = true
+marlin-io.workspace = true
+marlin-jobs.workspace = true
+marlin-math.workspace = true
+marlin-reflect.workspace = true
+marlin-render.workspace = true
+marlin-rhi.workspace = true
+marlin-serial.workspace = true
+marlin-sync.workspace = true
+marlin-time.workspace = true
+
+[dev-dependencies]
+# The end-to-end test cooks, packages and serves the sample with the real tools.
+marlin-asset-db.workspace = true
+marlin-cook-core.workspace = true
+marlin-config.workspace = true
+marlin-cookd = { path = "../../../tools/cookd" }
+marlin-cooker.workspace = true
 
 [lints]
 workspace = true

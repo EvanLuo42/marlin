@@ -47,6 +47,43 @@ pub struct MeshRenderer {
     pub color: [f32; 4],
 }
 
+/// One mesh drawn at a transform.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct SceneInstance {
+    pub mesh: MeshHandle,
+    pub transform: Transform,
+    /// Linear RGBA.
+    pub color: [f32; 4],
+}
+
+/// What a frame draws, taken out of the simulation so the two can run apart: the camera and
+/// every instance. Immutable once built.
+#[derive(Clone, PartialEq, Debug, Default)]
+pub struct Scene {
+    pub camera: Option<(Transform, Camera)>,
+    pub instances: Vec<SceneInstance>,
+}
+
+impl Scene {
+    /// The first [`Camera`] and every [`MeshRenderer`] of `world`, with their [`Transform`]s.
+    pub fn extract(world: &World) -> Self {
+        Self {
+            camera: world
+                .query_ref::<(&Transform, &Camera)>()
+                .next()
+                .map(|(t, c)| (*t, *c)),
+            instances: world
+                .query_ref::<(&Transform, &MeshRenderer)>()
+                .map(|(t, r)| SceneInstance {
+                    mesh: r.mesh,
+                    transform: *t,
+                    color: r.color,
+                })
+                .collect(),
+        }
+    }
+}
+
 /// Lighting shared by the whole scene.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Environment {
@@ -121,7 +158,8 @@ struct DepthTarget {
 /// Draws the meshes of a [`World`]: see the crate docs.
 pub struct Renderer {
     pipeline: GraphicsPipeline,
-    meshes: Vec<Mesh>,
+    /// By handle; `None` once released.
+    meshes: Vec<Option<Mesh>>,
     frames: Vec<Option<FrameData>>,
     depth: DepthTarget,
     size: (u32, u32),
@@ -239,13 +277,29 @@ impl Renderer {
                 false,
             ),
         )?;
-        self.meshes.push(Mesh {
+        self.meshes.push(Some(Mesh {
             vertex_view,
             _vertices: vertices,
             indices,
             index_count: data.indices.len() as u32,
-        });
+        }));
         Ok(MeshHandle(self.meshes.len() as u32 - 1))
+    }
+
+    /// Frees a mesh's GPU buffers. Its handle draws nothing from now on.
+    ///
+    /// # Safety
+    /// The GPU has finished every frame that drew the mesh (after `frames_in_flight` more frames,
+    /// or a wait for idle).
+    pub unsafe fn release_mesh(&mut self, mesh: MeshHandle) {
+        if let Some(slot) = self.meshes.get_mut(mesh.0 as usize) {
+            *slot = None;
+        }
+    }
+
+    /// Meshes uploaded and not released.
+    pub fn mesh_count(&self) -> usize {
+        self.meshes.iter().filter(|m| m.is_some()).count()
     }
 
     /// The target size [`render`](Self::render) draws at.
@@ -284,14 +338,32 @@ impl Renderer {
         target: &RenderTargetView,
         world: &World,
     ) -> Result<RenderStats> {
-        let camera = world.query_ref::<(&Transform, &Camera)>().next();
+        let scene = Scene::extract(world);
+        // SAFETY: forwarded from the caller.
+        unsafe { self.render_scene(device, list, frame, target, &scene) }
+    }
+
+    /// Records `scene` like [`render`](Self::render) records a world. Instances of released meshes
+    /// are skipped.
+    ///
+    /// # Safety
+    /// As [`render`](Self::render).
+    pub unsafe fn render_scene(
+        &mut self,
+        device: &Device,
+        list: &mut CommandList,
+        frame: usize,
+        target: &RenderTargetView,
+        scene: &Scene,
+    ) -> Result<RenderStats> {
+        let camera = scene.camera.as_ref().map(|(t, c)| (t, c));
         self.instances.clear();
         if camera.is_some() {
-            for (transform, renderer) in world.query_ref::<(&Transform, &MeshRenderer)>() {
+            for instance in &scene.instances {
                 let mut words = [0.0; INSTANCE_WORDS];
-                words[..16].copy_from_slice(&transform.to_matrix().to_cols_array());
-                words[16..].copy_from_slice(&renderer.color);
-                self.instances.push((renderer.mesh.0, words));
+                words[..16].copy_from_slice(&instance.transform.to_matrix().to_cols_array());
+                words[16..].copy_from_slice(&instance.color);
+                self.instances.push((instance.mesh.0, words));
             }
             self.instances.sort_unstable_by_key(|(mesh, _)| *mesh);
         }
@@ -339,7 +411,10 @@ impl Renderer {
                     .iter()
                     .take_while(|(m, _)| *m == mesh_index)
                     .count();
-                let mesh = &self.meshes[mesh_index as usize];
+                let Some(mesh) = self.meshes[mesh_index as usize].as_ref() else {
+                    start += count;
+                    continue;
+                };
                 list.set_index_buffer(&mesh.indices, 0, IndexFormat::U32);
                 list.push_constants(
                     0,

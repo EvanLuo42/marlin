@@ -348,6 +348,22 @@ bulk        GPU 数据（顶点、纹理 mip），对齐到 4 KiB，直接上传
     - 纯运行时的重载用例：删除、迁移、失败保留、加载途中失效；
     - 帧的分片到达与随机损坏；
     - 全工作区 548 个测试通过。
+- **P6 · framework、game 与 samples 完成**：
+  - `marlin-framework`（no_std）：
+    - `boot`：读 `boot.toml` 里的 cvar（`content.package`、`content.cookd`、`game.level`、`game.platform`、`r.vsync`、`window.*`），命令行 `+cvar value` 可以覆盖。先挂载包，cookd 挂在包的上层。入口关卡按 UUID 指定，没有按路径加载。`ContentSettings` 是这些 cvar 解析后的纯数据，`mount` 直接用它，不读全局状态。
+    - `Level` 资产：实体加引擎组件（`StaticMesh`、`Camera`、`Spin`、`FlyCamera`）和环境。关卡链接到网格，网格靠 import 闭包随关卡加载。关卡重载会重建它生成的实体。
+    - `loaders`：`Mesh` 解码 LOD 0，产出 `Arc<MeshGeometry>`；`Texture`、`Skeleton`、`AnimationClip` 校验一次后原地保留在单元字节里（`InPlace<T>`），不拷贝。
+    - `Engine`（模拟侧）与 `RenderSide`（渲染侧）完全不共享状态，每帧之间只传一份不可变的 `RenderDelta`：要上传或替换的网格（按 UUID 加版本）、要释放的网格、相机、环境和实例。GPU 上的旧网格要等在途帧都结束后才释放。目前每帧整份发送，0006 的 GPU Scene 到位后再缩成只发变化量。
+    - `run`：主线程渲染第 N 帧，同时在 job 上模拟第 N+1 帧（0004 §3）。`Offscreen` 做离屏渲染和读回。
+  - `marlin-render`：`Scene`（从 ECS 里抽取出来的不可变场景）和 `render_scene`；网格槽位可以释放；`MeshView::decode_lod` 是给前向路径用的 CPU 解码。
+  - `marlin-rt::args()`：进程参数。
+  - `apps/game`：真正的可执行文件，`marlin-game [boot.toml] [+cvar value]`。`apps/demo_cubes` 已删除。
+  - `samples/basic`：关卡、立方体 / 球 / 圆环 glb、棋盘格贴图、`boot.toml`、README。
+  - 端到端测试（真实 RTX 5060，开验证层，0 警告）：
+    - 拷贝 sample → cook → 打包 → 启动 → 离屏渲染并读回，校验背景、物体和地面像素；
+    - 同一份内容改从运行中的 cookd 串流，图像与包路径逐像素相同；
+    - 游戏运行时修改关卡文本，画面里的物体颜色随之改变，网格不重新上传；
+    - 全工作区 551 个测试通过。
 - **待做**：
   - Linux 和 macOS 的变更源（fanotify、FSEvents）。
   - 共享缓存中的 extract；store 的 LRU 与容量上限；store 的鉴权与 TLS（目前只适合可信局域网）。
@@ -355,5 +371,5 @@ bulk        GPU 数据（顶点、纹理 mip），对齐到 4 KiB，直接上传
   - 加载：
     - 按 blob 流送，带优先级和内存预算（包格式与 `Package::read_blob` 已经支持）；
     - unbuffered IO 与 DirectStorage；
-    - 渲染侧 Texture/Mesh 的 loader，以及 GPU 上传（随 framework 在 P6 做）；
-    - 热重载之后通知渲染侧重建 GPU 资源（`version` 已经提供），随 framework 在 P6 做。
+    - 纹理上传到 GPU、网格按页上传（随 0004 R2 的 visbuffer 渲染器一起做；目前 P6 的网格走 CPU 解码加前向路径）；
+    - 关卡组件扩展到脚本（随 VM 集成），以及世界流送（多关卡 / cell）。
