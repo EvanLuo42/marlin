@@ -323,6 +323,9 @@ dependencies = [
 [[package]]
 name = "marlin-sync"
 version = "0.1.0"
+dependencies = [
+ "marlin-pal",
+]
 
 [[package]]
 name = "marlin-text"
@@ -335,6 +338,9 @@ version = "0.1.0"
 [[package]]
 name = "marlin-time"
 version = "0.1.0"
+dependencies = [
+ "marlin-pal",
+]
 
 [[package]]
 name = "marlin-ui-render"
