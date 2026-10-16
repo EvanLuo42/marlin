@@ -41,7 +41,7 @@ fn reads_writes_and_filters() {
         10
     );
 
-    for (pos, vel) in world.query_filtered::<(&mut Pos, &Vel), Without<Frozen>>() {
+    for (mut pos, vel) in world.query_filtered::<(&mut Pos, &Vel), Without<Frozen>>() {
         pos.0 += vel.0 * 100.0;
     }
     let moved = world.query_ref::<&Pos>().filter(|p| p.0 >= 100.0).count();
@@ -57,7 +57,7 @@ fn reads_writes_and_filters() {
         assert_eq!(world.has::<Vel>(e), has_vel);
     }
 
-    for vel in world.query::<Option<&mut Vel>>().flatten() {
+    for mut vel in world.query::<Option<&mut Vel>>().flatten() {
         vel.0 = 2.0;
     }
     assert!(world.query_ref::<&Vel>().all(|v| v.0 == 2.0));
@@ -96,7 +96,7 @@ fn par_for_each_visits_every_entity_once() {
         }
     }
     let visits = AtomicUsize::new(0);
-    world.par_for_each::<(&mut Pos, &Vel), _>(&jobs, 1024, |(pos, vel)| {
+    world.par_for_each::<(&mut Pos, &Vel), _>(&jobs, 1024, |(mut pos, vel)| {
         pos.0 += vel.0;
         visits.fetch_add(1, Ordering::Relaxed);
     });

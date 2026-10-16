@@ -5,14 +5,15 @@ use core::ptr::NonNull;
 use core::time::Duration;
 
 use crate::contract::{
-    Commands, Device, Fences, Instance, Queue, Resources, Rhi, Swapchain, Types,
+    Commands, Device, Fences, Instance, Queue, Queues, Resources, Rhi, Swapchain, Types,
 };
 use crate::{
-    AdapterInfo, Buffer, BufferBarrier, BufferDesc, BufferTextureCopy, BufferViewDesc, CommandList,
-    ComputePipelineDesc, DepthStencilViewDesc, DeviceDesc, Error, ErrorKind, Features, Fence,
-    Format, GraphicsPipelineDesc, IndexFormat, InstanceDesc, PresentMode, PresentStatus, Rect,
-    RenderPassDesc, RenderTargetView, RenderTargetViewDesc, Result, SamplerDesc, SurfaceHandle,
-    SwapchainDesc, Texture, TextureBarrier, TextureDesc, TextureViewDesc, Viewport,
+    AdapterInfo, Buffer, BufferBarrier, BufferDesc, BufferTextureCopy, BufferViewDesc,
+    ComputePipelineDesc, DepthStencilViewDesc, DeviceDesc, Error, ErrorKind, Features, Format,
+    GraphicsPipelineDesc, HeapDesc, IndexFormat, IndirectArgs, InstanceDesc, MemoryRequirements,
+    MeshPipelineDesc, PresentMode, PresentStatus, QueryPoolDesc, QueueType, Rect, RenderPassDesc,
+    RenderTargetView, RenderTargetViewDesc, Result, SamplerDesc, SubmitDesc, SurfaceHandle,
+    SwapchainDesc, Texture, TextureBarrier, TextureCopy, TextureDesc, TextureViewDesc, Viewport,
 };
 
 pub(crate) struct Backend;
@@ -40,6 +41,9 @@ impl Types for Backend {
     type Sampler = Never;
     type GraphicsPipeline = Never;
     type ComputePipeline = Never;
+    type MeshPipeline = Never;
+    type QueryPool = Never;
+    type Heap = Never;
 }
 
 impl Rhi for Backend {}
@@ -53,7 +57,7 @@ impl Instance for Backend {
         match *instance {}
     }
 
-    fn create_device(instance: &Never, _: &DeviceDesc) -> Result<(Never, Never)> {
+    fn create_device(instance: &Never, _: &DeviceDesc) -> Result<(Never, Queues<Never>)> {
         match *instance {}
     }
 }
@@ -71,7 +75,7 @@ impl Device for Backend {
         match *device {}
     }
 
-    fn create_command_pool(device: &Never) -> Result<Never> {
+    fn create_command_pool(device: &Never, _: QueueType) -> Result<Never> {
         match *device {}
     }
 
@@ -135,6 +139,34 @@ impl Device for Backend {
     fn create_compute_pipeline(device: &Never, _: &ComputePipelineDesc<'_>) -> Result<Never> {
         match *device {}
     }
+
+    fn create_mesh_pipeline(device: &Never, _: &MeshPipelineDesc<'_>) -> Result<Never> {
+        match *device {}
+    }
+
+    fn create_query_pool(device: &Never, _: &QueryPoolDesc) -> Result<Never> {
+        match *device {}
+    }
+
+    fn create_heap(device: &Never, _: &HeapDesc) -> Result<Never> {
+        match *device {}
+    }
+
+    fn buffer_requirements(device: &Never, _: &BufferDesc) -> MemoryRequirements {
+        match *device {}
+    }
+
+    fn texture_requirements(device: &Never, _: &TextureDesc) -> MemoryRequirements {
+        match *device {}
+    }
+
+    fn create_placed_buffer(device: &Never, _: &Never, _: u64, _: &BufferDesc) -> Result<Never> {
+        match *device {}
+    }
+
+    fn create_placed_texture(device: &Never, _: &Never, _: u64, _: &TextureDesc) -> Result<Never> {
+        match *device {}
+    }
 }
 
 impl Resources for Backend {
@@ -152,7 +184,11 @@ impl Resources for Backend {
 }
 
 impl Queue for Backend {
-    unsafe fn submit(queue: &Never, _: &[&CommandList], _: Option<(&Fence, u64)>) -> Result<()> {
+    unsafe fn submit(queue: &Never, _: &SubmitDesc<'_>) -> Result<()> {
+        match *queue {}
+    }
+
+    fn timestamp_frequency(queue: &Never) -> Result<u64> {
         match *queue {}
     }
 
@@ -236,6 +272,10 @@ impl Commands for Backend {
         match *list {}
     }
 
+    fn set_stencil_reference(list: &mut Never, _: u8) {
+        match *list {}
+    }
+
     fn set_index_buffer(list: &mut Never, _: &Buffer, _: u64, _: IndexFormat) {
         match *list {}
     }
@@ -249,6 +289,54 @@ impl Commands for Backend {
     }
 
     fn dispatch(list: &mut Never, _: u32, _: u32, _: u32) {
+        match *list {}
+    }
+
+    fn set_mesh_pipeline(list: &mut Never, _: &Never) {
+        match *list {}
+    }
+
+    fn dispatch_mesh(list: &mut Never, _: u32, _: u32, _: u32) {
+        match *list {}
+    }
+
+    fn draw_indirect(list: &mut Never, _: &IndirectArgs<'_>) {
+        match *list {}
+    }
+
+    fn draw_indexed_indirect(list: &mut Never, _: &IndirectArgs<'_>) {
+        match *list {}
+    }
+
+    fn dispatch_indirect(list: &mut Never, _: &IndirectArgs<'_>) {
+        match *list {}
+    }
+
+    fn dispatch_mesh_indirect(list: &mut Never, _: &IndirectArgs<'_>) {
+        match *list {}
+    }
+
+    fn write_timestamp(list: &mut Never, _: &Never, _: u32) {
+        match *list {}
+    }
+
+    fn resolve_queries(list: &mut Never, _: &Never, _: u32, _: u32, _: &Buffer, _: u64) {
+        match *list {}
+    }
+
+    fn begin_event(list: &mut Never, _: &str) {
+        match *list {}
+    }
+
+    fn end_event(list: &mut Never) {
+        match *list {}
+    }
+
+    fn set_marker(list: &mut Never, _: &str) {
+        match *list {}
+    }
+
+    fn copy_texture(list: &mut Never, _: &Texture, _: &Texture, _: &TextureCopy) {
         match *list {}
     }
 }

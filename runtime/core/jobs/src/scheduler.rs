@@ -92,6 +92,9 @@ pub(crate) struct Shared {
     idle: Mutex<()>,
     wake: Condvar,
     shutdown: AtomicBool,
+    /// Detached jobs (see `handle.rs`) queued, waiting on dependencies or running: the system
+    /// waits for them before it stops.
+    pub(crate) detached: Counter,
 }
 
 // SAFETY: the raw pointers are to fibers owned by `Shared` and handed between threads only
@@ -369,6 +372,7 @@ impl JobSystem {
             idle: Mutex::new(()),
             wake: Condvar::new(),
             shutdown: AtomicBool::new(false),
+            detached: Counter::new(),
         });
         for &fiber in &shared.fibers {
             // SAFETY: no fiber runs yet.
@@ -402,9 +406,11 @@ impl JobSystem {
 }
 
 impl Drop for JobSystem {
-    /// Stops the workers once they finish what they are running. Scopes guarantee no job is
-    /// outstanding. Must not be called from a job of this system.
+    /// Waits for every detached job (including those still waiting on dependencies), then stops
+    /// the workers. Scopes guarantee no scoped job is outstanding. Must not be called from a job
+    /// of this system.
     fn drop(&mut self) {
+        self.shared.detached.wait();
         self.shared.shutdown.store(true, Ordering::Release);
         self.shared.epoch.fetch_add(1, Ordering::SeqCst);
         {

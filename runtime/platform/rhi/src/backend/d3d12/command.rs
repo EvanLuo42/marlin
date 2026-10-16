@@ -1,46 +1,59 @@
-//! Command pools and lists: barriers, render passes, copies, draws and dispatches.
+//! Command pools and lists: barriers, render passes, copies, draws, dispatches, queries and
+//! debug markers.
+//!
+//! Lists have the type of the queue they run on. Graphics lists bind both root signatures,
+//! compute lists the compute one, copy lists neither (they set no shader state).
 
 use core::ffi::c_void;
 use core::ptr;
+use core::sync::atomic::Ordering;
 
 use alloc::sync::Arc;
 
 use super::com::{self, *};
 use super::ffi::*;
-use super::pipeline::{Bindless, ComputePipeline, GraphicsPipeline, heaps};
+use super::pipeline::{Bindless, ComputePipeline, GraphicsPipeline, MeshPipeline, heaps};
 use super::resource::Texture;
-use super::{Backend, Device, check, error};
+use super::{Backend, Device, QueryPool, check, error};
 use crate::{
-    Access, Buffer, BufferBarrier, BufferTextureCopy, IndexFormat, Layout, LoadOp,
-    MAX_COLOR_ATTACHMENTS, MAX_PUSH_CONSTANTS, Rect, RenderPassDesc, Result, SubresourceRange,
-    Texture as PublicTexture, TextureBarrier, Viewport,
+    Access, Buffer, BufferBarrier, BufferTextureCopy, IndexFormat, IndirectArgs, Layout, LoadOp,
+    MAX_COLOR_ATTACHMENTS, MAX_PUSH_CONSTANTS, QueueType, Rect, RenderPassDesc, Result,
+    SubresourceRange, Texture as PublicTexture, TextureBarrier, TextureCopy, Viewport,
 };
+
+/// The D3D12 command list type of a queue type.
+pub(super) fn list_type(ty: QueueType) -> i32 {
+    match ty {
+        QueueType::Graphics => D3D12_COMMAND_LIST_TYPE_DIRECT,
+        QueueType::Compute => D3D12_COMMAND_LIST_TYPE_COMPUTE,
+        QueueType::Copy => D3D12_COMMAND_LIST_TYPE_COPY,
+    }
+}
 
 pub(crate) struct CommandPool {
     allocator: Com<ID3D12CommandAllocator>,
+    ty: QueueType,
 }
 
 impl CommandPool {
-    pub(super) fn new(device: &Com<ID3D12Device>) -> Result<Self> {
+    pub(super) fn new(device: &Com<ID3D12Device>, ty: QueueType) -> Result<Self> {
         // SAFETY: valid interface, IID and out pointer.
         let allocator = com::create(|iid, out| unsafe {
-            (device.vtbl().CreateCommandAllocator)(
-                device.as_raw(),
-                D3D12_COMMAND_LIST_TYPE_DIRECT,
-                iid,
-                out,
-            )
+            (device.vtbl().CreateCommandAllocator)(device.as_raw(), list_type(ty), iid, out)
         })
         .map_err(error)?;
-        Ok(Self { allocator })
+        Ok(Self { allocator, ty })
     }
 }
 
 pub(crate) struct CommandList {
     list: Com<ID3D12GraphicsCommandList>,
+    /// Mesh dispatches (graphics lists).
+    list6: Option<Com<ID3D12GraphicsCommandList6>>,
     /// Present when the device supports enhanced barriers.
     list7: Option<Com<ID3D12GraphicsCommandList7>>,
     bindless: Arc<Bindless>,
+    ty: QueueType,
     /// The last pipeline bound was a compute pipeline: push constants go to the compute slot.
     compute: bool,
 }
@@ -53,7 +66,7 @@ impl CommandList {
             (d.vtbl().CreateCommandList)(
                 d.as_raw(),
                 0,
-                D3D12_COMMAND_LIST_TYPE_DIRECT,
+                list_type(pool.ty),
                 pool.allocator.as_raw(),
                 ptr::null_mut(),
                 iid,
@@ -64,20 +77,69 @@ impl CommandList {
         // Lists are created recording; `begin` expects them closed.
         // SAFETY: valid interface.
         check(unsafe { (list.vtbl().Close)(list.as_raw()) })?;
+        let list6 = match pool.ty {
+            QueueType::Graphics => Some(list.cast().map_err(error)?),
+            _ => None,
+        };
         let list7 = match device.features.enhanced_barriers {
             true => list.cast().ok(),
             false => None,
         };
         Ok(Self {
             list,
+            list6,
             list7,
             bindless: device.bindless.clone(),
-            compute: false,
+            ty: pool.ty,
+            compute: pool.ty == QueueType::Compute,
         })
     }
 
     pub(super) fn as_raw(&self) -> *mut c_void {
         self.list.as_raw()
+    }
+
+    fn execute_indirect(&self, signature: &Com<ID3D12CommandSignature>, args: &IndirectArgs<'_>) {
+        let (count, count_offset) = match args.count {
+            Some((buffer, offset)) => (buffer.raw.resource.as_raw(), offset),
+            None => (ptr::null_mut(), 0),
+        };
+        let l = &self.list;
+        // SAFETY: valid interfaces; `api.rs` checked the argument and count ranges.
+        unsafe {
+            (l.vtbl().ExecuteIndirect)(
+                l.as_raw(),
+                signature.as_raw(),
+                args.max_count,
+                args.buffer.raw.resource.as_raw(),
+                args.offset,
+                count,
+                count_offset,
+            )
+        };
+    }
+
+    /// PIX's unformatted-string event encoding: metadata 0, a NUL-terminated UTF-16 string.
+    fn event(
+        &self,
+        name: &str,
+        call: unsafe extern "system" fn(*mut c_void, u32, *const c_void, u32),
+    ) {
+        let mut wide = [0u16; 128];
+        let mut n = 0;
+        for unit in name.encode_utf16().take(wide.len() - 1) {
+            wide[n] = unit;
+            n += 1;
+        }
+        // SAFETY: valid interface; `wide` holds `n + 1` units including the NUL.
+        unsafe {
+            call(
+                self.list.as_raw(),
+                0,
+                wide.as_ptr().cast(),
+                ((n + 1) * size_of::<u16>()) as u32,
+            )
+        };
     }
 }
 
@@ -237,15 +299,29 @@ fn enhanced_flush<T>(list: &Com<ID3D12GraphicsCommandList7>, ty: i32) -> impl Fn
     }
 }
 
-/// The subresource index of mip `mip`, layer `layer` (plane 0).
-fn subresource(texture: &Texture, mip: u32, layer: u32) -> u32 {
-    mip + layer * texture.mip_levels
+/// An aliasing barrier activating `after` (no named predecessor: any overlapping resource).
+/// `D3D12_RESOURCE_ALIASING_BARRIER` overlays the transition member: `pResourceBefore` on
+/// `pResource`, `pResourceAfter` on the two words after it.
+fn aliasing_barrier(after: *mut c_void) -> D3D12_RESOURCE_BARRIER {
+    let mut b = EMPTY_TRANSITION;
+    b.Type = D3D12_RESOURCE_BARRIER_TYPE_ALIASING;
+    let address = after as usize as u64;
+    b.Transition.Subresource = address as u32;
+    b.Transition.StateBefore = (address >> 32) as u32;
+    b
 }
 
-/// Buffer footprints of depth textures use the typeless plane format.
+/// The subresource index of mip `mip`, layer `layer`, plane `plane`.
+fn subresource(texture: &Texture, mip: u32, layer: u32, plane: u32) -> u32 {
+    mip + (layer + plane * texture.array_layers) * texture.mip_levels
+}
+
+/// Buffer footprints of depth textures use the typeless format of their depth plane.
 fn copy_format(texture: &Texture) -> u32 {
     match texture.format {
-        DXGI_FORMAT_D32_FLOAT => DXGI_FORMAT_R32_TYPELESS,
+        DXGI_FORMAT_D32_FLOAT
+        | DXGI_FORMAT_D32_FLOAT_S8X24_UINT
+        | DXGI_FORMAT_R32G8X24_TYPELESS => DXGI_FORMAT_R32_TYPELESS,
         format => format,
     }
 }
@@ -264,20 +340,20 @@ fn footprint(
                 Format: copy_format(&texture.raw),
                 Width: r.width,
                 Height: r.height,
-                Depth: 1,
+                Depth: r.depth,
                 RowPitch: r.bytes_per_row,
             },
         },
     }
 }
 
-fn texture_location(texture: &PublicTexture, r: &BufferTextureCopy) -> D3D12_TEXTURE_COPY_LOCATION {
+fn subresource_location(texture: &PublicTexture, index: u32) -> D3D12_TEXTURE_COPY_LOCATION {
     D3D12_TEXTURE_COPY_LOCATION {
         pResource: texture.raw.resource.as_raw(),
         Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
         PlacedFootprint: D3D12_PLACED_SUBRESOURCE_FOOTPRINT {
             // `SubresourceIndex` overlays the low half of `Offset`.
-            Offset: subresource(&texture.raw, r.mip, r.layer) as u64,
+            Offset: index as u64,
             Footprint: D3D12_SUBRESOURCE_FOOTPRINT {
                 Format: 0,
                 Width: 0,
@@ -287,6 +363,11 @@ fn texture_location(texture: &PublicTexture, r: &BufferTextureCopy) -> D3D12_TEX
             },
         },
     }
+}
+
+/// Buffer copies move plane 0 (the depth of depth-stencil formats).
+fn texture_location(texture: &PublicTexture, r: &BufferTextureCopy) -> D3D12_TEXTURE_COPY_LOCATION {
+    subresource_location(texture, subresource(&texture.raw, r.mip, r.layer, 0))
 }
 
 impl crate::contract::Commands for Backend {
@@ -300,7 +381,10 @@ impl crate::contract::Commands for Backend {
         let l = &list.list;
         // SAFETY: valid interfaces; D3D12 itself rejects resetting a list still recording.
         check(unsafe { (l.vtbl().Reset)(l.as_raw(), pool.allocator.as_raw(), ptr::null_mut()) })?;
-        list.compute = false;
+        list.compute = list.ty == QueueType::Compute;
+        if list.ty == QueueType::Copy {
+            return Ok(());
+        }
         let b = &list.bindless;
         let heaps = heaps(b);
         let zeros = [0u32; MAX_PUSH_CONSTANTS as usize];
@@ -309,15 +393,7 @@ impl crate::contract::Commands for Backend {
         // parameter in shaders that ignore them.
         unsafe {
             (l.vtbl().SetDescriptorHeaps)(l.as_raw(), 2, heaps.as_ptr());
-            (l.vtbl().SetGraphicsRootSignature)(l.as_raw(), b.root.as_raw());
             (l.vtbl().SetComputeRootSignature)(l.as_raw(), b.root.as_raw());
-            (l.vtbl().SetGraphicsRoot32BitConstants)(
-                l.as_raw(),
-                0,
-                MAX_PUSH_CONSTANTS,
-                zeros.as_ptr().cast(),
-                0,
-            );
             (l.vtbl().SetComputeRoot32BitConstants)(
                 l.as_raw(),
                 0,
@@ -325,6 +401,16 @@ impl crate::contract::Commands for Backend {
                 zeros.as_ptr().cast(),
                 0,
             );
+            if list.ty == QueueType::Graphics {
+                (l.vtbl().SetGraphicsRootSignature)(l.as_raw(), b.root.as_raw());
+                (l.vtbl().SetGraphicsRoot32BitConstants)(
+                    l.as_raw(),
+                    0,
+                    MAX_PUSH_CONSTANTS,
+                    zeros.as_ptr().cast(),
+                    0,
+                );
+            }
         }
         Ok(())
     }
@@ -372,9 +458,13 @@ impl crate::contract::Commands for Backend {
                         FirstArraySlice: layer,
                         NumArraySlices: layers,
                         FirstPlane: 0,
-                        NumPlanes: 1,
+                        NumPlanes: texture.planes,
                     }
                 };
+                // Placed render targets and depth taking over aliased memory start with a
+                // discard (their metadata is garbage).
+                let discard =
+                    b.before.layout == Layout::Undefined && texture.placed && texture.target;
                 batch.push(
                     D3D12_TEXTURE_BARRIER {
                         SyncBefore: b.before.stage.bits(),
@@ -385,7 +475,10 @@ impl crate::contract::Commands for Backend {
                         LayoutAfter: barrier_layout(b.after.layout),
                         pResource: texture.resource.as_raw(),
                         Subresources: subresources,
-                        Flags: 0,
+                        Flags: match discard {
+                            true => D3D12_TEXTURE_BARRIER_FLAG_DISCARD,
+                            false => 0,
+                        },
                     },
                     &mut flush,
                 );
@@ -394,15 +487,25 @@ impl crate::contract::Commands for Backend {
             return;
         }
 
-        // Legacy: one transition per subresource whose state changes, or a UAV barrier between
+        // Legacy: an aliasing barrier when a placed texture takes over its memory, one
+        // transition per subresource whose state changes, or a UAV barrier between
         // unordered-access uses.
         let mut flush = legacy_flush(&list.list);
         let mut batch = Batch::<_, 16>::new(EMPTY_TRANSITION);
         for b in barriers {
             let texture = &b.texture.raw;
             let resource = texture.resource.as_raw();
-            let before = legacy_state(b.before.layout);
+            let undefined = b.before.layout == Layout::Undefined;
+            if undefined && texture.placed {
+                batch.push(aliasing_barrier(resource), &mut flush);
+            }
+            // Legacy states name the current state even when the contents are discarded.
+            let before = match undefined {
+                true => texture.legacy_state.load(Ordering::Relaxed),
+                false => legacy_state(b.before.layout),
+            };
             let after = legacy_state(b.after.layout);
+            texture.legacy_state.store(after, Ordering::Relaxed);
             if before == after {
                 if before == D3D12_RESOURCE_STATE_UNORDERED_ACCESS {
                     batch.push(uav_barrier(resource), &mut flush);
@@ -423,14 +526,36 @@ impl crate::contract::Commands for Backend {
                 transition(D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES);
             } else {
                 let (mip, mips, layer, layers) = resolve(b.range, texture);
-                for l in layer..layer + layers {
-                    for m in mip..mip + mips {
-                        transition(m + l * texture.mip_levels);
+                for plane in 0..texture.planes {
+                    for l in layer..layer + layers {
+                        for m in mip..mip + mips {
+                            transition(subresource(texture, m, l, plane));
+                        }
                     }
                 }
             }
         }
         batch.finish(&mut flush);
+        // Reactivated placed targets: discard once they are in their target state.
+        for b in barriers {
+            let texture = &b.texture.raw;
+            let target_state = matches!(
+                b.after.layout,
+                Layout::RenderTarget | Layout::DepthStencilWrite
+            );
+            if b.before.layout == Layout::Undefined
+                && texture.placed
+                && texture.target
+                && target_state
+            {
+                let l = &list.list;
+                // SAFETY: valid interfaces; null discards the whole resource, which is in a
+                // render target or depth write state.
+                unsafe {
+                    (l.vtbl().DiscardResource)(l.as_raw(), texture.resource.as_raw(), ptr::null())
+                };
+            }
+        }
     }
 
     fn buffer_barriers(list: &mut CommandList, barriers: &[BufferBarrier<'_>]) {
@@ -465,15 +590,22 @@ impl crate::contract::Commands for Backend {
         }
 
         // Legacy: buffers start each submission in the common state and are promoted on first
-        // use, so a barrier without a prior access has nothing to do. Upload and readback
-        // buffers never leave their initial state.
+        // use, so a barrier without a prior access has nothing to do, except to activate a
+        // placed buffer over aliased memory. Upload and readback buffers never leave their
+        // initial state.
         let mut flush = legacy_flush(&list.list);
         let mut batch = Batch::<_, 16>::new(EMPTY_TRANSITION);
         for b in barriers {
-            if b.buffer.raw.host || b.before.access == Access::NONE {
+            let resource = b.buffer.raw.resource.as_raw();
+            if b.before.access == Access::NONE {
+                if b.buffer.raw.placed {
+                    batch.push(aliasing_barrier(resource), &mut flush);
+                }
                 continue;
             }
-            let resource = b.buffer.raw.resource.as_raw();
+            if b.buffer.raw.host {
+                continue;
+            }
             let before = legacy_buffer_state(b.before.access);
             let after = legacy_buffer_state(b.after.access);
             if before == after {
@@ -525,21 +657,30 @@ impl crate::contract::Commands for Backend {
                 };
             }
         }
-        if let (Some(handle), Some(d)) = (depth, desc.depth)
-            && let LoadOp::Clear(value) = d.load
-        {
-            // SAFETY: valid interface and descriptor.
-            unsafe {
-                (l.vtbl().ClearDepthStencilView)(
-                    l.as_raw(),
-                    handle,
-                    D3D12_CLEAR_FLAG_DEPTH,
-                    value,
-                    0,
-                    0,
-                    ptr::null(),
-                )
-            };
+        if let (Some(handle), Some(d)) = (depth, desc.depth) {
+            let (mut flags, mut depth_value, mut stencil_value) = (0, 0.0, 0);
+            if let LoadOp::Clear(value) = d.load {
+                flags |= D3D12_CLEAR_FLAG_DEPTH;
+                depth_value = value;
+            }
+            if let (true, LoadOp::Clear(value)) = (d.view.raw.stencil, d.stencil_load) {
+                flags |= D3D12_CLEAR_FLAG_STENCIL;
+                stencil_value = value;
+            }
+            if flags != 0 {
+                // SAFETY: valid interface and descriptor.
+                unsafe {
+                    (l.vtbl().ClearDepthStencilView)(
+                        l.as_raw(),
+                        handle,
+                        flags,
+                        depth_value,
+                        stencil_value,
+                        0,
+                        ptr::null(),
+                    )
+                };
+            }
         }
     }
 
@@ -580,7 +721,15 @@ impl crate::contract::Commands for Backend {
         let l = &list.list;
         // SAFETY: valid interface and locations; the region was checked by `api.rs`.
         unsafe {
-            (l.vtbl().CopyTextureRegion)(l.as_raw(), &to, region.x, region.y, 0, &from, ptr::null())
+            (l.vtbl().CopyTextureRegion)(
+                l.as_raw(),
+                &to,
+                region.x,
+                region.y,
+                region.z,
+                &from,
+                ptr::null(),
+            )
         };
     }
 
@@ -595,10 +744,10 @@ impl crate::contract::Commands for Backend {
         let area = D3D12_BOX {
             left: region.x,
             top: region.y,
-            front: 0,
+            front: region.z,
             right: region.x + region.width,
             bottom: region.y + region.height,
-            back: 1,
+            back: region.z + region.depth,
         };
         let l = &list.list;
         // SAFETY: valid interface and locations; the region was checked by `api.rs`.
@@ -667,6 +816,12 @@ impl crate::contract::Commands for Backend {
         unsafe { (l.vtbl().RSSetScissorRects)(l.as_raw(), 1, &r) };
     }
 
+    fn set_stencil_reference(list: &mut CommandList, reference: u8) {
+        let l = &list.list;
+        // SAFETY: valid interface.
+        unsafe { (l.vtbl().OMSetStencilRef)(l.as_raw(), reference as u32) };
+    }
+
     fn set_index_buffer(list: &mut CommandList, buffer: &Buffer, offset: u64, format: IndexFormat) {
         let view = D3D12_INDEX_BUFFER_VIEW {
             BufferLocation: buffer.raw.address + offset,
@@ -727,5 +882,118 @@ impl crate::contract::Commands for Backend {
         let l = &list.list;
         // SAFETY: valid interface.
         unsafe { (l.vtbl().Dispatch)(l.as_raw(), x, y, z) };
+    }
+
+    fn set_mesh_pipeline(list: &mut CommandList, pipeline: &MeshPipeline) {
+        list.compute = false;
+        let l = &list.list;
+        // SAFETY: valid interfaces.
+        unsafe { (l.vtbl().SetPipelineState)(l.as_raw(), pipeline.pso.as_raw()) };
+    }
+
+    fn dispatch_mesh(list: &mut CommandList, x: u32, y: u32, z: u32) {
+        // `api.rs` allows mesh dispatches on graphics lists only, which all have the interface.
+        let l = list.list6.as_ref().expect("graphics list");
+        // SAFETY: valid interface.
+        unsafe { (l.vtbl().DispatchMesh)(l.as_raw(), x, y, z) };
+    }
+
+    fn draw_indirect(list: &mut CommandList, args: &IndirectArgs<'_>) {
+        list.execute_indirect(&list.bindless.signatures.draw, args);
+    }
+
+    fn draw_indexed_indirect(list: &mut CommandList, args: &IndirectArgs<'_>) {
+        list.execute_indirect(&list.bindless.signatures.draw_indexed, args);
+    }
+
+    fn dispatch_indirect(list: &mut CommandList, args: &IndirectArgs<'_>) {
+        list.execute_indirect(&list.bindless.signatures.dispatch, args);
+    }
+
+    fn dispatch_mesh_indirect(list: &mut CommandList, args: &IndirectArgs<'_>) {
+        list.execute_indirect(&list.bindless.signatures.dispatch_mesh, args);
+    }
+
+    fn write_timestamp(list: &mut CommandList, pool: &QueryPool, index: u32) {
+        let l = &list.list;
+        // SAFETY: valid interfaces; `index` is inside the heap (checked by `api.rs`).
+        unsafe {
+            (l.vtbl().EndQuery)(
+                l.as_raw(),
+                pool.heap.as_raw(),
+                D3D12_QUERY_TYPE_TIMESTAMP,
+                index,
+            )
+        };
+    }
+
+    fn resolve_queries(
+        list: &mut CommandList,
+        pool: &QueryPool,
+        first: u32,
+        count: u32,
+        dst: &Buffer,
+        offset: u64,
+    ) {
+        let l = &list.list;
+        // SAFETY: valid interfaces; the query and buffer ranges were checked by `api.rs`.
+        unsafe {
+            (l.vtbl().ResolveQueryData)(
+                l.as_raw(),
+                pool.heap.as_raw(),
+                D3D12_QUERY_TYPE_TIMESTAMP,
+                first,
+                count,
+                dst.raw.resource.as_raw(),
+                offset,
+            )
+        };
+    }
+
+    fn begin_event(list: &mut CommandList, name: &str) {
+        list.event(name, list.list.vtbl().BeginEvent);
+    }
+
+    fn end_event(list: &mut CommandList) {
+        let l = &list.list;
+        // SAFETY: valid interface; `api.rs` callers pair events.
+        unsafe { (l.vtbl().EndEvent)(l.as_raw()) };
+    }
+
+    fn set_marker(list: &mut CommandList, name: &str) {
+        list.event(name, list.list.vtbl().SetMarker);
+    }
+
+    fn copy_texture(
+        list: &mut CommandList,
+        src: &PublicTexture,
+        dst: &PublicTexture,
+        region: &TextureCopy,
+    ) {
+        let [x, y, z] = region.src_offset;
+        let [w, h, d] = region.size;
+        let area = D3D12_BOX {
+            left: x,
+            top: y,
+            front: z,
+            right: x + w,
+            bottom: y + h,
+            back: z + d,
+        };
+        let l = &list.list;
+        // Depth-stencil copies cover both planes.
+        for plane in 0..src.raw.planes {
+            let from = subresource_location(
+                src,
+                subresource(&src.raw, region.src_mip, region.src_layer, plane),
+            );
+            let to = subresource_location(
+                dst,
+                subresource(&dst.raw, region.dst_mip, region.dst_layer, plane),
+            );
+            let [dx, dy, dz] = region.dst_offset;
+            // SAFETY: valid interface and locations; both boxes were checked by `api.rs`.
+            unsafe { (l.vtbl().CopyTextureRegion)(l.as_raw(), &to, dx, dy, dz, &from, &area) };
+        }
     }
 }

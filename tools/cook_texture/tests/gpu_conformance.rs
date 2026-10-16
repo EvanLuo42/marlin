@@ -93,6 +93,8 @@ fn gpu_decode(device: &Device, texture: &EncodedTexture) -> Vec<Vec<[f32; 4]>> {
             format: rhi_format(texture.format),
             usage: TextureUsage::SAMPLED | TextureUsage::COPY_DST,
             clear_value: None,
+            dimension: rhi::TextureDimension::D2,
+            depth: 1,
         })
         .unwrap();
     let view = device
@@ -159,8 +161,10 @@ fn gpu_decode(device: &Device, texture: &EncodedTexture) -> Vec<Vec<[f32; 4]>> {
                 layer: r.layer,
                 x: 0,
                 y: 0,
+                z: 0,
                 width: r.width,
                 height: r.height,
+                depth: 1,
             },
         );
     }

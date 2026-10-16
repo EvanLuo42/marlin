@@ -13,11 +13,12 @@ use core::ptr::NonNull;
 use core::time::Duration;
 
 use crate::{
-    AdapterInfo, Buffer, BufferBarrier, BufferDesc, BufferTextureCopy, BufferViewDesc, CommandList,
-    ComputePipelineDesc, DepthStencilViewDesc, DeviceDesc, Features, Fence, Format,
-    GraphicsPipelineDesc, IndexFormat, InstanceDesc, PresentMode, PresentStatus, Rect,
-    RenderPassDesc, RenderTargetView, RenderTargetViewDesc, Result, SamplerDesc, ShaderFormat,
-    SurfaceHandle, SwapchainDesc, Texture, TextureBarrier, TextureDesc, TextureViewDesc, Viewport,
+    AdapterInfo, Buffer, BufferBarrier, BufferDesc, BufferTextureCopy, BufferViewDesc,
+    ComputePipelineDesc, DepthStencilViewDesc, DeviceDesc, Features, Format, GraphicsPipelineDesc,
+    HeapDesc, IndexFormat, IndirectArgs, InstanceDesc, MemoryRequirements, MeshPipelineDesc,
+    PresentMode, PresentStatus, QueryPoolDesc, QueueType, Rect, RenderPassDesc, RenderTargetView,
+    RenderTargetViewDesc, Result, SamplerDesc, ShaderFormat, SubmitDesc, SurfaceHandle,
+    SwapchainDesc, Texture, TextureBarrier, TextureCopy, TextureDesc, TextureViewDesc, Viewport,
 };
 
 pub(crate) trait Types {
@@ -37,6 +38,16 @@ pub(crate) trait Types {
     type Sampler: Send + Sync;
     type GraphicsPipeline: Send + Sync;
     type ComputePipeline: Send + Sync;
+    type MeshPipeline: Send + Sync;
+    type QueryPool: Send + Sync;
+    type Heap: Send + Sync;
+}
+
+/// A device's queues: graphics always; dedicated compute and copy queues where the API has them.
+pub(crate) struct Queues<Q> {
+    pub graphics: Q,
+    pub compute: Option<Q>,
+    pub copy: Option<Q>,
 }
 
 pub(crate) trait Instance: Types {
@@ -44,18 +55,18 @@ pub(crate) trait Instance: Types {
     /// The adapter at `index` in enumeration order (highest performance first), or `None` past
     /// the end.
     fn adapter(instance: &Self::Instance, index: u32) -> Option<AdapterInfo>;
-    /// Creates the device and its graphics queue.
+    /// Creates the device and its queues.
     fn create_device(
         instance: &Self::Instance,
         desc: &DeviceDesc,
-    ) -> Result<(Self::Device, Self::Queue)>;
+    ) -> Result<(Self::Device, Queues<Self::Queue>)>;
 }
 
 pub(crate) trait Device: Types {
     fn adapter_info(device: &Self::Device) -> &AdapterInfo;
     fn features(device: &Self::Device) -> Features;
     fn create_fence(device: &Self::Device, initial: u64) -> Result<Self::Fence>;
-    fn create_command_pool(device: &Self::Device) -> Result<Self::CommandPool>;
+    fn create_command_pool(device: &Self::Device, ty: QueueType) -> Result<Self::CommandPool>;
     fn create_command_list(
         device: &Self::Device,
         pool: &Self::CommandPool,
@@ -102,6 +113,27 @@ pub(crate) trait Device: Types {
         device: &Self::Device,
         desc: &ComputePipelineDesc<'_>,
     ) -> Result<Self::ComputePipeline>;
+    fn create_mesh_pipeline(
+        device: &Self::Device,
+        desc: &MeshPipelineDesc<'_>,
+    ) -> Result<Self::MeshPipeline>;
+    fn create_query_pool(device: &Self::Device, desc: &QueryPoolDesc) -> Result<Self::QueryPool>;
+    fn create_heap(device: &Self::Device, desc: &HeapDesc) -> Result<Self::Heap>;
+    fn buffer_requirements(device: &Self::Device, desc: &BufferDesc) -> MemoryRequirements;
+    fn texture_requirements(device: &Self::Device, desc: &TextureDesc) -> MemoryRequirements;
+    /// `offset` is aligned and the resource fits (checked by `api.rs`).
+    fn create_placed_buffer(
+        device: &Self::Device,
+        heap: &Self::Heap,
+        offset: u64,
+        desc: &BufferDesc,
+    ) -> Result<Self::Buffer>;
+    fn create_placed_texture(
+        device: &Self::Device,
+        heap: &Self::Heap,
+        offset: u64,
+        desc: &TextureDesc,
+    ) -> Result<Self::Texture>;
 }
 
 pub(crate) trait Resources: Types {
@@ -117,11 +149,9 @@ pub(crate) trait Queue: Types {
     /// # Safety
     /// Every resource the lists use stays alive, and every list and its pool stay unreset, until
     /// the GPU finishes them.
-    unsafe fn submit(
-        queue: &Self::Queue,
-        lists: &[&CommandList],
-        signal: Option<(&Fence, u64)>,
-    ) -> Result<()>;
+    unsafe fn submit(queue: &Self::Queue, desc: &SubmitDesc<'_>) -> Result<()>;
+    /// Ticks per second of the queue's timestamps.
+    fn timestamp_frequency(queue: &Self::Queue) -> Result<u64>;
     /// Blocks until all submitted work has finished.
     fn wait_idle(queue: &Self::Queue) -> Result<()>;
 }
@@ -170,6 +200,7 @@ pub(crate) trait Commands: Types {
     fn push_constants(list: &mut Self::CommandList, offset: u32, data: &[u32]);
     fn set_viewport(list: &mut Self::CommandList, viewport: &Viewport);
     fn set_scissor(list: &mut Self::CommandList, rect: &Rect);
+    fn set_stencil_reference(list: &mut Self::CommandList, reference: u8);
     fn set_index_buffer(
         list: &mut Self::CommandList,
         buffer: &Buffer,
@@ -192,6 +223,30 @@ pub(crate) trait Commands: Types {
         first_instance: u32,
     );
     fn dispatch(list: &mut Self::CommandList, x: u32, y: u32, z: u32);
+    fn set_mesh_pipeline(list: &mut Self::CommandList, pipeline: &Self::MeshPipeline);
+    fn dispatch_mesh(list: &mut Self::CommandList, x: u32, y: u32, z: u32);
+    fn draw_indirect(list: &mut Self::CommandList, args: &IndirectArgs<'_>);
+    fn draw_indexed_indirect(list: &mut Self::CommandList, args: &IndirectArgs<'_>);
+    fn dispatch_indirect(list: &mut Self::CommandList, args: &IndirectArgs<'_>);
+    fn dispatch_mesh_indirect(list: &mut Self::CommandList, args: &IndirectArgs<'_>);
+    fn write_timestamp(list: &mut Self::CommandList, pool: &Self::QueryPool, index: u32);
+    fn resolve_queries(
+        list: &mut Self::CommandList,
+        pool: &Self::QueryPool,
+        first: u32,
+        count: u32,
+        dst: &Buffer,
+        offset: u64,
+    );
+    fn begin_event(list: &mut Self::CommandList, name: &str);
+    fn end_event(list: &mut Self::CommandList);
+    fn set_marker(list: &mut Self::CommandList, name: &str);
+    fn copy_texture(
+        list: &mut Self::CommandList,
+        src: &Texture,
+        dst: &Texture,
+        region: &TextureCopy,
+    );
 }
 
 pub(crate) trait Swapchain: Types {

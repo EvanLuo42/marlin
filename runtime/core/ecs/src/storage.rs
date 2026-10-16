@@ -1,13 +1,34 @@
-//! Type-erased columns: a `Vec<T>` whose `T` is known only by layout and drop function.
+//! Type-erased columns: a `Vec<T>` whose `T` is known only by layout and drop function, with each
+//! row's change ticks beside it.
 
 use alloc::alloc::{alloc, dealloc, handle_alloc_error, realloc};
+use alloc::vec::Vec;
 use core::alloc::Layout;
 use core::ptr::{self, NonNull};
 
+use crate::change::{Tick, TickCell};
 use crate::component::ComponentInfo;
+
+/// When a row's component was added and last written.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ComponentTicks {
+    pub added: Tick,
+    pub changed: Tick,
+}
+
+impl ComponentTicks {
+    pub(crate) const fn new(tick: Tick) -> Self {
+        Self {
+            added: tick,
+            changed: tick,
+        }
+    }
+}
 
 pub(crate) struct Column {
     data: NonNull<u8>,
+    /// Parallel to the rows.
+    ticks: Vec<TickCell>,
     len: usize,
     capacity: usize,
     item: Layout,
@@ -28,6 +49,7 @@ impl Column {
             data: NonNull::without_provenance(
                 core::num::NonZero::new(item.align()).expect("alignment is non-zero"),
             ),
+            ticks: Vec::new(),
             len: 0,
             capacity: if item.size() == 0 { usize::MAX } else { 0 },
             item,
@@ -80,13 +102,42 @@ impl Column {
         self.capacity = new_capacity;
     }
 
-    /// Appends the item at `src`, moving it in.
+    /// The row ticks, for queries.
+    #[inline]
+    pub(crate) fn ticks_ptr(&self) -> *const TickCell {
+        self.ticks.as_ptr()
+    }
+
+    #[inline]
+    pub(crate) fn ticks(&self, row: usize) -> ComponentTicks {
+        self.ticks[row].read()
+    }
+
+    /// The ticks of `row` for writing.
+    #[inline]
+    pub(crate) fn ticks_mut(&mut self, row: usize) -> &mut ComponentTicks {
+        // SAFETY: `&mut self` excludes every other access.
+        unsafe { &mut *self.ticks[row].get() }
+    }
+
+    /// Clamps every row's ticks against `now` (see [`Tick::clamp`]).
+    pub(crate) fn check_ticks(&mut self, now: Tick) {
+        for cell in &mut self.ticks {
+            // SAFETY: `&mut self` excludes every other access.
+            let ticks = unsafe { &mut *cell.get() };
+            ticks.added.clamp(now);
+            ticks.changed.clamp(now);
+        }
+    }
+
+    /// Appends the item at `src`, moving it in, with `ticks`.
     ///
     /// # Safety
     /// `src` points to a valid item of this column's type that the caller will not use or drop.
     #[inline]
-    pub(crate) unsafe fn push(&mut self, src: *const u8) {
+    pub(crate) unsafe fn push(&mut self, src: *const u8, ticks: ComponentTicks) {
         self.reserve_one();
+        self.ticks.push(TickCell::new(ticks));
         // SAFETY: room for one more; the caller hands over the item.
         unsafe { ptr::copy_nonoverlapping(src, self.ptr(self.len), self.item.size()) };
         self.len += 1;
@@ -104,6 +155,7 @@ impl Column {
             // SAFETY: distinct rows within the column.
             unsafe { ptr::copy_nonoverlapping(self.ptr(last), self.ptr(row), self.item.size()) };
         }
+        self.ticks.swap_remove(row);
         self.len = last;
     }
 
@@ -120,11 +172,13 @@ impl Column {
         unsafe { self.swap_remove_forget(row) };
     }
 
-    /// Drops the item at `row` and moves the item at `src` into its place.
+    /// Drops the item at `row` and moves the item at `src` into its place, marked changed at
+    /// `tick`.
     ///
     /// # Safety
     /// `row < len`; `src` as for [`push`](Self::push).
-    pub(crate) unsafe fn replace(&mut self, row: usize, src: *const u8) {
+    pub(crate) unsafe fn replace(&mut self, row: usize, src: *const u8, tick: Tick) {
+        self.ticks_mut(row).changed = tick;
         let dst = self.ptr(row);
         if let Some(drop) = self.drop {
             // SAFETY: the item is valid and owned by the column.

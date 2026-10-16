@@ -134,7 +134,10 @@ impl<'v> Engine<'v> {
         if let Some(input) = input {
             self.fly(input, dt);
         }
-        self.extract()
+        let delta = self.extract();
+        // The frame's changes have been extracted: start the next change-detection period.
+        self.world.clear_trackers();
+        delta
     }
 
     fn spawn(&mut self, level: &Level) {
@@ -226,7 +229,7 @@ impl<'v> Engine<'v> {
 
     fn spin(&mut self) {
         let time = self.time;
-        for (transform, spin) in self.world.query::<(&mut Transform, &Spin)>() {
+        for (mut transform, spin) in self.world.query::<(&mut Transform, &Spin)>() {
             transform.rotation = spin.base * Quat::from_axis_angle(spin.axis, spin.speed * time);
         }
     }
@@ -245,7 +248,7 @@ impl<'v> Engine<'v> {
         let forward = key(Key::W) - key(Key::S) + stick_y;
         let up = key(Key::E) - key(Key::Q) + pad.right_trigger() - pad.left_trigger();
         let boost = if state.shift() { 3.0 } else { 1.0 };
-        for (transform, fly) in self.world.query::<(&mut Transform, &mut FlyCamera)>() {
+        for (mut transform, mut fly) in self.world.query::<(&mut Transform, &mut FlyCamera)>() {
             fly.yaw -= look[0];
             fly.pitch = (fly.pitch + look[1]).clamp(-1.5, 1.5);
             let rotation = Quat::from_euler_yxz(fly.yaw, fly.pitch, 0.0);

@@ -12,13 +12,15 @@ use crate::contract::{
 };
 use crate::{
     AdapterInfo, BufferBarrier, BufferDesc, BufferTextureCopy, BufferUsage, BufferViewDesc,
-    BufferViewKind, ClearValue, ComputePipelineDesc, DepthStencilViewDesc, DeviceDesc, Error,
-    ErrorKind, Features, Format, GraphicsPipelineDesc, IndexFormat, InstanceDesc,
-    MAX_COLOR_ATTACHMENTS, MAX_PUSH_CONSTANTS, MAX_UNIFORM_SIZE, MemoryLocation, PresentMode,
-    PresentStatus, Rect, RenderPassDesc, RenderTargetViewDesc, Result, SamplerDesc,
+    BufferViewKind, ClearValue, ComputePipelineDesc, DepthStencilViewDesc, DeviceDesc,
+    DispatchIndirectArgs, DrawIndexedIndirectArgs, DrawIndirectArgs, Error, ErrorKind, Features,
+    Format, GraphicsPipelineDesc, HeapDesc, HeapKind, IndexFormat, IndirectArgs, InstanceDesc,
+    MAX_COLOR_ATTACHMENTS, MAX_PUSH_CONSTANTS, MAX_UNIFORM_SIZE, MemoryLocation,
+    MemoryRequirements, MeshPipelineDesc, PresentMode, PresentStatus, QueryKind, QueryPoolDesc,
+    QueueType, Rect, RenderPassDesc, RenderTargetViewDesc, Result, SamplerDesc, SubmitDesc,
     SubresourceRange, SurfaceHandle, SwapchainDesc, TEXTURE_OFFSET_ALIGNMENT,
-    TEXTURE_ROW_PITCH_ALIGNMENT, TextureBarrier, TextureDesc, TextureUsage, TextureViewDesc,
-    TextureViewDimension, UNIFORM_ALIGNMENT, Viewport,
+    TEXTURE_ROW_PITCH_ALIGNMENT, TextureBarrier, TextureCopy, TextureDesc, TextureDimension,
+    TextureUsage, TextureViewDesc, TextureViewDimension, UNIFORM_ALIGNMENT, Viewport,
 };
 
 fn invalid() -> Error {
@@ -32,6 +34,7 @@ fn ensure(condition: bool) -> Result<()> {
 /// Largest texture dimension (D3D12's limit for 2D textures).
 const MAX_TEXTURE_SIZE: u32 = 16384;
 const MAX_TEXTURE_LAYERS: u32 = 2048;
+const MAX_TEXTURE_3D_SIZE: u32 = 2048;
 
 /// The API entry point (DXGI factory, `VkInstance`). Enumerates adapters and creates devices.
 pub struct Instance {
@@ -51,20 +54,32 @@ impl Instance {
     }
 
     /// Fails with `Unsupported` if the adapter lacks the baseline (D3D12: feature level 12_0,
-    /// shader model 6.6, resource binding tier 3).
+    /// shader model 6.6, resource binding tier 3, mesh shaders).
     pub fn create_device(&self, desc: &DeviceDesc) -> Result<Device> {
-        let (raw, queue) = Backend::create_device(&self.raw, desc)?;
+        let (raw, queues) = Backend::create_device(&self.raw, desc)?;
         Ok(Device {
-            queue: Queue { raw: queue },
+            queue: Queue {
+                raw: queues.graphics,
+                ty: QueueType::Graphics,
+            },
+            compute: queues.compute.map(|raw| Queue {
+                raw,
+                ty: QueueType::Compute,
+            }),
+            copy: queues.copy.map(|raw| Queue {
+                raw,
+                ty: QueueType::Copy,
+            }),
             raw,
         })
     }
 }
 
-/// A GPU. Owns the graphics queue and the bindless tables. Dropping it waits for the queue to go
-/// idle.
+/// A GPU. Owns its queues and the bindless tables. Dropping it waits for the queues to go idle.
 pub struct Device {
     queue: Queue,
+    compute: Option<Queue>,
+    copy: Option<Queue>,
     raw: <Backend as Types>::Device,
 }
 
@@ -85,6 +100,23 @@ impl Device {
         &self.queue
     }
 
+    /// The dedicated queue of type `ty` (async compute, copies for streaming), or `None` where
+    /// the API has none: then the graphics queue does that work.
+    #[inline]
+    pub fn dedicated_queue(&self, ty: QueueType) -> Option<&Queue> {
+        match ty {
+            QueueType::Graphics => Some(&self.queue),
+            QueueType::Compute => self.compute.as_ref(),
+            QueueType::Copy => self.copy.as_ref(),
+        }
+    }
+
+    /// The queue that runs `ty` work: the dedicated one, else the graphics queue.
+    #[inline]
+    pub fn queue_for(&self, ty: QueueType) -> &Queue {
+        self.dedicated_queue(ty).unwrap_or(&self.queue)
+    }
+
     pub fn create_fence(&self, initial_value: u64) -> Result<Fence> {
         Ok(Fence {
             raw: Backend::create_fence(&self.raw, initial_value)?,
@@ -93,16 +125,27 @@ impl Device {
 
     /// A command pool for the graphics queue.
     pub fn create_command_pool(&self) -> Result<CommandPool> {
+        self.create_command_pool_for(QueueType::Graphics)
+    }
+
+    /// A command pool for lists of queue type `ty`. Without a dedicated queue of that type, the
+    /// lists record for the graphics queue (they may only use `ty`'s commands all the same).
+    pub fn create_command_pool_for(&self, ty: QueueType) -> Result<CommandPool> {
+        let backend_ty = self.queue_for(ty).ty;
         Ok(CommandPool {
-            raw: Backend::create_command_pool(&self.raw)?,
+            raw: Backend::create_command_pool(&self.raw, backend_ty)?,
+            ty,
+            backend_ty,
         })
     }
 
-    /// A command list whose memory comes from `pool` (and from whichever pool it is begun with
-    /// later).
+    /// A command list whose memory comes from `pool` (and from whichever pool of the same type
+    /// it is begun with later). It records `pool`'s queue type's commands.
     pub fn create_command_list(&self, pool: &CommandPool) -> Result<CommandList> {
         Ok(CommandList {
             raw: Backend::create_command_list(&self.raw, &pool.raw)?,
+            ty: pool.ty,
+            backend_ty: pool.backend_ty,
         })
     }
 
@@ -132,11 +175,7 @@ impl Device {
     }
 
     pub fn create_buffer(&self, desc: &BufferDesc) -> Result<Buffer> {
-        ensure(desc.size > 0)?;
-        ensure(
-            !desc.usage.contains(BufferUsage::SHADER_WRITE)
-                || desc.memory == MemoryLocation::GpuOnly,
-        )?;
+        validate_buffer(desc)?;
         Ok(Buffer {
             raw: Backend::create_buffer(&self.raw, desc)?,
             desc: *desc,
@@ -205,7 +244,7 @@ impl Device {
         };
         let layer_count = match r.layer_count {
             u32::MAX => match desc.dimension {
-                TextureViewDimension::D2 => 1,
+                TextureViewDimension::D2 | TextureViewDimension::D3 => 1,
                 TextureViewDimension::D2Array => t.array_layers - r.base_layer,
                 TextureViewDimension::Cube => 6,
             },
@@ -214,12 +253,18 @@ impl Device {
         ensure(mip_count > 0 && r.base_mip + mip_count <= t.mip_levels)?;
         ensure(layer_count > 0 && r.base_layer + layer_count <= t.array_layers)?;
         ensure(!desc.writable || mip_count == 1)?;
+        let volume = t.dimension == TextureDimension::D3;
         match desc.dimension {
-            TextureViewDimension::D2 => ensure(layer_count == 1)?,
-            TextureViewDimension::D2Array => {}
+            TextureViewDimension::D2 => ensure(layer_count == 1 && !volume)?,
+            TextureViewDimension::D2Array => ensure(!volume)?,
             TextureViewDimension::Cube => ensure(
-                !desc.writable && r.base_layer == 0 && layer_count == 6 && t.width == t.height,
+                !volume
+                    && !desc.writable
+                    && r.base_layer == 0
+                    && layer_count == 6
+                    && t.width == t.height,
             )?,
+            TextureViewDimension::D3 => ensure(volume && layer_count == 1)?,
         }
         let format = match desc.format {
             Some(f) => {
@@ -294,7 +339,9 @@ impl Device {
         desc: &GraphicsPipelineDesc<'_>,
     ) -> Result<GraphicsPipeline> {
         ensure(desc.color_targets.len() <= MAX_COLOR_ATTACHMENTS)?;
-        ensure(desc.depth.is_none_or(|d| d.format.is_depth()))?;
+        ensure(desc.depth.is_none_or(|d| {
+            d.format.is_depth() && (d.stencil.is_none() || d.format.has_stencil())
+        }))?;
         ensure(
             desc.color_targets
                 .iter()
@@ -315,13 +362,149 @@ impl Device {
             raw: Backend::create_compute_pipeline(&self.raw, desc)?,
         })
     }
+
+    /// A mesh shader pipeline. `Unsupported` without [`Features::mesh_shader`].
+    pub fn create_mesh_pipeline(&self, desc: &MeshPipelineDesc<'_>) -> Result<MeshPipeline> {
+        if !self.features().mesh_shader {
+            return Err(Error::from_kind(ErrorKind::Unsupported));
+        }
+        ensure(desc.color_targets.len() <= MAX_COLOR_ATTACHMENTS)?;
+        ensure(desc.depth.is_none_or(|d| {
+            d.format.is_depth() && (d.stencil.is_none() || d.format.has_stencil())
+        }))?;
+        ensure(
+            desc.color_targets
+                .iter()
+                .all(|t| !t.format.is_depth() && !t.format.is_compressed()),
+        )?;
+        ensure(!desc.mesh.code.is_empty())?;
+        ensure(desc.amplification.is_none_or(|a| !a.code.is_empty()))?;
+        ensure(desc.pixel.is_none_or(|p| !p.code.is_empty()))?;
+        Ok(MeshPipeline {
+            raw: Backend::create_mesh_pipeline(&self.raw, desc)?,
+        })
+    }
+
+    /// `count` queries (1..=65536) of one kind.
+    pub fn create_query_pool(&self, desc: &QueryPoolDesc) -> Result<QueryPool> {
+        ensure((1..=65536).contains(&desc.count))?;
+        if desc.kind == QueryKind::CopyTimestamp && !self.features().copy_queue_timestamps {
+            return Err(Error::from_kind(ErrorKind::Unsupported));
+        }
+        Ok(QueryPool {
+            raw: Backend::create_query_pool(&self.raw, desc)?,
+            desc: *desc,
+        })
+    }
+
+    /// Memory for placed resources ([`create_placed_buffer`](Self::create_placed_buffer),
+    /// [`create_placed_texture`](Self::create_placed_texture)): pools of streamed textures and
+    /// the render graph's transient resources, which alias each other.
+    pub fn create_heap(&self, desc: &HeapDesc) -> Result<Heap> {
+        ensure(desc.size > 0)?;
+        ensure(desc.kind != HeapKind::Any || self.features().mixed_heaps)?;
+        ensure(
+            desc.memory == MemoryLocation::GpuOnly
+                || matches!(desc.kind, HeapKind::Any | HeapKind::Buffers),
+        )?;
+        Ok(Heap {
+            raw: Backend::create_heap(&self.raw, desc)?,
+            desc: *desc,
+        })
+    }
+
+    /// The size and alignment `desc` takes in a heap.
+    pub fn buffer_requirements(&self, desc: &BufferDesc) -> MemoryRequirements {
+        Backend::buffer_requirements(&self.raw, desc)
+    }
+
+    /// The size and alignment `desc` takes in a heap. `desc` must be valid for
+    /// [`create_texture`](Self::create_texture).
+    pub fn texture_requirements(&self, desc: &TextureDesc) -> Result<MemoryRequirements> {
+        validate_texture(desc)?;
+        Ok(Backend::texture_requirements(&self.raw, desc))
+    }
+
+    /// A buffer in `heap` at `offset` (aligned to its requirements). Placed resources may
+    /// overlap: only one of the overlapping resources holds meaningful contents at a time, and a
+    /// texture's first use after another resource used its memory starts from
+    /// [`Layout::Undefined`](crate::Layout::Undefined).
+    ///
+    /// A placed resource keeps its heap alive. Buffers taking over aliased memory are activated by
+    /// a barrier from [`BufferState::NONE`](crate::BufferState::NONE).
+    pub fn create_placed_buffer(
+        &self,
+        heap: &Heap,
+        offset: u64,
+        desc: &BufferDesc,
+    ) -> Result<Buffer> {
+        validate_buffer(desc)?;
+        ensure(desc.memory == heap.desc.memory)?;
+        ensure(matches!(heap.desc.kind, HeapKind::Any | HeapKind::Buffers))?;
+        let req = self.buffer_requirements(desc);
+        ensure(offset.is_multiple_of(req.alignment))?;
+        ensure(
+            offset
+                .checked_add(req.size)
+                .is_some_and(|e| e <= heap.desc.size),
+        )?;
+        Ok(Buffer {
+            raw: Backend::create_placed_buffer(&self.raw, &heap.raw, offset, desc)?,
+            desc: *desc,
+        })
+    }
+
+    /// A texture in `heap` at `offset`; see [`create_placed_buffer`](Self::create_placed_buffer).
+    pub fn create_placed_texture(
+        &self,
+        heap: &Heap,
+        offset: u64,
+        desc: &TextureDesc,
+    ) -> Result<Texture> {
+        let req = self.texture_requirements(desc)?;
+        ensure(heap.desc.memory == MemoryLocation::GpuOnly)?;
+        let target = desc.usage.contains(TextureUsage::RENDER_TARGET)
+            || desc.usage.contains(TextureUsage::DEPTH_STENCIL);
+        ensure(match heap.desc.kind {
+            HeapKind::Any => true,
+            HeapKind::Buffers => false,
+            HeapKind::Textures => !target,
+            HeapKind::Targets => target,
+        })?;
+        ensure(offset.is_multiple_of(req.alignment))?;
+        ensure(
+            offset
+                .checked_add(req.size)
+                .is_some_and(|e| e <= heap.desc.size),
+        )?;
+        Ok(Texture {
+            raw: Backend::create_placed_texture(&self.raw, &heap.raw, offset, desc)?,
+            desc: *desc,
+        })
+    }
+}
+
+fn validate_buffer(desc: &BufferDesc) -> Result<()> {
+    ensure(desc.size > 0)?;
+    ensure(
+        !desc.usage.contains(BufferUsage::SHADER_WRITE) || desc.memory == MemoryLocation::GpuOnly,
+    )
 }
 
 fn validate_texture(d: &TextureDesc) -> Result<()> {
     ensure((1..=MAX_TEXTURE_SIZE).contains(&d.width))?;
     ensure((1..=MAX_TEXTURE_SIZE).contains(&d.height))?;
     ensure((1..=MAX_TEXTURE_LAYERS).contains(&d.array_layers))?;
-    let max_mips = 32 - d.width.max(d.height).leading_zeros();
+    match d.dimension {
+        TextureDimension::D2 => ensure(d.depth == 1)?,
+        TextureDimension::D3 => {
+            // D3D12's 3D limits; volumes are sampled or written, not rendered to as targets.
+            ensure(d.width <= MAX_TEXTURE_3D_SIZE && d.height <= MAX_TEXTURE_3D_SIZE)?;
+            ensure((1..=MAX_TEXTURE_3D_SIZE).contains(&d.depth) && d.array_layers == 1)?;
+            ensure(!d.format.is_depth() && !d.usage.contains(TextureUsage::RENDER_TARGET))?;
+        }
+    }
+    let max_mips = 32 - d.width.max(d.height).max(d.depth).leading_zeros();
     ensure((1..=max_mips).contains(&d.mip_levels))?;
     ensure(d.usage != TextureUsage::default())?;
     let f = d.format;
@@ -349,16 +532,28 @@ fn validate_texture(d: &TextureDesc) -> Result<()> {
 
 impl Drop for Device {
     fn drop(&mut self) {
-        let _ = self.queue.wait_idle();
+        for queue in [Some(&self.queue), self.compute.as_ref(), self.copy.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            let _ = queue.wait_idle();
+        }
     }
 }
 
-/// A GPU queue: executes command lists in submission order.
+/// A GPU queue: executes command lists in submission order. Queues run concurrently;
+/// [`SubmitDesc::waits`] orders work across them.
 pub struct Queue {
     raw: <Backend as Types>::Queue,
+    ty: QueueType,
 }
 
 impl Queue {
+    #[inline]
+    pub fn queue_type(&self) -> QueueType {
+        self.ty
+    }
+
     /// Executes `lists` in order, then sets `signal.0` to `signal.1` once they finish.
     ///
     /// # Safety
@@ -370,8 +565,31 @@ impl Queue {
         lists: &[&CommandList],
         signal: Option<(&Fence, u64)>,
     ) -> Result<()> {
+        let signals = signal.as_slice();
         // SAFETY: forwarded from the caller.
-        unsafe { Backend::submit(&self.raw, lists, signal) }
+        unsafe {
+            self.submit_with(&SubmitDesc {
+                waits: &[],
+                lists,
+                signals,
+            })
+        }
+    }
+
+    /// Waits on the GPU for `desc.waits`, executes the lists, then signals `desc.signals`.
+    /// `InvalidInput` if a list was recorded for another queue type.
+    ///
+    /// # Safety
+    /// As [`submit`](Self::submit). A wait that is never signalled hangs the queue.
+    pub unsafe fn submit_with(&self, desc: &SubmitDesc<'_>) -> Result<()> {
+        ensure(desc.lists.iter().all(|l| l.backend_ty == self.ty))?;
+        // SAFETY: forwarded from the caller.
+        unsafe { Backend::submit(&self.raw, desc) }
+    }
+
+    /// Ticks per second of this queue's timestamps ([`CommandList::write_timestamp`]).
+    pub fn timestamp_frequency(&self) -> Result<u64> {
+        Backend::timestamp_frequency(&self.raw)
     }
 
     /// Blocks until everything submitted so far has finished.
@@ -407,9 +625,18 @@ impl Fence {
 /// records from a pool at a time; reset it once the GPU is done with everything recorded.
 pub struct CommandPool {
     raw: <Backend as Types>::CommandPool,
+    /// The work its lists record.
+    ty: QueueType,
+    /// The queue they run on (graphics where there is no dedicated queue of `ty`).
+    backend_ty: QueueType,
 }
 
 impl CommandPool {
+    #[inline]
+    pub fn queue_type(&self) -> QueueType {
+        self.ty
+    }
+
     /// Frees everything recorded from this pool for reuse.
     ///
     /// # Safety
@@ -425,15 +652,41 @@ impl CommandPool {
 ///
 /// Each recording starts with the bindless tables bound and the push constants zeroed; pipelines,
 /// viewports, scissors and index buffers must be set before drawing.
-#[repr(transparent)]
+///
+/// A list records the commands of its pool's [`QueueType`]: copy lists copy (and barrier,
+/// time and mark), compute lists also dispatch, graphics lists do everything. Recording a
+/// command the type does not allow panics.
 pub struct CommandList {
     pub(crate) raw: <Backend as Types>::CommandList,
+    ty: QueueType,
+    backend_ty: QueueType,
 }
 
 impl CommandList {
-    /// Starts recording into `pool`, discarding what was recorded before. The previous recording
-    /// must not be pending on the GPU.
+    #[inline]
+    pub fn queue_type(&self) -> QueueType {
+        self.ty
+    }
+
+    fn graphics(&self, what: &str) {
+        assert!(
+            self.ty == QueueType::Graphics,
+            "{what} needs a graphics list, not {:?}",
+            self.ty
+        );
+    }
+
+    fn compute(&self, what: &str) {
+        assert!(
+            self.ty != QueueType::Copy,
+            "{what} needs a graphics or compute list, not a copy list"
+        );
+    }
+
+    /// Starts recording into `pool` (of the list's queue type), discarding what was recorded
+    /// before. The previous recording must not be pending on the GPU.
     pub fn begin(&mut self, pool: &mut CommandPool) -> Result<()> {
+        ensure(pool.ty == self.ty)?;
         Backend::begin(&mut self.raw, &mut pool.raw)
     }
 
@@ -453,6 +706,7 @@ impl CommandList {
     /// Binds render targets and applies their load ops. No barriers or copies are allowed until
     /// [`end_render_pass`](Self::end_render_pass).
     pub fn begin_render_pass(&mut self, desc: &RenderPassDesc<'_>) {
+        self.graphics("a render pass");
         assert!(desc.color.len() <= MAX_COLOR_ATTACHMENTS);
         Backend::begin_render_pass(&mut self.raw, desc);
     }
@@ -514,16 +768,19 @@ impl CommandList {
     }
 
     pub fn set_graphics_pipeline(&mut self, pipeline: &GraphicsPipeline) {
+        self.graphics("a graphics pipeline");
         Backend::set_graphics_pipeline(&mut self.raw, &pipeline.raw);
     }
 
     pub fn set_compute_pipeline(&mut self, pipeline: &ComputePipeline) {
+        self.compute("a compute pipeline");
         Backend::set_compute_pipeline(&mut self.raw, &pipeline.raw);
     }
 
     /// Writes `data` at word `offset` of the push constants of the pipeline kind bound last
     /// (graphics if none). Panics past [`MAX_PUSH_CONSTANTS`] words.
     pub fn push_constants(&mut self, offset: u32, data: &[u32]) {
+        self.compute("push constants");
         assert!(
             (offset as usize)
                 .checked_add(data.len())
@@ -533,15 +790,25 @@ impl CommandList {
     }
 
     pub fn set_viewport(&mut self, viewport: &Viewport) {
+        self.graphics("a viewport");
         Backend::set_viewport(&mut self.raw, viewport);
     }
 
     pub fn set_scissor(&mut self, rect: &Rect) {
+        self.graphics("a scissor");
         Backend::set_scissor(&mut self.raw, rect);
+    }
+
+    /// The reference value of stencil tests and [`StencilOp::Replace`](crate::StencilOp::Replace)
+    /// (0 at the start of each recording).
+    pub fn set_stencil_reference(&mut self, reference: u8) {
+        self.graphics("a stencil reference");
+        Backend::set_stencil_reference(&mut self.raw, reference);
     }
 
     /// Panics without [`BufferUsage::INDEX`] or with an offset past the end or misaligned.
     pub fn set_index_buffer(&mut self, buffer: &Buffer, offset: u64, format: IndexFormat) {
+        self.graphics("an index buffer");
         assert!(buffer.desc.usage.contains(BufferUsage::INDEX));
         let size = match format {
             IndexFormat::U16 => 2,
@@ -560,6 +827,7 @@ impl CommandList {
         first_vertex: u32,
         first_instance: u32,
     ) {
+        self.graphics("a draw");
         Backend::draw(
             &mut self.raw,
             vertex_count,
@@ -578,6 +846,7 @@ impl CommandList {
         vertex_offset: i32,
         first_instance: u32,
     ) {
+        self.graphics("a draw");
         Backend::draw_indexed(
             &mut self.raw,
             index_count,
@@ -589,7 +858,183 @@ impl CommandList {
     }
 
     pub fn dispatch(&mut self, x: u32, y: u32, z: u32) {
+        self.compute("a dispatch");
         Backend::dispatch(&mut self.raw, x, y, z);
+    }
+
+    /// Binds a mesh pipeline; push constants then go to it, as for a graphics pipeline.
+    pub fn set_mesh_pipeline(&mut self, pipeline: &MeshPipeline) {
+        self.graphics("a mesh pipeline");
+        Backend::set_mesh_pipeline(&mut self.raw, &pipeline.raw);
+    }
+
+    /// Launches `x * y * z` amplification (or, without one, mesh) shader groups.
+    pub fn dispatch_mesh(&mut self, x: u32, y: u32, z: u32) {
+        self.graphics("a mesh dispatch");
+        Backend::dispatch_mesh(&mut self.raw, x, y, z);
+    }
+
+    fn check_indirect(args: &IndirectArgs<'_>, stride: u64) {
+        let b = &args.buffer.desc;
+        assert!(
+            b.usage.contains(BufferUsage::INDIRECT),
+            "argument buffer without INDIRECT usage"
+        );
+        assert!(
+            args.offset.is_multiple_of(4),
+            "argument offset not a multiple of 4"
+        );
+        assert!(
+            (args.max_count as u64)
+                .checked_mul(stride)
+                .and_then(|n| n.checked_add(args.offset))
+                .is_some_and(|e| e <= b.size),
+            "indirect arguments past the end of the buffer"
+        );
+        if let Some((count, offset)) = args.count {
+            assert!(
+                count.desc.usage.contains(BufferUsage::INDIRECT),
+                "count buffer without INDIRECT usage"
+            );
+            assert!(
+                offset.is_multiple_of(4) && offset + 4 <= count.desc.size,
+                "count out of range"
+            );
+        }
+    }
+
+    /// Draws as [`draw`](Self::draw) does, once per [`DrawIndirectArgs`] record.
+    pub fn draw_indirect(&mut self, args: &IndirectArgs<'_>) {
+        self.graphics("a draw");
+        Self::check_indirect(args, size_of::<DrawIndirectArgs>() as u64);
+        Backend::draw_indirect(&mut self.raw, args);
+    }
+
+    /// Draws as [`draw_indexed`](Self::draw_indexed) does, once per [`DrawIndexedIndirectArgs`]
+    /// record.
+    pub fn draw_indexed_indirect(&mut self, args: &IndirectArgs<'_>) {
+        self.graphics("a draw");
+        Self::check_indirect(args, size_of::<DrawIndexedIndirectArgs>() as u64);
+        Backend::draw_indexed_indirect(&mut self.raw, args);
+    }
+
+    /// Dispatches once per [`DispatchIndirectArgs`] record.
+    pub fn dispatch_indirect(&mut self, args: &IndirectArgs<'_>) {
+        self.compute("a dispatch");
+        Self::check_indirect(args, size_of::<DispatchIndirectArgs>() as u64);
+        Backend::dispatch_indirect(&mut self.raw, args);
+    }
+
+    /// Mesh-dispatches once per [`DispatchIndirectArgs`] record.
+    pub fn dispatch_mesh_indirect(&mut self, args: &IndirectArgs<'_>) {
+        self.graphics("a mesh dispatch");
+        Self::check_indirect(args, size_of::<DispatchIndirectArgs>() as u64);
+        Backend::dispatch_mesh_indirect(&mut self.raw, args);
+    }
+
+    /// Writes the GPU clock into timestamp query `index` once the work before it has finished.
+    pub fn write_timestamp(&mut self, pool: &QueryPool, index: u32) {
+        let copy = pool.desc.kind == QueryKind::CopyTimestamp;
+        assert!(
+            copy == (self.ty == QueueType::Copy),
+            "copy lists write CopyTimestamp queries, other lists Timestamp queries"
+        );
+        assert!(index < pool.desc.count, "query index out of range");
+        Backend::write_timestamp(&mut self.raw, &pool.raw, index);
+    }
+
+    /// Writes queries `first..first + count` as little-endian `u64`s at `offset` (a multiple of
+    /// 8) of `dst` ([`BufferUsage::COPY_DST`], in [`Access::COPY_DST`](crate::Access::COPY_DST)).
+    pub fn resolve_queries(
+        &mut self,
+        pool: &QueryPool,
+        first: u32,
+        count: u32,
+        dst: &Buffer,
+        offset: u64,
+    ) {
+        assert!(
+            first
+                .checked_add(count)
+                .is_some_and(|e| e <= pool.desc.count)
+                && count > 0,
+            "query range out of bounds"
+        );
+        assert!(dst.desc.usage.contains(BufferUsage::COPY_DST));
+        assert!(
+            offset.is_multiple_of(8) && offset + count as u64 * 8 <= dst.desc.size,
+            "query results out of range"
+        );
+        Backend::resolve_queries(&mut self.raw, &pool.raw, first, count, dst, offset);
+    }
+
+    /// Opens a named region for GPU debuggers and profilers (PIX, RenderDoc). Regions nest;
+    /// close each with [`end_event`](Self::end_event) in the same list.
+    pub fn begin_event(&mut self, name: &str) {
+        Backend::begin_event(&mut self.raw, name);
+    }
+
+    pub fn end_event(&mut self) {
+        Backend::end_event(&mut self.raw);
+    }
+
+    /// A named point in the GPU timeline, for debuggers.
+    pub fn set_marker(&mut self, name: &str) {
+        Backend::set_marker(&mut self.raw, name);
+    }
+
+    /// Copies a box between textures of the same format (or its sRGB / linear twin). Panics if
+    /// either side is out of range, misaligned to blocks, or lacks its copy usage. Depth-stencil
+    /// copies move both planes.
+    pub fn copy_texture(&mut self, src: &Texture, dst: &Texture, region: &TextureCopy) {
+        assert!(src.desc.usage.contains(TextureUsage::COPY_SRC));
+        assert!(dst.desc.usage.contains(TextureUsage::COPY_DST));
+        let (sf, df) = (src.desc.format, dst.desc.format);
+        assert!(
+            sf.linear() == df.linear(),
+            "copy between incompatible formats"
+        );
+        let fits = |t: &TextureDesc, mip: u32, layer: u32, offset: [u32; 3]| {
+            let (w, h) = t.mip_size(mip);
+            let block = t.format.block_extent();
+            let (w, h) = (w.next_multiple_of(block), h.next_multiple_of(block));
+            let d = t.mip_depth(mip);
+            mip < t.mip_levels
+                && layer < t.array_layers
+                && [w, h, d].iter().zip(offset.iter().zip(&region.size)).all(
+                    |(&extent, (&o, &s))| s > 0 && o.checked_add(s).is_some_and(|e| e <= extent),
+                )
+                && [offset[0], offset[1], region.size[0], region.size[1]]
+                    .iter()
+                    .all(|v| v.is_multiple_of(block))
+        };
+        assert!(
+            fits(
+                &src.desc,
+                region.src_mip,
+                region.src_layer,
+                region.src_offset
+            ),
+            "copy source out of range"
+        );
+        assert!(
+            fits(
+                &dst.desc,
+                region.dst_mip,
+                region.dst_layer,
+                region.dst_offset
+            ),
+            "copy destination out of range"
+        );
+        if sf.is_depth() {
+            assert!(
+                region.src_offset == [0; 3]
+                    && region.dst_offset == [0; 3]
+                    && (region.size[0], region.size[1]) == src.desc.mip_size(region.src_mip),
+                "depth copies cover the whole subresource"
+            );
+        }
+        Backend::copy_texture(&mut self.raw, src, dst, region);
     }
 }
 
@@ -606,8 +1051,12 @@ fn check_copy(buffer: &Buffer, texture: &Texture, r: &BufferTextureCopy) {
     assert!(
         r.x.checked_add(r.width).is_some_and(|e| e <= w)
             && r.y.checked_add(r.height).is_some_and(|e| e <= h)
+            && r.z
+                .checked_add(r.depth)
+                .is_some_and(|e| e <= d.mip_depth(r.mip))
             && r.width > 0
-            && r.height > 0,
+            && r.height > 0
+            && r.depth > 0,
         "copy region outside the subresource"
     );
     assert!(
@@ -627,9 +1076,11 @@ fn check_copy(buffer: &Buffer, texture: &Texture, r: &BufferTextureCopy) {
             && r.buffer_offset.is_multiple_of(TEXTURE_OFFSET_ALIGNMENT),
         "copy rows misaligned"
     );
-    let row = (r.width / block) as u64 * d.format.block_size() as u64;
+    let row = (r.width / block) as u64 * d.format.copy_block_size() as u64;
     assert!(r.bytes_per_row as u64 >= row, "copy rows overlap");
-    let end = r.buffer_offset + (r.height / block - 1) as u64 * r.bytes_per_row as u64 + row;
+    // Slices follow each other, `height / block` rows apart.
+    let rows = (r.height / block) as u64 * r.depth as u64;
+    let end = r.buffer_offset + (rows - 1) * r.bytes_per_row as u64 + row;
     assert!(end <= buffer.desc.size, "copy past the end of the buffer");
 }
 
@@ -772,6 +1223,37 @@ pub struct ComputePipeline {
     raw: <Backend as Types>::ComputePipeline,
 }
 
+/// Compiled amplification, mesh and pixel shaders plus fixed-function state, for mesh dispatches.
+pub struct MeshPipeline {
+    raw: <Backend as Types>::MeshPipeline,
+}
+
+/// GPU queries of one kind (timestamps).
+pub struct QueryPool {
+    raw: <Backend as Types>::QueryPool,
+    desc: QueryPoolDesc,
+}
+
+impl QueryPool {
+    #[inline]
+    pub fn desc(&self) -> &QueryPoolDesc {
+        &self.desc
+    }
+}
+
+/// GPU memory that placed resources are created in.
+pub struct Heap {
+    raw: <Backend as Types>::Heap,
+    desc: HeapDesc,
+}
+
+impl Heap {
+    #[inline]
+    pub fn desc(&self) -> &HeapDesc {
+        &self.desc
+    }
+}
+
 /// The images a window presents, rotated by the presentation engine.
 ///
 /// Per frame: [`acquire`](Self::acquire) an image, record work that moves it from
@@ -853,8 +1335,23 @@ opaque_debug!(
     DepthStencilView,
     GraphicsPipeline,
     ComputePipeline,
+    MeshPipeline,
     Swapchain
 );
+
+impl core::fmt::Debug for QueryPool {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("QueryPool")
+            .field("desc", &self.desc)
+            .finish()
+    }
+}
+
+impl core::fmt::Debug for Heap {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Heap").field("desc", &self.desc).finish()
+    }
+}
 
 impl core::fmt::Debug for Device {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {

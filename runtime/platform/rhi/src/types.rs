@@ -109,6 +109,20 @@ pub struct Features {
     pub enhanced_barriers: bool,
     /// [`PresentMode::Immediate`] can tear (variable refresh displays).
     pub tearing: bool,
+    /// Mesh and amplification shaders. Part of the baseline: devices without them are refused.
+    pub mesh_shader: bool,
+    /// Inline ray queries (DXR 1.1), the `RayQuery` ext.
+    pub ray_query: bool,
+    /// 64-bit atomics on typed resources and in shared memory (software rasterization).
+    pub atomic_int64: bool,
+    /// Timestamps can be written on the copy queue.
+    pub copy_queue_timestamps: bool,
+    /// Heaps may hold buffers and every kind of texture together (D3D12 resource heap tier 2).
+    /// Otherwise each heap takes one [`HeapKind`].
+    pub mixed_heaps: bool,
+    /// The smallest and largest wave (subgroup) sizes, for shaders that pick one with
+    /// `[WaveSize]`.
+    pub wave_size_range: (u32, u32),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -135,12 +149,23 @@ pub enum Format {
     R16Float,
     Rg16Float,
     Rgba16Float,
+    R8Uint,
+    R16Uint,
+    R16Unorm,
+    Rg16Uint,
+    Rgba16Unorm,
+    Rgba16Uint,
     R32Uint,
     R32Float,
+    /// The visibility buffer: cluster and triangle ids.
+    Rg32Uint,
     Rg32Float,
+    Rgba32Uint,
     Rgba32Float,
     /// The depth format: reverse-Z wants float precision.
     D32Float,
+    /// Depth with an 8-bit stencil.
+    D32FloatS8,
     Bc1Unorm,
     Bc1UnormSrgb,
     Bc3Unorm,
@@ -148,6 +173,7 @@ pub enum Format {
     Bc4Unorm,
     Bc5Unorm,
     Bc6hUfloat,
+    Bc6hSfloat,
     Bc7Unorm,
     Bc7UnormSrgb,
 }
@@ -177,7 +203,25 @@ impl Format {
     }
 
     pub const fn is_depth(self) -> bool {
-        matches!(self, Self::D32Float)
+        matches!(self, Self::D32Float | Self::D32FloatS8)
+    }
+
+    pub const fn has_stencil(self) -> bool {
+        matches!(self, Self::D32FloatS8)
+    }
+
+    /// Integer formats: read and written as integers, never filtered or blended.
+    pub const fn is_integer(self) -> bool {
+        matches!(
+            self,
+            Self::R8Uint
+                | Self::R16Uint
+                | Self::Rg16Uint
+                | Self::Rgba16Uint
+                | Self::R32Uint
+                | Self::Rg32Uint
+                | Self::Rgba32Uint
+        )
     }
 
     /// Block-compressed (4×4 texel blocks).
@@ -195,17 +239,27 @@ impl Format {
             | Self::Bc4Unorm
             | Self::Bc5Unorm
             | Self::Bc6hUfloat
+            | Self::Bc6hSfloat
             | Self::Bc7Unorm
             | Self::Bc7UnormSrgb => 4,
             _ => 1,
         }
     }
 
+    /// Bytes per block in buffer↔texture copies: [`block_size`](Self::block_size), except that
+    /// depth-stencil formats copy only their 32-bit depth plane.
+    pub const fn copy_block_size(self) -> u32 {
+        match self {
+            Self::D32FloatS8 => 4,
+            other => other.block_size(),
+        }
+    }
+
     /// Bytes per block (per texel for uncompressed formats).
     pub const fn block_size(self) -> u32 {
         match self {
-            Self::R8Unorm => 1,
-            Self::Rg8Unorm | Self::R16Float => 2,
+            Self::R8Unorm | Self::R8Uint => 1,
+            Self::Rg8Unorm | Self::R16Float | Self::R16Uint | Self::R16Unorm => 2,
             Self::Rgba8Unorm
             | Self::Rgba8UnormSrgb
             | Self::Bgra8Unorm
@@ -215,14 +269,24 @@ impl Format {
             | Self::Rg16Float
             | Self::R32Uint
             | Self::R32Float
+            | Self::Rg16Uint
             | Self::D32Float => 4,
-            Self::Rgba16Float | Self::Rg32Float | Self::Bc1Unorm | Self::Bc1UnormSrgb => 8,
+            Self::Rgba16Float
+            | Self::Rgba16Unorm
+            | Self::Rgba16Uint
+            | Self::Rg32Float
+            | Self::Rg32Uint
+            | Self::D32FloatS8
+            | Self::Bc1Unorm
+            | Self::Bc1UnormSrgb => 8,
             Self::Bc4Unorm => 8,
             Self::Rgba32Float
+            | Self::Rgba32Uint
             | Self::Bc3Unorm
             | Self::Bc3UnormSrgb
             | Self::Bc5Unorm
             | Self::Bc6hUfloat
+            | Self::Bc6hSfloat
             | Self::Bc7Unorm
             | Self::Bc7UnormSrgb => 16,
         }
@@ -277,11 +341,24 @@ pub enum ClearValue {
     Depth(f32),
 }
 
-/// A 2D texture or 2D texture array (cube maps are arrays of 6 viewed as cubes).
+/// A texture's shape.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub enum TextureDimension {
+    /// 2D, with `array_layers` layers (cube maps are 6-layer 2D textures).
+    #[default]
+    D2,
+    /// A volume `depth` texels deep; one layer. Froxels, noise, LUTs, probe volumes.
+    D3,
+}
+
+/// A 2D texture, 2D texture array (cube maps are arrays of 6 viewed as cubes) or volume.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct TextureDesc {
+    pub dimension: TextureDimension,
     pub width: u32,
     pub height: u32,
+    /// Texels deep: 1 for 2D textures.
+    pub depth: u32,
     pub array_layers: u32,
     pub mip_levels: u32,
     pub format: Format,
@@ -293,8 +370,10 @@ impl TextureDesc {
     /// One layer, one mip, no clear value.
     pub const fn new_2d(width: u32, height: u32, format: Format, usage: TextureUsage) -> Self {
         Self {
+            dimension: TextureDimension::D2,
             width,
             height,
+            depth: 1,
             array_layers: 1,
             mip_levels: 1,
             format,
@@ -303,11 +382,32 @@ impl TextureDesc {
         }
     }
 
+    /// A volume texture: one layer, one mip, no clear value.
+    pub const fn new_3d(
+        width: u32,
+        height: u32,
+        depth: u32,
+        format: Format,
+        usage: TextureUsage,
+    ) -> Self {
+        Self {
+            dimension: TextureDimension::D3,
+            depth,
+            ..Self::new_2d(width, height, format, usage)
+        }
+    }
+
     /// Size of mip `level` in texels.
     pub const fn mip_size(&self, level: u32) -> (u32, u32) {
         let w = self.width >> level;
         let h = self.height >> level;
         (if w == 0 { 1 } else { w }, if h == 0 { 1 } else { h })
+    }
+
+    /// Depth of mip `level` in texels (1 for 2D textures).
+    pub const fn mip_depth(&self, level: u32) -> u32 {
+        let d = self.depth >> level;
+        if d == 0 { 1 } else { d }
     }
 }
 
@@ -429,6 +529,8 @@ pub struct DepthStencilViewDesc {
 pub enum TextureViewDimension {
     D2,
     D2Array,
+    /// A volume texture. Writable views see every slice of one mip.
+    D3,
     /// 6 layers starting at layer 0, in +X −X +Y −Y +Z −Z order.
     Cube,
 }
@@ -652,6 +754,8 @@ pub struct DepthState {
     pub format: Format,
     pub write: bool,
     pub compare: CompareOp,
+    /// Stencil testing; the format must have stencil ([`Format::has_stencil`]).
+    pub stencil: Option<StencilState>,
 }
 
 impl DepthState {
@@ -661,6 +765,65 @@ impl DepthState {
             format,
             write: true,
             compare: CompareOp::GreaterEqual,
+            stencil: None,
+        }
+    }
+}
+
+/// What a stencil test does to the stored value.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub enum StencilOp {
+    #[default]
+    Keep,
+    Zero,
+    /// Writes the reference value
+    /// ([`CommandList::set_stencil_reference`](crate::CommandList::set_stencil_reference)).
+    Replace,
+    IncrementClamp,
+    DecrementClamp,
+    Invert,
+    IncrementWrap,
+    DecrementWrap,
+}
+
+/// The stencil test of one face: `reference & read_mask` compared with `stored & read_mask`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct StencilFace {
+    pub compare: CompareOp,
+    /// The stencil test failed.
+    pub fail: StencilOp,
+    /// The stencil test passed and the depth test failed.
+    pub depth_fail: StencilOp,
+    /// Both passed.
+    pub pass: StencilOp,
+}
+
+impl Default for StencilFace {
+    fn default() -> Self {
+        Self {
+            compare: CompareOp::Always,
+            fail: StencilOp::Keep,
+            depth_fail: StencilOp::Keep,
+            pass: StencilOp::Keep,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct StencilState {
+    pub read_mask: u8,
+    pub write_mask: u8,
+    pub front: StencilFace,
+    pub back: StencilFace,
+}
+
+impl Default for StencilState {
+    fn default() -> Self {
+        Self {
+            read_mask: 0xff,
+            write_mask: 0xff,
+            front: StencilFace::default(),
+            back: StencilFace::default(),
         }
     }
 }
@@ -824,7 +987,9 @@ pub struct Rect {
 ///
 /// The buffer holds rows of texel blocks `bytes_per_row` apart, a multiple of
 /// [`TEXTURE_ROW_PITCH_ALIGNMENT`]; `buffer_offset` is a multiple of [`TEXTURE_OFFSET_ALIGNMENT`].
-/// For block-compressed formats the region is in texels but block-aligned.
+/// For block-compressed formats the region is in texels but block-aligned. Volume textures copy
+/// `depth` slices from `z`, each `height / block` rows, one after another in the buffer.
+/// Depth-stencil formats copy their depth plane ([`Format::copy_block_size`]).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct BufferTextureCopy {
     pub buffer_offset: u64,
@@ -833,8 +998,11 @@ pub struct BufferTextureCopy {
     pub layer: u32,
     pub x: u32,
     pub y: u32,
+    pub z: u32,
     pub width: u32,
     pub height: u32,
+    /// Slices: 1 for 2D textures.
+    pub depth: u32,
 }
 
 impl BufferTextureCopy {
@@ -848,8 +1016,10 @@ impl BufferTextureCopy {
             layer,
             x: 0,
             y: 0,
+            z: 0,
             width,
             height,
+            depth: desc.mip_depth(mip),
         }
     }
 }
@@ -858,7 +1028,7 @@ impl BufferTextureCopy {
 /// [`TEXTURE_ROW_PITCH_ALIGNMENT`].
 pub const fn aligned_row_pitch(format: Format, width: u32) -> u32 {
     let blocks = width.div_ceil(format.block_extent());
-    (blocks * format.block_size()).next_multiple_of(TEXTURE_ROW_PITCH_ALIGNMENT)
+    (blocks * format.copy_block_size()).next_multiple_of(TEXTURE_ROW_PITCH_ALIGNMENT)
 }
 
 flags! {
@@ -1025,6 +1195,11 @@ impl BufferState {
         stage: Stage::COMPUTE_SHADING,
         access: Access::UNORDERED_ACCESS,
     };
+    /// Arguments and counts of indirect commands.
+    pub const INDIRECT: Self = Self {
+        stage: Stage::EXECUTE_INDIRECT,
+        access: Access::INDIRECT_ARGUMENT,
+    };
 }
 
 /// An execution and memory dependency on a whole buffer.
@@ -1098,6 +1273,9 @@ pub struct DepthAttachment<'a> {
     /// Reverse-Z clears to 0 (the far plane).
     pub load: LoadOp<f32>,
     pub store: StoreOp,
+    /// The stencil plane's; ignored for formats without stencil.
+    pub stencil_load: LoadOp<u8>,
+    pub stencil_store: StoreOp,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -1166,4 +1344,156 @@ pub enum PresentStatus {
     Presented,
     /// The window is fully hidden (minimized, covered); presenting more often wastes power.
     Occluded,
+}
+
+// --- Queues and submission ---
+
+/// One submission to a queue: GPU-side waits, then the lists in order, then the signals.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SubmitDesc<'a> {
+    /// The queue does not start the lists before each fence reaches its value (another queue's
+    /// work, or the CPU's signal). The CPU does not block.
+    pub waits: &'a [(&'a crate::Fence, u64)],
+    /// Lists recorded for this queue's type.
+    pub lists: &'a [&'a crate::CommandList],
+    /// Set once the lists have finished.
+    pub signals: &'a [(&'a crate::Fence, u64)],
+}
+
+// --- Indirect commands ---
+
+/// The push-constant word every indirect command writes its `constant` into, so the shaders a
+/// multi-draw runs can tell its draws apart (D3D12 sets it from the argument buffer; Vulkan
+/// backends will map it to the draw index).
+pub const INDIRECT_CONSTANT_WORD: u32 = MAX_PUSH_CONSTANTS - 1;
+
+/// Arguments of one indirect draw, as the argument buffer holds them (20 bytes).
+#[repr(C)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub struct DrawIndirectArgs {
+    /// Lands in push-constant word [`INDIRECT_CONSTANT_WORD`].
+    pub constant: u32,
+    pub vertex_count: u32,
+    pub instance_count: u32,
+    pub first_vertex: u32,
+    pub first_instance: u32,
+}
+
+/// Arguments of one indirect indexed draw (24 bytes).
+#[repr(C)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub struct DrawIndexedIndirectArgs {
+    pub constant: u32,
+    pub index_count: u32,
+    pub instance_count: u32,
+    pub first_index: u32,
+    pub vertex_offset: i32,
+    pub first_instance: u32,
+}
+
+/// Arguments of one indirect compute or mesh dispatch (16 bytes).
+#[repr(C)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub struct DispatchIndirectArgs {
+    pub constant: u32,
+    pub x: u32,
+    pub y: u32,
+    pub z: u32,
+}
+
+/// Where an indirect command finds its arguments: `max_count` records of the command's argument
+/// type ([`DrawIndirectArgs`], [`DrawIndexedIndirectArgs`] or [`DispatchIndirectArgs`]), packed
+/// from `offset`. With a count buffer, the first `count` of them run (the `u32` there, clamped
+/// to `max_count`), else all of them.
+#[derive(Clone, Copy, Debug)]
+pub struct IndirectArgs<'a> {
+    /// [`BufferUsage::INDIRECT`].
+    pub buffer: &'a crate::Buffer,
+    /// A multiple of 4.
+    pub offset: u64,
+    pub max_count: u32,
+    pub count: Option<(&'a crate::Buffer, u64)>,
+}
+
+// --- Mesh pipelines ---
+
+/// A mesh shader pipeline: an optional amplification (task) stage, the mesh stage, and the
+/// fixed-function state of a graphics pipeline.
+#[derive(Clone, Copy, Debug)]
+pub struct MeshPipelineDesc<'a> {
+    pub amplification: Option<ShaderModule<'a>>,
+    pub mesh: ShaderModule<'a>,
+    /// `None`: depth-only.
+    pub pixel: Option<ShaderModule<'a>>,
+    pub raster: RasterState,
+    pub depth: Option<DepthState>,
+    pub color_targets: &'a [ColorTargetState],
+}
+
+// --- Queries ---
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum QueryKind {
+    /// GPU clock values, [`Queue::timestamp_frequency`](crate::Queue::timestamp_frequency) ticks
+    /// per second, written by [`CommandList::write_timestamp`](crate::CommandList::write_timestamp)
+    /// on graphics and compute lists.
+    Timestamp,
+    /// Timestamps written on copy lists (D3D12 keeps them in their own heap type). Requires
+    /// [`Features::copy_queue_timestamps`].
+    CopyTimestamp,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct QueryPoolDesc {
+    pub kind: QueryKind,
+    pub count: u32,
+}
+
+// --- Heaps ---
+
+/// What a heap may hold where heaps are not mixed ([`Features::mixed_heaps`] false).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub enum HeapKind {
+    /// Anything (requires [`Features::mixed_heaps`]).
+    #[default]
+    Any,
+    Buffers,
+    /// Textures that are neither render targets nor depth.
+    Textures,
+    /// Render target and depth textures.
+    Targets,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct HeapDesc {
+    pub size: u64,
+    pub memory: MemoryLocation,
+    pub kind: HeapKind,
+}
+
+/// The size and alignment a resource takes in a heap.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct MemoryRequirements {
+    pub size: u64,
+    pub alignment: u64,
+}
+
+/// Alignment of placed resources' offsets that is always enough (64 KiB; D3D12's default).
+pub const PLACEMENT_ALIGNMENT: u64 = 64 << 10;
+
+// --- Texture copies ---
+
+/// A box copied between two textures of compatible formats: `size` texels (block-aligned for
+/// compressed formats) from `src_offset` in subresource (`src_mip`, `src_layer`) to `dst_offset`
+/// in (`dst_mip`, `dst_layer`).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct TextureCopy {
+    pub src_mip: u32,
+    pub src_layer: u32,
+    pub src_offset: [u32; 3],
+    pub dst_mip: u32,
+    pub dst_layer: u32,
+    pub dst_offset: [u32; 3],
+    /// Width, height and depth.
+    pub size: [u32; 3],
 }

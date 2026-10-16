@@ -1,18 +1,21 @@
 //! The world: entities, their components, and resources.
 
 use alloc::boxed::Box;
+use alloc::vec::Vec;
 use core::any::{Any, TypeId};
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use marlin_containers::{HashMap, HashMapExt};
 use marlin_reflect::Reflect;
 
 use crate::archetype::{Archetype, ArchetypeId, Archetypes};
 use crate::bundle::{Bundle, MAX_BUNDLE};
+use crate::change::{CHECK_TICK_THRESHOLD, ChangeTicks, Mut, Tick};
 use crate::component::{Component, ComponentId, ComponentInfo, Components};
 use crate::entity::{Entities, Entity, EntityLocation};
-use crate::storage::Column;
+use crate::storage::{Column, ComponentTicks};
 
 type Resource = Box<UnsafeCell<dyn Any + Send + Sync>>;
 
@@ -21,6 +24,14 @@ pub struct World {
     pub(crate) components: Components,
     pub(crate) archetypes: Archetypes,
     resources: HashMap<TypeId, Resource>,
+    /// Now, for change detection: writes are stamped with it. Systems advance it as they run.
+    change_tick: AtomicU32,
+    /// What queries through the world compare against (see [`clear_trackers`](Self::clear_trackers)).
+    last_change_tick: Tick,
+    /// When old ticks were last clamped.
+    last_check_tick: Tick,
+    /// Components removed (or despawned with their entity), by type, with the tick it happened at.
+    removed: HashMap<ComponentId, Vec<(Entity, Tick)>>,
 }
 
 // SAFETY: every component and resource is Send + Sync. Shared access only reads, except through
@@ -41,6 +52,11 @@ impl World {
             components: Components::new(),
             archetypes: Archetypes::new(),
             resources: HashMap::new(),
+            // Tick 0 is everyone's first `last_run`: what exists at tick 1 reads as added.
+            change_tick: AtomicU32::new(1),
+            last_change_tick: Tick(0),
+            last_check_tick: Tick(0),
+            removed: HashMap::new(),
         }
     }
 
@@ -64,12 +80,13 @@ impl World {
         let archetype_id = self.archetypes.get_or_create(sorted, &self.components);
 
         let entity = self.entities.alloc();
+        let ticks = ComponentTicks::new(self.change_tick());
         let archetype = &mut self.archetypes.list[archetype_id.index()];
         let row = archetype.len();
         let mut put = |i: usize, ptr: *mut u8| {
             let column = archetype.column_index(ids[i]).expect("bundle column");
             // SAFETY: `take` hands over a valid component of this column's type.
-            unsafe { archetype.columns[column].push(ptr) };
+            unsafe { archetype.columns[column].push(ptr, ticks) };
         };
         // SAFETY: `put` takes ownership of every component.
         unsafe { bundle.take(&mut put) };
@@ -105,8 +122,12 @@ impl World {
         let Some(location) = self.entities.location(entity) else {
             return false;
         };
+        let tick = self.change_tick();
         let archetype = &mut self.archetypes.list[location.archetype.index()];
         let row = location.row as usize;
+        for &id in archetype.components.iter() {
+            self.removed.entry(id).or_default().push((entity, tick));
+        }
         for column in archetype.columns.iter_mut() {
             // SAFETY: `row` holds the entity's component.
             unsafe { column.swap_remove_drop(row) };
@@ -137,10 +158,13 @@ impl World {
         };
         let id = self.components.register::<T>();
         let mut value = MaybeUninit::new(value);
+        let tick = self.change_tick();
         let source = &mut self.archetypes.list[location.archetype.index()];
         if let Some(column) = source.column_index(id) {
             // SAFETY: the row holds a `T`; `value` is moved in and never used again.
-            unsafe { source.columns[column].replace(location.row as usize, value.as_ptr().cast()) };
+            unsafe {
+                source.columns[column].replace(location.row as usize, value.as_ptr().cast(), tick)
+            };
             return true;
         }
         let target = self
@@ -151,8 +175,9 @@ impl World {
         });
         let target = &mut self.archetypes.list[target.index()];
         let column = target.column_index(id).expect("added column");
+        let ticks = ComponentTicks::new(tick);
         // SAFETY: `value` is moved in and never used again.
-        unsafe { target.columns[column].push(value.as_mut_ptr().cast()) };
+        unsafe { target.columns[column].push(value.as_mut_ptr().cast(), ticks) };
         debug_assert_eq!(target.columns[column].len(), row + 1);
         true
     }
@@ -167,6 +192,8 @@ impl World {
         let target = self
             .archetypes
             .with_removed(location.archetype, id, &self.components);
+        let tick = self.change_tick();
+        self.removed.entry(id).or_default().push((entity, tick));
         let mut out = MaybeUninit::<T>::uninit();
         self.transfer(entity, location, target, |column, row| {
             // SAFETY: the only column missing from the target is `T`'s; the value is moved out
@@ -189,14 +216,54 @@ impl World {
         self.component_ptr::<T>(entity).map(|p| unsafe { &*p })
     }
 
-    pub fn get_mut<T: Component>(&mut self, entity: Entity) -> Option<&mut T> {
-        // SAFETY: exclusive access to the world.
-        self.component_ptr::<T>(entity).map(|p| unsafe { &mut *p })
+    /// The entity's `T` for writing; writes through the [`Mut`] mark it changed.
+    pub fn get_mut<T: Component>(&mut self, entity: Entity) -> Option<Mut<'_, T>> {
+        let change = ChangeTicks {
+            last_run: self.last_change_tick,
+            this_run: self.change_tick(),
+        };
+        let location = self.entities.location(entity)?;
+        let id = self.components.id_of::<T>()?;
+        let archetype = &mut self.archetypes.list[location.archetype.index()];
+        let index = archetype.column_index(id)?;
+        let column = &mut archetype.columns[index];
+        let row = location.row as usize;
+        let value = column.ptr(row).cast::<T>();
+        // SAFETY: exclusive access to the world; the row holds a `T`, and the ticks are a
+        // separate allocation.
+        Some(Mut::new(
+            unsafe { &mut *value },
+            column.ticks_mut(row),
+            change,
+        ))
+    }
+
+    /// When the entity's `T` was added and last changed.
+    pub fn component_ticks<T: Component>(&self, entity: Entity) -> Option<ComponentTicks> {
+        let location = self.entities.location(entity)?;
+        let id = self.components.id_of::<T>()?;
+        let column = self.archetypes.list[location.archetype.index()].column(id)?;
+        Some(column.ticks(location.row as usize))
     }
 
     #[inline]
     pub fn has<T: Component>(&self, entity: Entity) -> bool {
         self.component_ptr::<T>(entity).is_some()
+    }
+
+    /// The entity's `T` and its ticks, as pointers for callers that uphold the access rules.
+    pub(crate) fn component_and_ticks_ptr<T: Component>(
+        &self,
+        entity: Entity,
+    ) -> Option<(*mut T, *mut ComponentTicks)> {
+        let location = self.entities.location(entity)?;
+        let id = self.components.id_of::<T>()?;
+        let column = self.archetypes.list[location.archetype.index()].column(id)?;
+        let row = location.row as usize;
+        // SAFETY: `row` is in bounds; the tick cell gives a raw pointer without a reference.
+        Some((column.ptr(row).cast(), unsafe {
+            (*column.ticks_ptr().add(row)).get()
+        }))
     }
 
     pub(crate) fn component_ptr<T: Component>(&self, entity: Entity) -> Option<*mut T> {
@@ -252,7 +319,8 @@ impl World {
                     // SAFETY: the row's item moves to the target, then leaves the source
                     // without being dropped.
                     unsafe {
-                        target.columns[j].push(source.columns[i].ptr(row));
+                        let ticks = source.columns[i].ticks(row);
+                        target.columns[j].push(source.columns[i].ptr(row), ticks);
                         source.columns[i].swap_remove_forget(row);
                     }
                 }
@@ -285,6 +353,87 @@ impl World {
                 },
             );
         }
+    }
+
+    // --- Change detection ---
+
+    /// Now: the tick writes are stamped with.
+    #[inline]
+    pub fn change_tick(&self) -> Tick {
+        Tick(self.change_tick.load(Ordering::Acquire))
+    }
+
+    /// Advances the change tick, returning the tick before. Each system run takes one.
+    #[inline]
+    pub fn increment_change_tick(&self) -> Tick {
+        Tick(self.change_tick.fetch_add(1, Ordering::AcqRel))
+    }
+
+    /// What queries through the world (rather than a system) compare against: they report
+    /// changes made since this tick.
+    #[inline]
+    pub fn last_change_tick(&self) -> Tick {
+        self.last_change_tick
+    }
+
+    /// Ends a change-detection period, once a frame: queries through the world stop reporting
+    /// what happened so far, removal records older than the previous period are dropped, and old
+    /// ticks are clamped when due. Systems keep their own `last_run` and are unaffected.
+    pub fn clear_trackers(&mut self) {
+        let previous = self.last_change_tick;
+        let now = self.increment_change_tick();
+        for entries in self.removed.values_mut() {
+            // Removals of the period now ending are kept for one more, so a reader that runs once
+            // per period still sees them; those of the period before (at or before `previous`)
+            // go.
+            entries.retain(|&(_, tick)| tick.is_newer_than(previous, now));
+        }
+        self.last_change_tick = now;
+        self.check_change_ticks();
+    }
+
+    /// Clamps ticks older than [`MAX_CHANGE_AGE`](crate::change::MAX_CHANGE_AGE) if
+    /// [`CHECK_TICK_THRESHOLD`] ticks have passed since the last check, returning the tick
+    /// checked against. Readers with their own `last_run` (systems) clamp it with the result.
+    pub fn check_change_ticks(&mut self) -> Option<Tick> {
+        let now = self.change_tick();
+        if now.0.wrapping_sub(self.last_check_tick.0) < CHECK_TICK_THRESHOLD {
+            return None;
+        }
+        for archetype in &mut self.archetypes.list {
+            for column in archetype.columns.iter_mut() {
+                column.check_ticks(now);
+            }
+        }
+        for entries in self.removed.values_mut() {
+            for (_, tick) in entries.iter_mut() {
+                tick.clamp(now);
+            }
+        }
+        self.last_change_tick.clamp(now);
+        self.last_check_tick = now;
+        Some(now)
+    }
+
+    /// Entities whose `T` was removed (or that were despawned with one) after `since`, as seen at
+    /// `now`. Records last until two [`clear_trackers`](Self::clear_trackers) later.
+    pub fn removed_since<T: Component>(
+        &self,
+        since: Tick,
+        now: Tick,
+    ) -> impl Iterator<Item = Entity> + '_ {
+        self.component_id::<T>()
+            .and_then(|id| self.removed.get(&id))
+            .into_iter()
+            .flatten()
+            .filter(move |&&(_, tick)| tick.is_newer_than(since, now))
+            .map(|&(entity, _)| entity)
+    }
+
+    /// [`removed_since`](Self::removed_since) the world's
+    /// [`last_change_tick`](Self::last_change_tick).
+    pub fn removed<T: Component>(&self) -> impl Iterator<Item = Entity> + '_ {
+        self.removed_since::<T>(self.last_change_tick, self.change_tick())
     }
 
     // --- Resources ---

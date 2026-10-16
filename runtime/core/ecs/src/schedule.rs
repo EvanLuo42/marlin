@@ -13,10 +13,11 @@ use core::mem;
 
 use marlin_jobs::JobSystem;
 
+use crate::change::{ChangeTicks, Mut, Tick};
 use crate::command::Commands;
 use crate::component::Component;
 use crate::entity::Entity;
-use crate::query::{Access, QueryData, QueryFilter, QueryIter, ReadOnlyQueryData};
+use crate::query::{Access, QueryData, QueryFilter, QueryIter, ReadOnlyQueryData, query_access};
 use crate::world::World;
 
 /// A system's view of the world: queries, resources and components it declared, nothing else.
@@ -25,6 +26,8 @@ pub struct SystemWorld<'w> {
     access: &'w Access,
     name: &'static str,
     jobs: &'w JobSystem,
+    /// Changes since the system last ran.
+    change: ChangeTicks,
 }
 
 impl<'w> SystemWorld<'w> {
@@ -39,41 +42,44 @@ impl<'w> SystemWorld<'w> {
     }
 
     #[track_caller]
-    fn check_query<Q: QueryData>(&self) {
-        let mut needed = Access::new();
-        Q::access(&mut needed);
-        self.check(&needed);
+    fn check_query<Q: QueryData, F: QueryFilter>(&self) {
+        self.check(&query_access::<Q, F>());
+    }
+
+    /// The ticks this run compares against: `last_run` is the system's previous run.
+    pub fn change_ticks(&self) -> ChangeTicks {
+        self.change
     }
 
     /// A read-only query; several may be alive at once.
     #[track_caller]
     pub fn query<Q: ReadOnlyQueryData>(&self) -> QueryIter<'_, Q> {
-        self.check_query::<Q>();
+        self.check_query::<Q, ()>();
         // SAFETY: the access is declared, and the schedule never runs a writer of these types
         // alongside this system.
-        unsafe { QueryIter::new(self.world) }
+        unsafe { QueryIter::new(self.world, self.change) }
     }
 
     #[track_caller]
     pub fn query_filtered<Q: ReadOnlyQueryData, F: QueryFilter>(&self) -> QueryIter<'_, Q, F> {
-        self.check_query::<Q>();
+        self.check_query::<Q, F>();
         // SAFETY: as above.
-        unsafe { QueryIter::new(self.world) }
+        unsafe { QueryIter::new(self.world, self.change) }
     }
 
     /// A query that may write; exclusive within the system.
     #[track_caller]
     pub fn query_mut<Q: QueryData>(&mut self) -> QueryIter<'_, Q> {
-        self.check_query::<Q>();
+        self.check_query::<Q, ()>();
         // SAFETY: declared access; the `&mut self` borrow keeps the system's other accesses out.
-        unsafe { QueryIter::new(self.world) }
+        unsafe { QueryIter::new(self.world, self.change) }
     }
 
     #[track_caller]
     pub fn query_mut_filtered<Q: QueryData, F: QueryFilter>(&mut self) -> QueryIter<'_, Q, F> {
-        self.check_query::<Q>();
+        self.check_query::<Q, F>();
         // SAFETY: as above.
-        unsafe { QueryIter::new(self.world) }
+        unsafe { QueryIter::new(self.world, self.change) }
     }
 
     /// [`World::par_for_each`] within the system's declared access.
@@ -83,12 +89,30 @@ impl<'w> SystemWorld<'w> {
         Q: QueryData,
         F: for<'a> Fn(Q::Item<'a>) + Sync,
     {
-        self.check_query::<Q>();
+        self.par_for_each_filtered::<Q, (), F>(batch, f);
+    }
+
+    #[track_caller]
+    pub fn par_for_each_filtered<Q, Filter, F>(&mut self, batch: usize, f: F)
+    where
+        Q: QueryData,
+        Filter: QueryFilter,
+        F: for<'a> Fn(Q::Item<'a>) + Sync,
+    {
+        self.check_query::<Q, Filter>();
         // SAFETY: as for `query_mut`.
         unsafe {
             self.world
-                .par_for_each_unchecked::<Q, (), F>(self.jobs, batch, &f)
+                .par_for_each_unchecked::<Q, Filter, F>(self.jobs, batch, self.change, &f)
         }
+    }
+
+    /// Entities whose `T` was removed (or despawned) since the system last ran.
+    #[track_caller]
+    pub fn removed<T: Component>(&self) -> impl Iterator<Item = Entity> + '_ {
+        self.check(Access::new().read::<T>());
+        self.world
+            .removed_since::<T>(self.change.last_run, self.change.this_run)
     }
 
     #[track_caller]
@@ -114,13 +138,14 @@ impl<'w> SystemWorld<'w> {
             .map(|p| unsafe { &*p })
     }
 
+    /// The entity's `T` for writing; writes through the [`Mut`] mark it changed.
     #[track_caller]
-    pub fn get_mut<T: Component>(&mut self, entity: Entity) -> Option<&mut T> {
+    pub fn get_mut<T: Component>(&mut self, entity: Entity) -> Option<Mut<'_, T>> {
         self.check(Access::new().write::<T>());
-        // SAFETY: declared write; `&mut self` keeps it unique within the system.
-        self.world
-            .component_ptr::<T>(entity)
-            .map(|p| unsafe { &mut *p })
+        let (value, ticks) = self.world.component_and_ticks_ptr::<T>(entity)?;
+        // SAFETY: declared write; `&mut self` keeps it unique within the system, and no other
+        // system touches `T` meanwhile.
+        Some(unsafe { Mut::new(&mut *value, &mut *ticks, self.change) })
     }
 
     pub fn is_alive(&self, entity: Entity) -> bool {
@@ -207,6 +232,8 @@ impl System {
 struct Entry {
     system: System,
     commands: Commands,
+    /// The tick of the system's previous run (0 before the first: everything reads as added).
+    last_run: Tick,
 }
 
 #[derive(Default)]
@@ -225,6 +252,7 @@ impl Schedule {
         self.systems.push(Entry {
             system,
             commands: Commands::new(),
+            last_run: Tick::default(),
         });
         self.waves = None;
         self
@@ -278,6 +306,7 @@ impl Schedule {
 
             if let Run::Exclusive(run) = &mut first.system.run {
                 debug_assert!(rest.is_empty(), "exclusive systems run alone");
+                first.last_run = world.increment_change_tick();
                 run(world, jobs);
                 continue;
             }
@@ -305,22 +334,33 @@ impl Schedule {
                 world.apply(&mut entry.commands);
             }
         }
+        if let Some(now) = world.check_change_ticks() {
+            for entry in &mut self.systems {
+                entry.last_run.clamp(now);
+            }
+        }
     }
 
     fn run_shared(entry: &mut Entry, world: &World, jobs: &JobSystem) {
         let Run::Shared(run) = &mut entry.system.run else {
             unreachable!("exclusive systems run separately")
         };
+        let this_run = world.increment_change_tick();
         let mut context = SystemContext {
             world: SystemWorld {
                 world,
                 access: &entry.system.access,
                 name: entry.system.name,
                 jobs,
+                change: ChangeTicks {
+                    last_run: entry.last_run,
+                    this_run,
+                },
             },
             commands: mem::take(&mut entry.commands),
         };
         run(&mut context);
         entry.commands = context.commands;
+        entry.last_run = this_run;
     }
 }

@@ -15,6 +15,9 @@
 //! }); // Every spawned job has finished here.
 //! ```
 //!
+//! Detached jobs ([`JobSystem::spawn`], [`JobSystem::spawn_after`]) return a [`JobHandle`] that
+//! may be kept across frames, waited on, or depended on by later jobs: the frame pipeline's links.
+//!
 //! Jobs must not panic: the engine aborts on panic, and a panic cannot unwind out of a fiber.
 //! Code running in jobs must not keep a thread-local's address across a wait, since the job may
 //! resume on another thread.
@@ -24,8 +27,10 @@
 extern crate alloc;
 
 mod counter;
+mod handle;
 mod scheduler;
 mod scope;
 
+pub use handle::{Batch, JobHandle};
 pub use scheduler::{Config, JobSystem, Priority};
 pub use scope::Scope;

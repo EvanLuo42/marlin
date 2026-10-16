@@ -337,7 +337,17 @@ pub(super) struct ID3D12DeviceVtbl {
     ),
     pub CreateSampler:
         unsafe extern "system" fn(This, *const D3D12_SAMPLER_DESC, D3D12_CPU_DESCRIPTOR_HANDLE),
-    _23_26: [usize; 4],
+    _23_24: [usize; 2],
+    /// C++ returns the struct through a hidden pointer after `this`.
+    pub GetResourceAllocationInfo: unsafe extern "system" fn(
+        This,
+        *mut D3D12_RESOURCE_ALLOCATION_INFO,
+        u32,
+        u32,
+        *const D3D12_RESOURCE_DESC,
+    )
+        -> *mut D3D12_RESOURCE_ALLOCATION_INFO,
+    _26: usize,
     pub CreateCommittedResource: unsafe extern "system" fn(
         This,
         *const D3D12_HEAP_PROPERTIES,
@@ -348,16 +358,67 @@ pub(super) struct ID3D12DeviceVtbl {
         *const GUID,
         *mut *mut c_void,
     ) -> HRESULT,
-    _28_35: [usize; 8],
+    pub CreateHeap: unsafe extern "system" fn(
+        This,
+        *const D3D12_HEAP_DESC,
+        *const GUID,
+        *mut *mut c_void,
+    ) -> HRESULT,
+    pub CreatePlacedResource: unsafe extern "system" fn(
+        This,
+        *mut c_void,
+        u64,
+        *const D3D12_RESOURCE_DESC,
+        u32,
+        *const D3D12_CLEAR_VALUE,
+        *const GUID,
+        *mut *mut c_void,
+    ) -> HRESULT,
+    _30_35: [usize; 6],
     pub CreateFence:
         unsafe extern "system" fn(This, u64, i32, *const GUID, *mut *mut c_void) -> HRESULT,
     pub GetDeviceRemovedReason: unsafe extern "system" fn(This) -> HRESULT,
+    _38: usize,
+    pub CreateQueryHeap: unsafe extern "system" fn(
+        This,
+        *const D3D12_QUERY_HEAP_DESC,
+        *const GUID,
+        *mut *mut c_void,
+    ) -> HRESULT,
+    _40: usize,
+    pub CreateCommandSignature: unsafe extern "system" fn(
+        This,
+        *const D3D12_COMMAND_SIGNATURE_DESC,
+        *mut c_void,
+        *const GUID,
+        *mut *mut c_void,
+    ) -> HRESULT,
+    _42_43: [usize; 2],
 }
 
 interface!(
     ID3D12Device,
     ID3D12DeviceVtbl,
     0x189819f1_1db6_4b57_be54_1821339b85f7
+);
+
+/// ID3D12Device1 (44..=46) adds nothing called here.
+#[repr(C)]
+pub(super) struct ID3D12Device2Vtbl {
+    pub base: ID3D12DeviceVtbl,
+    _44_46: [usize; 3],
+    pub CreatePipelineState: unsafe extern "system" fn(
+        This,
+        *const D3D12_PIPELINE_STATE_STREAM_DESC,
+        *const GUID,
+        *mut *mut c_void,
+    ) -> HRESULT,
+}
+
+interface!(
+    ID3D12Device2,
+    ID3D12Device2Vtbl,
+    0x30baa41e_b15b_475c_a0bb_1af5c5b64328
 );
 
 #[repr(C)]
@@ -367,6 +428,8 @@ pub(super) struct ID3D12CommandQueueVtbl {
     pub ExecuteCommandLists: unsafe extern "system" fn(This, u32, *const *mut c_void),
     _11_13: [usize; 3],
     pub Signal: unsafe extern "system" fn(This, *mut c_void, u64) -> HRESULT,
+    pub Wait: unsafe extern "system" fn(This, *mut c_void, u64) -> HRESULT,
+    pub GetTimestampFrequency: unsafe extern "system" fn(This, *mut u64) -> HRESULT,
 }
 
 interface!(
@@ -411,7 +474,8 @@ pub(super) struct ID3D12GraphicsCommandListVtbl {
     pub IASetPrimitiveTopology: unsafe extern "system" fn(This, i32),
     pub RSSetViewports: unsafe extern "system" fn(This, u32, *const D3D12_VIEWPORT),
     pub RSSetScissorRects: unsafe extern "system" fn(This, u32, *const D3D12_RECT),
-    _23_24: [usize; 2],
+    _23: usize,
+    pub OMSetStencilRef: unsafe extern "system" fn(This, u32),
     pub SetPipelineState: unsafe extern "system" fn(This, *mut c_void),
     pub ResourceBarrier: unsafe extern "system" fn(This, u32, *const D3D12_RESOURCE_BARRIER),
     _27: usize,
@@ -448,13 +512,38 @@ pub(super) struct ID3D12GraphicsCommandListVtbl {
         u32,
         *const c_void,
     ),
-    _49_59: [usize; 11],
+    _49_50: [usize; 2],
+    pub DiscardResource: unsafe extern "system" fn(This, *mut c_void, *const c_void),
+    _52: usize,
+    pub EndQuery: unsafe extern "system" fn(This, *mut c_void, i32, u32),
+    pub ResolveQueryData:
+        unsafe extern "system" fn(This, *mut c_void, i32, u32, u32, *mut c_void, u64),
+    _55: usize,
+    pub SetMarker: unsafe extern "system" fn(This, u32, *const c_void, u32),
+    pub BeginEvent: unsafe extern "system" fn(This, u32, *const c_void, u32),
+    pub EndEvent: unsafe extern "system" fn(This),
+    pub ExecuteIndirect:
+        unsafe extern "system" fn(This, *mut c_void, u32, *mut c_void, u64, *mut c_void, u64),
 }
 
 interface!(
     ID3D12GraphicsCommandList,
     ID3D12GraphicsCommandListVtbl,
     0x5b160d0f_ac1b_4185_8ba8_b3ae42a5a455
+);
+
+#[repr(C)]
+pub(super) struct ID3D12GraphicsCommandList6Vtbl {
+    pub base: ID3D12GraphicsCommandListVtbl,
+    /// ID3D12GraphicsCommandList1 through 5.
+    _60_78: [usize; 19],
+    pub DispatchMesh: unsafe extern "system" fn(This, u32, u32, u32),
+}
+
+interface!(
+    ID3D12GraphicsCommandList6,
+    ID3D12GraphicsCommandList6Vtbl,
+    0xc3827890_e548_4cfa_96cf_5689a9370f80
 );
 
 #[repr(C)]
@@ -569,4 +658,22 @@ interface!(
     ID3D12InfoQueue,
     ID3D12InfoQueueVtbl,
     0x0742a90b_c387_483f_b946_30a7e4e61458
+);
+
+interface!(
+    ID3D12Heap,
+    DeviceChildVtbl,
+    0x6b3b2502_6e51_45b3_90ee_9884265e8df3
+);
+
+interface!(
+    ID3D12QueryHeap,
+    DeviceChildVtbl,
+    0x0d9658ae_ed45_469e_a61d_970ec583cab4
+);
+
+interface!(
+    ID3D12CommandSignature,
+    DeviceChildVtbl,
+    0xc36a797c_ec80_4f0a_8985_a7b2475082d1
 );

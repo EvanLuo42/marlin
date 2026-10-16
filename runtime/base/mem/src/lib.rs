@@ -4,6 +4,7 @@
 #![cfg_attr(not(test), no_std)]
 #![feature(thread_local)]
 
+pub mod arena;
 mod global;
 mod heap;
 mod layout;
@@ -11,5 +12,6 @@ mod list;
 mod lock;
 mod segment;
 
+pub use arena::{Arena, FrameArenas};
 pub use global::MarlinHeap;
 pub use heap::{HeapStats, collect_abandoned, good_size, stats};

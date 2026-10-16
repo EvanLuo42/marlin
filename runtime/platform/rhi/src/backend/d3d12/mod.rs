@@ -29,13 +29,13 @@ use ffi::*;
 
 use core::ptr::NonNull;
 
-use crate::contract::{Fences, Rhi, Types};
+use crate::contract::{Fences, Queues, Rhi, Types};
 use crate::{
     AdapterInfo, AdapterKind, AdapterPreference, Buffer as PublicBuffer, BufferDesc,
-    BufferViewDesc, CommandList, ComputePipelineDesc, DepthStencilViewDesc, DeviceDesc, Error,
-    ErrorKind, Features, Fence as PublicFence, GraphicsPipelineDesc, InstanceDesc,
-    RenderTargetViewDesc, Result, SamplerDesc, SurfaceHandle, SwapchainDesc,
-    Texture as PublicTexture, TextureDesc, TextureViewDesc,
+    BufferViewDesc, ComputePipelineDesc, DepthStencilViewDesc, DeviceDesc, Error, ErrorKind,
+    Features, GraphicsPipelineDesc, HeapDesc, InstanceDesc, MemoryRequirements, MeshPipelineDesc,
+    QueryKind, QueryPoolDesc, QueueType, RenderTargetViewDesc, Result, SamplerDesc, SubmitDesc,
+    SurfaceHandle, SwapchainDesc, Texture as PublicTexture, TextureDesc, TextureViewDesc,
 };
 use pipeline::Bindless;
 use resource::Descriptor;
@@ -59,6 +59,9 @@ impl Types for Backend {
     type Sampler = Descriptor;
     type GraphicsPipeline = pipeline::GraphicsPipeline;
     type ComputePipeline = pipeline::ComputePipeline;
+    type MeshPipeline = pipeline::MeshPipeline;
+    type QueryPool = QueryPool;
+    type Heap = resource::Heap;
 }
 
 impl Rhi for Backend {}
@@ -315,8 +318,9 @@ fn shader_model(device: &Com<ID3D12Device>) -> i32 {
         .unwrap_or(0)
 }
 
-/// Creates a device on `adapter` if it meets the baseline: feature level 12_0, shader model 6.6
-/// and resource binding tier 3 (bindless through directly indexed heaps).
+/// Creates a device on `adapter` if it meets the baseline: feature level 12_0, shader model 6.6,
+/// resource binding tier 3 (bindless through directly indexed heaps), mesh shader tier 1 and wave
+/// intrinsics.
 fn create_d3d12_device(adapter: &Com<IDXGIAdapter1>) -> Result<(Com<ID3D12Device>, i32)> {
     let create = d3d12_create_device().ok_or_else(unsupported)?;
     // SAFETY: valid adapter, IID and out pointer.
@@ -331,10 +335,23 @@ fn create_d3d12_device(adapter: &Com<IDXGIAdapter1>) -> Result<(Com<ID3D12Device
         true => options.ResourceBindingTier,
         false => 0,
     };
-    if model < D3D_SHADER_MODEL_6_6 || tier < D3D12_RESOURCE_BINDING_TIER_3 {
+    let mut options1 = D3D12_FEATURE_DATA_D3D12_OPTIONS1::default();
+    // SAFETY: the struct matches the feature.
+    unsafe { feature(&device, D3D12_FEATURE_D3D12_OPTIONS1, &mut options1) };
+    let mut options7 = D3D12_FEATURE_DATA_D3D12_OPTIONS7::default();
+    // SAFETY: the struct matches the feature. Older runtimes reject it, leaving tier 0.
+    unsafe { feature(&device, D3D12_FEATURE_D3D12_OPTIONS7, &mut options7) };
+    if model < D3D_SHADER_MODEL_6_6
+        || tier < D3D12_RESOURCE_BINDING_TIER_3
+        || options7.MeshShaderTier == 0
+        || options1.WaveOps == 0
+    {
         marlin_diag::warn!(
-            "adapter lacks the D3D12 baseline: shader model {:#x}, resource binding tier {tier}",
-            model
+            "adapter lacks the D3D12 baseline: shader model {:#x}, resource binding tier {tier}, \
+             mesh shader tier {}, wave ops {}",
+            model,
+            options7.MeshShaderTier,
+            options1.WaveOps != 0
         );
         return Err(unsupported());
     }
@@ -383,7 +400,7 @@ impl crate::contract::Instance for Backend {
         adapter_info(&instance.enum_adapter(index)?, index)
     }
 
-    fn create_device(instance: &Instance, desc: &DeviceDesc) -> Result<(Device, Queue)> {
+    fn create_device(instance: &Instance, desc: &DeviceDesc) -> Result<(Device, Queues<Queue>)> {
         let (adapter, device, index) = match desc.adapter {
             AdapterPreference::HighPerformance => {
                 let mut found = None;
@@ -432,27 +449,8 @@ impl crate::contract::Instance for Backend {
                 })
             });
 
-        let mut options12 = D3D12_FEATURE_DATA_D3D12_OPTIONS12::default();
-        // SAFETY: the struct matches the feature. Older runtimes reject it, leaving it zeroed.
-        unsafe { feature(&device, D3D12_FEATURE_D3D12_OPTIONS12, &mut options12) };
-        let features = Features {
-            shader_model: ((model >> 4) as u8, (model & 0xf) as u8),
-            enhanced_barriers: options12.EnhancedBarriersSupported != 0
-                && !desc.disable_enhanced_barriers,
-            tearing: instance.tearing,
-        };
-
-        let queue_desc = D3D12_COMMAND_QUEUE_DESC {
-            Type: D3D12_COMMAND_LIST_TYPE_DIRECT,
-            Priority: 0,
-            Flags: 0,
-            NodeMask: 0,
-        };
-        // SAFETY: valid interface, description, IID and out pointer.
-        let queue = com::create::<ID3D12CommandQueue>(|iid, out| unsafe {
-            (device.vtbl().CreateCommandQueue)(device.as_raw(), &queue_desc, iid, out)
-        })
-        .map_err(error)?;
+        let features = query_features(&device, model, instance.tearing, desc);
+        let device2 = device.cast::<ID3D12Device2>().map_err(error)?;
 
         let device = Device {
             // SAFETY: valid interface.
@@ -464,17 +462,62 @@ impl crate::contract::Instance for Backend {
             },
             bindless: Bindless::new(&device)?,
             device,
+            device2,
             factory: instance.factory.clone(),
             info,
             features,
             validation,
         };
-        let queue = Queue {
-            idle: Idle::new(&device, queue.clone())?,
-            queue,
-            validation: device.validation.clone(),
+        let queues = Queues {
+            graphics: Queue::new(&device, QueueType::Graphics)?,
+            compute: Some(Queue::new(&device, QueueType::Compute)?),
+            copy: Some(Queue::new(&device, QueueType::Copy)?),
         };
-        Ok((device, queue))
+        Ok((device, queues))
+    }
+}
+
+/// The device's optional features (the baseline was checked by [`create_d3d12_device`]).
+fn query_features(
+    device: &Com<ID3D12Device>,
+    model: i32,
+    tearing: bool,
+    desc: &DeviceDesc,
+) -> Features {
+    let mut options = D3D12_FEATURE_DATA_D3D12_OPTIONS::default();
+    // SAFETY: each struct below matches its feature. Older runtimes reject newer features,
+    // leaving them zeroed (unsupported).
+    unsafe { feature(device, D3D12_FEATURE_D3D12_OPTIONS, &mut options) };
+    let mut options1 = D3D12_FEATURE_DATA_D3D12_OPTIONS1::default();
+    // SAFETY: as above.
+    unsafe { feature(device, D3D12_FEATURE_D3D12_OPTIONS1, &mut options1) };
+    let mut options3 = D3D12_FEATURE_DATA_D3D12_OPTIONS3::default();
+    // SAFETY: as above.
+    unsafe { feature(device, D3D12_FEATURE_D3D12_OPTIONS3, &mut options3) };
+    let mut options5 = D3D12_FEATURE_DATA_D3D12_OPTIONS5::default();
+    // SAFETY: as above.
+    unsafe { feature(device, D3D12_FEATURE_D3D12_OPTIONS5, &mut options5) };
+    let mut options7 = D3D12_FEATURE_DATA_D3D12_OPTIONS7::default();
+    // SAFETY: as above.
+    unsafe { feature(device, D3D12_FEATURE_D3D12_OPTIONS7, &mut options7) };
+    let mut options9 = D3D12_FEATURE_DATA_D3D12_OPTIONS9::default();
+    // SAFETY: as above.
+    unsafe { feature(device, D3D12_FEATURE_D3D12_OPTIONS9, &mut options9) };
+    let mut options12 = D3D12_FEATURE_DATA_D3D12_OPTIONS12::default();
+    // SAFETY: as above.
+    unsafe { feature(device, D3D12_FEATURE_D3D12_OPTIONS12, &mut options12) };
+    Features {
+        shader_model: ((model >> 4) as u8, (model & 0xf) as u8),
+        enhanced_barriers: options12.EnhancedBarriersSupported != 0
+            && !desc.disable_enhanced_barriers,
+        tearing,
+        mesh_shader: options7.MeshShaderTier != 0,
+        ray_query: options5.RaytracingTier >= D3D12_RAYTRACING_TIER_1_1,
+        atomic_int64: options9.AtomicInt64OnTypedResourceSupported != 0
+            && options9.AtomicInt64OnGroupSharedSupported != 0,
+        copy_queue_timestamps: options3.CopyQueueTimestampQueriesSupported != 0,
+        mixed_heaps: options.ResourceHeapTier >= D3D12_RESOURCE_HEAP_TIER_2,
+        wave_size_range: (options1.WaveLaneCountMin, options1.WaveLaneCountMax),
     }
 }
 
@@ -482,6 +525,8 @@ impl crate::contract::Instance for Backend {
 
 pub(crate) struct Device {
     device: Com<ID3D12Device>,
+    /// Pipeline state streams (mesh pipelines).
+    device2: Com<ID3D12Device2>,
     factory: Com<IDXGIFactory4>,
     info: AdapterInfo,
     features: Features,
@@ -518,8 +563,8 @@ impl crate::contract::Device for Backend {
         create_fence(&device.device, initial)
     }
 
-    fn create_command_pool(device: &Device) -> Result<command::CommandPool> {
-        command::CommandPool::new(&device.device)
+    fn create_command_pool(device: &Device, ty: QueueType) -> Result<command::CommandPool> {
+        command::CommandPool::new(&device.device, ty)
     }
 
     fn create_command_list(
@@ -607,6 +652,68 @@ impl crate::contract::Device for Backend {
         flush(&device.validation);
         pipeline
     }
+
+    fn create_mesh_pipeline(
+        device: &Device,
+        desc: &MeshPipelineDesc<'_>,
+    ) -> Result<pipeline::MeshPipeline> {
+        let pipeline = pipeline::create_mesh_pipeline(device, desc);
+        flush(&device.validation);
+        pipeline
+    }
+
+    fn create_query_pool(device: &Device, desc: &QueryPoolDesc) -> Result<QueryPool> {
+        let heap_desc = D3D12_QUERY_HEAP_DESC {
+            Type: match desc.kind {
+                QueryKind::Timestamp => D3D12_QUERY_HEAP_TYPE_TIMESTAMP,
+                QueryKind::CopyTimestamp => D3D12_QUERY_HEAP_TYPE_COPY_QUEUE_TIMESTAMP,
+            },
+            Count: desc.count,
+            NodeMask: 0,
+        };
+        let d = &device.device;
+        // SAFETY: valid interface, description, IID and out pointer.
+        let heap = com::create(|iid, out| unsafe {
+            (d.vtbl().CreateQueryHeap)(d.as_raw(), &heap_desc, iid, out)
+        })
+        .map_err(error)?;
+        Ok(QueryPool { heap })
+    }
+
+    fn create_heap(device: &Device, desc: &HeapDesc) -> Result<resource::Heap> {
+        resource::create_heap(device, desc)
+    }
+
+    fn buffer_requirements(device: &Device, desc: &BufferDesc) -> MemoryRequirements {
+        resource::buffer_requirements(device, desc)
+    }
+
+    fn texture_requirements(device: &Device, desc: &TextureDesc) -> MemoryRequirements {
+        resource::texture_requirements(device, desc)
+    }
+
+    fn create_placed_buffer(
+        device: &Device,
+        heap: &resource::Heap,
+        offset: u64,
+        desc: &BufferDesc,
+    ) -> Result<resource::Buffer> {
+        resource::create_placed_buffer(device, heap, offset, desc)
+    }
+
+    fn create_placed_texture(
+        device: &Device,
+        heap: &resource::Heap,
+        offset: u64,
+        desc: &TextureDesc,
+    ) -> Result<resource::Texture> {
+        resource::create_placed_texture(device, heap, offset, desc)
+    }
+}
+
+/// A timestamp query heap (of the copy queue's type for [`QueryKind::CopyTimestamp`]).
+pub(crate) struct QueryPool {
+    heap: Com<ID3D12QueryHeap>,
 }
 
 impl crate::contract::Resources for Backend {
@@ -657,27 +764,58 @@ pub(crate) struct Queue {
     validation: Option<Arc<Validation>>,
 }
 
+impl Queue {
+    fn new(device: &Device, ty: QueueType) -> Result<Self> {
+        let desc = D3D12_COMMAND_QUEUE_DESC {
+            Type: command::list_type(ty),
+            Priority: 0,
+            Flags: 0,
+            NodeMask: 0,
+        };
+        let d = &device.device;
+        // SAFETY: valid interface, description, IID and out pointer.
+        let queue = com::create::<ID3D12CommandQueue>(|iid, out| unsafe {
+            (d.vtbl().CreateCommandQueue)(d.as_raw(), &desc, iid, out)
+        })
+        .map_err(error)?;
+        Ok(Self {
+            idle: Idle::new(device, queue.clone())?,
+            queue,
+            validation: device.validation.clone(),
+        })
+    }
+}
+
 impl crate::contract::Queue for Backend {
-    unsafe fn submit(
-        queue: &Queue,
-        lists: &[&CommandList],
-        signal: Option<(&PublicFence, u64)>,
-    ) -> Result<()> {
+    unsafe fn submit(queue: &Queue, desc: &SubmitDesc<'_>) -> Result<()> {
         let q = &queue.queue;
-        for chunk in lists.chunks(16) {
+        for (fence, value) in desc.waits {
+            // SAFETY: valid interfaces; the wait is queued on the GPU, not the CPU.
+            check(unsafe { (q.vtbl().Wait)(q.as_raw(), fence.raw.fence.as_raw(), *value) })?;
+        }
+        for chunk in desc.lists.chunks(16) {
             let mut raw = [ptr::null_mut::<c_void>(); 16];
             for (r, list) in raw.iter_mut().zip(chunk) {
                 *r = list.raw.as_raw();
             }
-            // SAFETY: valid closed command lists (the caller keeps their resources alive).
+            // SAFETY: valid closed command lists of the queue's type (checked by `api.rs`); the
+            // caller keeps their resources alive.
             unsafe { (q.vtbl().ExecuteCommandLists)(q.as_raw(), chunk.len() as u32, raw.as_ptr()) };
         }
-        if let Some((fence, value)) = signal {
+        for (fence, value) in desc.signals {
             // SAFETY: valid interfaces.
-            check(unsafe { (q.vtbl().Signal)(q.as_raw(), fence.raw.fence.as_raw(), value) })?;
+            check(unsafe { (q.vtbl().Signal)(q.as_raw(), fence.raw.fence.as_raw(), *value) })?;
         }
         flush(&queue.validation);
         Ok(())
+    }
+
+    fn timestamp_frequency(queue: &Queue) -> Result<u64> {
+        let mut frequency = 0;
+        let q = &queue.queue;
+        // SAFETY: valid interface and out pointer.
+        check(unsafe { (q.vtbl().GetTimestampFrequency)(q.as_raw(), &mut frequency) })?;
+        Ok(frequency)
     }
 
     fn wait_idle(queue: &Queue) -> Result<()> {

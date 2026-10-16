@@ -655,7 +655,8 @@ pub(super) struct D3D12_FEATURE_DATA_D3D12_OPTIONS {
     pub MinPrecisionSupport: i32,
     pub TiledResourcesTier: i32,
     pub ResourceBindingTier: i32,
-    pub _rest: [u32; 10],
+    pub _5_13: [u32; 9],
+    pub ResourceHeapTier: i32,
 }
 
 #[repr(C)]
@@ -752,3 +753,178 @@ pub(super) fn create_dxgi_factory2() -> Option<CreateDXGIFactory2> {
     // SAFETY: the export has this signature.
     Some(unsafe { core::mem::transmute::<*mut c_void, CreateDXGIFactory2>(p) })
 }
+
+// --- R0: queues, indirect, mesh shaders, queries, heaps, formats (from d3d12.h, dxgiformat.h) ---
+
+pub(super) const D3D12_COMMAND_LIST_TYPE_COMPUTE: i32 = 2;
+pub(super) const D3D12_COMMAND_LIST_TYPE_COPY: i32 = 3;
+
+pub(super) const D3D12_FEATURE_D3D12_OPTIONS3: i32 = 21;
+pub(super) const D3D12_FEATURE_D3D12_OPTIONS5: i32 = 27;
+pub(super) const D3D12_FEATURE_D3D12_OPTIONS7: i32 = 32;
+pub(super) const D3D12_FEATURE_D3D12_OPTIONS9: i32 = 37;
+
+#[repr(C)]
+#[derive(Default)]
+pub(super) struct D3D12_FEATURE_DATA_D3D12_OPTIONS3 {
+    pub CopyQueueTimestampQueriesSupported: BOOL,
+    pub CastingFullyTypedFormatSupported: BOOL,
+    pub WriteBufferImmediateSupportFlags: u32,
+    pub ViewInstancingTier: i32,
+    pub BarycentricsSupported: BOOL,
+}
+
+#[repr(C)]
+#[derive(Default)]
+pub(super) struct D3D12_FEATURE_DATA_D3D12_OPTIONS5 {
+    pub SRVOnlyTiledResourceTier3: BOOL,
+    pub RenderPassesTier: i32,
+    pub RaytracingTier: i32,
+}
+
+/// DXR 1.1: inline ray queries.
+pub(super) const D3D12_RAYTRACING_TIER_1_1: i32 = 11;
+
+#[repr(C)]
+#[derive(Default)]
+pub(super) struct D3D12_FEATURE_DATA_D3D12_OPTIONS7 {
+    pub MeshShaderTier: i32,
+    pub SamplerFeedbackTier: i32,
+}
+
+#[repr(C)]
+#[derive(Default)]
+pub(super) struct D3D12_FEATURE_DATA_D3D12_OPTIONS9 {
+    pub MeshShaderPipelineStatsSupported: BOOL,
+    pub MeshShaderSupportsFullRangeRenderTargetArrayIndex: BOOL,
+    pub AtomicInt64OnTypedResourceSupported: BOOL,
+    pub AtomicInt64OnGroupSharedSupported: BOOL,
+    pub DerivativesInMeshAndAmplificationShadersSupported: BOOL,
+    pub WaveMMATier: i32,
+}
+
+pub(super) const D3D12_RESOURCE_HEAP_TIER_2: i32 = 2;
+
+// Indirect commands.
+pub(super) const D3D12_INDIRECT_ARGUMENT_TYPE_DRAW: i32 = 0;
+pub(super) const D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED: i32 = 1;
+pub(super) const D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH: i32 = 2;
+pub(super) const D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT: i32 = 5;
+pub(super) const D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH_MESH: i32 = 10;
+
+/// The type and the largest union member (`Constant`: root parameter, offset, count).
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub(super) struct D3D12_INDIRECT_ARGUMENT_DESC {
+    pub Type: i32,
+    pub RootParameterIndex: u32,
+    pub DestOffsetIn32BitValues: u32,
+    pub Num32BitValuesToSet: u32,
+}
+
+#[repr(C)]
+pub(super) struct D3D12_COMMAND_SIGNATURE_DESC {
+    pub ByteStride: u32,
+    pub NumArgumentDescs: u32,
+    pub pArgumentDescs: *const D3D12_INDIRECT_ARGUMENT_DESC,
+    pub NodeMask: u32,
+}
+
+// Queries.
+pub(super) const D3D12_QUERY_HEAP_TYPE_TIMESTAMP: i32 = 1;
+pub(super) const D3D12_QUERY_HEAP_TYPE_COPY_QUEUE_TIMESTAMP: i32 = 5;
+pub(super) const D3D12_QUERY_TYPE_TIMESTAMP: i32 = 2;
+
+#[repr(C)]
+pub(super) struct D3D12_QUERY_HEAP_DESC {
+    pub Type: i32,
+    pub Count: u32,
+    pub NodeMask: u32,
+}
+
+// Heaps and placed resources.
+pub(super) const D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS: u32 = 0xc0;
+pub(super) const D3D12_HEAP_FLAG_ALLOW_ONLY_NON_RT_DS_TEXTURES: u32 = 0x44;
+pub(super) const D3D12_HEAP_FLAG_ALLOW_ONLY_RT_DS_TEXTURES: u32 = 0x84;
+
+#[repr(C)]
+pub(super) struct D3D12_HEAP_DESC {
+    pub SizeInBytes: u64,
+    pub Properties: D3D12_HEAP_PROPERTIES,
+    pub Alignment: u64,
+    pub Flags: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub(super) struct D3D12_RESOURCE_ALLOCATION_INFO {
+    pub SizeInBytes: u64,
+    pub Alignment: u64,
+}
+
+pub(super) const D3D12_RESOURCE_BARRIER_TYPE_ALIASING: i32 = 1;
+pub(super) const D3D12_TEXTURE_BARRIER_FLAG_DISCARD: u32 = 0x1;
+
+pub(super) const D3D12_CLEAR_FLAG_STENCIL: u32 = 0x2;
+
+pub(super) const D3D12_FEATURE_D3D12_OPTIONS1: i32 = 8;
+
+#[repr(C)]
+#[derive(Default)]
+pub(super) struct D3D12_FEATURE_DATA_D3D12_OPTIONS1 {
+    pub WaveOps: BOOL,
+    pub WaveLaneCountMin: u32,
+    pub WaveLaneCountMax: u32,
+    pub TotalLaneCount: u32,
+    pub ExpandedComputeResourceStates: BOOL,
+    pub Int64ShaderOps: BOOL,
+}
+
+pub(super) const D3D12_RESOURCE_DIMENSION_TEXTURE3D: i32 = 4;
+pub(super) const D3D12_SRV_DIMENSION_TEXTURE3D: i32 = 8;
+pub(super) const D3D12_UAV_DIMENSION_TEXTURE3D: i32 = 8;
+
+// Pipeline state streams.
+pub(super) const D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE: u32 = 0;
+pub(super) const D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS: u32 = 2;
+pub(super) const D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_BLEND: u32 = 8;
+pub(super) const D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_MASK: u32 = 9;
+pub(super) const D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RASTERIZER: u32 = 10;
+pub(super) const D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL: u32 = 11;
+pub(super) const D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RENDER_TARGET_FORMATS: u32 = 15;
+pub(super) const D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL_FORMAT: u32 = 16;
+pub(super) const D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_DESC: u32 = 17;
+pub(super) const D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_AS: u32 = 24;
+pub(super) const D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_MS: u32 = 25;
+
+#[repr(C)]
+pub(super) struct D3D12_PIPELINE_STATE_STREAM_DESC {
+    pub SizeInBytes: usize,
+    pub pPipelineStateSubobjectStream: *mut c_void,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(super) struct D3D12_RT_FORMAT_ARRAY {
+    pub RTFormats: [u32; 8],
+    pub NumRenderTargets: u32,
+}
+
+// Formats.
+pub(super) const DXGI_FORMAT_R32G32B32A32_UINT: u32 = 3;
+pub(super) const DXGI_FORMAT_R16G16B16A16_UNORM: u32 = 11;
+pub(super) const DXGI_FORMAT_R16G16B16A16_UINT: u32 = 12;
+pub(super) const DXGI_FORMAT_R32G32_UINT: u32 = 17;
+pub(super) const DXGI_FORMAT_R32G8X24_TYPELESS: u32 = 19;
+pub(super) const DXGI_FORMAT_D32_FLOAT_S8X24_UINT: u32 = 20;
+pub(super) const DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS: u32 = 21;
+pub(super) const DXGI_FORMAT_R16G16_UINT: u32 = 36;
+pub(super) const DXGI_FORMAT_R16_UNORM: u32 = 56;
+pub(super) const DXGI_FORMAT_R8_UINT: u32 = 62;
+pub(super) const DXGI_FORMAT_BC6H_SF16: u32 = 96;
+
+pub(super) const D3D12_DSV_FLAG_READ_ONLY_STENCIL: u32 = 2;
+/// Skips zeroing new heaps (transient and pooled memory is always written before it is read).
+pub(super) const D3D12_HEAP_FLAG_CREATE_NOT_ZEROED: u32 = 0x1000;
+pub(super) const D3D12_SMALL_RESOURCE_PLACEMENT_ALIGNMENT: u64 = 4096;
+pub(super) const D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT: u64 = 65536;

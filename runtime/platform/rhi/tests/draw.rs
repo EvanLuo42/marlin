@@ -267,6 +267,8 @@ fn draws_with_vertex_pulling_textures_and_depth() {
                     view: &depth_view,
                     load: LoadOp::Clear(0.0),
                     store: StoreOp::DontCare,
+                    stencil_load: LoadOp::DontCare,
+                    stencil_store: StoreOp::DontCare,
                 }),
             });
             list.set_graphics_pipeline(&pipeline);

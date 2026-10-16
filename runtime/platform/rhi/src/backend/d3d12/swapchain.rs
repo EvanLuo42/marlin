@@ -175,19 +175,15 @@ impl Swapchain {
             unsafe {
                 (d.vtbl().CreateRenderTargetView)(d.as_raw(), resource.as_raw(), &view_desc, handle)
             };
+            let desc = TextureDesc::new_2d(
+                self.width,
+                self.height,
+                self.format,
+                TextureUsage::RENDER_TARGET | TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
+            );
             self.textures.push(Texture {
-                raw: RawTexture {
-                    resource,
-                    mip_levels: 1,
-                    array_layers: 1,
-                    format: dxgi_format(self.format.linear()),
-                },
-                desc: TextureDesc::new_2d(
-                    self.width,
-                    self.height,
-                    self.format,
-                    TextureUsage::RENDER_TARGET | TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
-                ),
+                raw: RawTexture::wrap(resource, &desc, dxgi_format(self.format.linear())),
+                desc,
             });
             self.views.push(RenderTargetView {
                 raw: RawView {

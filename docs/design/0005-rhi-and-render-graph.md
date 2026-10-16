@@ -119,6 +119,49 @@ pub struct SubmitDesc<'a> {
 | indirect count | `vkCmdDrawIndirectCount` | ICB 或 compute 写 indirect 参数 | Metal 没有 count 版本，需要 GPU 端模拟 |
 | ray query | `VK_KHR_ray_query` | intersection query | — |
 
+### 1.8 R0 实现情况（2026-10-16）
+
+已实现（D3D12；stub backend 在 Linux/macOS 上编译通过）：
+
+- **基线**：在原来的基础上，再要求 mesh shader tier 1 和 wave 指令，不满足的 adapter 直接拒绝。
+- **Features**：新增 `mesh_shader`、`ray_query`（只检测 DXR 1.1，功能本身未实现）、`atomic_int64`、`copy_queue_timestamps`、`mixed_heaps`（resource heap tier 2）、`wave_size_range`。
+- **队列**：D3D12 总是创建专用的 Compute 和 Copy 队列。`Device::dedicated_queue(ty)` 在没有专用队列时返回 `None`，`queue_for(ty)` 这时退化到 Graphics 队列。
+  - `CommandPool` 和 `CommandList` 带队列类型；不属于该类型的命令会 panic，提交到别的类型的队列会返回 `InvalidInput`。
+  - `Queue::submit_with(&SubmitDesc { waits, lists, signals })` 在 GPU 端等待。
+- **Indirect**：每条记录的第一个字是 `constant`，写进 push constant 的第 `INDIRECT_CONSTANT_WORD`（= 31）个字。D3D12 用 command signature 实现（CONSTANT + DRAW/DRAW_INDEXED/DISPATCH/DISPATCH_MESH）。
+  - stride 由命令类型决定：`DrawIndirectArgs` 20 字节，`DrawIndexedIndirectArgs` 24 字节，`DispatchIndirectArgs` 16 字节。
+  - count buffer 是 `IndirectArgs::count`，没有单独的 `*_indirect_count` 方法。
+  - ExecuteIndirect 之后，第 31 个字的值是未定义的。
+- **Mesh shader**：`MeshPipelineDesc` 通过 `ID3D12Device2::CreatePipelineState` 的 state stream 创建；命令是 `dispatch_mesh` 和 `dispatch_mesh_indirect`。
+- **查询**：`QueryKind::Timestamp` 用在 graphics/compute list 上，`QueryKind::CopyTimestamp` 用在 copy list 上（D3D12 的 copy 队列要求单独类型的 query heap）。`resolve_queries` 把结果写成 u64；`Queue::timestamp_frequency` 返回频率。
+- **标记**：`begin_event(name)`、`end_event`、`set_marker(name)` 使用 PIX 的无格式字符串编码（metadata 0，UTF-16）。暂不支持颜色参数，需要 PIX 的二进制事件编码。
+- **Heap 与 placed 资源**：
+  - `create_heap(&HeapDesc { size, memory, kind })`，kind 为 `Any`、`Buffers`、`Textures`、`Targets`；heap tier 1 不允许 `Any`。
+  - `buffer_requirements` / `texture_requirements` 返回 `MemoryRequirements`。小的采样纹理会尝试 4 KiB 对齐（先按 D3D12MA 的 tile 数估算，避免对齐请求被拒时报 validation 错误）。
+  - `create_placed_buffer/texture`：placed 资源持有 heap 的引用；heap 创建时带 `CREATE_NOT_ZEROED`。
+- **别名**：before 为 `Undefined` 时激活别名。
+  - Enhanced barrier：placed 的 RT/DS 纹理加 `DISCARD` 标志。
+  - Legacy：先发 aliasing barrier，再做 transition，RT/DS 随后 `DiscardResource`。legacy 状态要求 before 必须写出真实的当前状态，所以 backend 记录每个纹理最后一次 barrier 的状态，用来替换 `Undefined`。这个状态只按录制顺序跟踪，乱序录制时可能过时。
+  - placed buffer 从 `BufferState::NONE` 开始使用时发 aliasing barrier。
+- **纹理**：`TextureDimension::D3`、`TextureDesc::new_3d`、`TextureViewDimension::D3`（SRV，以及覆盖整个 mip 的 UAV）。buffer↔texture 拷贝支持 `z`/`depth`，各 slice 在 buffer 中依次排列。`copy_texture` 拷贝任意 box，要求格式相同（或互为 sRGB/linear）；depth-stencil 会同时拷两个 plane。
+- **格式**：R8Uint、R16Uint、R16Unorm、Rg16Uint、Rg32Uint、Rgba16Unorm、Rgba16Uint、Rgba32Uint、Bc6hSfloat、D32FloatS8。
+  - D32FloatS8 配套完整的 stencil：`DepthState::stencil`（`StencilState`/`StencilFace`/`StencilOp`）、`DepthAttachment::stencil_load/stencil_store`、`CommandList::set_stencil_reference`。
+  - 采样视图读的是 depth plane；buffer 拷贝也只拷 depth plane（`Format::copy_block_size`）。
+- **CPU 侧**：
+  - `marlin_mem::{Arena, FrameArenas}`。
+  - `marlin_ecs` 的 change detection：`Mut`/`Ref`、`Changed`/`Added`、`World::removed`、`clear_trackers`。
+  - `marlin_jobs::{JobHandle, Batch}`：`spawn`/`spawn_after`/`batch`，dependency 等待期间不占用 fiber。
+
+推迟到后续阶段：
+- `fill_buffer`、`clear_texture_uav`、`rebind_view`/`ViewRange`。
+- per-slice 的 3D UAV。
+- ray query 的实现（加速结构）、`opacity_micromap`/`work_graphs`/`hdr_output` 这几个 feature、HDR swapchain。
+- `write_breadcrumb`、pipeline library/cache。
+- stencil plane 的采样和拷贝。
+- BC 与无压缩格式之间的重解释拷贝（GPU BC 编码要用）。
+
+另外，**GPU 内存的子分配策略**（D3D12MA/VMA 式的块池和 TLSF）不放在 RHI 里，而是在 heap/placed 原语之上单独做一层。
+
 ## 2. Render Graph
 
 ### 2.1 模型

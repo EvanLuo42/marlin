@@ -386,6 +386,8 @@ impl Renderer {
                 view: &self.depth.view,
                 load: LoadOp::Clear(0.0),
                 store: StoreOp::DontCare,
+                stencil_load: LoadOp::DontCare,
+                stencil_store: StoreOp::DontCare,
             }),
         });
         let mut stats = RenderStats::default();

@@ -169,7 +169,7 @@ tools/cook_font            新增：字体子集化、MSDF 预生成（可选）
 
 | 阶段 | 内容 | 前置 | 可并行 |
 |---|---|---|---|
-| R0 | RHI 补齐：多队列与 GPU 端 wait、indirect（含 count）、mesh shader、timestamp、debug 标记、placed 资源与 heap、3D 纹理、新格式；`mem::arena`；ECS change detection；jobs 跨帧 counter | — | 各项互相独立 |
+| R0 ✅ | RHI 补齐：多队列与 GPU 端 wait、indirect（含 count）、mesh shader、timestamp、debug 标记、placed 资源与 heap、3D 纹理、新格式；`mem::arena`；ECS change detection；jobs 跨帧 counter（2026-10-16 完成，范围与偏差见 0005 §1.8） | — | 各项互相独立 |
 | R1 | `render_graph`：声明、编译、别名、barrier、异步计算、并行录制、缓存，以及调试可视化 | R0 | 与 U1 并行 |
 | U1 | `font`（解析、光栅、字形缓存）+ `ui_render`（GPU binning 与 tile 着色，基础图元和文字） | R0 | 与 R1 并行 |
 | R2 | GPU Scene + delta 同步；`cook_mesh` 产出 meshlet 和 LOD；剔除 + visbuffer；**临时**固定材质 resolve（DefaultLit 单 slab）；clustered 直接光；TSR 和基础后处理。删除旧 `marlin-render` 的前向路径 | R1 | |

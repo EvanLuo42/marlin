@@ -73,7 +73,7 @@ fn systems_run_in_dependency_order() {
         .add_system(
             System::new("gravity", |ctx| {
                 let g = ctx.world.resource::<Gravity>().unwrap().0;
-                for vel in ctx.world.query_mut::<&mut Vel>() {
+                for mut vel in ctx.world.query_mut::<&mut Vel>() {
                     vel.0 += g;
                 }
             })
@@ -83,14 +83,14 @@ fn systems_run_in_dependency_order() {
         .add_system(
             System::new("movement", |ctx| {
                 ctx.world
-                    .par_for_each::<(&mut Pos, &Vel), _>(64, |(p, v)| p.0 += v.0);
+                    .par_for_each::<(&mut Pos, &Vel), _>(64, |(mut p, v)| p.0 += v.0);
             })
             .reads::<Vel>()
             .writes::<Pos>(),
         )
         .add_system(
             System::new("regen", |ctx| {
-                for h in ctx.world.query_mut::<&mut Health>() {
+                for mut h in ctx.world.query_mut::<&mut Health>() {
                     h.0 += 1;
                 }
             })
@@ -172,7 +172,7 @@ fn undeclared_writes_panic() {
     // Alone in its wave, so it runs on this thread and the panic reaches the test.
     schedule.add_system(
         System::new("sneaky", |ctx| {
-            for p in ctx.world.query_mut::<&mut Pos>() {
+            for mut p in ctx.world.query_mut::<&mut Pos>() {
                 p.0 = 1.0;
             }
         })
