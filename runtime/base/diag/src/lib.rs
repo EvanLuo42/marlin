@@ -6,6 +6,8 @@
 //! - The log path never allocates: records carry `fmt::Arguments`, the registry is a fixed array
 //!   of `&'static dyn Sink`, and [`DebugOutput`] formats into a stack buffer.
 //! - [`marlin_assert!`] / [`marlin_verify!`] log, break into an attached debugger, then panic.
+//! - Errors are logged once, where they are handled: [`chain`] displays one with its sources;
+//!   [`fatal!`] and [`OrFatal`] report an unrecoverable one and panic. See [`report`].
 #![cfg_attr(not(test), no_std)]
 
 extern crate alloc;
@@ -14,10 +16,12 @@ mod buf;
 pub mod debugger;
 mod level;
 mod macros;
+pub mod report;
 mod sink;
 
 pub use buf::FixedBuf;
 pub use level::{Level, LevelFilter, STATIC_MAX_LEVEL, enabled, max_level, set_max_level};
+pub use report::{Chain, OrFatal, chain, take_fatal_report};
 pub use sink::{
     DebugOutput, MAX_SINKS, Record, RegistryFull, Sink, dispatch, flush, register_sink,
 };
@@ -28,7 +32,6 @@ pub const ASSERTIONS_ENABLED: bool = !cfg!(marlin_build = "shipping");
 #[doc(hidden)]
 pub mod __private {
     use core::fmt;
-    use core::panic::Location;
 
     use crate::{Level, Record};
 
@@ -44,27 +47,14 @@ pub mod __private {
     #[inline(never)]
     #[track_caller]
     pub fn assert_failed(cond: &str, target: &str, msg: Option<fmt::Arguments<'_>>) -> ! {
-        let location = Location::caller();
-        let report = |args: fmt::Arguments<'_>| {
-            let thread_id = marlin_pal::thread::current_id();
-            crate::dispatch(&Record::new(
-                Level::Error,
-                target,
-                location.file(),
-                location.line(),
-                thread_id,
-                format_args!("{args} at {location}"),
-            ));
-        };
         match msg {
-            Some(msg) => report(format_args!("assertion failed: {cond}: {msg}")),
-            None => report(format_args!("assertion failed: {cond}")),
+            Some(msg) => fatal(target, format_args!("assertion failed: {cond}: {msg}")),
+            None => fatal(target, format_args!("assertion failed: {cond}")),
         }
-        crate::flush();
-        crate::debugger::break_if_present();
-        match msg {
-            Some(msg) => panic!("assertion failed: {cond}: {msg}"),
-            None => panic!("assertion failed: {cond}"),
-        }
+    }
+
+    #[track_caller]
+    pub fn fatal(target: &str, args: fmt::Arguments<'_>) -> ! {
+        crate::report::fatal(target, args)
     }
 }

@@ -1,0 +1,17 @@
+[package]
+name = "marlin-error"
+description = "#[derive(Error)] and #[derive(ErrorKind)]: Display, From and core::error::Error for engine errors."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2.workspace = true
+quote.workspace = true
+syn.workspace = true
+
+[lints]
+workspace = true

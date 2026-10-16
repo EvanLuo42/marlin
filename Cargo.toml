@@ -26,6 +26,7 @@ marlin-thread = { path = "runtime/base/thread" }
 marlin-time = { path = "runtime/base/time" }
 marlin-io = { path = "runtime/base/io" }
 marlin-diag = { path = "runtime/base/diag" }
+marlin-error = { path = "runtime/base/error" }
 marlin-rt = { path = "runtime/base/rt" }
 marlin-std = { path = "runtime/base/std" }
 # --- L1 runtime/platform ---

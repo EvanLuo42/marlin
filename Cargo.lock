@@ -152,6 +152,7 @@ dependencies = [
 name = "marlin-diag"
 version = "0.1.0"
 dependencies = [
+ "marlin-error",
  "marlin-pal",
 ]
 
@@ -215,6 +216,15 @@ name = "marlin-editor-world-tools"
 version = "0.1.0"
 
 [[package]]
+name = "marlin-error"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "marlin-font"
 version = "0.1.0"
 
@@ -276,6 +286,7 @@ name = "marlin-pal"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "marlin-error",
  "windows-sys",
 ]
 
@@ -320,6 +331,7 @@ version = "0.1.0"
 name = "marlin-rt"
 version = "0.1.0"
 dependencies = [
+ "marlin-diag",
  "marlin-mem",
  "marlin-pal",
 ]
@@ -348,6 +360,7 @@ name = "marlin-std"
 version = "0.1.0"
 dependencies = [
  "marlin-diag",
+ "marlin-error",
  "marlin-io",
  "marlin-mem",
  "marlin-sync",

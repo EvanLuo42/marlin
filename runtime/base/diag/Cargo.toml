@@ -10,3 +10,6 @@ marlin-pal.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+marlin-error.workspace = true

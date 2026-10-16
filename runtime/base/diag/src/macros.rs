@@ -74,6 +74,23 @@ macro_rules! trace {
     ($($arg:tt)+) => { $crate::__log_static!($crate::Level::Trace, $($arg)+) };
 }
 
+/// Reports an unrecoverable error and panics, in every build. Use where the code decides nothing
+/// can be done; for a `Result`, [`OrFatal::or_fatal`](crate::OrFatal::or_fatal) adds the error's
+/// source chain.
+///
+/// Logs at `Error` (ignoring the run-time filter), flushes the sinks, breaks into an attached
+/// debugger, then panics, which aborts the game. The panic handler does not log it again.
+///
+/// ```ignore
+/// marlin_diag::fatal!("device lost twice: {}", marlin_diag::chain(&e));
+/// ```
+#[macro_export]
+macro_rules! fatal {
+    ($($arg:tt)+) => {
+        $crate::__private::fatal(::core::module_path!(), ::core::format_args!($($arg)+))
+    };
+}
+
 /// Checks an invariant in every build except shipping, where the condition is not evaluated (but
 /// still type-checked). Like `debug_assert!`, but kept in optimized development builds.
 ///
