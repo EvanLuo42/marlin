@@ -277,6 +277,19 @@ version = "0.1.0"
 [[package]]
 name = "marlin-reflect"
 version = "0.1.0"
+dependencies = [
+ "marlin-reflect-derive",
+ "marlin-std",
+]
+
+[[package]]
+name = "marlin-reflect-derive"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
 
 [[package]]
 name = "marlin-render"
@@ -305,6 +318,9 @@ version = "0.1.0"
 [[package]]
 name = "marlin-serial"
 version = "0.1.0"
+dependencies = [
+ "marlin-reflect",
+]
 
 [[package]]
 name = "marlin-services"

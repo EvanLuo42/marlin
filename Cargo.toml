@@ -43,6 +43,7 @@ marlin-hash = { path = "runtime/core/hash" }
 marlin-jobs = { path = "runtime/core/jobs" }
 marlin-profile = { path = "runtime/core/profile" }
 marlin-reflect = { path = "runtime/core/reflect" }
+marlin-reflect-derive = { path = "runtime/core/reflect_derive" }
 marlin-serial = { path = "runtime/core/serial" }
 marlin-ecs = { path = "runtime/core/ecs" }
 marlin-config = { path = "runtime/core/config" }
@@ -91,6 +92,10 @@ windows-sys = { version = "0.61", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "1"
+# Proc-macro crates run on the host, so their dependencies need not be no_std.
+proc-macro2 = "1"
+quote = "1"
+syn = "3"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
