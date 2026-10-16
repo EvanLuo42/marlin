@@ -2,6 +2,8 @@
 name = "macos"
 family = "desktop"
 targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
+# See platforms/windows/platform.toml. Every Intel Mac supported by current macOS has AVX2.
+target-cpu = { x86_64 = "x86-64-v3" }
 # Planned: vmem_alias, crash_dump, dylib. No hybrid_cores: ThreadPriority maps to QoS classes,
 # which already steer threads between P and E cores.
 ext = []

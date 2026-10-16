@@ -6,6 +6,7 @@
 //! [`hosted::init`].
 #![cfg_attr(not(test), no_std)]
 
+pub mod cpu;
 pub mod hosted;
 pub mod panic;
 
@@ -25,8 +26,15 @@ unsafe extern "C" {}
 #[link(name = "c")]
 unsafe extern "C" {}
 
-/// Runs the engine startup sequence, then `main`. Returns the process exit code.
+/// Runs the engine startup sequence, then `main`. Returns the process exit code: 1, without
+/// running `main`, if the CPU lacks an instruction set the build requires.
 pub fn start(main: fn() -> i32) -> i32 {
+    if let Err(missing) = cpu::check() {
+        use core::fmt::Write;
+        let mut out = marlin_pal::debug::OutputBuffer::new();
+        let _ = writeln!(out, "marlin: {missing}");
+        return 1;
+    }
     // Startup order once the subsystems exist: pal → heap → diag → jobs.
     main()
 }

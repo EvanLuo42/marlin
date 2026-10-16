@@ -15,5 +15,8 @@ use marlin_editor_world_tools as _;
 static HEAP: marlin_mem::MarlinHeap = marlin_mem::MarlinHeap::new();
 
 fn main() {
-    marlin_rt::hosted::init();
+    if let Err(missing) = marlin_rt::hosted::init() {
+        eprintln!("marlin-editor: {missing}");
+        std::process::exit(1);
+    }
 }

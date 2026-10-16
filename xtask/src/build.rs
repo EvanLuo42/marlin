@@ -53,14 +53,15 @@ pub fn run(root: &Path, args: &[String]) -> Result {
         ])
         .arg("--target-dir")
         .arg(root.join("target").join(&platform.name));
-    match (target, &platform.target_spec) {
+    let target = match (target, &platform.target_spec) {
         (Some(t), _) if !platform.targets.contains(&t) => {
             return Err(format!("`{t}` is not a target of {}", platform.name).into());
         }
-        (Some(t), _) => command.args(["--target", &t]),
-        (None, Some(spec)) => command.arg("--target").arg(platform.dir.join(spec)),
-        (None, None) => command.args(["--target", &platform.targets[0]]),
+        (Some(t), _) => t,
+        (None, Some(spec)) => platform.dir.join(spec).to_string_lossy().into_owned(),
+        (None, None) => platform.targets[0].clone(),
     };
+    command.args(["--target", &target]);
     if platform.build_std {
         command.arg("-Zbuild-std=core,alloc");
     }
@@ -70,7 +71,7 @@ pub fn run(root: &Path, args: &[String]) -> Result {
     // crates, not build scripts or proc macros.
     command.env_remove("RUSTFLAGS").env(
         "CARGO_ENCODED_RUSTFLAGS",
-        cfg::flags(&platform, Some(config)).join("\x1f"),
+        cfg::flags(&platform, &target, Some(config)).join("\x1f"),
     );
     crate::run(command)
 }

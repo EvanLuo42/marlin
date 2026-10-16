@@ -3,6 +3,9 @@ name = "windows"
 family = "desktop"
 # Rust target triples. The first one is the default for `cargo xtask build`.
 targets = ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"]
+# Minimum CPU per architecture (`-Ctarget-cpu`). x86-64-v3: AVX2, FMA, BMI1/2, i.e. Intel Haswell
+# (2013) / AMD Zen (2017) and later; ~96% of Steam users as of September 2026.
+target-cpu = { x86_64 = "x86-64-v3" }
 # Capabilities this platform's backends implement; each becomes `--cfg marlin_ext="<name>"`.
 # Listing a capability that a backend does not implement is a compile error.
 # Planned: vmem_alias, direct_storage, crash_dump, cpu_markers, dylib.

@@ -44,8 +44,9 @@ impl Config {
     }
 }
 
-/// rustc flags selecting the platform, its extensions and (for xtask builds) the configuration.
-pub fn flags(platform: &Platform, config: Option<Config>) -> Vec<String> {
+/// rustc flags for building `target` (a triple or target-spec path): the platform, its
+/// extensions, its minimum CPU and (for xtask builds) the configuration.
+pub fn flags(platform: &Platform, target: &str, config: Option<Config>) -> Vec<String> {
     let mut cfgs = vec![format!("marlin_platform=\"{}\"", platform.name)];
     cfgs.extend(
         platform
@@ -54,9 +55,16 @@ pub fn flags(platform: &Platform, config: Option<Config>) -> Vec<String> {
             .map(|ext| format!("marlin_ext=\"{ext}\"")),
     );
     cfgs.extend(config.map(|c| format!("marlin_build=\"{}\"", c.name())));
-    cfgs.into_iter()
+    let mut flags: Vec<String> = cfgs
+        .into_iter()
         .flat_map(|cfg| ["--cfg".to_owned(), cfg])
-        .collect()
+        .collect();
+    flags.extend(
+        platform
+            .target_cpu(target)
+            .map(|cpu| format!("-Ctarget-cpu={cpu}")),
+    );
+    flags
 }
 
 const BEGIN: &str = "# BEGIN gen-cfg";
@@ -80,9 +88,12 @@ pub fn gen_cfg(root: &Path) -> Result {
     let mut owners: HashMap<&str, &str> = HashMap::new();
     let platforms = platform::load_all(root)?;
     for p in platforms.iter().filter(|p| p.family == Family::Desktop) {
-        let flags: Vec<String> = flags(p, None).iter().map(|f| toml_string(f)).collect();
-        let flags = flags.join(", ");
         for target in &p.targets {
+            let flags: Vec<String> = flags(p, target, None)
+                .iter()
+                .map(|f| toml_string(f))
+                .collect();
+            let flags = flags.join(", ");
             if let Some(other) = owners.insert(target, &p.name) {
                 return Err(format!(
                     "target `{target}` is claimed by both {other} and {}",

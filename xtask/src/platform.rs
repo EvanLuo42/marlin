@@ -1,5 +1,6 @@
 //! Platform manifests: `platforms/<name>/platform.toml`.
 
+use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -24,6 +25,10 @@ pub struct Platform {
     /// Build core and alloc from source with `-Zbuild-std`.
     #[serde(default)]
     pub build_std: bool,
+    /// Minimum CPU per architecture (the triple's first component), e.g. `x86_64 = "x86-64-v3"`;
+    /// becomes `-Ctarget-cpu`.
+    #[serde(default)]
+    pub target_cpu: BTreeMap<String, String>,
     #[serde(skip)]
     pub dir: PathBuf,
 }
@@ -109,4 +114,13 @@ pub fn list(root: &Path) -> Result {
         );
     }
     Ok(())
+}
+
+impl Platform {
+    /// The minimum CPU for `target`, a triple or a target-spec path.
+    pub fn target_cpu(&self, target: &str) -> Option<&str> {
+        let name = Path::new(target).file_stem()?.to_str()?;
+        let arch = name.split('-').next()?;
+        self.target_cpu.get(arch).map(String::as_str)
+    }
 }
