@@ -4,10 +4,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
 use marlin_asset::Uuid;
-use marlin_asset::cooked::{
-    BULK_ALIGN, BulkEntry, ImportEntry, ObjectEntry, PAYLOAD_ALIGN, UnitHeader, platform_id,
-    unit_id, write,
-};
+use marlin_asset::cooked::{platform_id, unit_id, write};
 use marlin_asset_db::{AssetDb, FileId, MASSET_EXT};
 use marlin_hash::xxh3_128;
 use marlin_masset::{DocumentLinks, Severity, parse};
@@ -172,87 +169,25 @@ struct CookedObject {
     bulk: Vec<(marlin_asset::cooked::BulkKind, Vec<u8>)>,
 }
 
-fn pad(out: &mut Vec<u8>, align: u64) {
-    let len = (out.len() as u64).next_multiple_of(align);
-    out.resize(len as usize, 0);
-}
-
 /// Lays out a unit (see `marlin_asset::cooked`).
 fn assemble(
     unit: u64,
     platform: &str,
-    mut objects: Vec<CookedObject>,
+    objects: Vec<CookedObject>,
     imports: BTreeMap<Uuid, u64>,
 ) -> Vec<u8> {
-    objects.sort_by_key(|o| o.uuid);
-    let tables = UnitHeader::SIZE
-        + objects.len() * ObjectEntry::SIZE
-        + imports.len() * ImportEntry::SIZE
-        + objects.iter().map(|o| o.bulk.len()).sum::<usize>() * BulkEntry::SIZE;
-    let payload_offset = (tables as u64).next_multiple_of(PAYLOAD_ALIGN);
-
-    // Payload and bulk regions first, to know the offsets.
-    let mut payload = Vec::new();
-    let mut bulk = Vec::new();
-    let mut entries = Vec::with_capacity(objects.len());
-    let mut bulk_entries = Vec::new();
-    for o in &objects {
-        pad(&mut payload, PAYLOAD_ALIGN);
-        let payload_start = payload.len() as u64;
-        payload.extend_from_slice(&o.payload);
-        let bulk_first = bulk_entries.len() as u32;
-        for (kind, data) in &o.bulk {
-            pad(&mut bulk, BULK_ALIGN);
-            bulk_entries.push(BulkEntry {
-                offset: bulk.len() as u64,
-                size: data.len() as u64,
-                kind: *kind,
-            });
-            bulk.extend_from_slice(data);
-        }
-        entries.push(ObjectEntry {
+    let objects = objects
+        .into_iter()
+        .map(|o| write::UnitObject {
             uuid: o.uuid,
             type_id: o.entry_type,
             encoding: o.encoding,
-            payload_offset: payload_start,
-            payload_size: o.payload.len() as u64,
-            bulk_first,
-            bulk_count: o.bulk.len() as u32,
-        });
-    }
-    let bulk_offset = (payload_offset + payload.len() as u64).next_multiple_of(BULK_ALIGN);
-
-    let mut out = Vec::with_capacity(bulk_offset as usize + bulk.len());
-    write::header(
-        &mut out,
-        &UnitHeader {
-            unit,
-            platform: platform_id(platform),
-            object_count: entries.len() as u32,
-            import_count: imports.len() as u32,
-            bulk_count: bulk_entries.len() as u32,
-            payload_offset,
-            payload_size: payload.len() as u64,
-            bulk_offset: if bulk.is_empty() { 0 } else { bulk_offset },
-            bulk_size: bulk.len() as u64,
-        },
-    );
-    for e in &entries {
-        write::object(&mut out, e);
-    }
-    for (&uuid, &unit) in &imports {
-        write::import(&mut out, &ImportEntry { uuid, unit });
-    }
-    for e in &bulk_entries {
-        write::bulk(&mut out, e);
-    }
-    pad(&mut out, PAYLOAD_ALIGN);
-    out.extend_from_slice(&payload);
-    if !bulk.is_empty() {
-        out.resize(bulk_offset as usize, 0);
-        out.extend_from_slice(&bulk);
-    }
-    out
+            payload: o.payload,
+            bulk: o.bulk,
+        })
+        .collect();
+    let imports: Vec<(Uuid, u64)> = imports.into_iter().collect();
+    write::unit(unit, platform_id(platform), objects, &imports)
 }
 
 /// Cooks one unit (no cache involved).

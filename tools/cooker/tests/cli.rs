@@ -44,6 +44,16 @@ fn cooks_then_hits_the_cache_then_reports_failures() {
     assert!(ok, "{text}");
     assert!(text.contains("(0 cooked, 1 cached)"), "{text}");
 
+    let (ok, text) = run(&["package", r, "--bulk-codec", "gdeflate"]);
+    assert!(ok, "{text}");
+    assert!(text.contains("1 units"), "{text}");
+    let package =
+        marlin_asset::Package::open(root.join(".marlin/build/windows.mpak").to_str().unwrap())
+            .unwrap();
+    assert_eq!(package.index().units.len(), 1);
+    let (ok, text) = run(&["package", r, "--bulk-codec", "brotli"]);
+    assert!(!ok && text.contains("usage"), "{text}");
+
     fs::write(
         root.join("tex/broken.masset"),
         "!Version 1\nTexture { !Uuid = \"01990000-0000-7000-8000-000000000002\" !Name = \"Broken\" Source = `source:tex/missing.png` }\n",

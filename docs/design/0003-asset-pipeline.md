@@ -196,6 +196,7 @@ bulk        GPU 数据（顶点、纹理 mip），对齐到 4 KiB，直接上传
 ## 8. Runtime asset 系统
 
 - **句柄**：`Handle<T>` 带类型和引用计数，由下标加世代号组成；另有弱引用。状态有 `Loading`、`Loaded`、`Failed` 三种。
+- **链接不持有对象**：loader 把链接解析成 `AssetRef<T>`，它不计引用。单元被加载着时，它 import 的单元也一直留着，所以链接目标总比持有链接的对象活得久；互相链接的对象也就不会形成引用环、永远卸载不掉。
 - **加载流水线**：
   1. 用 marlin-io `IoQueue` 读取（打包时读包，开发时从 dev source 读）。
   2. 在 job 里解压。
@@ -294,7 +295,37 @@ bulk        GPU 数据（顶点、纹理 mip），对齐到 4 KiB，直接上传
     - Forsyth 顶点缓存优化与顶点取用顺序优化。
     - meshlet 生成：64 顶点、124 三角形；优先不增加顶点的三角形和悬空三角形，再按距离和法线锥选；遇到孤岛就吸收附近的三角形。在规则网格上平均每个 meshlet 82 个三角形（理论上限约 98）。包围球用 Ritter 算法；法线锥量化保守，测试验证了被剔除的 meshlet 没有正面三角形。
   - `marlin-cook cook <root> [--platform] [--threads]`：更新索引、cook、发布清单，并报告 cook 数、命中缓存数和错误。
+- **P4 · runtime 加载与打包完成**（`marlin-asset`，no_std）：
+  - `.mpak` 包格式：
+    - 结构：文件头、chunk 数据、末尾的索引（单元、blob、chunk、对象四张表，加 xxh3 校验）。
+    - 单元按 cooked 字节切成 chunk，每个 chunk 不超过 256 KiB，各自记录 codec、两种大小和校验和。
+    - 每个 bulk blob 从新的 chunk 开始，起点在文件里 4 KiB 对齐，以后可以单独流送，也满足 DirectStorage 的要求；单元头之间按 16 字节紧凑排列。
+    - 单元按资产路径排序，打补丁时其余字节位置不变。
+    - 不值得压缩的 chunk（节省不到 3%）原样存储。
+    - 索引和 chunk 的损坏都会报成错误。
+  - `Vfs`：分层挂载，后挂载的层覆盖同 ID 的单元，按 UUID 查对象所在的单元。`UnitSource` 有两种交付方式：给出文件区间，异步读完后再解码；或者直接给出字节。实现有 `Package` 和 `MemorySource`，P5 的 cookd dev source 也从这里接入。
+  - `AssetServer`：
+    - 句柄：`Handle<T>`（引用计数加世代号槽位）、`WeakHandle<T>`、`AssetRef<T>`。
+    - 只能按 UUID 加载。
+    - 流水线：`IoQueue` 异步读取，在 `JobSystem` 上并行解压，然后解析，补齐 import 闭包（互相引用的单元一起加载），再调用按 cooked 类型 id 注册的 loader。`register_serial` 处理通用类型。
+    - 没有句柄、也没有常驻单元 import 它的单元会被卸载。
+    - 失败（找不到、没有 loader、类型不对、读取失败、单元损坏、loader 拒绝）都是状态，不会 panic。
+    - `update_blocking` 给工具和加载画面用。
+  - 单元组装（`cooked::write::unit`）移到了 `marlin-asset`，cook_core、测试和以后的 cookd 共用。
+  - 打包器 `cook_core::write_package`：多线程压缩，输出逐字节确定。对应命令 `marlin-cook package <root> [--platform] [--out] [--head-codec] [--bulk-codec] [--level]`。
+  - 测试：
+    - 四种 codec 都能逐单元、逐 blob 还原；
+    - 用真实 `IoQueue` 加上 job 解压加载，bulk 用 GDeflate；
+    - 补丁层覆盖；
+    - chunk 或索引损坏被检测出来，其余单元照常加载；
+    - 链接环能加载，也能一起卸载；
+    - 全工作区 532 个测试通过。
 - **待做**：
   - Linux 和 macOS 的变更源（fanotify、FSEvents）。
   - 共享缓存中的 extract（P5）。
   - cook：MikkTSpace 逐位一致的切线（现在是 Lengyel 加按角度加权，与 MikkTSpace 很接近，但拆分处不完全一致）、morph target、主机纹理 tiling 单元、cluster DAG（格式里已经预留了字段）、DDC 的 LRU 淘汰。
+  - 加载：
+    - 按 blob 流送，带优先级和内存预算（包格式与 `Package::read_blob` 已经支持）；
+    - unbuffered IO 与 DirectStorage；
+    - 渲染侧 Texture/Mesh 的 loader，以及 GPU 上传（随 framework 在 P6 做）；
+    - 热重载（P5）。

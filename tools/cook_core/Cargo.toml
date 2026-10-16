@@ -8,11 +8,17 @@ publish.workspace = true
 [dependencies]
 marlin-asset.workspace = true
 marlin-asset-db.workspace = true
+marlin-compress = { workspace = true, features = ["encode"] }
 marlin-error.workspace = true
 marlin-hash.workspace = true
 marlin-masset.workspace = true
 marlin-reflect.workspace = true
 marlin-serial.workspace = true
+
+[dev-dependencies]
+# The package tests load through the runtime's IO queue and job system.
+marlin-io.workspace = true
+marlin-jobs.workspace = true
 
 [lints]
 workspace = true

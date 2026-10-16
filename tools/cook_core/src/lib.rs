@@ -7,6 +7,8 @@
 //! cooked again. [`cook`] runs units in parallel; [`cook_all`] also produces the build
 //! [`Manifest`] that names every unit's result.
 //!
+//! [`write_package`] packs a build's units into a `.mpak` for shipping.
+//!
 //! Inputs come from the asset index (`marlin-asset-db`), so deciding what needs cooking opens no
 //! files.
 
@@ -14,6 +16,7 @@ mod cook;
 mod cooker;
 mod ddc;
 mod manifest;
+mod package;
 
 pub use cook::{
     COOK_FORMAT, CookError, CookOptions, CookReport, UnitOutcome, cook, cook_all, cook_unit,
@@ -22,3 +25,4 @@ pub use cook::{
 pub use cooker::{CookContext, Cooked, Cooker, Cookers, SourceObject, fingerprint};
 pub use ddc::{Ddc, LocalDdc};
 pub use manifest::{Manifest, ManifestError, ManifestUnit};
+pub use package::{PackageOptions, PackageReport, PackageWriteError, write_package};

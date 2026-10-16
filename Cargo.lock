@@ -268,9 +268,15 @@ dependencies = [
 name = "marlin-asset"
 version = "0.1.0"
 dependencies = [
+ "marlin-compress",
+ "marlin-containers",
  "marlin-error",
  "marlin-hash",
+ "marlin-io",
+ "marlin-jobs",
  "marlin-reflect",
+ "marlin-serial",
+ "marlin-sync",
 ]
 
 [[package]]
@@ -333,8 +339,11 @@ version = "0.1.0"
 dependencies = [
  "marlin-asset",
  "marlin-asset-db",
+ "marlin-compress",
  "marlin-error",
  "marlin-hash",
+ "marlin-io",
+ "marlin-jobs",
  "marlin-masset",
  "marlin-reflect",
  "marlin-serial",
@@ -388,6 +397,7 @@ dependencies = [
  "marlin-anim",
  "marlin-asset",
  "marlin-asset-db",
+ "marlin-compress",
  "marlin-cook-audio",
  "marlin-cook-core",
  "marlin-cook-level",

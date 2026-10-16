@@ -4,6 +4,10 @@
 //!   cooks every unit whose inputs changed (the rest come from the local cache in
 //!   `<root>/.marlin/ddc`) and publishes the build manifest to
 //!   `<root>/.marlin/build/<platform>.manifest`. Fails if any unit fails.
+//! - `marlin-cook package <root> [--platform <name>] [--out <file>] [--head-codec <codec>]
+//!   [--bulk-codec <codec>] [--level <1-9>]`: packs the last cooked build of the platform into a
+//!   `.mpak` (default `<root>/.marlin/build/<platform>.mpak`). Codecs: none, lz4, zstd,
+//!   gdeflate.
 //! - `marlin-cook index <root>`: brings the asset index of `root` up to date and saves it.
 //! - `marlin-cook validate <root>`: the same, then reports content problems (dangling and stale
 //!   links, UUID collisions, parse errors, missing source files). Fails on errors.
@@ -21,7 +25,10 @@ use std::time::Instant;
 use marlin_anim::asset::{AnimationClip, Skeleton};
 use marlin_asset_db::{AssetDb, Options};
 use marlin_cook_audio as _;
-use marlin_cook_core::{CookOptions, Cookers, LocalDdc, cook_all, publish_manifest};
+use marlin_cook_core::{
+    CookOptions, Cookers, LocalDdc, Manifest, PackageOptions, cook_all, publish_manifest,
+    write_package,
+};
 use marlin_cook_level as _;
 use marlin_cook_mesh::{AnimationCooker, MeshCooker, SkeletonCooker};
 use marlin_cook_script as _;
@@ -36,6 +43,7 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.split_first() {
         Some((command, rest)) if command == "cook" && !rest.is_empty() => cook(rest),
+        Some((command, rest)) if command == "package" && !rest.is_empty() => package(rest),
         Some((command, paths)) if command == "check" && !paths.is_empty() => check(paths),
         Some((command, [root])) if command == "index" => index(root, Validate::No),
         Some((command, [root])) if command == "validate" => index(root, Validate::All),
@@ -325,5 +333,87 @@ fn cook(args: &[String]) -> ExitCode {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
+    }
+}
+
+fn codec(name: &str) -> Option<marlin_compress::Codec> {
+    marlin_compress::Codec::ALL
+        .into_iter()
+        .find(|c| c.name() == name)
+}
+
+fn package(args: &[String]) -> ExitCode {
+    let root = Path::new(&args[0]);
+    let mut platform = CookOptions::default().platform;
+    let mut out: Option<PathBuf> = None;
+    let mut options = PackageOptions::default();
+    let mut rest = args[1..].iter();
+    while let Some(flag) = rest.next() {
+        let value = rest.next();
+        let ok = match (flag.as_str(), value) {
+            ("--platform", Some(p)) => {
+                platform = p.clone();
+                true
+            }
+            ("--out", Some(p)) => {
+                out = Some(PathBuf::from(p));
+                true
+            }
+            ("--head-codec", Some(c)) => codec(c).map(|c| options.head_codec = c).is_some(),
+            ("--bulk-codec", Some(c)) => codec(c).map(|c| options.bulk_codec = c).is_some(),
+            ("--level", Some(n)) => n
+                .parse()
+                .map(|n| options.level = marlin_compress::Level::new(n))
+                .is_ok(),
+            _ => false,
+        };
+        if !ok {
+            eprintln!("{USAGE}");
+            return ExitCode::from(2);
+        }
+    }
+    let build = root.join(".marlin").join("build");
+    let manifest_path = build.join(format!("{platform}.manifest"));
+    let manifest = match std::fs::read(&manifest_path).map(|b| Manifest::from_bytes(&b)) {
+        Ok(Ok(m)) => m,
+        Ok(Err(e)) => {
+            eprintln!("{}: {e}", manifest_path.display());
+            return ExitCode::FAILURE;
+        }
+        Err(e) => {
+            eprintln!(
+                "{}: {e} (run `marlin-cook cook` first)",
+                manifest_path.display()
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    let ddc = match LocalDdc::open(root.join(".marlin").join("ddc")) {
+        Ok(ddc) => ddc,
+        Err(e) => {
+            eprintln!("opening the cache: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let out = out.unwrap_or_else(|| build.join(format!("{platform}.mpak")));
+    let start = Instant::now();
+    match write_package(&manifest, &ddc, &options, &out) {
+        Ok(r) => {
+            println!(
+                "{}: {} units, {} chunks, {:.1} MiB raw -> {:.1} MiB ({:.0}%); {:.2?}",
+                out.display(),
+                r.units,
+                r.chunks,
+                r.raw_bytes as f64 / (1 << 20) as f64,
+                r.file_bytes as f64 / (1 << 20) as f64,
+                r.file_bytes as f64 * 100.0 / r.raw_bytes.max(1) as f64,
+                start.elapsed()
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("{}", marlin_error_chain(&e));
+            ExitCode::FAILURE
+        }
     }
 }
