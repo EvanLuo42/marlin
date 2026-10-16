@@ -1,0 +1,11 @@
+[package]
+name = "marlin-editor-ui-widgets"
+description = "Editor widgets: trees, virtualized lists, property grids, docking and node graphs."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

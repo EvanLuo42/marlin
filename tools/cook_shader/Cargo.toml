@@ -1,0 +1,11 @@
+[package]
+name = "marlin-cook-shader"
+description = "Shader compilation and permutations."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

@@ -1,0 +1,17 @@
+[package]
+name = "marlin-std"
+description = "Facade over core, alloc and the L0 base crates; the standard library of Marlin runtime code."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+marlin-diag.workspace = true
+marlin-io.workspace = true
+marlin-mem.workspace = true
+marlin-sync.workspace = true
+marlin-thread.workspace = true
+marlin-time.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,11 @@
+[package]
+name = "marlin-serial"
+description = "Binary serialization and zero-copy cooked data layouts."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

@@ -1,0 +1,11 @@
+[package]
+name = "marlin-cook-core"
+description = "Cook pipeline: dependency graph, derived data cache and packaging."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

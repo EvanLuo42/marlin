@@ -1,0 +1,6 @@
+# Platform manifest, read by `cargo xtask`.
+name = "macos"
+family = "desktop"
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
+# Planned: vmem_alias, hybrid_cores, crash_dump, dylib.
+ext = []

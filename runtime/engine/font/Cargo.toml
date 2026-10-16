@@ -1,0 +1,11 @@
+[package]
+name = "marlin-font"
+description = "Glyph rasterization, atlases and text shaping."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

@@ -1,0 +1,11 @@
+[package]
+name = "marlin-editor-viewport"
+description = "Scene viewport, gizmos and play-in-editor."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

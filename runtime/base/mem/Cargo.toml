@@ -1,0 +1,12 @@
+[package]
+name = "marlin-mem"
+description = "Memory: page allocation, arenas, the general-purpose heap and the global allocator."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+marlin-pal.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,11 @@
+[package]
+name = "marlin-physics"
+description = "Physics simulation."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

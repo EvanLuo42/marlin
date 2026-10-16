@@ -1,0 +1,11 @@
+[package]
+name = "marlin-world"
+description = "Levels, world streaming, transform hierarchy and the entity object API."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

@@ -1,0 +1,11 @@
+[package]
+name = "marlin-ui-render"
+description = "Immediate-mode UI renderer for primitives and text."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

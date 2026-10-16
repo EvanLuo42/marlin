@@ -1,0 +1,6 @@
+# Platform manifest, read by `cargo xtask`.
+name = "linux"
+family = "desktop"
+targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
+# Planned: large_pages, vmem_alias, crash_dump, dylib.
+ext = []

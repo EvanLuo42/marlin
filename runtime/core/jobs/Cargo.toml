@@ -1,0 +1,11 @@
+[package]
+name = "marlin-jobs"
+description = "Fiber-based job system and fiber-aware synchronization."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

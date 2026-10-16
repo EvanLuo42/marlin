@@ -1,0 +1,11 @@
+[package]
+name = "marlin-text"
+description = "Interned names, UTF-8 utilities and formatting."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

@@ -1,0 +1,11 @@
+[package]
+name = "marlin-anim"
+description = "Skeletal animation, blending and IK."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

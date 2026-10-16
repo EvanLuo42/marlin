@@ -1,0 +1,11 @@
+[package]
+name = "marlin-editor-core"
+description = "Editor project model, undo/redo, selection, commands and source asset database."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

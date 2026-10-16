@@ -1,0 +1,11 @@
+[package]
+name = "marlin-editor-asset-tools"
+description = "Asset browser, import and re-cook."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

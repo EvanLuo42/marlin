@@ -1,0 +1,11 @@
+[package]
+name = "marlin-thread"
+description = "Threads, fibers, CPU topology and thread-local storage."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

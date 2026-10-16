@@ -1,0 +1,11 @@
+[package]
+name = "marlin-time"
+description = "Monotonic clocks, high-resolution timers and sleeping."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

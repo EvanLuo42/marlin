@@ -1,0 +1,11 @@
+[package]
+name = "marlin-rhi"
+description = "Rendering hardware interface over D3D12, Vulkan, Metal and console GPU APIs."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

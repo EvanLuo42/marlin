@@ -1,0 +1,11 @@
+[package]
+name = "marlin-framework"
+description = "Game framework: main loop, frame pipeline and subsystem registration."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

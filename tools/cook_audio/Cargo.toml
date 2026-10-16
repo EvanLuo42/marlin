@@ -1,0 +1,11 @@
+[package]
+name = "marlin-cook-audio"
+description = "Audio encoding."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

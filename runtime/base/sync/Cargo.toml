@@ -1,0 +1,11 @@
+[package]
+name = "marlin-sync"
+description = "Mutex, RwLock, Condvar, Once and Event built on wait-on-address."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

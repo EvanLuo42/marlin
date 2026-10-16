@@ -1,0 +1,11 @@
+[package]
+name = "marlin-profile"
+description = "CPU and GPU profiling markers and counters."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

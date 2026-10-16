@@ -1,0 +1,11 @@
+[package]
+name = "marlin-asset"
+description = "Asset handles, package mounting and streaming."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

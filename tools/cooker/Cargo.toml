@@ -1,0 +1,22 @@
+[package]
+name = "marlin-cooker"
+description = "Command-line asset cooker."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "marlin-cook"
+path = "src/main.rs"
+
+[dependencies]
+marlin-cook-audio.workspace = true
+marlin-cook-core.workspace = true
+marlin-cook-level.workspace = true
+marlin-cook-mesh.workspace = true
+marlin-cook-script.workspace = true
+marlin-cook-shader.workspace = true
+marlin-cook-texture.workspace = true
+
+[lints]
+workspace = true

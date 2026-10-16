@@ -1,0 +1,11 @@
+[package]
+name = "marlin-audio"
+description = "Audio mixing, DSP and spatialization."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

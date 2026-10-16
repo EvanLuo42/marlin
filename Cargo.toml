@@ -1,0 +1,132 @@
+[workspace]
+resolver = "3"
+members = [
+    "runtime/base/*",
+    "runtime/platform/*",
+    "runtime/core/*",
+    "runtime/engine/*",
+    "runtime/marlin",
+    "editor/*",
+    "tools/*",
+    "apps/*",
+    "xtask",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace.dependencies]
+# --- L0 runtime/base ---
+marlin-pal = { path = "runtime/base/pal" }
+marlin-mem = { path = "runtime/base/mem" }
+marlin-sync = { path = "runtime/base/sync" }
+marlin-thread = { path = "runtime/base/thread" }
+marlin-time = { path = "runtime/base/time" }
+marlin-io = { path = "runtime/base/io" }
+marlin-diag = { path = "runtime/base/diag" }
+marlin-rt = { path = "runtime/base/rt" }
+marlin-std = { path = "runtime/base/std" }
+# --- L1 runtime/platform ---
+marlin-app = { path = "runtime/platform/app" }
+marlin-input = { path = "runtime/platform/input" }
+marlin-audio-device = { path = "runtime/platform/audio_device" }
+marlin-net = { path = "runtime/platform/net" }
+marlin-services = { path = "runtime/platform/services" }
+marlin-rhi = { path = "runtime/platform/rhi" }
+# --- L2 runtime/core ---
+marlin-math = { path = "runtime/core/math" }
+marlin-containers = { path = "runtime/core/containers" }
+marlin-text = { path = "runtime/core/text" }
+marlin-hash = { path = "runtime/core/hash" }
+marlin-jobs = { path = "runtime/core/jobs" }
+marlin-profile = { path = "runtime/core/profile" }
+marlin-reflect = { path = "runtime/core/reflect" }
+marlin-serial = { path = "runtime/core/serial" }
+marlin-ecs = { path = "runtime/core/ecs" }
+marlin-config = { path = "runtime/core/config" }
+# --- L3 runtime/engine ---
+marlin-asset = { path = "runtime/engine/asset" }
+marlin-world = { path = "runtime/engine/world" }
+marlin-vm-bytecode = { path = "runtime/engine/vm_bytecode" }
+marlin-vm = { path = "runtime/engine/vm" }
+marlin-script = { path = "runtime/engine/script" }
+marlin-shader = { path = "runtime/engine/shader" }
+marlin-render-graph = { path = "runtime/engine/render_graph" }
+marlin-render = { path = "runtime/engine/render" }
+marlin-font = { path = "runtime/engine/font" }
+marlin-ui-render = { path = "runtime/engine/ui_render" }
+marlin-anim = { path = "runtime/engine/anim" }
+marlin-physics = { path = "runtime/engine/physics" }
+marlin-audio = { path = "runtime/engine/audio" }
+marlin-nav = { path = "runtime/engine/nav" }
+marlin-vfx = { path = "runtime/engine/vfx" }
+marlin-framework = { path = "runtime/engine/framework" }
+# --- umbrella ---
+marlin = { path = "runtime/marlin" }
+# --- editor ---
+marlin-editor-ui-core = { path = "editor/ui_core" }
+marlin-editor-ui-widgets = { path = "editor/ui_widgets" }
+marlin-editor-ui-theme = { path = "editor/ui_theme" }
+marlin-editor-core = { path = "editor/core" }
+marlin-editor-viewport = { path = "editor/viewport" }
+marlin-editor-world-tools = { path = "editor/world_tools" }
+marlin-editor-asset-tools = { path = "editor/asset_tools" }
+marlin-editor-script-tools = { path = "editor/script_tools" }
+# --- tools ---
+marlin-cook-core = { path = "tools/cook_core" }
+marlin-cook-texture = { path = "tools/cook_texture" }
+marlin-cook-mesh = { path = "tools/cook_mesh" }
+marlin-cook-shader = { path = "tools/cook_shader" }
+marlin-cook-audio = { path = "tools/cook_audio" }
+marlin-cook-level = { path = "tools/cook_level" }
+marlin-cook-script = { path = "tools/cook_script" }
+marlin-vm-compiler = { path = "tools/vm_compiler" }
+
+# --- third party ---
+# Anything a runtime crate depends on must be no_std (default-features = false).
+libc = { version = "0.2", default-features = false }
+windows-sys = { version = "0.61", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+# Global cfgs. `marlin_platform` and `marlin_ext` come from platforms/<name>/platform.toml,
+# `marlin_build` from the xtask build configuration (see `cargo xtask gen-cfg` / `build`).
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(marlin_platform, values("windows", "linux", "macos", "ps5", "xbox", "switch2"))',
+    'cfg(marlin_ext, values("large_pages", "physical_memory", "vmem_alias", "gpu_memory", "hybrid_cores", "hw_decompression", "direct_storage", "crash_dump", "cpu_markers", "dylib"))',
+    'cfg(marlin_build, values("debug", "development", "profile", "shipping"))',
+] }
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "warn"
+
+# Build configurations: Debug = dev, Development, Profile, Shipping.
+# `cargo test` ignores `panic`, so tests still unwind.
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+
+[profile.development]
+inherits = "release"
+opt-level = 2
+debug = true
+debug-assertions = true
+overflow-checks = true
+incremental = true
+
+[profile.profile]
+inherits = "release"
+debug = true
+
+[profile.shipping]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+debug = "line-tables-only"

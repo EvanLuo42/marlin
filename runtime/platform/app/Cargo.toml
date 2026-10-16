@@ -1,0 +1,11 @@
+[package]
+name = "marlin-app"
+description = "Application lifecycle, windows and displays, and presentation surfaces."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

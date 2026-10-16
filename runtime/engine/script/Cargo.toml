@@ -1,0 +1,11 @@
+[package]
+name = "marlin-script"
+description = "Engine API bindings for the Marlin VM."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

@@ -1,0 +1,11 @@
+[package]
+name = "marlin-containers"
+description = "Allocator-aware containers, slot maps and handles."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

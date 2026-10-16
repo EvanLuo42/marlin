@@ -1,0 +1,6 @@
+[toolchain]
+# Pinned nightly: allocator_api, build-std (consoles), naked functions, custom target specs.
+# Bump deliberately and in its own commit.
+channel = "nightly-2026-10-16"
+components = ["rust-src", "rustfmt", "clippy", "rust-analyzer"]
+profile = "minimal"

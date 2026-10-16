@@ -1,0 +1,9 @@
+/target
+
+# Console backends are private repositories cloned into platforms/<name>/.
+# Only the public desktop platform manifests are tracked.
+/platforms/*
+!/platforms/README.md
+!/platforms/windows/
+!/platforms/linux/
+!/platforms/macos/

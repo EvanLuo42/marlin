@@ -1,0 +1,11 @@
+[package]
+name = "marlin-io"
+description = "Completion-based asynchronous file IO, paths and memory-mapped files."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

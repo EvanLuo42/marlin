@@ -1,0 +1,20 @@
+[package]
+name = "marlin-game"
+description = "The game executable shared by every Marlin game."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+# no_std binary: a std test harness would bring a second panic handler.
+[[bin]]
+name = "marlin-game"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+marlin.workspace = true
+marlin-rt.workspace = true
+
+[lints]
+workspace = true

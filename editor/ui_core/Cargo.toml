@@ -1,0 +1,11 @@
+[package]
+name = "marlin-editor-ui-core"
+description = "Retained-mode editor UI core: reactive bindings, widget tree, layout and input routing."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

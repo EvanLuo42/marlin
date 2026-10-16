@@ -1,0 +1,11 @@
+[package]
+name = "marlin-diag"
+description = "Logging, assertions, debugger breaks, stack traces and crash dumps."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

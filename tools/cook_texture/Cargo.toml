@@ -1,0 +1,11 @@
+[package]
+name = "marlin-cook-texture"
+description = "Texture compression and platform swizzling."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

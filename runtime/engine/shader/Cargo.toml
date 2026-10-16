@@ -1,0 +1,11 @@
+[package]
+name = "marlin-shader"
+description = "Runtime shader containers and permutation lookup."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

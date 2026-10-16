@@ -1,0 +1,11 @@
+[package]
+name = "marlin-audio-device"
+description = "Audio output endpoints."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true
