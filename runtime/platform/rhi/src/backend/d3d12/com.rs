@@ -268,7 +268,18 @@ pub(super) struct ID3D12DeviceVtbl {
     ) -> HRESULT,
     pub CreateCommandAllocator:
         unsafe extern "system" fn(This, i32, *const GUID, *mut *mut c_void) -> HRESULT,
-    _10_11: [usize; 2],
+    pub CreateGraphicsPipelineState: unsafe extern "system" fn(
+        This,
+        *const D3D12_GRAPHICS_PIPELINE_STATE_DESC,
+        *const GUID,
+        *mut *mut c_void,
+    ) -> HRESULT,
+    pub CreateComputePipelineState: unsafe extern "system" fn(
+        This,
+        *const D3D12_COMPUTE_PIPELINE_STATE_DESC,
+        *const GUID,
+        *mut *mut c_void,
+    ) -> HRESULT,
     pub CreateCommandList: unsafe extern "system" fn(
         This,
         u32,
@@ -286,14 +297,58 @@ pub(super) struct ID3D12DeviceVtbl {
         *mut *mut c_void,
     ) -> HRESULT,
     pub GetDescriptorHandleIncrementSize: unsafe extern "system" fn(This, i32) -> u32,
-    _16_19: [usize; 4],
+    pub CreateRootSignature: unsafe extern "system" fn(
+        This,
+        u32,
+        *const c_void,
+        usize,
+        *const GUID,
+        *mut *mut c_void,
+    ) -> HRESULT,
+    pub CreateConstantBufferView: unsafe extern "system" fn(
+        This,
+        *const D3D12_CONSTANT_BUFFER_VIEW_DESC,
+        D3D12_CPU_DESCRIPTOR_HANDLE,
+    ),
+    pub CreateShaderResourceView: unsafe extern "system" fn(
+        This,
+        *mut c_void,
+        *const D3D12_SHADER_RESOURCE_VIEW_DESC,
+        D3D12_CPU_DESCRIPTOR_HANDLE,
+    ),
+    pub CreateUnorderedAccessView: unsafe extern "system" fn(
+        This,
+        *mut c_void,
+        *mut c_void,
+        *const D3D12_UNORDERED_ACCESS_VIEW_DESC,
+        D3D12_CPU_DESCRIPTOR_HANDLE,
+    ),
     pub CreateRenderTargetView: unsafe extern "system" fn(
         This,
         *mut c_void,
         *const D3D12_RENDER_TARGET_VIEW_DESC,
         D3D12_CPU_DESCRIPTOR_HANDLE,
     ),
-    _21_35: [usize; 15],
+    pub CreateDepthStencilView: unsafe extern "system" fn(
+        This,
+        *mut c_void,
+        *const D3D12_DEPTH_STENCIL_VIEW_DESC,
+        D3D12_CPU_DESCRIPTOR_HANDLE,
+    ),
+    pub CreateSampler:
+        unsafe extern "system" fn(This, *const D3D12_SAMPLER_DESC, D3D12_CPU_DESCRIPTOR_HANDLE),
+    _23_26: [usize; 4],
+    pub CreateCommittedResource: unsafe extern "system" fn(
+        This,
+        *const D3D12_HEAP_PROPERTIES,
+        u32,
+        *const D3D12_RESOURCE_DESC,
+        u32,
+        *const D3D12_CLEAR_VALUE,
+        *const GUID,
+        *mut *mut c_void,
+    ) -> HRESULT,
+    _28_35: [usize; 8],
     pub CreateFence:
         unsafe extern "system" fn(This, u64, i32, *const GUID, *mut *mut c_void) -> HRESULT,
     pub GetDeviceRemovedReason: unsafe extern "system" fn(This) -> HRESULT,
@@ -338,9 +393,38 @@ pub(super) struct ID3D12GraphicsCommandListVtbl {
     _8: usize,
     pub Close: unsafe extern "system" fn(This) -> HRESULT,
     pub Reset: unsafe extern "system" fn(This, *mut c_void, *mut c_void) -> HRESULT,
-    _11_25: [usize; 15],
+    _11: usize,
+    pub DrawInstanced: unsafe extern "system" fn(This, u32, u32, u32, u32),
+    pub DrawIndexedInstanced: unsafe extern "system" fn(This, u32, u32, u32, i32, u32),
+    pub Dispatch: unsafe extern "system" fn(This, u32, u32, u32),
+    pub CopyBufferRegion: unsafe extern "system" fn(This, *mut c_void, u64, *mut c_void, u64, u64),
+    pub CopyTextureRegion: unsafe extern "system" fn(
+        This,
+        *const D3D12_TEXTURE_COPY_LOCATION,
+        u32,
+        u32,
+        u32,
+        *const D3D12_TEXTURE_COPY_LOCATION,
+        *const D3D12_BOX,
+    ),
+    _17_19: [usize; 3],
+    pub IASetPrimitiveTopology: unsafe extern "system" fn(This, i32),
+    pub RSSetViewports: unsafe extern "system" fn(This, u32, *const D3D12_VIEWPORT),
+    pub RSSetScissorRects: unsafe extern "system" fn(This, u32, *const D3D12_RECT),
+    _23_24: [usize; 2],
+    pub SetPipelineState: unsafe extern "system" fn(This, *mut c_void),
     pub ResourceBarrier: unsafe extern "system" fn(This, u32, *const D3D12_RESOURCE_BARRIER),
-    _27_45: [usize; 19],
+    _27: usize,
+    pub SetDescriptorHeaps: unsafe extern "system" fn(This, u32, *const *mut c_void),
+    pub SetComputeRootSignature: unsafe extern "system" fn(This, *mut c_void),
+    pub SetGraphicsRootSignature: unsafe extern "system" fn(This, *mut c_void),
+    _31_34: [usize; 4],
+    pub SetComputeRoot32BitConstants: unsafe extern "system" fn(This, u32, u32, *const c_void, u32),
+    pub SetGraphicsRoot32BitConstants:
+        unsafe extern "system" fn(This, u32, u32, *const c_void, u32),
+    _37_42: [usize; 6],
+    pub IASetIndexBuffer: unsafe extern "system" fn(This, *const D3D12_INDEX_BUFFER_VIEW),
+    _44_45: [usize; 2],
     pub OMSetRenderTargets: unsafe extern "system" fn(
         This,
         u32,
@@ -348,7 +432,15 @@ pub(super) struct ID3D12GraphicsCommandListVtbl {
         BOOL,
         *const D3D12_CPU_DESCRIPTOR_HANDLE,
     ),
-    _47: usize,
+    pub ClearDepthStencilView: unsafe extern "system" fn(
+        This,
+        D3D12_CPU_DESCRIPTOR_HANDLE,
+        u32,
+        f32,
+        u8,
+        u32,
+        *const D3D12_RECT,
+    ),
     pub ClearRenderTargetView: unsafe extern "system" fn(
         This,
         D3D12_CPU_DESCRIPTOR_HANDLE,
@@ -411,10 +503,44 @@ interface!(
     0x8efb471d_616c_4f49_90f7_127bb763fa51
 );
 
+/// ID3D12Pageable adds no methods.
+#[repr(C)]
+pub(super) struct ID3D12ResourceVtbl {
+    pub base: DeviceChildVtbl,
+    pub Map: unsafe extern "system" fn(This, u32, *const D3D12_RANGE, *mut *mut c_void) -> HRESULT,
+    _9_10: [usize; 2],
+    pub GetGPUVirtualAddress: unsafe extern "system" fn(This) -> u64,
+}
+
 interface!(
     ID3D12Resource,
-    DeviceChildVtbl,
+    ID3D12ResourceVtbl,
     0x696442be_a72e_4059_bc79_5b5c98040fad
+);
+
+interface!(
+    ID3D12RootSignature,
+    DeviceChildVtbl,
+    0xc54a6b66_72df_4ee8_8be5_a946a1429214
+);
+
+interface!(
+    ID3D12PipelineState,
+    DeviceChildVtbl,
+    0x765a30f3_f624_4c6f_a828_ace948622445
+);
+
+#[repr(C)]
+pub(super) struct ID3DBlobVtbl {
+    pub base: IUnknownVtbl,
+    pub GetBufferPointer: unsafe extern "system" fn(This) -> *mut c_void,
+    pub GetBufferSize: unsafe extern "system" fn(This) -> usize,
+}
+
+interface!(
+    ID3DBlob,
+    ID3DBlobVtbl,
+    0x8ba5fb08_5195_40e2_ac58_0d989c3a0102
 );
 
 #[repr(C)]

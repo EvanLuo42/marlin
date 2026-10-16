@@ -1,13 +1,18 @@
 //! Placeholder for platforms whose backend is not written yet: [`Instance`] creation fails with
 //! `Unsupported`, so no other object can exist.
 
+use core::ptr::NonNull;
 use core::time::Duration;
 
-use crate::contract::{Commands, Device, Fences, Instance, Queue, Rhi, Swapchain, Types};
+use crate::contract::{
+    Commands, Device, Fences, Instance, Queue, Resources, Rhi, Swapchain, Types,
+};
 use crate::{
-    AdapterInfo, CommandList, DeviceDesc, Error, ErrorKind, Features, Fence, Format, InstanceDesc,
-    PresentMode, PresentStatus, RenderPassDesc, RenderTargetView, Result, SurfaceHandle,
-    SwapchainDesc, Texture, TextureBarrier,
+    AdapterInfo, Buffer, BufferBarrier, BufferDesc, BufferTextureCopy, BufferViewDesc, CommandList,
+    ComputePipelineDesc, DepthStencilViewDesc, DeviceDesc, Error, ErrorKind, Features, Fence,
+    Format, GraphicsPipelineDesc, IndexFormat, InstanceDesc, PresentMode, PresentStatus, Rect,
+    RenderPassDesc, RenderTargetView, RenderTargetViewDesc, Result, SamplerDesc, SurfaceHandle,
+    SwapchainDesc, Texture, TextureBarrier, TextureDesc, TextureViewDesc, Viewport,
 };
 
 pub(crate) struct Backend;
@@ -15,6 +20,11 @@ pub(crate) struct Backend;
 pub(crate) enum Never {}
 
 impl Types for Backend {
+    // What the future backends will take: Vulkan on Linux, Metal on macOS.
+    #[cfg(marlin_platform = "linux")]
+    const SHADER_FORMAT: crate::ShaderFormat = crate::ShaderFormat::SpirV;
+    #[cfg(marlin_platform = "macos")]
+    const SHADER_FORMAT: crate::ShaderFormat = crate::ShaderFormat::MetalLib;
     type Instance = Never;
     type Device = Never;
     type Queue = Never;
@@ -22,8 +32,14 @@ impl Types for Backend {
     type CommandPool = Never;
     type CommandList = Never;
     type Swapchain = Never;
+    type Buffer = Never;
     type Texture = Never;
     type RenderTargetView = Never;
+    type DepthStencilView = Never;
+    type ShaderView = Never;
+    type Sampler = Never;
+    type GraphicsPipeline = Never;
+    type ComputePipeline = Never;
 }
 
 impl Rhi for Backend {}
@@ -75,6 +91,64 @@ impl Device for Backend {
     fn validation_errors(device: &Never) -> u64 {
         match *device {}
     }
+
+    fn create_buffer(device: &Never, _: &BufferDesc) -> Result<Never> {
+        match *device {}
+    }
+
+    fn create_texture(device: &Never, _: &TextureDesc) -> Result<Never> {
+        match *device {}
+    }
+
+    fn create_render_target_view(
+        device: &Never,
+        _: &Texture,
+        _: &RenderTargetViewDesc,
+    ) -> Result<Never> {
+        match *device {}
+    }
+
+    fn create_depth_stencil_view(
+        device: &Never,
+        _: &Texture,
+        _: &DepthStencilViewDesc,
+    ) -> Result<Never> {
+        match *device {}
+    }
+
+    fn create_texture_view(device: &Never, _: &Texture, _: &TextureViewDesc) -> Result<Never> {
+        match *device {}
+    }
+
+    fn create_buffer_view(device: &Never, _: &Buffer, _: &BufferViewDesc) -> Result<Never> {
+        match *device {}
+    }
+
+    fn create_sampler(device: &Never, _: &SamplerDesc) -> Result<Never> {
+        match *device {}
+    }
+
+    fn create_graphics_pipeline(device: &Never, _: &GraphicsPipelineDesc<'_>) -> Result<Never> {
+        match *device {}
+    }
+
+    fn create_compute_pipeline(device: &Never, _: &ComputePipelineDesc<'_>) -> Result<Never> {
+        match *device {}
+    }
+}
+
+impl Resources for Backend {
+    fn buffer_mapped(buffer: &Never) -> Option<NonNull<u8>> {
+        match *buffer {}
+    }
+
+    fn shader_view_index(view: &Never) -> u32 {
+        match *view {}
+    }
+
+    fn sampler_index(sampler: &Never) -> u32 {
+        match *sampler {}
+    }
 }
 
 impl Queue for Backend {
@@ -118,11 +192,63 @@ impl Commands for Backend {
         match *list {}
     }
 
+    fn buffer_barriers(list: &mut Never, _: &[BufferBarrier<'_>]) {
+        match *list {}
+    }
+
     fn begin_render_pass(list: &mut Never, _: &RenderPassDesc<'_>) {
         match *list {}
     }
 
     fn end_render_pass(list: &mut Never) {
+        match *list {}
+    }
+
+    fn copy_buffer(list: &mut Never, _: &Buffer, _: u64, _: &Buffer, _: u64, _: u64) {
+        match *list {}
+    }
+
+    fn copy_buffer_to_texture(list: &mut Never, _: &Buffer, _: &Texture, _: &BufferTextureCopy) {
+        match *list {}
+    }
+
+    fn copy_texture_to_buffer(list: &mut Never, _: &Texture, _: &Buffer, _: &BufferTextureCopy) {
+        match *list {}
+    }
+
+    fn set_graphics_pipeline(list: &mut Never, _: &Never) {
+        match *list {}
+    }
+
+    fn set_compute_pipeline(list: &mut Never, _: &Never) {
+        match *list {}
+    }
+
+    fn push_constants(list: &mut Never, _: u32, _: &[u32]) {
+        match *list {}
+    }
+
+    fn set_viewport(list: &mut Never, _: &Viewport) {
+        match *list {}
+    }
+
+    fn set_scissor(list: &mut Never, _: &Rect) {
+        match *list {}
+    }
+
+    fn set_index_buffer(list: &mut Never, _: &Buffer, _: u64, _: IndexFormat) {
+        match *list {}
+    }
+
+    fn draw(list: &mut Never, _: u32, _: u32, _: u32, _: u32) {
+        match *list {}
+    }
+
+    fn draw_indexed(list: &mut Never, _: u32, _: u32, _: u32, _: i32, _: u32) {
+        match *list {}
+    }
+
+    fn dispatch(list: &mut Never, _: u32, _: u32, _: u32) {
         match *list {}
     }
 }

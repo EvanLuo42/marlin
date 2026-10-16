@@ -1,5 +1,5 @@
-//! Device-level tests that need no window: they run on the software adapter (WARP on Windows),
-//! with validation on, and require it to report no errors.
+//! Device-level tests that need no window: they run on the hardware adapter with validation on,
+//! and require it to report no errors.
 #![cfg(marlin_platform = "windows")]
 
 use std::time::Duration;
@@ -8,11 +8,11 @@ use marlin_rhi::{
     AdapterKind, AdapterPreference, DeviceDesc, ErrorKind, FramesInFlight, Instance, InstanceDesc,
 };
 
-fn software_device() -> marlin_rhi::Device {
+fn hardware_device() -> marlin_rhi::Device {
     let instance = Instance::new(&InstanceDesc { validation: true }).unwrap();
     instance
         .create_device(&DeviceDesc {
-            adapter: AdapterPreference::Software,
+            adapter: AdapterPreference::HighPerformance,
             ..DeviceDesc::default()
         })
         .unwrap()
@@ -43,16 +43,11 @@ fn enumerates_adapters() {
 }
 
 #[test]
-fn creates_warp_device() {
-    let device = software_device();
+fn creates_hardware_device() {
+    let device = hardware_device();
     let info = device.adapter_info();
-    assert_eq!(info.kind, AdapterKind::Software);
-    assert_eq!(
-        info.vendor_id,
-        0x1414,
-        "WARP is Microsoft's: {}",
-        info.name()
-    );
+    assert_eq!(info.kind, AdapterKind::Hardware, "{}", info.name());
+    assert!(device.features().shader_model >= (6, 6));
     assert_eq!(device.validation_errors(), 0);
 }
 
@@ -71,7 +66,7 @@ fn index_past_the_end_is_not_found() {
 
 #[test]
 fn fence_cpu_signal_and_wait() {
-    let device = software_device();
+    let device = hardware_device();
     let fence = device.create_fence(3).unwrap();
     assert_eq!(fence.completed_value(), 3);
     assert!(fence.wait(2, None).unwrap());
@@ -89,7 +84,7 @@ fn fence_cpu_signal_and_wait() {
 
 #[test]
 fn queue_signals_fence_after_submit() {
-    let device = software_device();
+    let device = hardware_device();
     let fence = device.create_fence(0).unwrap();
     let mut pool = device.create_command_pool().unwrap();
     let mut list = device.create_command_list(&pool).unwrap();
@@ -113,7 +108,7 @@ fn queue_signals_fence_after_submit() {
 
 #[test]
 fn frames_in_flight_cycle() {
-    let device = software_device();
+    let device = hardware_device();
     let mut frames = FramesInFlight::new(&device, 2).unwrap();
     assert_eq!(frames.count(), 2);
     for frame in 0..6 {

@@ -29,7 +29,7 @@ fn clear_and_present(disable_enhanced_barriers: bool) {
     let instance = Instance::new(&InstanceDesc { validation: true }).unwrap();
     let device = instance
         .create_device(&DeviceDesc {
-            adapter: AdapterPreference::Software,
+            adapter: AdapterPreference::HighPerformance,
             disable_enhanced_barriers,
         })
         .unwrap();
@@ -69,6 +69,7 @@ fn clear_and_present(disable_enhanced_barriers: bool) {
                 load: LoadOp::Clear([frame as f32 / 8.0, 0.25, 0.5, 1.0]),
                 store: StoreOp::Store,
             }],
+            depth: None,
         });
         list.end_render_pass();
         list.texture_barriers(&[TextureBarrier::new(

@@ -8,6 +8,8 @@
 mod com;
 mod command;
 mod ffi;
+mod pipeline;
+mod resource;
 mod swapchain;
 
 use core::ffi::c_void;
@@ -25,15 +27,23 @@ use windows_sys::core::{BOOL, HRESULT};
 use com::*;
 use ffi::*;
 
+use core::ptr::NonNull;
+
 use crate::contract::{Fences, Rhi, Types};
 use crate::{
-    AdapterInfo, AdapterKind, AdapterPreference, CommandList, DeviceDesc, Error, ErrorKind,
-    Features, Fence as PublicFence, InstanceDesc, Result, SurfaceHandle, SwapchainDesc,
+    AdapterInfo, AdapterKind, AdapterPreference, Buffer as PublicBuffer, BufferDesc,
+    BufferViewDesc, CommandList, ComputePipelineDesc, DepthStencilViewDesc, DeviceDesc, Error,
+    ErrorKind, Features, Fence as PublicFence, GraphicsPipelineDesc, InstanceDesc,
+    RenderTargetViewDesc, Result, SamplerDesc, SurfaceHandle, SwapchainDesc,
+    Texture as PublicTexture, TextureDesc, TextureViewDesc,
 };
+use pipeline::Bindless;
+use resource::Descriptor;
 
 pub(crate) struct Backend;
 
 impl Types for Backend {
+    const SHADER_FORMAT: crate::ShaderFormat = crate::ShaderFormat::Dxil;
     type Instance = Instance;
     type Device = Device;
     type Queue = Queue;
@@ -41,8 +51,14 @@ impl Types for Backend {
     type CommandPool = command::CommandPool;
     type CommandList = command::CommandList;
     type Swapchain = swapchain::Swapchain;
-    type Texture = command::Texture;
-    type RenderTargetView = command::RenderTargetView;
+    type Buffer = resource::Buffer;
+    type Texture = resource::Texture;
+    type RenderTargetView = resource::RenderTargetView;
+    type DepthStencilView = resource::DepthStencilView;
+    type ShaderView = Descriptor;
+    type Sampler = Descriptor;
+    type GraphicsPipeline = pipeline::GraphicsPipeline;
+    type ComputePipeline = pipeline::ComputePipeline;
 }
 
 impl Rhi for Backend {}
@@ -266,11 +282,63 @@ fn adapter_info(adapter: &Com<IDXGIAdapter1>, index: u32) -> Option<AdapterInfo>
     Some(info)
 }
 
-fn create_d3d12_device(adapter: &Com<IDXGIAdapter1>) -> Result<Com<ID3D12Device>> {
+/// Queries a feature-support struct; `false` if the runtime does not know the feature.
+///
+/// # Safety
+/// `T` is the struct `feature` reports.
+unsafe fn feature<T>(device: &Com<ID3D12Device>, feature: i32, data: &mut T) -> bool {
+    // SAFETY: valid interface; `data` matches the feature (caller).
+    let hr = unsafe {
+        (device.vtbl().CheckFeatureSupport)(
+            device.as_raw(),
+            feature,
+            (data as *mut T).cast(),
+            size_of::<T>() as u32,
+        )
+    };
+    hr >= 0
+}
+
+/// The highest shader model the device supports, as `0xMm`.
+fn shader_model(device: &Com<ID3D12Device>) -> i32 {
+    // Runtimes reject models newer than they know: step down until one is accepted.
+    (D3D_SHADER_MODEL_6_6..=D3D_SHADER_MODEL_HIGHEST)
+        .rev()
+        .find_map(|requested| {
+            let mut data = D3D12_FEATURE_DATA_SHADER_MODEL {
+                HighestShaderModel: requested,
+            };
+            // SAFETY: the struct matches the feature.
+            unsafe { feature(device, D3D12_FEATURE_SHADER_MODEL, &mut data) }
+                .then_some(data.HighestShaderModel)
+        })
+        .unwrap_or(0)
+}
+
+/// Creates a device on `adapter` if it meets the baseline: feature level 12_0, shader model 6.6
+/// and resource binding tier 3 (bindless through directly indexed heaps).
+fn create_d3d12_device(adapter: &Com<IDXGIAdapter1>) -> Result<(Com<ID3D12Device>, i32)> {
     let create = d3d12_create_device().ok_or_else(unsupported)?;
     // SAFETY: valid adapter, IID and out pointer.
-    com::create(|iid, out| unsafe { create(adapter.as_raw(), D3D_FEATURE_LEVEL_12_0, iid, out) })
-        .map_err(error)
+    let device = com::create::<ID3D12Device>(|iid, out| unsafe {
+        create(adapter.as_raw(), D3D_FEATURE_LEVEL_12_0, iid, out)
+    })
+    .map_err(error)?;
+    let model = shader_model(&device);
+    let mut options = D3D12_FEATURE_DATA_D3D12_OPTIONS::default();
+    // SAFETY: the struct matches the feature.
+    let tier = match unsafe { feature(&device, D3D12_FEATURE_D3D12_OPTIONS, &mut options) } {
+        true => options.ResourceBindingTier,
+        false => 0,
+    };
+    if model < D3D_SHADER_MODEL_6_6 || tier < D3D12_RESOURCE_BINDING_TIER_3 {
+        marlin_diag::warn!(
+            "adapter lacks the D3D12 baseline: shader model {:#x}, resource binding tier {tier}",
+            model
+        );
+        return Err(unsupported());
+    }
+    Ok((device, model))
 }
 
 impl crate::contract::Instance for Backend {
@@ -349,6 +417,7 @@ impl crate::contract::Instance for Backend {
                 (adapter, device, index)
             }
         };
+        let (device, model) = device;
         let info = adapter_info(&adapter, index).ok_or(Error::from_kind(ErrorKind::Other))?;
 
         let validation = instance
@@ -364,17 +433,10 @@ impl crate::contract::Instance for Backend {
             });
 
         let mut options12 = D3D12_FEATURE_DATA_D3D12_OPTIONS12::default();
-        // SAFETY: valid interface; `options12` matches the queried feature. Older runtimes fail
-        // with E_INVALIDARG, which leaves it zeroed.
-        unsafe {
-            (device.vtbl().CheckFeatureSupport)(
-                device.as_raw(),
-                D3D12_FEATURE_D3D12_OPTIONS12,
-                (&raw mut options12).cast(),
-                size_of::<D3D12_FEATURE_DATA_D3D12_OPTIONS12>() as u32,
-            )
-        };
+        // SAFETY: the struct matches the feature. Older runtimes reject it, leaving it zeroed.
+        unsafe { feature(&device, D3D12_FEATURE_D3D12_OPTIONS12, &mut options12) };
         let features = Features {
+            shader_model: ((model >> 4) as u8, (model & 0xf) as u8),
             enhanced_barriers: options12.EnhancedBarriersSupported != 0
                 && !desc.disable_enhanced_barriers,
             tearing: instance.tearing,
@@ -400,6 +462,7 @@ impl crate::contract::Instance for Backend {
                     D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
                 )
             },
+            bindless: Bindless::new(&device)?,
             device,
             factory: instance.factory.clone(),
             info,
@@ -423,6 +486,7 @@ pub(crate) struct Device {
     info: AdapterInfo,
     features: Features,
     rtv_size: u32,
+    bindless: Arc<Bindless>,
     validation: Option<Arc<Validation>>,
 }
 
@@ -480,6 +544,82 @@ impl crate::contract::Device for Backend {
             v.flush();
             v.errors.load(Ordering::Relaxed)
         })
+    }
+
+    fn create_buffer(device: &Device, desc: &BufferDesc) -> Result<resource::Buffer> {
+        resource::create_buffer(device, desc)
+    }
+
+    fn create_texture(device: &Device, desc: &TextureDesc) -> Result<resource::Texture> {
+        resource::create_texture(device, desc)
+    }
+
+    fn create_render_target_view(
+        device: &Device,
+        texture: &PublicTexture,
+        desc: &RenderTargetViewDesc,
+    ) -> Result<resource::RenderTargetView> {
+        resource::create_render_target_view(device, texture, desc)
+    }
+
+    fn create_depth_stencil_view(
+        device: &Device,
+        texture: &PublicTexture,
+        desc: &DepthStencilViewDesc,
+    ) -> Result<resource::DepthStencilView> {
+        resource::create_depth_stencil_view(device, texture, desc)
+    }
+
+    fn create_texture_view(
+        device: &Device,
+        texture: &PublicTexture,
+        desc: &TextureViewDesc,
+    ) -> Result<Descriptor> {
+        resource::create_texture_view(device, texture, desc)
+    }
+
+    fn create_buffer_view(
+        device: &Device,
+        buffer: &PublicBuffer,
+        desc: &BufferViewDesc,
+    ) -> Result<Descriptor> {
+        resource::create_buffer_view(device, buffer, desc)
+    }
+
+    fn create_sampler(device: &Device, desc: &SamplerDesc) -> Result<Descriptor> {
+        resource::create_sampler(device, desc)
+    }
+
+    fn create_graphics_pipeline(
+        device: &Device,
+        desc: &GraphicsPipelineDesc<'_>,
+    ) -> Result<pipeline::GraphicsPipeline> {
+        let pipeline = pipeline::create_graphics_pipeline(device, desc);
+        flush(&device.validation);
+        pipeline
+    }
+
+    fn create_compute_pipeline(
+        device: &Device,
+        desc: &ComputePipelineDesc<'_>,
+    ) -> Result<pipeline::ComputePipeline> {
+        let pipeline = pipeline::create_compute_pipeline(device, desc);
+        flush(&device.validation);
+        pipeline
+    }
+}
+
+impl crate::contract::Resources for Backend {
+    fn buffer_mapped(buffer: &resource::Buffer) -> Option<NonNull<u8>> {
+        buffer.mapped
+    }
+
+    fn shader_view_index(view: &Descriptor) -> u32 {
+        view.index()
+    }
+
+    fn sampler_index(sampler: &Descriptor) -> u32 {
+        sampler.index()
     }
 }
 

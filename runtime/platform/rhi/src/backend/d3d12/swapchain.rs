@@ -6,12 +6,12 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use super::com::{self, *};
-use super::command::{RenderTargetView as RawView, Texture as RawTexture};
 use super::ffi::*;
+use super::resource::{RenderTargetView as RawView, Texture as RawTexture, dxgi_format};
 use super::{Backend, Device, Handle, Idle, Queue, Validation, check, error, flush, wait_handle};
 use crate::{
     Error, ErrorKind, Format, PresentMode, PresentStatus, RenderTargetView, Result, SurfaceHandle,
-    SwapchainDesc, Texture,
+    SwapchainDesc, Texture, TextureDesc, TextureUsage,
 };
 
 pub(crate) struct Swapchain {
@@ -32,15 +32,12 @@ pub(crate) struct Swapchain {
     validation: Option<Arc<Validation>>,
 }
 
-fn dxgi_format(format: Format) -> u32 {
-    match format {
-        Format::Rgba8Unorm => DXGI_FORMAT_R8G8B8A8_UNORM,
-        Format::Rgba8UnormSrgb => DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
-        Format::Bgra8Unorm => DXGI_FORMAT_B8G8R8A8_UNORM,
-        Format::Bgra8UnormSrgb => DXGI_FORMAT_B8G8R8A8_UNORM_SRGB,
-        Format::Rgb10a2Unorm => DXGI_FORMAT_R10G10B10A2_UNORM,
-        Format::Rgba16Float => DXGI_FORMAT_R16G16B16A16_FLOAT,
-    }
+/// Formats DXGI flip-model swapchains accept (sRGB ones through their views).
+fn presentable(format: Format) -> bool {
+    matches!(
+        format.linear(),
+        Format::Rgba8Unorm | Format::Bgra8Unorm | Format::Rgb10a2Unorm | Format::Rgba16Float
+    )
 }
 
 impl Swapchain {
@@ -53,7 +50,11 @@ impl Swapchain {
         desc: &SwapchainDesc,
     ) -> Result<Self> {
         let SurfaceHandle::Win32 { hwnd, .. } = surface;
-        if desc.width == 0 || desc.height == 0 || !(2..=16).contains(&desc.image_count) {
+        if desc.width == 0
+            || desc.height == 0
+            || !(2..=16).contains(&desc.image_count)
+            || !presentable(desc.format)
+        {
             return Err(Error::from_kind(ErrorKind::InvalidInput));
         }
         let tearing = device.features.tearing;
@@ -157,9 +158,7 @@ impl Swapchain {
         let view_desc = D3D12_RENDER_TARGET_VIEW_DESC {
             Format: dxgi_format(self.format),
             ViewDimension: D3D12_RTV_DIMENSION_TEXTURE2D,
-            Texture2D: [0, 0],
-            _union: [0, 0],
-            _align: [],
+            u: ViewUnion::default(),
         };
         for i in 0..count {
             let s = &self.swapchain;
@@ -181,10 +180,20 @@ impl Swapchain {
                     resource,
                     mip_levels: 1,
                     array_layers: 1,
+                    format: dxgi_format(self.format.linear()),
                 },
+                desc: TextureDesc::new_2d(
+                    self.width,
+                    self.height,
+                    self.format,
+                    TextureUsage::RENDER_TARGET | TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
+                ),
             });
             self.views.push(RenderTargetView {
-                raw: RawView { handle },
+                raw: RawView {
+                    handle,
+                    _slot: None,
+                },
             });
         }
         Ok(())

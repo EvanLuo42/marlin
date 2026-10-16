@@ -167,6 +167,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "marlin-demo-cubes"
+version = "0.1.0"
+dependencies = [
+ "marlin-app",
+ "marlin-diag",
+ "marlin-ecs",
+ "marlin-error",
+ "marlin-input",
+ "marlin-jobs",
+ "marlin-math",
+ "marlin-render",
+ "marlin-rhi",
+ "marlin-rt",
+ "marlin-time",
+]
+
+[[package]]
 name = "marlin-diag"
 version = "0.1.0"
 dependencies = [
@@ -341,6 +358,11 @@ dependencies = [
 [[package]]
 name = "marlin-render"
 version = "0.1.0"
+dependencies = [
+ "marlin-ecs",
+ "marlin-math",
+ "marlin-rhi",
+]
 
 [[package]]
 name = "marlin-render-graph"
@@ -353,6 +375,7 @@ dependencies = [
  "marlin-app",
  "marlin-diag",
  "marlin-error",
+ "marlin-sync",
  "windows-sys",
 ]
 

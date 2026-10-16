@@ -6,17 +6,22 @@
 //! signature wrong fails to compile on its own platform.
 //!
 //! Backends may name the public wrapper types (`crate::Texture`, ...) where the contract hands
-//! them out by reference: a swapchain owns its `crate::Texture`s so it can lend `&Texture`.
+//! them out by reference or needs their descriptions: a swapchain owns its `crate::Texture`s so
+//! it can lend `&Texture`.
 
+use core::ptr::NonNull;
 use core::time::Duration;
 
 use crate::{
-    AdapterInfo, CommandList, DeviceDesc, Features, Fence, Format, InstanceDesc, PresentMode,
-    PresentStatus, RenderPassDesc, RenderTargetView, Result, SurfaceHandle, SwapchainDesc, Texture,
-    TextureBarrier,
+    AdapterInfo, Buffer, BufferBarrier, BufferDesc, BufferTextureCopy, BufferViewDesc, CommandList,
+    ComputePipelineDesc, DepthStencilViewDesc, DeviceDesc, Features, Fence, Format,
+    GraphicsPipelineDesc, IndexFormat, InstanceDesc, PresentMode, PresentStatus, Rect,
+    RenderPassDesc, RenderTargetView, RenderTargetViewDesc, Result, SamplerDesc, ShaderFormat,
+    SurfaceHandle, SwapchainDesc, Texture, TextureBarrier, TextureDesc, TextureViewDesc, Viewport,
 };
 
 pub(crate) trait Types {
+    const SHADER_FORMAT: ShaderFormat;
     type Instance: Send + Sync;
     type Device: Send + Sync;
     type Queue: Send + Sync;
@@ -24,8 +29,14 @@ pub(crate) trait Types {
     type CommandPool: Send;
     type CommandList: Send;
     type Swapchain: Send;
+    type Buffer: Send + Sync;
     type Texture: Send + Sync;
     type RenderTargetView: Send + Sync;
+    type DepthStencilView: Send + Sync;
+    type ShaderView: Send + Sync;
+    type Sampler: Send + Sync;
+    type GraphicsPipeline: Send + Sync;
+    type ComputePipeline: Send + Sync;
 }
 
 pub(crate) trait Instance: Types {
@@ -59,6 +70,47 @@ pub(crate) trait Device: Types {
     ) -> Result<Self::Swapchain>;
     /// Validation errors logged so far (0 without validation).
     fn validation_errors(device: &Self::Device) -> u64;
+
+    fn create_buffer(device: &Self::Device, desc: &BufferDesc) -> Result<Self::Buffer>;
+    fn create_texture(device: &Self::Device, desc: &TextureDesc) -> Result<Self::Texture>;
+    fn create_render_target_view(
+        device: &Self::Device,
+        texture: &Texture,
+        desc: &RenderTargetViewDesc,
+    ) -> Result<Self::RenderTargetView>;
+    fn create_depth_stencil_view(
+        device: &Self::Device,
+        texture: &Texture,
+        desc: &DepthStencilViewDesc,
+    ) -> Result<Self::DepthStencilView>;
+    fn create_texture_view(
+        device: &Self::Device,
+        texture: &Texture,
+        desc: &TextureViewDesc,
+    ) -> Result<Self::ShaderView>;
+    fn create_buffer_view(
+        device: &Self::Device,
+        buffer: &Buffer,
+        desc: &BufferViewDesc,
+    ) -> Result<Self::ShaderView>;
+    fn create_sampler(device: &Self::Device, desc: &SamplerDesc) -> Result<Self::Sampler>;
+    fn create_graphics_pipeline(
+        device: &Self::Device,
+        desc: &GraphicsPipelineDesc<'_>,
+    ) -> Result<Self::GraphicsPipeline>;
+    fn create_compute_pipeline(
+        device: &Self::Device,
+        desc: &ComputePipelineDesc<'_>,
+    ) -> Result<Self::ComputePipeline>;
+}
+
+pub(crate) trait Resources: Types {
+    /// The CPU mapping of an upload or readback buffer.
+    fn buffer_mapped(buffer: &Self::Buffer) -> Option<NonNull<u8>>;
+    /// The view's slot in the bindless resource table.
+    fn shader_view_index(view: &Self::ShaderView) -> u32;
+    /// The sampler's slot in the bindless sampler table.
+    fn sampler_index(sampler: &Self::Sampler) -> u32;
 }
 
 pub(crate) trait Queue: Types {
@@ -81,6 +133,7 @@ pub(crate) trait Fences: Types {
     fn signal(fence: &Self::Fence, value: u64) -> Result<()>;
 }
 
+/// Recording. Arguments were validated by `api.rs` (ranges, counts, usages).
 pub(crate) trait Commands: Types {
     /// # Safety
     /// The GPU has finished every list recorded from the pool.
@@ -88,8 +141,57 @@ pub(crate) trait Commands: Types {
     fn begin(list: &mut Self::CommandList, pool: &mut Self::CommandPool) -> Result<()>;
     fn end(list: &mut Self::CommandList) -> Result<()>;
     fn texture_barriers(list: &mut Self::CommandList, barriers: &[TextureBarrier<'_>]);
+    fn buffer_barriers(list: &mut Self::CommandList, barriers: &[BufferBarrier<'_>]);
     fn begin_render_pass(list: &mut Self::CommandList, desc: &RenderPassDesc<'_>);
     fn end_render_pass(list: &mut Self::CommandList);
+    fn copy_buffer(
+        list: &mut Self::CommandList,
+        src: &Buffer,
+        src_offset: u64,
+        dst: &Buffer,
+        dst_offset: u64,
+        size: u64,
+    );
+    fn copy_buffer_to_texture(
+        list: &mut Self::CommandList,
+        src: &Buffer,
+        dst: &Texture,
+        region: &BufferTextureCopy,
+    );
+    fn copy_texture_to_buffer(
+        list: &mut Self::CommandList,
+        src: &Texture,
+        dst: &Buffer,
+        region: &BufferTextureCopy,
+    );
+    fn set_graphics_pipeline(list: &mut Self::CommandList, pipeline: &Self::GraphicsPipeline);
+    fn set_compute_pipeline(list: &mut Self::CommandList, pipeline: &Self::ComputePipeline);
+    /// Into the push constants of the pipeline kind bound last (graphics before any).
+    fn push_constants(list: &mut Self::CommandList, offset: u32, data: &[u32]);
+    fn set_viewport(list: &mut Self::CommandList, viewport: &Viewport);
+    fn set_scissor(list: &mut Self::CommandList, rect: &Rect);
+    fn set_index_buffer(
+        list: &mut Self::CommandList,
+        buffer: &Buffer,
+        offset: u64,
+        format: IndexFormat,
+    );
+    fn draw(
+        list: &mut Self::CommandList,
+        vertex_count: u32,
+        instance_count: u32,
+        first_vertex: u32,
+        first_instance: u32,
+    );
+    fn draw_indexed(
+        list: &mut Self::CommandList,
+        index_count: u32,
+        instance_count: u32,
+        first_index: u32,
+        vertex_offset: i32,
+        first_instance: u32,
+    );
+    fn dispatch(list: &mut Self::CommandList, x: u32, y: u32, z: u32);
 }
 
 pub(crate) trait Swapchain: Types {
@@ -106,4 +208,7 @@ pub(crate) trait Swapchain: Types {
 }
 
 /// The whole contract.
-pub(crate) trait Rhi: Instance + Device + Queue + Fences + Commands + Swapchain {}
+pub(crate) trait Rhi:
+    Instance + Device + Resources + Queue + Fences + Commands + Swapchain
+{
+}

@@ -21,11 +21,17 @@
 //! - **Swapchains pace the CPU** with a frame-latency wait in [`Swapchain::acquire`] (DXGI's
 //!   waitable object, Vulkan's acquire). A submission's swapchain dependency will become explicit
 //!   when the Vulkan backend needs its semaphores.
-//! - **Baseline**: D3D12 feature level 12_0. The binding model to come is bindless (shader model
-//!   6.6 descriptor heap indexing, resource binding tier 3), which this baseline allows.
+//! - **Bindless only**: buffer and texture views ([`ShaderView`]) and samplers occupy slots in
+//!   device-wide tables, and shaders index those tables with values passed in push constants or
+//!   buffers. There are no descriptor sets, root tables or vertex input layouts; every pipeline
+//!   shares one layout. Baseline: D3D12 feature level 12_0, shader model 6.6, resource binding
+//!   tier 3.
+//! - **Shaders are bytecode** ([`ShaderModule`]): DXIL, SPIR-V or a console format, produced
+//!   offline. The RHI never compiles source. `docs/design/0002-shader-interface.md` is the
+//!   contract shaders follow.
 //!
-//! Only what clearing and presenting needs is implemented so far. Validation messages (D3D12
-//! debug layer) go to the `marlin_diag` log, and [`Device::validation_errors`] counts errors.
+//! Validation messages (D3D12 debug layer) go to the `marlin_diag` log, and
+//! [`Device::validation_errors`] counts errors.
 #![cfg_attr(not(test), no_std)]
 
 extern crate alloc;
@@ -38,16 +44,29 @@ mod frames;
 mod types;
 
 pub use api::{
-    CommandList, CommandPool, Device, Fence, Instance, Queue, RenderTargetView, Swapchain, Texture,
+    Buffer, CommandList, CommandPool, ComputePipeline, DepthStencilView, Device, Fence,
+    GraphicsPipeline, Instance, Queue, RenderTargetView, Sampler, ShaderView, Swapchain, Texture,
 };
 pub use error::{Error, ErrorKind, Result};
 pub use frames::FramesInFlight;
 pub use types::{
-    Access, AdapterInfo, AdapterKind, AdapterPreference, ColorAttachment, DeviceDesc, Features,
-    Format, InstanceDesc, Layout, LoadOp, MAX_COLOR_ATTACHMENTS, PresentMode, PresentStatus,
-    QueueType, RenderPassDesc, Stage, StoreOp, SubresourceRange, SurfaceHandle, SwapchainDesc,
-    TextureBarrier, TextureState,
+    Access, AdapterInfo, AdapterKind, AdapterPreference, AddressMode, BlendComponent, BlendFactor,
+    BlendOp, BlendState, BorderColor, BufferBarrier, BufferDesc, BufferState, BufferTextureCopy,
+    BufferUsage, BufferViewDesc, BufferViewKind, ClearValue, ColorAttachment, ColorTargetState,
+    ColorWrites, CompareOp, ComputePipelineDesc, CullMode, DepthAttachment, DepthState,
+    DepthStencilViewDesc, DeviceDesc, Features, Filter, Format, FrontFace, GraphicsPipelineDesc,
+    IndexFormat, InstanceDesc, Layout, LoadOp, MAX_BINDLESS_RESOURCES, MAX_BINDLESS_SAMPLERS,
+    MAX_COLOR_ATTACHMENTS, MAX_PUSH_CONSTANTS, MAX_UNIFORM_SIZE, MemoryLocation, PolygonMode,
+    PresentMode, PresentStatus, PrimitiveTopology, QueueType, RasterState, Rect, RenderPassDesc,
+    RenderTargetViewDesc, SamplerDesc, ShaderFormat, ShaderModule, Stage, StoreOp,
+    SubresourceRange, SurfaceHandle, SwapchainDesc, TEXTURE_OFFSET_ALIGNMENT,
+    TEXTURE_ROW_PITCH_ALIGNMENT, TextureBarrier, TextureDesc, TextureState, TextureUsage,
+    TextureViewDesc, TextureViewDimension, UNIFORM_ALIGNMENT, Viewport, aligned_row_pitch,
 };
+
+/// The shader bytecode this build's backend consumes. Engine code picks shader blobs with it
+/// rather than by platform.
+pub const SHADER_FORMAT: ShaderFormat = <backend::imp::Backend as contract::Types>::SHADER_FORMAT;
 
 // The selected backend must implement the whole contract.
 const _: () = {

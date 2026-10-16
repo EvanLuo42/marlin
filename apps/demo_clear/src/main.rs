@@ -163,6 +163,7 @@ fn run() -> Result<(), Failure> {
                 load: LoadOp::Clear(color(time + hue)),
                 store: StoreOp::Store,
             }],
+            depth: None,
         });
         list.end_render_pass();
         list.texture_barriers(&[TextureBarrier::new(

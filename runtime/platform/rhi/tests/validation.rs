@@ -9,7 +9,7 @@ fn validation_reports_errors() {
     let instance = Instance::new(&InstanceDesc { validation: true }).unwrap();
     let device = instance
         .create_device(&DeviceDesc {
-            adapter: AdapterPreference::Software,
+            adapter: AdapterPreference::HighPerformance,
             ..DeviceDesc::default()
         })
         .unwrap();

@@ -6,6 +6,9 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+marlin-ecs.workspace = true
+marlin-math.workspace = true
+marlin-rhi.workspace = true
 
 [lints]
 workspace = true
