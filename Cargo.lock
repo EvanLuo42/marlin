@@ -147,6 +147,9 @@ dependencies = [
 [[package]]
 name = "marlin-diag"
 version = "0.1.0"
+dependencies = [
+ "marlin-pal",
+]
 
 [[package]]
 name = "marlin-ecs"
@@ -334,6 +337,9 @@ version = "0.1.0"
 [[package]]
 name = "marlin-thread"
 version = "0.1.0"
+dependencies = [
+ "marlin-pal",
+]
 
 [[package]]
 name = "marlin-time"
