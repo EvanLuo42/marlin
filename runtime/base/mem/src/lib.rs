@@ -12,4 +12,4 @@ mod lock;
 mod segment;
 
 pub use global::MarlinHeap;
-pub use heap::{HeapStats, collect_abandoned, stats};
+pub use heap::{HeapStats, collect_abandoned, good_size, stats};

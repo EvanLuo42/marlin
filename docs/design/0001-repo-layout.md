@@ -276,7 +276,7 @@ RHI 放在 L1 而不是 L3：它和 pal 一样含平台 backend，放在这里�
 
 ```
 runtime/core/
-├── math/          SIMD 向量/矩阵/四元数、几何
+├── math/          向量/矩阵/四元数/TRS/几何（自研，portable_simd；右手 Y 向上、列向量、reverse-Z）
 ├── containers/    allocator-aware 容器：Vec 别名、HashMap（hashbrown）、SmallVec、SlotMap、Handle、侵入式链表
 ├── text/          Name（驻留字符串，类似 FName）、UTF-8 工具、格式化
 ├── hash/          稳定哈希（资源 ID）、快速哈希
@@ -510,3 +510,8 @@ runtime/<layer>/<name>/
 - 空闲 worker 用 eventcount（`epoch` + `sleepers`，SeqCst 配对）睡在 Condvar 上，不会丢唤醒。外部线程等待 counter 时直接阻塞（不帮忙执行 job）。counter 由 `Arc` 共享，最后一次 decrement 发生在 scope 返回之后也是安全的。
 - 性能（release，11 个 worker）：空 job（spawn + 执行）约 224 ns；4095 次嵌套等待的 fork-join 约 2.8 ms。
 - 尚未实现：无锁的 Chase-Lev 双端队列（现在是 Mutex<VecDeque>）、fiber 感知的锁（job 不要在等待时持有 `marlin_sync` 的锁）、fiber 池耗尽时的降级处理（现在直接 panic）、主线程作为 worker 参与执行、frame 级的 job 图与 profiler 标记。
+- **约定**：测试一律写在各 crate 中与 `src/` 同级的 `tests/` 目录（集成测试），`src/` 里不放 `#[cfg(test)]` 模块。需要验证内部逻辑时，通过有实际用途的公共 API 来测，例如 mem 的 `good_size()`。
+- **marlin-math**（自研，不用 glam）：右手系、Y 向上、相机朝 -Z；列向量（`M * v`），列主序存储；投影统一是 reverse-Z，深度范围 [0, 1]（`perspective_rh`、`perspective_infinite_rh`、`orthographic_rh`）。`Vec4`、`Quat`、`Mat4` 的列都基于 `core::simd::f32x4`（portable_simd，16 字节对齐，通过 `Deref` 用 `.x/.y/.z/.w` 访问字段）；`Vec2`/`Vec3` 是 `repr(C)` 标量（8/12 字节），方便直接作为 GPU 顶点数据。四元数乘法用 SIMD swizzle 实现；`Mat4` 求逆用 MESA 的余子式公式，另提供更快的 `inverse_affine`。
+- **超越函数**：`core::f32::math` 只有 floor/ceil/round/trunc/fract/sqrt/mul_add 等，没有 sin/exp/ln，所以自研：在 f64 里做区间规约和多项式求值（sin/cos 用 FreeBSD k_sinf/k_cosf 的系数，atan/exp/ln 用级数，阶数按误差界选定）。实测和 std libm 相比：sin/cos/atan/asin/acos/exp/exp2/ln/log2/log10 ≤ 1 ulp，tan/pow ≤ 2 ulp。只用基本 IEEE 运算、不用 FMA，所以各平台结果逐位一致；三角函数在 |x| < 约 1.6e6 时保持精度。
+- `core::simd` 没有向量 sqrt（它在 std 的 `std_float` 里），所以需要开方的地方都先归约成标量再用 `core::f32::math::sqrt`。
+- 几何：`Aabb`（Arvo 变换）、`Sphere`、`Plane`、`Ray`（slab / 平面 / 球求交）、`Frustum`（按 reverse-Z 的 Gribb/Hartmann 提取平面；无限远投影的远平面退化为"总在内侧"）。

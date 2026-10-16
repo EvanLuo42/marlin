@@ -708,3 +708,14 @@ pub fn stats() -> HeapStats {
         abandoned_segments: ABANDONED_COUNT.load(Ordering::Relaxed),
     }
 }
+
+/// The usable size of an allocation of `size` bytes (alignment ≤ 16): the size class a small or
+/// medium request is rounded up to, or whole pages for larger ones. Containers can grow to it for
+/// free.
+pub fn good_size(size: usize) -> usize {
+    if size <= MEDIUM_MAX {
+        bin_size(bin(size.max(1)))
+    } else {
+        size.next_multiple_of(vmem::page_size())
+    }
+}

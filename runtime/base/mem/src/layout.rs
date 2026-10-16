@@ -48,32 +48,3 @@ pub(crate) const fn bin_size(bin: usize) -> usize {
 
 const _: () = assert!(bin(MEDIUM_MAX) == BIN_COUNT - 1);
 const _: () = assert!(bin_size(BIN_COUNT - 1) == MEDIUM_MAX);
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn bins_cover_every_size_tightly() {
-        for size in 1..=MEDIUM_MAX {
-            let b = bin(size);
-            assert!((1..BIN_COUNT).contains(&b), "size {size}");
-            assert!(bin_size(b) >= size, "size {size}");
-            assert!(b == 1 || bin_size(b - 1) < size, "size {size}");
-            if size > 64 {
-                assert!(
-                    bin_size(b) * 4 <= size * 5 + 64,
-                    "size {size} wastes too much"
-                );
-                assert_eq!(bin_size(b) % 16, 0);
-            }
-        }
-    }
-
-    #[test]
-    fn bin_sizes_increase() {
-        for b in 2..BIN_COUNT {
-            assert!(bin_size(b) > bin_size(b - 1));
-        }
-    }
-}

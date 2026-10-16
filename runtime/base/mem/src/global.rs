@@ -65,35 +65,3 @@ unsafe impl GlobalAlloc for MarlinHeap {
         unsafe { heap::realloc(ptr, layout.size(), layout.align(), new_size) }
     }
 }
-
-#[cfg(test)]
-#[allow(clippy::undocumented_unsafe_blocks)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn alloc_write_dealloc_across_classes() {
-        let heap = MarlinHeap::new();
-        for size in [1, 8, 24, 100, 4096, 9000, 65536, 70_000, 5 << 20] {
-            for align in [1, 8, 16, 64, 4096] {
-                let layout = Layout::from_size_align(size, align).unwrap();
-                unsafe {
-                    let p = heap.alloc_zeroed(layout);
-                    assert!(!p.is_null(), "{layout:?}");
-                    assert_eq!(p.addr() % align, 0, "{layout:?}");
-                    assert_eq!(p.add(size - 1).read(), 0);
-                    p.write(1);
-                    p.add(size - 1).write(2);
-                    heap.dealloc(p, layout);
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn refuses_alignment_above_half_a_segment() {
-        let heap = MarlinHeap::new();
-        let layout = Layout::from_size_align(8, 4 << 20).unwrap();
-        assert!(unsafe { heap.alloc(layout) }.is_null());
-    }
-}
