@@ -12,6 +12,7 @@ marlin-error.workspace = true
 marlin-hash.workspace = true
 marlin-io.workspace = true
 marlin-jobs.workspace = true
+marlin-net.workspace = true
 marlin-reflect.workspace = true
 marlin-serial.workspace = true
 marlin-sync.workspace = true

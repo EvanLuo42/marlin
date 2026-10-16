@@ -433,3 +433,25 @@ pub fn publish_manifest(root: &Path, ddc: &dyn Ddc, manifest: &Manifest) -> std:
     std::fs::write(dir.join(format!("{}.manifest", manifest.platform)), &bytes)?;
     Ok(key)
 }
+
+/// One unit's cooked bytes: from `ddc` when its key is there, else cooked now and stored.
+/// Returns the key, the bytes, whether they were cached, and the cook's warnings.
+pub fn fetch_unit(
+    db: &AssetDb,
+    cookers: &Cookers,
+    ddc: &dyn Ddc,
+    platform: &str,
+    file: FileId,
+) -> Result<(u128, Vec<u8>, bool, Vec<String>), CookError> {
+    let key = unit_key(db, cookers, file, platform)?;
+    let io = |source| CookError::Io {
+        path: db.file_info(file).path,
+        source,
+    };
+    if let Some(bytes) = ddc.get(key).map_err(io)? {
+        return Ok((key, bytes, true, Vec::new()));
+    }
+    let (bytes, warnings) = cook_unit(db, cookers, file, platform)?;
+    ddc.put(key, &bytes).map_err(io)?;
+    Ok((key, bytes, false, warnings))
+}

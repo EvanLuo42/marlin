@@ -1,9 +1,12 @@
 [package]
 name = "marlin-cooker"
-description = "Command-line asset cooker."
+description = "Command-line asset cooker, and the engine's cookers for the cooking tools."
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+
+[lib]
+path = "src/lib.rs"
 
 [[bin]]
 name = "marlin-cook"
@@ -13,6 +16,7 @@ path = "src/main.rs"
 marlin-anim.workspace = true
 marlin-asset.workspace = true
 marlin-asset-db.workspace = true
+marlin-compress.workspace = true
 marlin-cook-audio.workspace = true
 marlin-cook-core.workspace = true
 marlin-cook-level.workspace = true
@@ -20,9 +24,9 @@ marlin-cook-mesh.workspace = true
 marlin-cook-script.workspace = true
 marlin-cook-shader.workspace = true
 marlin-cook-texture.workspace = true
-marlin-compress.workspace = true
 marlin-masset.workspace = true
 marlin-render.workspace = true
+marlin-store.workspace = true
 marlin-vcs.workspace = true
 
 [dev-dependencies]

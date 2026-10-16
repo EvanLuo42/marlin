@@ -8,6 +8,7 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
+use core::time::Duration;
 
 use marlin_containers::HashMap;
 use marlin_io::File;
@@ -28,6 +29,8 @@ pub enum SourceError {
     /// No layer has the unit.
     NotFound,
     Io(marlin_io::Error),
+    /// A remote source (the cook service) failed to provide the unit: its message.
+    Remote(String),
     Package(PackageError),
 }
 
@@ -36,6 +39,7 @@ impl fmt::Display for SourceError {
         match self {
             Self::NotFound => f.write_str("unit not found"),
             Self::Io(e) => write!(f, "{e}"),
+            Self::Remote(e) => f.write_str(e),
             Self::Package(e) => write!(f, "{e}"),
         }
     }
@@ -66,6 +70,8 @@ pub enum Read<'a> {
     },
     /// The bytes, already there.
     Ready(UnitBytes),
+    /// Requested; [`UnitSource::poll`] delivers it later (a network source).
+    Pending,
 }
 
 /// A provider of cooked units.
@@ -77,6 +83,20 @@ pub trait UnitSource: Send + Sync {
     /// Turns the bytes read for a [`Read::File`] into the unit (decompression: may run on any
     /// thread).
     fn finish(&self, unit: u64, read: &[u8]) -> Result<UnitBytes, SourceError>;
+
+    /// A unit [`begin`](Self::begin) left [`Read::Pending`], once it has arrived.
+    fn poll(&self, _unit: u64) -> Option<Result<UnitBytes, SourceError>> {
+        None
+    }
+
+    /// Blocks up to `timeout` for pending units to arrive (loading screens, tools).
+    fn wait(&self, _timeout: Duration) {}
+
+    /// Units whose contents changed since the last call: hot reload. Sources that never change
+    /// (packages) report none.
+    fn take_invalidated(&self) -> Vec<u64> {
+        Vec::new()
+    }
 }
 
 /// A mounted package file.
@@ -267,5 +287,26 @@ impl Vfs {
             .iter()
             .rev()
             .find_map(|l| l.source.object_unit(uuid))
+    }
+}
+
+impl Vfs {
+    /// Units any layer reports changed since the last call.
+    pub fn take_invalidated(&self) -> Vec<u64> {
+        let mut units: Vec<u64> = self
+            .layers
+            .iter()
+            .flat_map(|l| l.source.take_invalidated())
+            .collect();
+        units.sort_unstable();
+        units.dedup();
+        units
+    }
+
+    /// Waits up to `timeout` for pending units of any layer.
+    pub fn wait(&self, timeout: Duration) {
+        for l in &self.layers {
+            l.source.wait(timeout);
+        }
     }
 }

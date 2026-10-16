@@ -20,9 +20,9 @@ mod package;
 
 pub use cook::{
     COOK_FORMAT, CookError, CookOptions, CookReport, UnitOutcome, cook, cook_all, cook_unit,
-    publish_manifest, source_units, unit_key,
+    fetch_unit, publish_manifest, source_units, unit_key,
 };
 pub use cooker::{CookContext, Cooked, Cooker, Cookers, SourceObject, fingerprint};
-pub use ddc::{Ddc, LocalDdc};
+pub use ddc::{Ddc, LayeredDdc, LocalDdc};
 pub use manifest::{Manifest, ManifestError, ManifestUnit};
 pub use package::{PackageOptions, PackageReport, PackageWriteError, write_package};

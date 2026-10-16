@@ -1,0 +1,23 @@
+[package]
+name = "marlin-store"
+description = "Shared derived-data cache server and its clients."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "marlin-store"
+path = "src/main.rs"
+
+[dependencies]
+marlin-asset.workspace = true
+marlin-cook-core.workspace = true
+marlin-error.workspace = true
+marlin-hash.workspace = true
+marlin-net.workspace = true
+
+[dev-dependencies]
+marlin-asset.workspace = true
+
+[lints]
+workspace = true

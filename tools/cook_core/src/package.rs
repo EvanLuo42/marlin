@@ -137,8 +137,7 @@ pub fn write_package(
         n => n,
     }
     .min(jobs.len().max(1));
-    let results: Vec<OnceLock<Compressed>> =
-        (0..jobs.len()).map(|_| OnceLock::new()).collect();
+    let results: Vec<OnceLock<Compressed>> = (0..jobs.len()).map(|_| OnceLock::new()).collect();
     let next = AtomicUsize::new(0);
     std::thread::scope(|s| {
         for _ in 0..threads {

@@ -22,6 +22,7 @@ use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::any::{Any, TypeId};
 use core::fmt;
+use core::time::Duration;
 
 use marlin_containers::{HashMap, HashMapExt, HashSet, HashSetExt, SlotMap};
 use marlin_io::{IoBuffer, IoQueue, RequestId};
@@ -162,6 +163,8 @@ pub(crate) struct ObjectSlot {
     state: State,
     value: Option<Loaded>,
     unit: Option<u64>,
+    /// Times the value was replaced by a reload.
+    version: u32,
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -193,6 +196,7 @@ impl ObjectTable {
                 state: State::Queued,
                 value: None,
                 unit: None,
+                version: 0,
             })
         });
         let object = &mut self.slots[slot];
@@ -220,6 +224,7 @@ impl ObjectTable {
                 state: State::Waiting,
                 value: None,
                 unit: Some(unit),
+                version: 0,
             })
         });
         let object = &mut self.slots[slot];
@@ -240,6 +245,8 @@ impl ObjectTable {
 enum Stage {
     Requested,
     Reading,
+    /// Asked of a source that delivers later ([`Read::Pending`]).
+    Polling,
     /// Read, waiting to be decoded.
     Read(IoBuffer, usize),
     Decoded,
@@ -251,13 +258,21 @@ enum Stage {
 
 struct UnitSlot {
     stage: Stage,
+    /// The bytes its loaded objects came from.
     bytes: Option<Arc<UnitBytes>>,
+    /// New bytes, decoded but not loaded yet.
+    incoming: Option<Arc<UnitBytes>>,
     /// Its objects (once parsed).
     objects: Vec<Slot>,
     /// Units it links to.
     imports: Vec<u64>,
     /// Objects requested expecting to be in this unit.
     waiters: Vec<Slot>,
+    /// This load replaces a loaded version (hot reload): its objects keep their old values until
+    /// the new ones are made, and a failure keeps the old version.
+    reload: bool,
+    /// Invalidated again while loading: reload once this load is done.
+    again: bool,
 }
 
 impl UnitSlot {
@@ -265,9 +280,12 @@ impl UnitSlot {
         Self {
             stage: Stage::Requested,
             bytes: None,
+            incoming: None,
             objects: Vec::new(),
             imports: Vec::new(),
             waiters: Vec::new(),
+            reload: false,
+            again: false,
         }
     }
 
@@ -300,6 +318,11 @@ pub struct AssetServer {
     collect: bool,
     /// Stage changes so far: whether a blocking round got anywhere.
     progress: u64,
+    /// Objects reloaded since the last [`take_reloaded`](Self::take_reloaded).
+    reloaded: Vec<Uuid>,
+    /// Reloads that failed (the old version stays) since the last
+    /// [`take_reload_errors`](Self::take_reload_errors).
+    reload_errors: Vec<(u64, AssetError)>,
 }
 
 impl AssetServer {
@@ -317,6 +340,8 @@ impl AssetServer {
             reads: HashMap::new(),
             collect: false,
             progress: 0,
+            reloaded: Vec::new(),
+            reload_errors: Vec::new(),
         }
     }
 
@@ -386,6 +411,44 @@ impl AssetServer {
             .is_some_and(|u| matches!(u.stage, Stage::Resident))
     }
 
+    /// How many times the object was replaced by a reload (0: as first loaded). Systems that
+    /// derive data from an object (GPU resources, caches) compare it to rebuild.
+    pub fn version<T: 'static>(&self, handle: &Handle<T>) -> u32 {
+        self.table.slots.get(handle.slot()).map_or(0, |o| o.version)
+    }
+
+    /// Objects whose values were replaced by reloads since the last call.
+    pub fn take_reloaded(&mut self) -> Vec<Uuid> {
+        core::mem::take(&mut self.reloaded)
+    }
+
+    /// Reloads that failed since the last call. Their units keep the version loaded before.
+    pub fn take_reload_errors(&mut self) -> Vec<(u64, AssetError)> {
+        core::mem::take(&mut self.reload_errors)
+    }
+
+    /// Loads `unit` again (if it is loaded): its objects keep their handles and get new values.
+    /// Sources that know when units change ([`UnitSource::take_invalidated`]) trigger this on
+    /// their own.
+    ///
+    /// [`UnitSource::take_invalidated`]: crate::UnitSource::take_invalidated
+    pub fn reload(&mut self, unit: u64) {
+        let Some(u) = self.units.get_mut(&unit) else {
+            return;
+        };
+        match u.stage {
+            Stage::Resident | Stage::Failed(_) => {
+                u.reload = matches!(u.stage, Stage::Resident);
+                u.stage = Stage::Requested;
+                u.again = false;
+                self.requested.push(unit);
+                self.progress += 1;
+            }
+            // In flight: what arrives may already be stale.
+            _ => u.again = true,
+        }
+    }
+
     /// Whether nothing is in flight.
     pub fn is_idle(&self) -> bool {
         self.queued.is_empty()
@@ -420,9 +483,20 @@ impl AssetServer {
             total.objects_loaded += s.objects_loaded;
             total.objects_failed += s.objects_failed;
             total.units_unloaded += s.units_unloaded;
-            // Done, or stuck (nothing moved): either way, another round would change nothing.
-            if self.is_idle() || (self.progress == before && s == UpdateStats::default()) {
+            if self.is_idle() {
                 return total;
+            }
+            if self.progress == before && s == UpdateStats::default() {
+                // Nothing moved. Units on their way from a remote source: wait for them;
+                // otherwise another round would change nothing.
+                if !self
+                    .units
+                    .values()
+                    .any(|u| matches!(u.stage, Stage::Polling))
+                {
+                    return total;
+                }
+                vfs.wait(Duration::from_millis(5));
             }
         }
     }
@@ -438,9 +512,27 @@ impl AssetServer {
         let Some(u) = self.units.get_mut(&unit) else {
             return;
         };
-        u.stage = Stage::Failed(error.clone());
         self.progress += 1;
+        if u.reload {
+            // A failed reload keeps the version that is loaded. Objects asked for meanwhile that
+            // only the new version would have had fail.
+            u.stage = Stage::Resident;
+            u.incoming = None;
+            u.reload = false;
+            for slot in core::mem::take(&mut u.waiters) {
+                if let Some(o) = self.table.slots.get_mut(slot)
+                    && o.state == State::Waiting
+                {
+                    o.state = State::Failed(error.clone());
+                    stats.objects_failed += 1;
+                }
+            }
+            self.reload_errors.push((unit, error));
+            return;
+        }
+        u.stage = Stage::Failed(error.clone());
         u.bytes = None;
+        u.incoming = None;
         for &slot in u.objects.iter().chain(&u.waiters) {
             if let Some(o) = self.table.slots.get_mut(slot)
                 && !matches!(o.state, State::Loaded | State::Failed(_))
@@ -459,6 +551,11 @@ impl AssetServer {
         jobs: Option<&JobSystem>,
     ) -> UpdateStats {
         let mut stats = UpdateStats::default();
+
+        // Changed units: load them again.
+        for unit in vfs.take_invalidated() {
+            self.reload(unit);
+        }
 
         // Queued objects: find their units.
         for slot in core::mem::take(&mut self.queued) {
@@ -507,8 +604,12 @@ impl AssetServer {
                 Err(e) => self.fail_unit(unit, e.into(), &mut stats),
                 Ok(Read::Ready(bytes)) => {
                     let u = self.units.get_mut(&unit).expect("requested");
-                    u.bytes = Some(Arc::new(bytes));
+                    u.incoming = Some(Arc::new(bytes));
                     u.stage = Stage::Decoded;
+                    self.progress += 1;
+                }
+                Ok(Read::Pending) => {
+                    self.units.get_mut(&unit).expect("requested").stage = Stage::Polling;
                     self.progress += 1;
                 }
                 Ok(Read::File { file, offset, len }) => match io.as_deref_mut() {
@@ -542,6 +643,31 @@ impl AssetServer {
             }
         }
         self.requested = retry;
+
+        // Units on their way from sources that deliver later.
+        let polling: Vec<u64> = self
+            .units
+            .iter()
+            .filter(|(_, u)| matches!(u.stage, Stage::Polling))
+            .map(|(&k, _)| k)
+            .collect();
+        for unit in polling {
+            let Some(source) = vfs.source(unit) else {
+                self.fail_unit(unit, AssetError::NotFound, &mut stats);
+                continue;
+            };
+            match source.poll(unit) {
+                None => {}
+                Some(Ok(bytes)) => {
+                    let u = self.units.get_mut(&unit).expect("polling");
+                    u.incoming = Some(Arc::new(bytes));
+                    u.stage = Stage::Decoded;
+                    self.progress += 1;
+                    stats.units_decoded += 1;
+                }
+                Some(Err(e)) => self.fail_unit(unit, e.into(), &mut stats),
+            }
+        }
 
         // Completed reads.
         if let Some(queue) = io {
@@ -616,7 +742,7 @@ impl AssetServer {
             match result.expect("every job ran") {
                 Ok(bytes) => {
                     let u = self.units.get_mut(unit).expect("reading");
-                    u.bytes = Some(Arc::new(bytes));
+                    u.incoming = Some(Arc::new(bytes));
                     u.stage = Stage::Decoded;
                     self.progress += 1;
                     stats.units_decoded += 1;
@@ -633,7 +759,7 @@ impl AssetServer {
             .map(|(&k, _)| k)
             .collect();
         for unit in decoded_units {
-            let bytes = self.units[&unit].bytes.clone().expect("decoded");
+            let bytes = self.units[&unit].incoming.clone().expect("decoded");
             let parsed = UnitView::new(bytes.as_slice()).and_then(|view| {
                 if view.header().unit != unit {
                     return Err(crate::cooked::UnitError::Truncated);
@@ -660,6 +786,28 @@ impl AssetServer {
                         .collect();
                     for &i in &imports {
                         self.request_unit(i);
+                    }
+                    // A reload may have lost objects: moved to another unit (load them from
+                    // there), or deleted.
+                    let old =
+                        core::mem::take(&mut self.units.get_mut(&unit).expect("decoded").objects);
+                    for slot in old.into_iter().filter(|s| !slots.contains(s)) {
+                        let Some(o) = self.table.slots.get_mut(slot) else {
+                            continue;
+                        };
+                        o.value = None;
+                        o.version += 1;
+                        match vfs.object_unit(o.uuid).filter(|&u| u != unit) {
+                            Some(_) => {
+                                o.state = State::Queued;
+                                o.unit = None;
+                                self.queued.push(slot);
+                            }
+                            None => {
+                                o.state = State::Failed(AssetError::NotFound);
+                                stats.objects_failed += 1;
+                            }
+                        }
                     }
                     let u = self.units.get_mut(&unit).expect("decoded");
                     u.objects = slots;
@@ -696,9 +844,11 @@ impl AssetServer {
     }
 
     fn load_unit(&mut self, unit: u64, stats: &mut UpdateStats) {
-        let (bytes, slots) = {
-            let u = &self.units[&unit];
-            (u.bytes.clone().expect("parsed"), u.objects.clone())
+        let (bytes, slots, reload) = {
+            let u = self.units.get_mut(&unit).expect("parsed");
+            let bytes = u.incoming.take().expect("parsed");
+            u.bytes = Some(bytes.clone());
+            (bytes, u.objects.clone(), u.reload)
         };
         let view = match UnitView::new(bytes.as_slice()) {
             Ok(v) => v,
@@ -733,6 +883,7 @@ impl AssetServer {
                 }
             };
             let object = &mut self.table.slots[slot];
+            let had_value = object.value.is_some();
             match result {
                 Ok(value) => {
                     object.value = Some(value);
@@ -740,14 +891,26 @@ impl AssetServer {
                     stats.objects_loaded += 1;
                 }
                 Err(e) => {
+                    // A reload's failed object keeps nothing stale: its old value went with
+                    // the old bytes it may point into.
+                    object.value = None;
                     object.state = State::Failed(e);
                     stats.objects_failed += 1;
                 }
             }
+            if reload && had_value {
+                object.version += 1;
+                self.reloaded.push(object.uuid);
+            }
         }
         let u = self.units.get_mut(&unit).expect("parsed");
         u.stage = Stage::Resident;
+        u.reload = false;
         self.progress += 1;
+        if core::mem::take(&mut u.again) {
+            self.reload(unit);
+        }
+        let u = self.units.get_mut(&unit).expect("parsed");
         // Requested here but not in the unit: the source's tables disagreed with the unit.
         for slot in core::mem::take(&mut u.waiters) {
             if let Some(o) = self.table.slots.get_mut(slot)

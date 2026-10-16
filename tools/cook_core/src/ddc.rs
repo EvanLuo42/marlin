@@ -255,3 +255,43 @@ impl Ddc for LocalDdc {
         Ok(())
     }
 }
+
+/// A local cache in front of a shared one: reads try the local cache first and keep what the
+/// shared one had; writes go to both. The shared cache is best effort: when it fails, cooking
+/// carries on with the local one alone.
+pub struct LayeredDdc<L: Ddc, S: Ddc> {
+    pub local: L,
+    pub shared: S,
+}
+
+impl<L: Ddc, S: Ddc> LayeredDdc<L, S> {
+    pub fn new(local: L, shared: S) -> Self {
+        Self { local, shared }
+    }
+}
+
+impl<L: Ddc, S: Ddc> Ddc for LayeredDdc<L, S> {
+    fn get(&self, key: u128) -> io::Result<Option<Vec<u8>>> {
+        if let Some(data) = self.local.get(key)? {
+            return Ok(Some(data));
+        }
+        match self.shared.get(key) {
+            Ok(Some(data)) => {
+                self.local.put(key, &data)?;
+                Ok(Some(data))
+            }
+            Ok(None) | Err(_) => Ok(None),
+        }
+    }
+
+    fn contains(&self, key: u128) -> bool {
+        self.local.contains(key) || self.shared.contains(key)
+    }
+
+    fn put(&self, key: u128, data: &[u8]) -> io::Result<()> {
+        self.local.put(key, data)?;
+        // Another machine may have stored it meanwhile: keys are content, so that is fine.
+        let _ = self.shared.put(key, data);
+        Ok(())
+    }
+}

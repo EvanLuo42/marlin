@@ -1,0 +1,25 @@
+[package]
+name = "marlin-cookd"
+description = "The cook service: cooks on demand, serves units to games, reports changes."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "marlin-cookd"
+path = "src/main.rs"
+
+[dependencies]
+marlin-asset.workspace = true
+marlin-asset-db.workspace = true
+marlin-cook-core.workspace = true
+marlin-cooker.workspace = true
+marlin-store.workspace = true
+
+[dev-dependencies]
+marlin-io.workspace = true
+marlin-reflect.workspace = true
+marlin-serial.workspace = true
+
+[lints]
+workspace = true

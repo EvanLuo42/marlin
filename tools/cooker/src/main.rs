@@ -1,10 +1,10 @@
 //! Command-line asset cooker (`docs/design/0003-asset-pipeline.md`).
 //!
-//! - `marlin-cook cook <root> [--platform <name>] [--threads <n>]`: brings the index up to date,
+//! - `marlin-cook cook <root> [--platform <name>] [--threads <n>] [--store <addr>]`: brings the index up to date,
 //!   cooks every unit whose inputs changed (the rest come from the local cache in
 //!   `<root>/.marlin/ddc`) and publishes the build manifest to
 //!   `<root>/.marlin/build/<platform>.manifest`. Fails if any unit fails.
-//! - `marlin-cook package <root> [--platform <name>] [--out <file>] [--head-codec <codec>]
+//! - `marlin-cook package <root> [--platform <name>] [--store <addr>] [--out <file>] [--head-codec <codec>]
 //!   [--bulk-codec <codec>] [--level <1-9>]`: packs the last cooked build of the platform into a
 //!   `.mpak` (default `<root>/.marlin/build/<platform>.mpak`). Codecs: none, lz4, zstd,
 //!   gdeflate.
@@ -22,22 +22,14 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
 
-use marlin_anim::asset::{AnimationClip, Skeleton};
 use marlin_asset_db::{AssetDb, Options};
-use marlin_cook_audio as _;
 use marlin_cook_core::{
-    CookOptions, Cookers, LocalDdc, Manifest, PackageOptions, cook_all, publish_manifest,
-    write_package,
+    CookOptions, Manifest, PackageOptions, cook_all, publish_manifest, write_package,
 };
-use marlin_cook_level as _;
-use marlin_cook_mesh::{AnimationCooker, MeshCooker, SkeletonCooker};
-use marlin_cook_script as _;
-use marlin_cook_shader as _;
-use marlin_cook_texture::TextureCooker;
+use marlin_cooker::{engine_cookers, open_ddc};
 use marlin_masset::{NodeKind, parse};
-use marlin_render::asset::{Mesh, Texture};
 
-const USAGE: &str = "usage:\n  marlin-cook cook <root> [--platform <name>] [--threads <n>]\n  marlin-cook index <root>\n  marlin-cook validate <root> [--pre-submit]\n  marlin-cook install-hook <root>\n  marlin-cook check <file-or-directory>...";
+const USAGE: &str = "usage:\n  marlin-cook cook <root> [--platform <name>] [--threads <n>] [--store <addr>]\n  marlin-cook index <root>\n  marlin-cook validate <root> [--pre-submit]\n  marlin-cook install-hook <root>\n  marlin-cook check <file-or-directory>...";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -249,28 +241,21 @@ fn install_hook(root: &str) -> ExitCode {
     }
 }
 
-/// Every asset type the engine knows, with its cooker.
-fn engine_cookers() -> Cookers {
-    let mut cookers = Cookers::new();
-    let registered = cookers
-        .register::<Texture>(TextureCooker)
-        .and_then(|()| cookers.register::<Mesh>(MeshCooker))
-        .and_then(|()| cookers.register::<Skeleton>(SkeletonCooker))
-        .and_then(|()| cookers.register::<AnimationClip>(AnimationCooker));
-    if let Err(e) = registered {
-        // Two engine types with one text name: a programming error, caught by any run.
-        panic!("engine asset types: {e}");
-    }
-    cookers
-}
-
 fn cook(args: &[String]) -> ExitCode {
     let root = &args[0];
     let mut options = CookOptions::default();
+    let mut store = None;
     let mut rest = args[1..].iter();
     while let Some(flag) = rest.next() {
         match (flag.as_str(), rest.next()) {
             ("--platform", Some(p)) => options.platform = p.clone(),
+            ("--store", Some(a)) => match a.parse() {
+                Ok(a) => store = Some(a),
+                Err(_) => {
+                    eprintln!("--store: not an address: {a}");
+                    return ExitCode::from(2);
+                }
+            },
             ("--threads", Some(n)) => match n.parse() {
                 Ok(n) => options.threads = n,
                 Err(_) => {
@@ -296,7 +281,7 @@ fn cook(args: &[String]) -> ExitCode {
         eprintln!("saving the index: {}", marlin_error_chain(&e));
         return ExitCode::FAILURE;
     }
-    let ddc = match LocalDdc::open(Path::new(root).join(".marlin").join("ddc")) {
+    let ddc = match open_ddc(Path::new(root), store) {
         Ok(ddc) => ddc,
         Err(e) => {
             eprintln!("opening the cache: {e}");
@@ -304,7 +289,7 @@ fn cook(args: &[String]) -> ExitCode {
         }
     };
     let cookers = engine_cookers();
-    let (report, manifest) = cook_all(&db, &cookers, &ddc, &options);
+    let (report, manifest) = cook_all(&db, &cookers, ddc.as_ref(), &options);
     for unit in &report.units {
         for warning in &unit.warnings {
             eprintln!("warning: {}: {warning}", unit.path);
@@ -313,7 +298,7 @@ fn cook(args: &[String]) -> ExitCode {
     for error in &report.errors {
         eprintln!("error: {}", marlin_error_chain(error));
     }
-    let key = match publish_manifest(Path::new(root), &ddc, &manifest) {
+    let key = match publish_manifest(Path::new(root), ddc.as_ref(), &manifest) {
         Ok(key) => key,
         Err(e) => {
             eprintln!("publishing the manifest: {e}");
@@ -347,6 +332,7 @@ fn package(args: &[String]) -> ExitCode {
     let mut platform = CookOptions::default().platform;
     let mut out: Option<PathBuf> = None;
     let mut options = PackageOptions::default();
+    let mut store = None;
     let mut rest = args[1..].iter();
     while let Some(flag) = rest.next() {
         let value = rest.next();
@@ -359,6 +345,7 @@ fn package(args: &[String]) -> ExitCode {
                 out = Some(PathBuf::from(p));
                 true
             }
+            ("--store", Some(a)) => a.parse().map(|a| store = Some(a)).is_ok(),
             ("--head-codec", Some(c)) => codec(c).map(|c| options.head_codec = c).is_some(),
             ("--bulk-codec", Some(c)) => codec(c).map(|c| options.bulk_codec = c).is_some(),
             ("--level", Some(n)) => n
@@ -388,7 +375,7 @@ fn package(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let ddc = match LocalDdc::open(root.join(".marlin").join("ddc")) {
+    let ddc = match open_ddc(root, store) {
         Ok(ddc) => ddc,
         Err(e) => {
             eprintln!("opening the cache: {e}");
@@ -397,7 +384,7 @@ fn package(args: &[String]) -> ExitCode {
     };
     let out = out.unwrap_or_else(|| build.join(format!("{platform}.mpak")));
     let start = Instant::now();
-    match write_package(&manifest, &ddc, &options, &out) {
+    match write_package(&manifest, ddc.as_ref(), &options, &out) {
         Ok(r) => {
             println!(
                 "{}: {} units, {} chunks, {:.1} MiB raw -> {:.1} MiB ({:.0}%); {:.2?}",

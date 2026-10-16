@@ -320,12 +320,40 @@ bulk        GPU 数据（顶点、纹理 mip），对齐到 4 KiB，直接上传
     - chunk 或索引损坏被检测出来，其余单元照常加载；
     - 链接环能加载，也能一起卸载；
     - 全工作区 532 个测试通过。
+- **P5 · 共享缓存、cook 服务与热重载完成**：
+  - `marlin_asset::wire`：工具链 TCP 协议的分帧。16 字节帧头，含 magic、kind、id、长度和校验，后接负载。请求可以流水线发送，响应按 id 对上，id 0 用于推送。损坏或超长（> 1 GiB）的帧会断开该连接；负载读取都有越界检查。
+  - `tools/store`（`marlin-store`）：
+    - `Server`：单线程、多连接的分帧服务器，跑在 marlin-net 的完成式队列上（Windows 上是 IOCP）。每个连接始终挂着一个接收，发送按顺序排队。cookd 也用它。
+    - `Store`：数据复用 `LocalDdc` 的 pack 文件；ref 是追加写、带校验的日志，打开时丢弃不完整的尾记录。
+    - 协议：`GET`、`HAS`、`PUT`、`BATCH`、`REF_GET`、`REF_SET`（可选 CAS）、`STATS`。
+    - `StoreClient`（支持流水线），以及实现了 `Ddc` 的 `RemoteDdc`（失败时重连一次，连不上就当成空缓存）。
+  - `cook_core::LayeredDdc`：本地加共享两级缓存。读时先查本地，共享层命中后写回本地；写时两边都写，共享层只是尽力而为。`fetch_unit` 取单个单元：命中直接读，否则现场 cook。
+  - `marlin-cooker` 拆成库（`engine_cookers`、`open_ddc`）和 CLI；`cook` 与 `package` 都支持 `--store <addr>`。
+  - `tools/cookd`（`marlin-cookd <root> [--listen] [--store] [--workers]`）：
+    - 持有索引，用工作线程按需 cook，同一单元的并发请求合并成一次。
+    - 每 250 ms 用 NTFS 变更日志更新一次索引。对每个客户端，比较它拿到过的单元的当前 cook 键，只推送真正变了的（文本、源文件、类型或链接目标所在单元变化）。对象表变化时一并推送新表。
+    - 记住告诉过客户端的键（包括失败时的键），所以修好一个坏单元也会通知到它。
+  - `marlin_asset::DevSource`（no_std，基于 marlin-net）：连接时拿到全部对象表，之后查对象不用等网络。单元请求不阻塞（新增的 `Read::Pending` / `UnitSource::poll`），失效通知走 `UnitSource::take_invalidated`。
+  - `AssetServer` 热重载：
+    - 失效单元重新加载，句柄和槽位不变，值原地替换，`version` 加一；`take_reloaded` 列出替换过的对象。
+    - 重载失败时保留上一个好版本，错误进入 `take_reload_errors`。
+    - 对象从单元里删掉会进入失败状态；挪到别的单元的对象会跟过去。
+    - 加载途中再次失效，会在这次完成后再载一次。
+    - `update_blocking` 会等待远程单元。
+  - 修了一个既有问题：Windows 的 `WaitOnAddress` 超时可能比期限早一个时钟节拍触发。现在早到的超时算作伪唤醒，`futex::wait` 返回 false 一定表示整个超时已过，原来偶发失败的 `marlin-pal` futex 测试因此稳定。
+  - 测试：
+    - store：流水线、8 个并发客户端、5 MB 条目、损坏帧和超长帧、ref 的 CAS、持久化与尾记录恢复、`RemoteDdc` 的重连；
+    - 两台工作站共用一个 store 时，第二台什么都不用 cook；
+    - cookd 端到端：经 `DevSource` 加载；改文本和改源文件都原地重载；坏的修改保留旧版本，修好后恢复；失败以状态返回；
+    - 纯运行时的重载用例：删除、迁移、失败保留、加载途中失效；
+    - 帧的分片到达与随机损坏；
+    - 全工作区 548 个测试通过。
 - **待做**：
   - Linux 和 macOS 的变更源（fanotify、FSEvents）。
-  - 共享缓存中的 extract（P5）。
+  - 共享缓存中的 extract；store 的 LRU 与容量上限；store 的鉴权与 TLS（目前只适合可信局域网）。
   - cook：MikkTSpace 逐位一致的切线（现在是 Lengyel 加按角度加权，与 MikkTSpace 很接近，但拆分处不完全一致）、morph target、主机纹理 tiling 单元、cluster DAG（格式里已经预留了字段）、DDC 的 LRU 淘汰。
   - 加载：
     - 按 blob 流送，带优先级和内存预算（包格式与 `Package::read_blob` 已经支持）；
     - unbuffered IO 与 DirectStorage；
     - 渲染侧 Texture/Mesh 的 loader，以及 GPU 上传（随 framework 在 P6 做）；
-    - 热重载（P5）。
+    - 热重载之后通知渲染侧重建 GPU 资源（`version` 已经提供），随 framework 在 P6 做。

@@ -274,6 +274,7 @@ dependencies = [
  "marlin-hash",
  "marlin-io",
  "marlin-jobs",
+ "marlin-net",
  "marlin-reflect",
  "marlin-serial",
  "marlin-sync",
@@ -390,6 +391,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "marlin-cookd"
+version = "0.1.0"
+dependencies = [
+ "marlin-asset",
+ "marlin-asset-db",
+ "marlin-cook-core",
+ "marlin-cooker",
+ "marlin-io",
+ "marlin-reflect",
+ "marlin-serial",
+ "marlin-store",
+]
+
+[[package]]
 name = "marlin-cooker"
 version = "0.1.0"
 dependencies = [
@@ -407,6 +422,7 @@ dependencies = [
  "marlin-cook-texture",
  "marlin-masset",
  "marlin-render",
+ "marlin-store",
  "marlin-vcs",
 ]
 
@@ -701,6 +717,17 @@ dependencies = [
  "marlin-sync",
  "marlin-thread",
  "marlin-time",
+]
+
+[[package]]
+name = "marlin-store"
+version = "0.1.0"
+dependencies = [
+ "marlin-asset",
+ "marlin-cook-core",
+ "marlin-error",
+ "marlin-hash",
+ "marlin-net",
 ]
 
 [[package]]
