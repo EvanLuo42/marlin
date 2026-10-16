@@ -1,0 +1,20 @@
+[package]
+name = "marlin-compress"
+description = "In-house zstd, LZ4 and GDeflate codecs for package chunks."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[features]
+# Encoders, for cooking tools. The shipping runtime only decodes.
+encode = []
+
+[dependencies]
+marlin-hash.workspace = true
+marlin-std.workspace = true
+
+[dev-dependencies]
+marlin-compress = { path = ".", features = ["encode"] }
+
+[lints]
+workspace = true

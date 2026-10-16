@@ -1,0 +1,3 @@
+# Reference-codec output: never touch line endings.
+* binary
+*.md text eol=lf

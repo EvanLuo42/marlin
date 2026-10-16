@@ -13,6 +13,7 @@ marlin-input.workspace = true
 marlin-net.workspace = true
 marlin-rhi.workspace = true
 marlin-services.workspace = true
+marlin-compress.workspace = true
 marlin-config.workspace = true
 marlin-containers.workspace = true
 marlin-ecs.workspace = true

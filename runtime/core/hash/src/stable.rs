@@ -16,6 +16,8 @@
 //!   collision across a large project's lifetime plausible.
 //! - [`xxh3_64_ascii_lowercase`]: XXH3-64 of the input with ASCII lowercased, without copying it:
 //!   the case-insensitive hash behind names.
+//! - [`xxh64`] / [`xxh32`]: the classic xxHash, for the file formats that specify it (zstd and LZ4
+//!   frame checksums). Not for new uses.
 //! - [`fnv1a_64`] / [`fnv1a_32`]: FNV-1a, for when bytes arrive piecewise ([`fnv1a_64_extend`])
 //!   or a 32-bit hash is needed. One multiply per byte, so prefer XXH3 for anything long.
 //!
@@ -58,6 +60,127 @@ pub const fn fnv1a_32(bytes: &[u8]) -> u32 {
         i += 1;
     }
     hash
+}
+
+// --- XXH32 / XXH64 ---
+
+const X32_1: u32 = 0x9e37_79b1;
+const X32_2: u32 = 0x85eb_ca77;
+const X32_3: u32 = 0xc2b2_ae3d;
+const X32_4: u32 = 0x27d4_eb2f;
+const X32_5: u32 = 0x1656_67b1;
+
+/// XXH32 (`XXH32`): the checksum of the LZ4 frame format. Bit-exact with the reference.
+pub const fn xxh32(input: &[u8], seed: u32) -> u32 {
+    let len = input.len();
+    let mut i = 0;
+    let mut h = if len >= 16 {
+        let mut v = [
+            seed.wrapping_add(X32_1).wrapping_add(X32_2),
+            seed.wrapping_add(X32_2),
+            seed,
+            seed.wrapping_sub(X32_1),
+        ];
+        while i + 16 <= len {
+            let mut lane = 0;
+            while lane < 4 {
+                v[lane] = xxh32_round(v[lane], r32(input, i + 4 * lane) as u32);
+                lane += 1;
+            }
+            i += 16;
+        }
+        v[0].rotate_left(1)
+            .wrapping_add(v[1].rotate_left(7))
+            .wrapping_add(v[2].rotate_left(12))
+            .wrapping_add(v[3].rotate_left(18))
+    } else {
+        seed.wrapping_add(X32_5)
+    };
+    h = h.wrapping_add(len as u32);
+    while i + 4 <= len {
+        h = h.wrapping_add((r32(input, i) as u32).wrapping_mul(X32_3));
+        h = h.rotate_left(17).wrapping_mul(X32_4);
+        i += 4;
+    }
+    while i < len {
+        h = h.wrapping_add((input[i] as u32).wrapping_mul(X32_5));
+        h = h.rotate_left(11).wrapping_mul(X32_1);
+        i += 1;
+    }
+    h ^= h >> 15;
+    h = h.wrapping_mul(X32_2);
+    h ^= h >> 13;
+    h = h.wrapping_mul(X32_3);
+    h ^ (h >> 16)
+}
+
+#[inline(always)]
+const fn xxh32_round(acc: u32, input: u32) -> u32 {
+    acc.wrapping_add(input.wrapping_mul(X32_2))
+        .rotate_left(13)
+        .wrapping_mul(X32_1)
+}
+
+/// XXH64 (`XXH64`): the content checksum of the zstd frame format. Bit-exact with the
+/// reference. Prefer [`xxh3_64`] for new uses; it is faster on every input size.
+pub const fn xxh64(input: &[u8], seed: u64) -> u64 {
+    let len = input.len();
+    let mut i = 0;
+    let mut h = if len >= 32 {
+        let mut v = [
+            seed.wrapping_add(P64_1).wrapping_add(P64_2),
+            seed.wrapping_add(P64_2),
+            seed,
+            seed.wrapping_sub(P64_1),
+        ];
+        while i + 32 <= len {
+            let mut lane = 0;
+            while lane < 4 {
+                v[lane] = xxh64_round(v[lane], r64(input, i + 8 * lane));
+                lane += 1;
+            }
+            i += 32;
+        }
+        let mut h = v[0]
+            .rotate_left(1)
+            .wrapping_add(v[1].rotate_left(7))
+            .wrapping_add(v[2].rotate_left(12))
+            .wrapping_add(v[3].rotate_left(18));
+        let mut lane = 0;
+        while lane < 4 {
+            h = (h ^ xxh64_round(0, v[lane]))
+                .wrapping_mul(P64_1)
+                .wrapping_add(P64_4);
+            lane += 1;
+        }
+        h
+    } else {
+        seed.wrapping_add(P64_5)
+    };
+    h = h.wrapping_add(len as u64);
+    while i + 8 <= len {
+        h ^= xxh64_round(0, r64(input, i));
+        h = h.rotate_left(27).wrapping_mul(P64_1).wrapping_add(P64_4);
+        i += 8;
+    }
+    if i + 4 <= len {
+        h ^= r32(input, i).wrapping_mul(P64_1);
+        h = h.rotate_left(23).wrapping_mul(P64_2).wrapping_add(P64_3);
+        i += 4;
+    }
+    while i < len {
+        h ^= (input[i] as u64).wrapping_mul(P64_5);
+        h = h.rotate_left(11).wrapping_mul(P64_1);
+        i += 1;
+    }
+    xxh64_avalanche(h)
+}
+
+#[inline(always)]
+const fn xxh64_round(acc: u64, input: u64) -> u64 {
+    acc.wrapping_add(input.wrapping_mul(P64_2))
+        .rotate_left(31)
+        .wrapping_mul(P64_1)
 }
 
 // --- XXH3 ---

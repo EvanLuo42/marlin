@@ -48,6 +48,7 @@ marlin-reflect-derive = { path = "runtime/core/reflect_derive" }
 marlin-serial = { path = "runtime/core/serial" }
 marlin-ecs = { path = "runtime/core/ecs" }
 marlin-config = { path = "runtime/core/config" }
+marlin-compress = { path = "runtime/core/compress" }
 # --- L3 runtime/engine ---
 marlin-asset = { path = "runtime/engine/asset" }
 marlin-world = { path = "runtime/engine/world" }

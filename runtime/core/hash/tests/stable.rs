@@ -1,7 +1,9 @@
 //! Pinned vectors for the stable hashes. These values must never change.
 
 use marlin_hash::stable::fnv1a_64_extend;
-use marlin_hash::{fnv1a_32, fnv1a_64, xxh3_64, xxh3_64_with_seed, xxh3_128, xxh3_128_with_seed};
+use marlin_hash::{
+    fnv1a_32, fnv1a_64, xxh3_64, xxh3_64_with_seed, xxh3_128, xxh3_128_with_seed, xxh32, xxh64,
+};
 
 /// xorshift64 bytes; the reference values below were produced from this exact buffer.
 fn data(n: usize) -> Vec<u8> {
@@ -147,4 +149,52 @@ fn ascii_lowercase_variant_equals_hashing_the_lowered_bytes() {
     }
     const H: u64 = marlin_hash::xxh3_64_ascii_lowercase(b"Player_12");
     assert_eq!(H, xxh3_64(b"player_12"));
+}
+
+// Cross-checked against the reference implementation (via the twox-hash crate) for every
+// length 0..=4096 with seeds 0, 1 and SEED; these pin one length per code path and boundary.
+// (len, xxh64, xxh64 seeded, xxh32, xxh32 seeded with SEED as u32)
+#[rustfmt::skip]
+const CLASSIC_VECTORS: [(usize, u64, u64, u32, u32); 17] = [
+    (0, 0xef46db3751d8e999, 0xc4349fc93c010000, 0x02cc5d05, 0x872a8b86),
+    (1, 0xa8b77899b16d622d, 0x2f769d434924737e, 0x276fb8e3, 0xd21eb45e),
+    (3, 0xdbde4019aada25f5, 0x8f1dd55fa429a8d8, 0xe6c27a3e, 0x25c5a4e9),
+    (4, 0x7eb7addc07e29926, 0x0c4aba5af523a883, 0x64d308dd, 0x67d8a480),
+    (7, 0x3ceea39c4b639bd8, 0xd2dff0e13a75630b, 0x0e9a2244, 0x23069f3f),
+    (8, 0x4263ae261afe7da0, 0xf46d8ade4506222f, 0x59b30a8e, 0x9003ef09),
+    (15, 0x4f5ac534cb03be85, 0x9525ec96814849c2, 0x51e8e02e, 0x012e0ddd),
+    (16, 0xa8d86581dec3734a, 0xc4e005d5987c5bf9, 0x270acee9, 0xcaca695d),
+    (17, 0xac6ba8b0c60502e7, 0x4d2b3cc93058edef, 0x8a4dcfd8, 0xaa9b1ad5),
+    (31, 0xb6bb8dd37adfdce9, 0xd777243e742a4b07, 0x65a6eb10, 0x688cd843),
+    (32, 0x883b86a02aad1cdd, 0xeb5647c3080974bf, 0x30c15300, 0x133f6bc1),
+    (33, 0x07db3e957718e049, 0xd1a1b3eb67ac5333, 0x6abed72a, 0xbfd0ae6d),
+    (63, 0x3cc99396412fe11c, 0xde944a24c26428d7, 0x261acf7d, 0xfd33e101),
+    (64, 0x22944b22485c9f74, 0x8b0dc067cc8fba21, 0x6fd2b822, 0x32fb6c91),
+    (100, 0x277ea9e3ec050559, 0x570e96e65dd9c5ea, 0x61b5fb3e, 0x44b02632),
+    (1024, 0xa6b626842a9d169b, 0x0345169c3e341355, 0xe3573de6, 0x791bf0f7),
+    (4096, 0xa42634eb02302b94, 0xfe45c26dcdb4990b, 0x867e0dc5, 0x0974470f),
+];
+
+#[test]
+fn xxh32_xxh64_vectors() {
+    let d = data(4096);
+    for &(len, h64, h64s, h32, h32s) in &CLASSIC_VECTORS {
+        let s = &d[..len];
+        assert_eq!(xxh64(s, 0), h64, "xxh64 len {len}");
+        assert_eq!(xxh64(s, SEED), h64s, "xxh64 seeded len {len}");
+        assert_eq!(xxh32(s, 0), h32, "xxh32 len {len}");
+        assert_eq!(xxh32(s, SEED as u32), h32s, "xxh32 seeded len {len}");
+    }
+    // The published test values.
+    for (s, h64, h32) in [
+        ("", 0xef46db3751d8e999, 0x02cc5d05),
+        ("a", 0xd24ec4f1a98c6e5b, 0x550d7456),
+        ("abc", 0x44bc2cf5ad770999, 0x32d153ff),
+        ("Marlin", 0xcccc5d475904df05, 0x9f619176),
+    ] {
+        assert_eq!(xxh64(s.as_bytes(), 0), h64, "{s:?}");
+        assert_eq!(xxh32(s.as_bytes(), 0), h32, "{s:?}");
+    }
+    const CONST_EVAL: (u64, u32) = (xxh64(b"abc", 0), xxh32(b"abc", 0));
+    assert_eq!(CONST_EVAL, (0x44bc2cf5ad770999, 0x32d153ff));
 }
