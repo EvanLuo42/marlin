@@ -10,3 +10,6 @@
 
 # IDE project files
 /.idea/
+
+# Per-machine asset index and caches (tools/asset_db).
+.marlin/

@@ -1,13 +1,18 @@
-//! Command-line asset cooker.
+//! Command-line asset cooker. Cooking arrives with the rest of
+//! `docs/design/0003-asset-pipeline.md`; so far:
 //!
-//! So far only `marlin-cook check <path>...`: parses every `.masset` file under the paths and
-//! reports syntax errors, UUIDs used by two objects, and links to objects none of the checked
-//! files define. Cooking arrives with the rest of `docs/design/0003-asset-pipeline.md`.
+//! - `marlin-cook index <root>`: brings the asset index of `root` up to date and saves it.
+//! - `marlin-cook validate <root>`: the same, then reports content problems (dangling and stale
+//!   links, UUID collisions, parse errors, missing source files). Fails on errors.
+//! - `marlin-cook check <path>...`: parses `.masset` files without an index, for a quick look
+//!   at a few files.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::Instant;
 
+use marlin_asset_db::{AssetDb, Options};
 use marlin_cook_audio as _;
 use marlin_cook_core as _;
 use marlin_cook_level as _;
@@ -17,15 +22,78 @@ use marlin_cook_shader as _;
 use marlin_cook_texture as _;
 use marlin_masset::{NodeKind, parse};
 
+const USAGE: &str = "usage:\n  marlin-cook index <root>\n  marlin-cook validate <root>\n  marlin-cook check <file-or-directory>...";
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.split_first() {
         Some((command, paths)) if command == "check" && !paths.is_empty() => check(paths),
+        Some((command, [root])) if command == "index" => index(root, false),
+        Some((command, [root])) if command == "validate" => index(root, true),
         _ => {
-            eprintln!("usage: marlin-cook check <file-or-directory>...");
+            eprintln!("{USAGE}");
             ExitCode::from(2)
         }
     }
+}
+
+fn index(root: &str, validate: bool) -> ExitCode {
+    let start = Instant::now();
+    let (mut db, report) = match AssetDb::open(root, Options::default()) {
+        Ok(opened) => opened,
+        Err(e) => {
+            eprintln!("{root}: {}", marlin_error_chain(&e));
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Err(e) = db.save() {
+        eprintln!("saving the index: {}", marlin_error_chain(&e));
+        return ExitCode::FAILURE;
+    }
+    println!(
+        "{} files, {} objects; {:?}: {} checked, {} read (+{} ~{} -{}) in {:.2?}",
+        db.file_count(),
+        db.object_count(),
+        report.mode,
+        report.checked,
+        report.read,
+        report.added,
+        report.changed,
+        report.removed,
+        start.elapsed()
+    );
+    if !validate {
+        return ExitCode::SUCCESS;
+    }
+    let issues = db.validate();
+    let mut errors = 0;
+    for issue in &issues {
+        let kind = if issue.kind.is_error() {
+            errors += 1;
+            "error"
+        } else {
+            "fixable"
+        };
+        eprintln!("{kind}: {}", issue.describe(&db));
+    }
+    println!("{} issue(s), {errors} error(s)", issues.len());
+    if errors == 0 {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+/// `error: cause: root cause`.
+fn marlin_error_chain(error: &dyn std::error::Error) -> String {
+    let mut text = error.to_string();
+    let mut source = error.source();
+    while let Some(e) = source {
+        text.push_str(": ");
+        text.push_str(&e.to_string());
+        source = e.source();
+    }
+    text
 }
 
 fn collect(path: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {

@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 marlin-asset.workspace = true
+marlin-asset-db.workspace = true
 marlin-cook-audio.workspace = true
 marlin-cook-core.workspace = true
 marlin-cook-level.workspace = true

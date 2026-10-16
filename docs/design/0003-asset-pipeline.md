@@ -260,3 +260,17 @@ bulk        GPU 数据（顶点、纹理 mip），对齐到 4 KiB，直接上传
 - **身份类型**：`Uuid`、`Link<T>`、`SourceFile` 放在 `marlin-asset`（no_std），reflect 名字固定。
 - **`marlin-cook check <路径>`**：检查语法错误、跨文件的 UUID 冲突和悬空链接。
 - **并行进行中**：`marlin-compress`、`marlin-net` TCP、BCn 编码器与 mip。
+- **P2 · 索引 `tools/asset_db` 完成**：
+  - 列式表、字符串池、开放寻址的 UUID/路径表。
+  - 快照 64 字节对齐，用 mmap 打开、按列写时复制；版本化文件加 `CURRENT`，绕开 Windows 上"被映射的文件不能替换"的限制。
+  - 增量更新：
+    - Windows 上读 NTFS 变更日志。不需要管理员权限：经目录句柄读取，记录里没有文件名，按 FRN 解析，也就是说文件变更会重列它所在的目录，目录变更按 FRN 求出新路径后重扫子树。
+    - 否则退化为全量 stat 扫描。
+  - 查询：类型、名字子串、反向引用、依赖闭包、源文件使用者，并实现了 `marlin_masset::Links`。
+  - 校验：解析错误、UUID 冲突、悬空链接、过期的 path:name、缺 UUID 的链接、缺失的源文件。
+  - 规模（release，5 万文件 / 20 万对象）：完整构建 0.62 s，打开加无变化更新 30 ms，搜索 10 ms，反向引用热查询 2 µs，校验 135 ms。
+- **`marlin-cook index|validate <root>`** 已接上索引。
+- **待做**：
+  - `tools/vcs`（Git 后端）以及提交前校验（链接目标未提交）。
+  - Linux 和 macOS 的变更源（fanotify、FSEvents）。
+  - 共享缓存中的 extract（P5）。

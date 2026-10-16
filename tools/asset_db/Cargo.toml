@@ -1,0 +1,26 @@
+[package]
+name = "marlin-asset-db"
+description = "The local asset index: every file, object and link in the project, without opening files."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+marlin-asset.workspace = true
+marlin-error.workspace = true
+marlin-hash.workspace = true
+marlin-masset.workspace = true
+memmap2.workspace = true
+
+# The NTFS change journal, for finding changed files without scanning.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Ioctl",
+] }
+
+[lints]
+workspace = true
