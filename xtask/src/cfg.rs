@@ -47,9 +47,16 @@ impl Config {
 /// rustc flags selecting the platform, its extensions and (for xtask builds) the configuration.
 pub fn flags(platform: &Platform, config: Option<Config>) -> Vec<String> {
     let mut cfgs = vec![format!("marlin_platform=\"{}\"", platform.name)];
-    cfgs.extend(platform.ext.iter().map(|ext| format!("marlin_ext=\"{ext}\"")));
+    cfgs.extend(
+        platform
+            .ext
+            .iter()
+            .map(|ext| format!("marlin_ext=\"{ext}\"")),
+    );
     cfgs.extend(config.map(|c| format!("marlin_build=\"{}\"", c.name())));
-    cfgs.into_iter().flat_map(|cfg| ["--cfg".to_owned(), cfg]).collect()
+    cfgs.into_iter()
+        .flat_map(|cfg| ["--cfg".to_owned(), cfg])
+        .collect()
 }
 
 const BEGIN: &str = "# BEGIN gen-cfg";
@@ -64,7 +71,10 @@ pub fn gen_cfg(root: &Path) -> Result {
     let (Some(begin), Some(end)) = (text.find(BEGIN), text.find(END)) else {
         return Err(format!("{}: missing `{BEGIN}` / `{END}` markers", path.display()).into());
     };
-    let block_start = begin + text[begin..].find('\n').map_or(text.len() - begin, |i| i + 1);
+    let block_start = begin
+        + text[begin..]
+            .find('\n')
+            .map_or(text.len() - begin, |i| i + 1);
 
     let mut block = String::new();
     let mut owners: HashMap<&str, &str> = HashMap::new();
@@ -74,7 +84,11 @@ pub fn gen_cfg(root: &Path) -> Result {
         let flags = flags.join(", ");
         for target in &p.targets {
             if let Some(other) = owners.insert(target, &p.name) {
-                return Err(format!("target `{target}` is claimed by both {other} and {}", p.name).into());
+                return Err(format!(
+                    "target `{target}` is claimed by both {other} and {}",
+                    p.name
+                )
+                .into());
             }
             // rustdoc (doctests) does not see rustflags.
             writeln!(block, "[target.{target}]")?;
@@ -95,5 +109,9 @@ pub fn gen_cfg(root: &Path) -> Result {
 
 fn toml_string(s: &str) -> String {
     // Literal strings avoid escaping the quotes inside cfg values.
-    if s.contains('"') { format!("'{s}'") } else { format!("\"{s}\"") }
+    if s.contains('"') {
+        format!("'{s}'")
+    } else {
+        format!("\"{s}\"")
+    }
 }

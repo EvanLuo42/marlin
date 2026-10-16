@@ -18,9 +18,14 @@
 
 mod backend;
 mod contract;
+pub mod debug;
 mod error;
 pub mod ext;
+pub mod futex;
 pub mod process;
+pub mod thread;
+pub mod time;
+pub mod tls;
 mod types;
 pub mod vmem;
 

@@ -458,9 +458,9 @@ runtime/<layer>/<name>/
 ## 10. 待定问题（后续设计文档）
 
 1. 自研 VM 的执行策略：纯解释器，还是 cook 期 AOT（字节码 → Rust/C → 静态链接进 game）。主机禁止 JIT，后者会影响"所有游戏一个可执行文件"的假设。
-2. fiber 在 Windows 上用 `CreateFiber` 还是统一用 `arch/` 里的手写上下文切换。
+2. fiber 在 Windows 上用 `CreateFiber` 还是统一用 `arch/` 里的手写上下文切换。**倾向手写**：TLS key 在 Windows 上基于 FLS，用 `CreateFiber` 会让值跟着 fiber 走，而不是跟着线程走（见第 4 条）。
 3. 物理引擎自研，还是绑定 Jolt（需要 C++ 运行时，主机 SDK 提供）。
-4. PAL 的 TLS：用 `#[thread_local]`（依赖 target 支持），还是 PAL 显式 TLS slot API。
+4. ~~PAL 的 TLS~~ **已定**：PAL 提供带退出析构的 key（Windows FLS / POSIX `pthread_key`），热路径直接用 `#[thread_local]` static。
 5. 资源包格式与 VFS 挂载优先级（补丁/DLC）。
 
 ---
@@ -469,7 +469,7 @@ runtime/<layer>/<name>/
 
 已实现：
 
-- `marlin-pal`：契约 trait `VMem` + `Process`，以及 ext `LargePages`；Windows backend 完整实现，Linux/macOS 共享 `backend/unix`。
+- `marlin-pal`：契约 `VMem`、`Process`、`Debug`、`Time`、`Thread`、`Futex`、`Tls`，以及 ext `LargePages`。Windows、Linux、macOS 都有实现（Linux/macOS 共享 `backend/unix`，futex 和调试器检测各自实现）。
 - `marlin-mem::MarlinHeap`：**占位实现**，每次分配都是一次独立的 OS reservation（Windows 上为 64 KiB 粒度），后续由 mimalloc 式堆替换。
 - `marlin-rt`：`start` / `game_entry!` / `panic::report` / `hosted::init`。
 - xtask：`platforms`、`gen-cfg`、`build`、`check-layers`。
@@ -481,3 +481,7 @@ runtime/<layer>/<name>/
 - 空壳 crate 暂不声明依赖：nightly cargo 的 `unused_dependencies` lint 会报警，等有代码时再加。层级规则由 `check-layers` 保证，不依赖这些边是否存在。
 - `apps/game` 的 bin 设 `test = false`：no_std 二进制配上 std 测试 harness 会出现两个 panic handler。
 - Linux 的 `commit` 受 overcommit 影响，物理内存在页面首次被访问时才真正分配。
+- 线程入口不分配：调用方的结构体以 `#[repr(C)] ThreadStart` 作为第一个字段，新线程拿到指向它的指针后回调 `entry`。闭包式 API 由 `marlin-thread` 提供。
+- `rt::panic::report` 经 `pal::debug::OutputBuffer` 输出 panic 信息；有调试器时先断下来，再走 `__fastfail` / `abort`。重入的 panic 直接 abort。
+- 主机平台的 `#[path]` 模块都标了 `#[rustfmt::skip]`：rustfmt 不看 cfg，没有私有仓库时会找不到文件。
+- 尚未实现：CPU 拓扑（物理核 / SMT / P/E 核）、线程亲和性与优先级、`hybrid_cores` ext。这几项放在一起做。

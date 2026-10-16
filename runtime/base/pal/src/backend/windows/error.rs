@@ -1,6 +1,7 @@
 use windows_sys::Win32::Foundation::*;
+use windows_sys::core::BOOL;
 
-use crate::{Error, ErrorKind};
+use crate::{Error, ErrorKind, Result};
 
 pub(super) fn from_win32(code: WIN32_ERROR) -> Error {
     let kind = match code {
@@ -24,4 +25,9 @@ pub(super) fn from_win32(code: WIN32_ERROR) -> Error {
 pub(super) fn last_error() -> Error {
     // SAFETY: no preconditions.
     from_win32(unsafe { GetLastError() })
+}
+
+/// Converts a `BOOL` result, reading the last error on failure.
+pub(super) fn check(ok: BOOL) -> Result<()> {
+    if ok != 0 { Ok(()) } else { Err(last_error()) }
 }

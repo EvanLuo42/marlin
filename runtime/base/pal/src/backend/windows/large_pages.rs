@@ -53,7 +53,11 @@ unsafe impl LargePages for Backend {
 fn query() -> usize {
     // SAFETY: no preconditions.
     let size = unsafe { GetLargePageMinimum() };
-    if size == 0 || !enable_lock_memory_privilege() { UNAVAILABLE } else { size }
+    if size == 0 || !enable_lock_memory_privilege() {
+        UNAVAILABLE
+    } else {
+        size
+    }
 }
 
 /// Enables SeLockMemoryPrivilege in the process token. Only succeeds if the account holds it.
@@ -61,19 +65,29 @@ fn enable_lock_memory_privilege() -> bool {
     let mut token: HANDLE = ptr::null_mut();
     // SAFETY: GetCurrentProcess returns a pseudo-handle; `token` is a valid out pointer.
     let opened = unsafe {
-        OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &mut token)
+        OpenProcessToken(
+            GetCurrentProcess(),
+            TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
+            &mut token,
+        )
     };
     if opened == 0 {
         return false;
     }
 
-    let mut luid = LUID { LowPart: 0, HighPart: 0 };
+    let mut luid = LUID {
+        LowPart: 0,
+        HighPart: 0,
+    };
     // SAFETY: SE_LOCK_MEMORY_NAME is a static wide string; `luid` is a valid out pointer.
     let found = unsafe { LookupPrivilegeValueW(ptr::null(), SE_LOCK_MEMORY_NAME, &mut luid) } != 0;
     let enabled = found && {
         let privileges = TOKEN_PRIVILEGES {
             PrivilegeCount: 1,
-            Privileges: [LUID_AND_ATTRIBUTES { Luid: luid, Attributes: SE_PRIVILEGE_ENABLED }],
+            Privileges: [LUID_AND_ATTRIBUTES {
+                Luid: luid,
+                Attributes: SE_PRIVILEGE_ENABLED,
+            }],
         };
         // SAFETY: `token` was opened with TOKEN_ADJUST_PRIVILEGES; `privileges` outlives the call.
         // The call succeeds even when the privilege is not held, so GetLastError decides.

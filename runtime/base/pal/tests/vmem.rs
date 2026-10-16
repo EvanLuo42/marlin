@@ -42,7 +42,10 @@ fn reserve_commit_decommit_release() {
 
 #[test]
 fn zero_size_is_rejected() {
-    assert_eq!(vmem::reserve(0).unwrap_err().kind(), ErrorKind::InvalidInput);
+    assert_eq!(
+        vmem::reserve(0).unwrap_err().kind(),
+        ErrorKind::InvalidInput
+    );
 }
 
 #[cfg(marlin_ext = "large_pages")]
@@ -53,7 +56,12 @@ fn large_pages_when_available() {
     // Usually unavailable: the account needs the "Lock pages in memory" privilege.
     let Some(lp) = LargePages::get() else { return };
     let size = lp.page_size();
-    assert_eq!(lp.alloc(size + 1, Protection::ReadWrite).unwrap_err().kind(), ErrorKind::InvalidInput);
+    assert_eq!(
+        lp.alloc(size + 1, Protection::ReadWrite)
+            .unwrap_err()
+            .kind(),
+        ErrorKind::InvalidInput
+    );
     let p = lp.alloc(size, Protection::ReadWrite).unwrap();
     assert_eq!(p.addr().get() % size, 0);
     unsafe {

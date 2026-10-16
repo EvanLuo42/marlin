@@ -49,7 +49,9 @@ enum Layer {
 
 impl Layer {
     fn of(relative_dir: &Path) -> Option<Self> {
-        let mut parts = relative_dir.components().map(|c| c.as_os_str().to_str().unwrap_or(""));
+        let mut parts = relative_dir
+            .components()
+            .map(|c| c.as_os_str().to_str().unwrap_or(""));
         Some(match (parts.next()?, parts.next()) {
             ("runtime", Some("base")) => Self::Base,
             ("runtime", Some("platform")) => Self::Platform,
@@ -74,25 +76,41 @@ pub fn layers(root: &Path) -> Result {
         .args(["metadata", "--format-version", "1", "--no-deps"])
         .output()?;
     if !output.status.success() {
-        return Err(format!("cargo metadata failed:\n{}", String::from_utf8_lossy(&output.stderr)).into());
+        return Err(format!(
+            "cargo metadata failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
     }
     let metadata: Metadata = serde_json::from_slice(&output.stdout)?;
 
     let mut layers = HashMap::new();
     for package in &metadata.packages {
         let dir = package.manifest_path.parent().unwrap();
-        if let Some(layer) = dir.strip_prefix(&metadata.workspace_root).ok().and_then(Layer::of) {
+        if let Some(layer) = dir
+            .strip_prefix(&metadata.workspace_root)
+            .ok()
+            .and_then(Layer::of)
+        {
             layers.insert(package.name.as_str(), layer);
         }
     }
 
     let mut errors = Vec::new();
     for package in &metadata.packages {
-        let Some(&layer) = layers.get(package.name.as_str()) else { continue };
+        let Some(&layer) = layers.get(package.name.as_str()) else {
+            continue;
+        };
 
         // Tests may use anything; only normal and build dependencies count.
-        for dependency in package.dependencies.iter().filter(|d| d.kind.as_deref() != Some("dev")) {
-            let Some(&dependency_layer) = layers.get(dependency.name.as_str()) else { continue };
+        for dependency in package
+            .dependencies
+            .iter()
+            .filter(|d| d.kind.as_deref() != Some("dev"))
+        {
+            let Some(&dependency_layer) = layers.get(dependency.name.as_str()) else {
+                continue;
+            };
             if dependency.name == "marlin-pal" && !matches!(layer, Layer::Base | Layer::Platform) {
                 errors.push(format!(
                     "{}: only runtime/base and runtime/platform crates may depend on marlin-pal",
@@ -107,7 +125,11 @@ pub fn layers(root: &Path) -> Result {
         }
 
         if layer.is_runtime() {
-            for lib in package.targets.iter().filter(|t| t.kind.iter().any(|k| k == "lib")) {
+            for lib in package
+                .targets
+                .iter()
+                .filter(|t| t.kind.iter().any(|k| k == "lib"))
+            {
                 if !fs::read_to_string(&lib.src_path)?.contains("no_std") {
                     errors.push(format!("{}: runtime crates must be no_std", package.name));
                 }

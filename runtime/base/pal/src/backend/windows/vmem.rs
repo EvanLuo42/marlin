@@ -7,10 +7,9 @@ use windows_sys::Win32::System::Memory::{
     VirtualProtect,
 };
 use windows_sys::Win32::System::SystemInformation::{GetSystemInfo, SYSTEM_INFO};
-use windows_sys::core::BOOL;
 
 use super::Backend;
-use super::error::last_error;
+use super::error::{check, last_error};
 use crate::contract::VMem;
 use crate::{Protection, Result};
 
@@ -36,10 +35,6 @@ pub(super) fn page_protection(prot: Protection) -> PAGE_PROTECTION_FLAGS {
         Protection::ReadExecute => PAGE_EXECUTE_READ,
         Protection::ReadWriteExecute => PAGE_EXECUTE_READWRITE,
     }
-}
-
-fn check(ok: BOOL) -> Result<()> {
-    if ok != 0 { Ok(()) } else { Err(last_error()) }
 }
 
 // SAFETY: VirtualAlloc reservations are aligned to the allocation granularity and stay valid until
@@ -75,8 +70,13 @@ unsafe impl VMem for Backend {
 
     unsafe fn commit(ptr: NonNull<u8>, size: usize, prot: Protection) -> Result<()> {
         // SAFETY: the caller guarantees the range lies inside a live reservation.
-        let p = unsafe { VirtualAlloc(ptr.as_ptr().cast(), size, MEM_COMMIT, page_protection(prot)) };
-        if p.is_null() { Err(last_error()) } else { Ok(()) }
+        let p =
+            unsafe { VirtualAlloc(ptr.as_ptr().cast(), size, MEM_COMMIT, page_protection(prot)) };
+        if p.is_null() {
+            Err(last_error())
+        } else {
+            Ok(())
+        }
     }
 
     unsafe fn decommit(ptr: NonNull<u8>, size: usize) -> Result<()> {

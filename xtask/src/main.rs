@@ -50,7 +50,10 @@ fn main() -> ExitCode {
 
 /// The workspace root; xtask lives one level below it.
 fn root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf()
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_path_buf()
 }
 
 /// The cargo that invoked us, so the pinned toolchain is used.
@@ -60,5 +63,9 @@ fn cargo() -> Command {
 
 fn run(mut command: Command) -> Result {
     let status = command.status()?;
-    if status.success() { Ok(()) } else { Err(format!("{command:?} failed: {status}").into()) }
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("{command:?} failed: {status}").into())
+    }
 }

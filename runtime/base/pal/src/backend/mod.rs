@@ -2,7 +2,8 @@
 //!
 //! Console backends are private repositories cloned into `platforms/<name>/` (see
 //! `platforms/README.md`). Their modules are only loaded when their cfg is active, so the public
-//! tree builds without them.
+//! tree builds without them. rustfmt ignores cfg, so each one is `#[rustfmt::skip]` to keep
+//! `cargo fmt` working without the private repositories (format those from their own repository).
 
 #[cfg(any(marlin_platform = "linux", marlin_platform = "macos"))]
 mod unix;
@@ -24,6 +25,7 @@ pub(crate) use macos as imp;
 
 #[cfg(marlin_platform = "ps5")]
 #[path = "../../../../../platforms/ps5/pal/mod.rs"]
+#[rustfmt::skip]
 pub(crate) mod ps5;
 #[cfg(marlin_platform = "ps5")]
 pub(crate) use ps5 as imp;
@@ -31,12 +33,14 @@ pub(crate) use ps5 as imp;
 // Reuses the Win32 backend above through `super::windows`.
 #[cfg(marlin_platform = "xbox")]
 #[path = "../../../../../platforms/xbox/pal/mod.rs"]
+#[rustfmt::skip]
 pub(crate) mod xbox;
 #[cfg(marlin_platform = "xbox")]
 pub(crate) use xbox as imp;
 
 #[cfg(marlin_platform = "switch2")]
 #[path = "../../../../../platforms/switch2/pal/mod.rs"]
+#[rustfmt::skip]
 pub(crate) mod switch2;
 #[cfg(marlin_platform = "switch2")]
 pub(crate) use switch2 as imp;

@@ -15,7 +15,11 @@ pub fn run(root: &Path, args: &[String]) -> Result {
 
     let mut it = args.iter();
     while let Some(arg) = it.next() {
-        let mut value = || it.next().cloned().ok_or_else(|| format!("`{arg}` needs a value"));
+        let mut value = || {
+            it.next()
+                .cloned()
+                .ok_or_else(|| format!("`{arg}` needs a value"))
+        };
         match arg.as_str() {
             "--platform" => platform = Some(value()?),
             "--config" => config = Config::parse(&value()?)?,
@@ -40,7 +44,13 @@ pub fn run(root: &Path, args: &[String]) -> Result {
     let mut command = cargo();
     command
         .current_dir(root)
-        .args(["build", "--package", package, "--profile", config.cargo_profile()])
+        .args([
+            "build",
+            "--package",
+            package,
+            "--profile",
+            config.cargo_profile(),
+        ])
         .arg("--target-dir")
         .arg(root.join("target").join(&platform.name));
     match (target, &platform.target_spec) {
@@ -58,8 +68,9 @@ pub fn run(root: &Path, args: &[String]) -> Result {
 
     // Replaces the .cargo/config.toml flags; with an explicit --target they only reach target
     // crates, not build scripts or proc macros.
-    command
-        .env_remove("RUSTFLAGS")
-        .env("CARGO_ENCODED_RUSTFLAGS", cfg::flags(&platform, Some(config)).join("\x1f"));
+    command.env_remove("RUSTFLAGS").env(
+        "CARGO_ENCODED_RUSTFLAGS",
+        cfg::flags(&platform, Some(config)).join("\x1f"),
+    );
     crate::run(command)
 }

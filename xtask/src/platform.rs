@@ -66,13 +66,16 @@ pub fn load_all(root: &Path) -> Result<Vec<Platform>> {
 }
 
 pub fn find(root: &Path, name: &str) -> Result<Platform> {
-    load_all(root)?.into_iter().find(|p| p.name == name).ok_or_else(|| {
-        format!(
-            "unknown platform `{name}`: no platforms/{name}/platform.toml \
+    load_all(root)?
+        .into_iter()
+        .find(|p| p.name == name)
+        .ok_or_else(|| {
+            format!(
+                "unknown platform `{name}`: no platforms/{name}/platform.toml \
              (console backends must be cloned first, see platforms/README.md)"
-        )
-        .into()
-    })
+            )
+            .into()
+        })
 }
 
 /// The desktop platform xtask itself runs on.
@@ -92,8 +95,18 @@ pub fn list(root: &Path) -> Result {
             Family::Desktop => "desktop",
             Family::Console => "console",
         };
-        let ext = if p.ext.is_empty() { "-".to_owned() } else { p.ext.join(", ") };
-        println!("{:<10} {:<8} targets: {}  ext: {}", p.name, family, p.targets.join(", "), ext);
+        let ext = if p.ext.is_empty() {
+            "-".to_owned()
+        } else {
+            p.ext.join(", ")
+        };
+        println!(
+            "{:<10} {:<8} targets: {}  ext: {}",
+            p.name,
+            family,
+            p.targets.join(", "),
+            ext
+        );
     }
     Ok(())
 }

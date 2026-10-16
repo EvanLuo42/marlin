@@ -99,6 +99,9 @@ fn check_size(size: usize) -> Result<()> {
 
 #[inline]
 fn check_range(ptr: NonNull<u8>, size: usize) -> Result<()> {
-    debug_assert!(ptr.addr().get().is_multiple_of(page_size()), "address is not page aligned");
+    debug_assert!(
+        ptr.addr().get().is_multiple_of(page_size()),
+        "address is not page aligned"
+    );
     check_size(size)
 }

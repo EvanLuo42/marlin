@@ -75,9 +75,20 @@ unsafe impl VMem for Backend {
         // SAFETY: the caller guarantees the range lies inside a live reservation, so MAP_FIXED only
         // replaces pages we own.
         let p = unsafe {
-            libc::mmap(ptr.as_ptr().cast(), size, libc::PROT_NONE, RESERVE_FLAGS | libc::MAP_FIXED, -1, 0)
+            libc::mmap(
+                ptr.as_ptr().cast(),
+                size,
+                libc::PROT_NONE,
+                RESERVE_FLAGS | libc::MAP_FIXED,
+                -1,
+                0,
+            )
         };
-        if p == libc::MAP_FAILED { Err(last_error()) } else { Ok(()) }
+        if p == libc::MAP_FAILED {
+            Err(last_error())
+        } else {
+            Ok(())
+        }
     }
 
     unsafe fn protect(ptr: NonNull<u8>, size: usize, prot: Protection) -> Result<()> {
