@@ -16,11 +16,13 @@
 //!   are pulled in from `platforms/<name>/pal/`.
 #![cfg_attr(not(test), no_std)]
 
+mod arch;
 mod backend;
 mod contract;
 pub mod debug;
 mod error;
 pub mod ext;
+pub mod fiber;
 pub mod futex;
 pub mod process;
 pub mod sysinfo;

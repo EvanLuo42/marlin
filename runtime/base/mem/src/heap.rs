@@ -50,6 +50,16 @@ const EXITED: usize = 1;
 #[thread_local]
 static THREAD_HEAP: Cell<usize> = Cell::new(UNINIT);
 
+/// Reads [`THREAD_HEAP`] afresh on every call.
+///
+/// Fibers migrate between threads, and LLVM may reuse a thread-local's address across an opaque
+/// call within one function. Inlined into a job that allocates, waits (resuming on another thread)
+/// and allocates again, a direct read could hand it the old thread's heap.
+#[inline(never)]
+fn thread_heap() -> usize {
+    THREAD_HEAP.get()
+}
+
 #[derive(Clone, Copy)]
 enum KeyState {
     Uninit,
@@ -156,7 +166,7 @@ pub(crate) unsafe fn realloc(
 /// `bin` is in `1..BIN_COUNT`.
 #[inline]
 unsafe fn alloc_in(bin: usize) -> *mut u8 {
-    let state = THREAD_HEAP.get();
+    let state = thread_heap();
     // SAFETY: a thread heap is only used by its thread.
     unsafe {
         if state > EXITED {
@@ -346,7 +356,7 @@ pub(crate) unsafe fn free(p: *mut u8) {
         } else {
             p.cast::<Block>()
         };
-        let state = THREAD_HEAP.get();
+        let state = thread_heap();
         if state > EXITED && (*seg).heap.load(Ordering::Relaxed).addr() == state {
             free_local(state as *mut Heap, page, block);
         } else {

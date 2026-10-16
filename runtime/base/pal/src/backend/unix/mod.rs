@@ -2,6 +2,7 @@
 //! `../macos` and are reached through `crate::backend::imp`.
 
 mod debug;
+mod fiber;
 mod process;
 mod thread;
 mod time;

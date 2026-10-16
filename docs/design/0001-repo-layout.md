@@ -461,7 +461,7 @@ runtime/<layer>/<name>/
 ## 10. 待定问题（后续设计文档）
 
 1. 自研 VM 的执行策略：纯解释器，还是 cook 期 AOT（字节码 → Rust/C → 静态链接进 game）。主机禁止 JIT，后者会影响"所有游戏一个可执行文件"的假设。
-2. fiber 在 Windows 上用 `CreateFiber` 还是统一用 `arch/` 里的手写上下文切换。**倾向手写**：TLS key 在 Windows 上基于 FLS，用 `CreateFiber` 会让值跟着 fiber 走，而不是跟着线程走（见第 4 条）。
+2. ~~fiber 实现方式~~ **已定**：统一用 `arch/` 里的手写上下文切换，共 4 种 ABI：x86_64 SysV/Win64、AArch64 AAPCS/Windows。Windows 的两个变体会同时切换 TEB 中的栈边界。
 3. 物理引擎自研，还是绑定 Jolt（需要 C++ 运行时，主机 SDK 提供）。
 4. ~~PAL 的 TLS~~ **已定**：PAL 提供带退出析构的 key（Windows FLS / POSIX `pthread_key`），热路径直接用 `#[thread_local]` static。
 5. 资源包格式与 VFS 挂载优先级（补丁/DLC）。
@@ -503,3 +503,10 @@ runtime/<layer>/<name>/
 - 对齐 > 16 的小分配：在 page 内多分配一些，返回块内对齐后的指针，并给该 page 打 `has_aligned` 标记，`free` 时回推到块起点。对齐 > 2 MiB 不支持，返回 null。
 - mem 用了 nightly 的 `#[thread_local]`；没有原生 TLS 的主机平台需要换成 PAL TLS key 的慢路径。
 - 尚未实现：purge（延迟 decommit 空闲 page）、内存标签与预算、`Allocator` trait（allocator_api）、arena/pool、mem-debug（guard page、泄漏追踪）、free list 指针编码（防止 heap 被利用）。
+- **Fiber**（`pal::fiber`，经 `marlin_thread::fiber` 原样提供给上层）：`Stack` 底部有一个不可访问的 guard page，其余部分预先 commit；`make_context` 在栈顶手工构造初始帧，返回地址指向 trampoline，trampoline 再调用 `entry(arg)`；`switch` 把 callee-saved 寄存器和浮点控制字压栈，然后交换栈指针。Win64 还保存 xmm6–15，以及 TEB 的 StackBase / StackLimit / DeallocationStack，否则 `__chkstk` 和异常分发会出错（有 800 KiB 深递归的测试覆盖）。5 个目标都完整 build 过（汇编通过汇编器），但只有 x86_64 Windows 实际运行过。
+- **TLS 与 fiber 迁移**：LLVM 可能在同一个函数里把 TLS 地址缓存下来，跨过不透明调用继续使用；fiber 在别的线程上恢复后，就会读到旧线程的值。因此所有可能在 fiber 上执行的 `#[thread_local]` 读取都包在 `#[inline(never)]` 访问函数里（mem 的 `thread_heap()`、jobs 的 `current_worker()`）。新写的代码要遵守同样的规则。
+- **marlin-jobs**：每个 worker 线程在 fiber 上跑调度循环。job 在 counter 上等待时，fiber 被 park，worker 换一个空闲 fiber 继续；counter 归零后，被 park 的 fiber 进入 ready 队列，优先于新 job 执行。凡是"切走之后才能做"的动作（把 fiber 还回池子、登记为等待者）都放进 `Worker::pending`，由切换到的那个 fiber 去完成，避免另一个线程恢复一个还在运行的 fiber。
+- 调度顺序：ready fiber → High 全局队列 → 本 worker 的本地队列（取最新的，深度优先）→ Normal 全局队列 → 从其他 worker 偷最旧的 → Low 全局队列。worker 内部 spawn 的 Normal job 进本地队列。深度优先把嵌套等待占用的 fiber 数限制在大约 worker 数 × 递归深度。只用全局 FIFO 时，4095 个嵌套等待就能耗尽 512 个 fiber。
+- 空闲 worker 用 eventcount（`epoch` + `sleepers`，SeqCst 配对）睡在 Condvar 上，不会丢唤醒。外部线程等待 counter 时直接阻塞（不帮忙执行 job）。counter 由 `Arc` 共享，最后一次 decrement 发生在 scope 返回之后也是安全的。
+- 性能（release，11 个 worker）：空 job（spawn + 执行）约 224 ns；4095 次嵌套等待的 fork-join 约 2.8 ms。
+- 尚未实现：无锁的 Chase-Lev 双端队列（现在是 Mutex<VecDeque>）、fiber 感知的锁（job 不要在等待时持有 `marlin_sync` 的锁）、fiber 池耗尽时的降级处理（现在直接 panic）、主线程作为 worker 参与执行、frame 级的 job 图与 profiler 标记。

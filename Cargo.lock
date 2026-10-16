@@ -235,6 +235,9 @@ version = "0.1.0"
 [[package]]
 name = "marlin-jobs"
 version = "0.1.0"
+dependencies = [
+ "marlin-std",
+]
 
 [[package]]
 name = "marlin-math"

@@ -12,6 +12,7 @@ extern crate alloc;
 mod builder;
 pub mod current;
 pub mod ext;
+pub mod fiber;
 mod local;
 
 use core::time::Duration;
