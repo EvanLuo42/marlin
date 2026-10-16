@@ -302,8 +302,10 @@ runtime/engine/
 ├── shader/        运行时 shader 容器、permutation 查找
 ├── render_graph/  render graph：资源生命周期、barrier 推导、异步计算调度
 ├── render/        场景渲染：材质、光照、阴影、后处理、可见性
+├── material/      材质类型/实例/动态实例/MPC/参数表（0007，新增）
+├── terrain/       地形 cell 运行时数据、RVT 合成、多层查询（0009，新增）
 ├── font/          字形栅格化/SDF 图集、shaping
-├── ui_render/     立即模式 UI 渲染：rect/圆角/线/图像/文字 → 批处理 → rhi
+├── ui_render/     立即模式 UI 渲染：rect/圆角/线/图像/文字 → GPU tile binning → rhi（0008）
 ├── anim/          骨骼动画、混合、IK
 ├── physics/       物理（自研或 third_party 绑定）
 ├── audio/         混音、DSP、空间化（输出走 audio_device）

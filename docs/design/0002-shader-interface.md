@@ -14,6 +14,7 @@
 
 - `entry` 是入口名。SPIR-V 模块和 DXIL library 可以有多个入口；单入口 DXIL 在 D3D12 下会忽略它。
 - 每个 stage 一个 module：vertex、pixel、compute。其他 stage（mesh、amplification、光追）等需要时再加。
+  - 0005 §1 已确定：mesh 和 amplification 成为**必需的基线**。光追只用 inline ray query（在 compute 和 pixel 中使用），不引入 RT pipeline stage。
 
 ## 2. 绑定模型：只有 bindless
 

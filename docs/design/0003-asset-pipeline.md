@@ -215,7 +215,7 @@ bulk        GPU 数据（顶点、纹理 mip），对齐到 4 KiB，直接上传
   - 加载入口关卡。
 - **帧流水线**：
   - 模拟第 N+1 帧的同时，提交第 N 帧的渲染。
-  - 每帧结束时，从 world 抽取不可变的渲染快照。
+  - 每帧结束时，从 world 抽取不可变的渲染快照。（已由 0006 §1 修订：渲染侧持有持久的 GPU Scene，每帧只抽取不可变的**变化量**，即 `RenderDelta`。流水线扩展为三级：Game N+1 ∥ Render N ∥ GPU N-1，见 0004 §3。）
   - 两侧都以 fiber job 图运行，不设固定线程。
   - 每帧调用 profile 的 `frame_mark`。
 - `apps/game` 成为真正的"读包和关卡"的可执行文件，`apps/demo_cubes` 删除。示例工程放在 `samples/`。
