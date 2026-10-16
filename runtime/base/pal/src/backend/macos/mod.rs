@@ -2,10 +2,13 @@
 //! dispatch_io later).
 
 mod futex;
+mod sysinfo;
+mod thread;
 
 use core::ptr;
 
 pub(crate) use super::unix::Backend;
+pub(super) use thread::{current_affinity, set_current_affinity, set_current_priority};
 
 /// Apple Technical Q&A QA1361: sysctl `KERN_PROC_PID` and test `P_TRACED` in `kp_proc.p_flag`.
 pub(super) fn is_debugger_present() -> bool {

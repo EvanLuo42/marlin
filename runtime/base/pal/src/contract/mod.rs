@@ -8,6 +8,7 @@ mod debug;
 pub(crate) mod ext;
 mod futex;
 mod process;
+mod sysinfo;
 mod thread;
 mod time;
 mod tls;
@@ -16,10 +17,14 @@ mod vmem;
 pub(crate) use debug::Debug;
 pub(crate) use futex::Futex;
 pub(crate) use process::Process;
+pub(crate) use sysinfo::SysInfo;
 pub(crate) use thread::Thread;
 pub(crate) use time::Time;
 pub(crate) use tls::Tls;
 pub(crate) use vmem::VMem;
 
 /// The whole contract. Grows with each subsystem (fiber, file, ...).
-pub(crate) trait Platform: VMem + Process + Debug + Time + Thread + Futex + Tls {}
+pub(crate) trait Platform:
+    VMem + Process + Debug + Time + Thread + Futex + Tls + SysInfo
+{
+}

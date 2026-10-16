@@ -2,8 +2,11 @@
 //! hugetlb later).
 
 mod futex;
+mod sysinfo;
+mod thread;
 
 pub(crate) use super::unix::Backend;
+pub(super) use thread::{current_affinity, set_current_affinity, set_current_priority};
 
 /// Reads `TracerPid` from `/proc/self/status`.
 pub(super) fn is_debugger_present() -> bool {

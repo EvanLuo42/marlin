@@ -5,5 +5,5 @@ family = "desktop"
 targets = ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"]
 # Capabilities this platform's backends implement; each becomes `--cfg marlin_ext="<name>"`.
 # Listing a capability that a backend does not implement is a compile error.
-# Planned: vmem_alias, hybrid_cores, direct_storage, crash_dump, cpu_markers, dylib.
-ext = ["large_pages"]
+# Planned: vmem_alias, direct_storage, crash_dump, cpu_markers, dylib.
+ext = ["large_pages", "hybrid_cores"]

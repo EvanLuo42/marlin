@@ -3,9 +3,12 @@
 mod debug;
 mod error;
 mod futex;
+#[cfg(marlin_ext = "hybrid_cores")]
+mod hybrid_cores;
 #[cfg(marlin_ext = "large_pages")]
 mod large_pages;
 mod process;
+mod sysinfo;
 mod thread;
 mod time;
 mod tls;

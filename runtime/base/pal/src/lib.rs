@@ -23,6 +23,7 @@ mod error;
 pub mod ext;
 pub mod futex;
 pub mod process;
+pub mod sysinfo;
 pub mod thread;
 pub mod time;
 pub mod tls;
@@ -30,7 +31,7 @@ mod types;
 pub mod vmem;
 
 pub use error::{Error, ErrorKind, Result};
-pub use types::Protection;
+pub use types::{CpuSet, Protection, ThreadPriority};
 
 // The selected backend must implement the whole contract, even items nothing calls yet.
 const _: () = {

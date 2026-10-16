@@ -1,8 +1,8 @@
 use core::ptr::NonNull;
 use core::time::Duration;
 
-use crate::Result;
 use crate::thread::ThreadStart;
+use crate::{CpuSet, Result, ThreadPriority};
 
 /// # Safety
 ///
@@ -26,4 +26,9 @@ pub(crate) unsafe trait Thread {
     fn yield_now();
     /// Logical CPUs this process may run on.
     fn available_parallelism() -> usize;
+
+    /// Restricts the calling thread to `cpus`, which is non-empty (checked by the caller).
+    fn set_current_affinity(cpus: &CpuSet) -> Result<()>;
+    fn current_affinity() -> Result<CpuSet>;
+    fn set_current_priority(priority: ThreadPriority) -> Result<()>;
 }

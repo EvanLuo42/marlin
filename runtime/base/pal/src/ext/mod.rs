@@ -11,5 +11,7 @@
 //! }
 //! ```
 
+#[cfg(marlin_ext = "hybrid_cores")]
+pub mod hybrid_cores;
 #[cfg(marlin_ext = "large_pages")]
 pub mod large_pages;

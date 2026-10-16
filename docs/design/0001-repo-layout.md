@@ -469,7 +469,7 @@ runtime/<layer>/<name>/
 
 已实现：
 
-- `marlin-pal`：契约 `VMem`、`Process`、`Debug`、`Time`、`Thread`、`Futex`、`Tls`，以及 ext `LargePages`。Windows、Linux、macOS 都有实现（Linux/macOS 共享 `backend/unix`，futex 和调试器检测各自实现）。
+- `marlin-pal`：契约 `VMem`、`Process`、`Debug`、`Time`、`Thread`（含亲和性与优先级）、`Futex`、`Tls`、`SysInfo`（目前只有 CPU 拓扑），以及 ext `LargePages`、`HybridCores`（仅 Windows）。Windows、Linux、macOS 都有实现（Linux/macOS 共享 `backend/unix`，futex 和调试器检测各自实现）。
 - `marlin-mem::MarlinHeap`：**占位实现**，每次分配都是一次独立的 OS reservation（Windows 上为 64 KiB 粒度），后续由 mimalloc 式堆替换。
 - `marlin-rt`：`start` / `game_entry!` / `panic::report` / `hosted::init`。
 - xtask：`platforms`、`gen-cfg`、`build`、`check-layers`。
@@ -484,4 +484,11 @@ runtime/<layer>/<name>/
 - 线程入口不分配：调用方的结构体以 `#[repr(C)] ThreadStart` 作为第一个字段，新线程拿到指向它的指针后回调 `entry`。闭包式 API 由 `marlin-thread` 提供。
 - `rt::panic::report` 经 `pal::debug::OutputBuffer` 输出 panic 信息；有调试器时先断下来，再走 `__fastfail` / `abort`。重入的 panic 直接 abort。
 - 主机平台的 `#[path]` 模块都标了 `#[rustfmt::skip]`：rustfmt 不看 cfg，没有私有仓库时会找不到文件。
-- 尚未实现：CPU 拓扑（物理核 / SMT / P/E 核）、线程亲和性与优先级、`hybrid_cores` ext。这几项放在一起做。
+- `sysinfo::cpu_topology(out: &mut [LogicalCpu]) -> Result<usize>` 不分配：返回总数，最多写 `out.len()` 项（先传空 slice 取数量），按 id 排序。`LogicalCpu` 含 `id`、`core`（同一物理核的 SMT 兄弟共享，全系统唯一但不连续）和 `efficiency_class`（0 = 最省电；同构 CPU 全为 0）。
+- `CpuSet` 是 1024 位的位图，每 64 位一个 word：在 Windows 上 word 下标就是 processor group，id = `group * 64 + number`；在 Linux 上与 `cpu_set_t` 布局一致，id 就是内核 CPU 编号。
+- Windows 拓扑用 `GetLogicalProcessorInformationEx(RelationProcessorCore)`。结果是变长的，PAL 不能用堆，所以先查大小，再用 `vmem` 申请临时页读取。
+- Windows 线程只能属于一个 processor group，所以 `set_current_affinity` 要求集合落在同一个 group 内，否则返回 `InvalidInput`；`current_affinity` 也只反映当前 group。
+- Linux 拓扑来自 sysfs：`core` 取 `core_cpus_list`（旧内核为 `thread_siblings_list`）中最小的 CPU，因为 `core_id` 在每个 package 内会重新从 0 编号。Intel 混合架构用 `/sys/devices/cpu_atom/cpus` 区分 E 核；ARM 按 `cpu_capacity` 的不同取值排出等级。
+- Linux 优先级通过对 tid 调 `setpriority` 设置 nice。降低 nice 值需要 `CAP_SYS_NICE` 或足够的 `RLIMIT_NICE`，否则返回 `PermissionDenied`，包括从 `Background` 改回 `Normal`。
+- macOS 只提供各性能等级的数量（`hw.perflevelN.*`），无法知道每个 CPU 属于哪个等级。因此拓扑中的数量和各等级的 CPU 数是准确的，但 id 是合成的：从最省电的等级开始编号；Intel Mac 的 SMT 兄弟假定相邻。macOS 没有硬亲和性，亲和性 API 返回 `Unsupported`；优先级映射到 QoS class，QoS 本身决定 P/E 核（`Background` 只跑在 E 核上）。
+- `hybrid_cores` ext 只在 Windows 实现（EcoQoS，`SetThreadInformation(ThreadPowerThrottling)`），运行期用无副作用的 `GetThreadInformation` 探测是否可用。macOS 不声明这个 ext：它的 QoS 已经由 `ThreadPriority` 使用，再暴露一次会让两个 API 互相覆盖。

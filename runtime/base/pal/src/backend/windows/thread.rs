@@ -3,18 +3,21 @@ use core::ptr::{self, NonNull};
 use core::time::Duration;
 
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
+use windows_sys::Win32::System::SystemInformation::GROUP_AFFINITY;
 use windows_sys::Win32::System::Threading::{
     ALL_PROCESSOR_GROUPS, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, CreateThread,
     CreateWaitableTimerExW, GetActiveProcessorCount, GetCurrentThread, GetCurrentThreadId,
-    INFINITE, STACK_SIZE_PARAM_IS_A_RESERVATION, SetThreadDescription, SetWaitableTimer, Sleep,
-    SwitchToThread, TIMER_ALL_ACCESS, WaitForSingleObject,
+    GetThreadGroupAffinity, INFINITE, STACK_SIZE_PARAM_IS_A_RESERVATION, SetThreadDescription,
+    SetThreadGroupAffinity, SetThreadPriority, SetWaitableTimer, Sleep, SwitchToThread,
+    THREAD_PRIORITY_ABOVE_NORMAL, THREAD_PRIORITY_BELOW_NORMAL, THREAD_PRIORITY_LOWEST,
+    THREAD_PRIORITY_NORMAL, THREAD_PRIORITY_TIME_CRITICAL, TIMER_ALL_ACCESS, WaitForSingleObject,
 };
 
-use super::error::last_error;
+use super::error::{check, last_error};
 use super::{Backend, for_each_wide_chunk};
-use crate::Result;
 use crate::contract::Thread;
 use crate::thread::ThreadStart;
+use crate::{CpuSet, Error, ErrorKind, Result, ThreadPriority};
 
 pub(crate) struct Handle(HANDLE);
 
@@ -142,5 +145,47 @@ unsafe impl Thread for Backend {
     fn available_parallelism() -> usize {
         // SAFETY: no preconditions.
         (unsafe { GetActiveProcessorCount(ALL_PROCESSOR_GROUPS) } as usize).max(1)
+    }
+
+    fn set_current_affinity(cpus: &CpuSet) -> Result<()> {
+        // A thread runs in exactly one processor group, so the set must not span groups.
+        let mut groups = (0..CpuSet::WORDS).filter(|&g| cpus.word(g) != 0);
+        let (Some(group), None) = (groups.next(), groups.next()) else {
+            return Err(Error::from_kind(ErrorKind::InvalidInput));
+        };
+        let affinity = GROUP_AFFINITY {
+            Mask: usize::try_from(cpus.word(group))
+                .map_err(|_| Error::from_kind(ErrorKind::InvalidInput))?,
+            Group: group as u16,
+            Reserved: [0; 3],
+        };
+        // SAFETY: GetCurrentThread returns a pseudo-handle; `affinity` outlives the call and a null
+        // previous-affinity pointer is allowed.
+        check(unsafe { SetThreadGroupAffinity(GetCurrentThread(), &affinity, ptr::null_mut()) })
+    }
+
+    fn current_affinity() -> Result<CpuSet> {
+        let mut affinity = GROUP_AFFINITY::default();
+        // SAFETY: GetCurrentThread returns a pseudo-handle; `affinity` is a valid out pointer.
+        check(unsafe { GetThreadGroupAffinity(GetCurrentThread(), &mut affinity) })?;
+        let group = usize::from(affinity.Group);
+        if group >= CpuSet::WORDS {
+            return Err(Error::from_kind(ErrorKind::Unsupported));
+        }
+        let mut set = CpuSet::new();
+        set.set_word(group, affinity.Mask as u64);
+        Ok(set)
+    }
+
+    fn set_current_priority(priority: ThreadPriority) -> Result<()> {
+        let value = match priority {
+            ThreadPriority::Background => THREAD_PRIORITY_LOWEST,
+            ThreadPriority::Low => THREAD_PRIORITY_BELOW_NORMAL,
+            ThreadPriority::Normal => THREAD_PRIORITY_NORMAL,
+            ThreadPriority::High => THREAD_PRIORITY_ABOVE_NORMAL,
+            ThreadPriority::TimeCritical => THREAD_PRIORITY_TIME_CRITICAL,
+        };
+        // SAFETY: GetCurrentThread returns a pseudo-handle with THREAD_SET_INFORMATION access.
+        check(unsafe { SetThreadPriority(GetCurrentThread(), value) })
     }
 }

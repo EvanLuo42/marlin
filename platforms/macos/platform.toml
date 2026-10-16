@@ -2,5 +2,6 @@
 name = "macos"
 family = "desktop"
 targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
-# Planned: vmem_alias, hybrid_cores, crash_dump, dylib.
+# Planned: vmem_alias, crash_dump, dylib. No hybrid_cores: ThreadPriority maps to QoS classes,
+# which already steer threads between P and E cores.
 ext = []

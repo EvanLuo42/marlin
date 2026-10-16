@@ -8,9 +8,9 @@
 use core::ptr::NonNull;
 use core::time::Duration;
 
-use crate::Result;
 use crate::backend::imp::Backend;
 use crate::contract::Thread;
+use crate::{CpuSet, Error, ErrorKind, Result, ThreadPriority};
 
 /// Header of a thread's start data. Embed it as the first field of a `#[repr(C)]` struct and
 /// derive the pointer from the whole struct, so `entry` may cast back to it.
@@ -84,4 +84,41 @@ pub fn yield_now() {
 #[inline]
 pub fn available_parallelism() -> usize {
     Backend::available_parallelism()
+}
+
+/// Restricts the calling thread to the CPUs in `cpus` (hard affinity). Ids come from
+/// [`cpu_topology`](crate::sysinfo::cpu_topology).
+///
+/// - Windows: `SetThreadGroupAffinity`. A thread runs in one processor group, so `cpus` must lie
+///   in a single group (ids `64 * g ..= 64 * g + 63`); otherwise `InvalidInput`.
+/// - Linux: `sched_setaffinity` on the calling thread.
+/// - macOS: `Unsupported`; the kernel has no hard affinity. Use [`set_current_priority`] (QoS)
+///   to steer work between P and E cores.
+///
+/// An empty set, or one with no CPU the process may use, is `InvalidInput`.
+#[inline]
+pub fn set_current_affinity(cpus: &CpuSet) -> Result<()> {
+    if cpus.is_empty() {
+        return Err(Error::from_kind(ErrorKind::InvalidInput));
+    }
+    Backend::set_current_affinity(cpus)
+}
+
+/// The CPUs the calling thread may run on. `Unsupported` on macOS.
+///
+/// On Windows this covers the thread's current processor group only, so on machines with more
+/// than 64 CPUs it can be narrower than what a new thread may use by default.
+#[inline]
+pub fn current_affinity() -> Result<CpuSet> {
+    Backend::current_affinity()
+}
+
+/// Sets the calling thread's scheduling priority (see [`ThreadPriority`] for the mapping).
+///
+/// On Linux, lowering the nice value (raising priority above its current level) needs
+/// `CAP_SYS_NICE` or a sufficient `RLIMIT_NICE`, else `PermissionDenied`. That includes going back
+/// to `Normal` after `Background` or `Low`.
+#[inline]
+pub fn set_current_priority(priority: ThreadPriority) -> Result<()> {
+    Backend::set_current_priority(priority)
 }

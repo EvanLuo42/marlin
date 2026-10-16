@@ -4,9 +4,10 @@ use core::ptr::{self, NonNull};
 use core::time::Duration;
 
 use super::{Backend, check_code, errno};
-use crate::Result;
+use crate::backend::imp;
 use crate::contract::{Thread, VMem};
 use crate::thread::ThreadStart;
+use crate::{CpuSet, Result, ThreadPriority};
 
 pub(crate) struct Handle(libc::pthread_t);
 
@@ -145,5 +146,17 @@ unsafe impl Thread for Backend {
         }
         // SAFETY: no preconditions.
         (unsafe { libc::sysconf(libc::_SC_NPROCESSORS_ONLN) }).max(1) as usize
+    }
+
+    fn set_current_affinity(cpus: &CpuSet) -> Result<()> {
+        imp::set_current_affinity(cpus)
+    }
+
+    fn current_affinity() -> Result<CpuSet> {
+        imp::current_affinity()
+    }
+
+    fn set_current_priority(priority: ThreadPriority) -> Result<()> {
+        imp::set_current_priority(priority)
     }
 }
