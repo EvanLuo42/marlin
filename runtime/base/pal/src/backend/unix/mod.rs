@@ -3,6 +3,7 @@
 
 mod debug;
 mod fiber;
+pub(super) mod file;
 mod process;
 mod thread;
 mod time;

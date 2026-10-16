@@ -231,6 +231,9 @@ version = "0.1.0"
 [[package]]
 name = "marlin-io"
 version = "0.1.0"
+dependencies = [
+ "marlin-pal",
+]
 
 [[package]]
 name = "marlin-jobs"

@@ -1,6 +1,7 @@
 //! Linux backend: the shared POSIX implementation plus the Linux-only pieces below (io_uring and
 //! hugetlb later).
 
+mod file;
 mod futex;
 mod sysinfo;
 mod thread;

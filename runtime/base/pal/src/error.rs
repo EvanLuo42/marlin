@@ -46,6 +46,8 @@ pub enum ErrorKind {
     WouldBlock,
     TimedOut,
     Interrupted,
+    /// A read ended before the requested bytes arrived.
+    UnexpectedEof,
     Unsupported,
     Other,
 }
@@ -61,6 +63,7 @@ impl ErrorKind {
             Self::WouldBlock => "operation would block",
             Self::TimedOut => "timed out",
             Self::Interrupted => "interrupted",
+            Self::UnexpectedEof => "unexpected end of file",
             Self::Unsupported => "unsupported",
             Self::Other => "other error",
         }

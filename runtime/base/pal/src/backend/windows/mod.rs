@@ -3,6 +3,7 @@
 mod debug;
 mod error;
 mod fiber;
+mod file;
 mod futex;
 #[cfg(marlin_ext = "hybrid_cores")]
 mod hybrid_cores;

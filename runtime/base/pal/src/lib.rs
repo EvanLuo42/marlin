@@ -23,6 +23,7 @@ pub mod debug;
 mod error;
 pub mod ext;
 pub mod fiber;
+pub mod file;
 pub mod futex;
 pub mod process;
 pub mod sysinfo;
