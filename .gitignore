@@ -7,3 +7,6 @@
 !/platforms/windows/
 !/platforms/linux/
 !/platforms/macos/
+
+# IDE project files
+/.idea/
