@@ -9,7 +9,8 @@ use crate::backend::imp::Backend;
 use crate::contract::Futex;
 
 /// Blocks while `*addr == expected` until woken by [`wake_one`]/[`wake_all`], timed out, or woken
-/// spuriously, so callers must re-check their condition in a loop. Returns `false` only on timeout.
+/// spuriously, so callers must re-check their condition in a loop. Returns `false` only on timeout,
+/// and only once the whole timeout has passed (a timer firing early counts as a spurious wakeup).
 #[inline]
 pub fn wait(addr: &AtomicU32, expected: u32, timeout: Option<Duration>) -> bool {
     Backend::wait(addr, expected, timeout)
