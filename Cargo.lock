@@ -102,6 +102,10 @@ version = "0.1.0"
 [[package]]
 name = "marlin-containers"
 version = "0.1.0"
+dependencies = [
+ "hashbrown",
+ "marlin-hash",
+]
 
 [[package]]
 name = "marlin-cook-audio"
@@ -339,6 +343,11 @@ dependencies = [
 [[package]]
 name = "marlin-text"
 version = "0.1.0"
+dependencies = [
+ "marlin-containers",
+ "marlin-hash",
+ "marlin-std",
+]
 
 [[package]]
 name = "marlin-thread"

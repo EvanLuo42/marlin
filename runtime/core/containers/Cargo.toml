@@ -1,11 +1,13 @@
 [package]
 name = "marlin-containers"
-description = "Allocator-aware containers, slot maps and handles."
+description = "Hash maps, inline vectors, slot maps and sparse sets."
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+hashbrown = { workspace = true, features = ["inline-more"] }
+marlin-hash.workspace = true
 
 [lints]
 workspace = true
