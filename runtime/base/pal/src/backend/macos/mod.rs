@@ -1,6 +1,7 @@
 //! macOS backend: the shared POSIX implementation plus the macOS-only pieces below (mach_vm and
 //! dispatch_io later).
 
+mod file;
 mod futex;
 mod sysinfo;
 mod thread;
