@@ -34,6 +34,7 @@ fn main() {
     compress_seeds(&mut out, repo);
     asset(&mut out);
     front_syntax(&mut out, repo);
+    shaderc_ir(&mut out, repo);
 }
 
 struct Corpus {
@@ -492,5 +493,19 @@ fn front_syntax(out: &mut Corpus, repo: &Path) {
             input.extend_from_slice(&text);
             out.put("front_syntax_parse", &format!("{stem}-{selector}"), &input);
         }
+    }
+}
+
+fn shaderc_ir(out: &mut Corpus, repo: &Path) {
+    let dir = repo.join("compiler/shader/ir/tests/data/text");
+    let mut sources: Vec<PathBuf> = fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|e| e == "ir"))
+        .collect();
+    sources.sort();
+    for path in sources {
+        let stem = path.file_stem().unwrap().to_string_lossy().into_owned();
+        out.put("shaderc_ir_parse", &stem, &fs::read(&path).unwrap());
     }
 }

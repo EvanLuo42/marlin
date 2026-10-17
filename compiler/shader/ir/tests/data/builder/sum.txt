@@ -1,0 +1,15 @@
+func @Game.Sum(%n: i32) -> i32 {
+block0:
+    loop header block1(i32 0, i32 0) continue block3 merge block4
+block1(%i: i32, %acc: i32):
+    %0 = icmp sge %i, %n
+    cond_br %0, block4(%acc), block2 merge block2
+block2:
+    %1 = add %acc, %i
+    br block3(%1)
+block3(%acc.1: i32):
+    %2 = add %i, i32 1
+    br block1(%2, %acc.1)
+block4(%result: i32):
+    return %result
+}

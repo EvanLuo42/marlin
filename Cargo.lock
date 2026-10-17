@@ -908,6 +908,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "marlin-shaderc-ir"
+version = "0.1.0"
+dependencies = [
+ "marlin-lang-arena",
+ "marlin-math",
+ "marlin-test-support",
+]
+
+[[package]]
 name = "marlin-shaderc-syntax"
 version = "0.1.0"
 dependencies = [

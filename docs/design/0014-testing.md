@@ -213,7 +213,7 @@ GPU 层的看门狗：xtask 监控测试进程，超时没有输出就报告卡�
 
 - **日常层**：在 `unit` 二进制里，用 `Rng::new(seed())` 生成输入，迭代次数 `N * scale()`，全局分配器套 `MemCap`（测试二进制可以设全局分配器）。失败输出种子，用 `--seed` 复现。
 - **长跑层**：根目录 `fuzz/`，libFuzzer 目标最终要覆盖所有解析器和反序列化入口（text、serial、cooked 格式、compress、net 帧、config/TOML、shader 前端、glTF/图片导入的我方处理部分）。
-  - 现有 13 个：`asset_package`、`asset_unit`、`asset_wire`、`compress_gdeflate`、`compress_lz4_block`、`compress_lz4_frame`、`compress_zstd`、`front_syntax_parse`（C# 系共享前端的 parser，0015）、`serial_cooked`、`serial_read`、`text_locale`、`text_message`、`text_string_table`。2026-10-17 各跑 60 秒，没有发现问题。`front_syntax_parse` 之前由 `unit` 里的随机测试找到的 5 个输入放在 `compiler/front/syntax/tests/data/regress/front_syntax_parse/`。
+  - 现有 14 个：`asset_package`、`asset_unit`、`asset_wire`、`compress_gdeflate`、`compress_lz4_block`、`compress_lz4_frame`、`compress_zstd`、`front_syntax_parse`（C# 系共享前端的 parser，0015）、`serial_cooked`、`serial_read`、`text_locale`、`text_message`、`text_string_table`，以及 `shaderc_ir_parse`（shader IR 的文本格式，0006 §13）。2026-10-17 各跑 60 秒，没有发现问题。`front_syntax_parse` 之前由 `unit` 里的随机测试找到的 5 个输入放在 `compiler/front/syntax/tests/data/regress/front_syntax_parse/`。
   - `cargo xtask test --tier fuzz [--target <name>] [--time <secs>] [--seed <n>] [-- <libFuzzer flags>]`，每次运行限 2048 MB 内存、单个输入 10 秒。
   - 不用 cargo-fuzz 本身：它的 `RUSTFLAGS` 会替换掉 gen-cfg 的 `marlin_platform` 等 flag。xtask 用和 cargo-fuzz 相同的 flag 加上 gen-cfg 自己构建。Windows MSVC 上要额外处理：链接加 `/include:main`；用 vswhere 找到 MSVC 的 `clang_rt.asan_dynamic-x86_64.dll` 放进 PATH；`marlin_fuzz::init()` 装一个调 C 运行时 `abort()` 的 panic hook（Rust 自己的 abort 会在 libFuzzer 保存输入之前结束进程）；检出路径太深时 `cl.exe` 会因 260 字符限制报 C1083。
   - 新发现的 corpus 留在 `target/fuzz/corpus/`，还没有合回 `fuzz/corpus/` 的步骤。

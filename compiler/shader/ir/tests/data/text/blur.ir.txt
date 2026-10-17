@@ -1,0 +1,18 @@
+struct @BlurArgs { Src: res<Texture2D<f32x4>>, Dst: res<StorageTexture2D<f32x4>>, Linear: res<Sampler>, Radius: f32 }
+global @args : ptr<push, @BlurArgs>
+global @tid : ptr<input, i32x3> builtin(DispatchThreadId)
+
+entry compute(8, 8, 1) @Marlin.Post.Blur uses(@args, @tid) {
+block0:
+    %id = load @tid
+    %xy = shuffle %id, %id, [0, 1]
+    %0 = access @args, .Src
+    %1 = load %0
+    %src = desc.get %1
+    %2 = access @args, .Dst
+    %3 = load %2
+    %dst = desc.get %3 nonuniform
+    %4 = access @args, .Radius
+    %r = load %4
+    return
+}

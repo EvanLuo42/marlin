@@ -30,6 +30,8 @@
 | CTFE | 单态化之后，用 IR 解释器执行 | 11 |
 | 表示 | 每个函数一个 arena，用 u32 下标引用；块内的指令是双向链表；每个值有 use 列表；类型和常量在 module 级 intern | 12 |
 | 文本格式 | 能打印也能解析，可以往返；不做二进制序列化 | 13 |
+| 文本里的名字 | 值带源码名作提示（`%acc`，重名时 `%acc.1`，没有名字时 `%5`）；函数、全局变量和 struct 用全名，不是标识符时加引号（`@"Game.Grid<4>"`）；名字不影响语义 | 13 |
+| 解释器 | 一个 group 的 lane 按 wave 锁步执行，按结构化控制流维护活动掩码（maximal reconvergence）；group 里的各个 wave 轮流执行到 barrier。数学函数是自己实现的，在所有宿主上逐位一致 | 11 |
 | 跨进程缓存 | 只缓存最终的 blob，用 manifest 模式核对依赖（0005 §8） | — |
 
 ## 1. target 约束
@@ -63,9 +65,9 @@ IR 停在比这几个 target 都高一层的位置：内存是逻辑的，资源
 | 向量 | `f32x4`、`i32x2`……（元素是标量，长度 2–4） | 一直保留到 legalize 的 5.8，由 target 决定要不要标量化 |
 | 矩阵 | `f32x4x4`（R×C，列主序） | legalize 的 5.1 才降低成向量 |
 | 数组 | `[T; N]` | 只有定长数组 |
-| struct | `struct Name { ... }` | 带 scalar 布局（0004 §16）；布局在 module 级计算并缓存 |
+| struct | `struct @Name { ... }` | 带 scalar 布局（0004 §16）；布局在 module 级计算并缓存 |
 | 指针 | `ptr<space, T>`，可以带 `ro` | 逻辑指针（§6） |
-| 资源下标 | `res<K>` | K 是资源种类和元素类型，比如 `res<Texture2D<f32x4>>`、`res<Buffer<Light>>`、`res<Sampler>` |
+| 资源下标 | `res<K>` | K 是资源种类和元素类型，比如 `res<Texture2D<f32x4>>`、`res<Buffer<@Light>>`、`res<Sampler>` |
 | handle | `handle<K>` | 物化之后的描述符（§7） |
 | 不透明类型 | `rayquery`、`accel` | 只能存在于变量里，或者作为 handle 的种类 |
 | 泛型（只在 MIR 里） | `param T`、`proj M.Params`、`const_expr` | 单态化时消掉 |
@@ -141,12 +143,12 @@ block3(%x: f32, %y: f32):
 ### 6.2 指针操作
 
 ```text
-%e   = buffer.elem %h, %i            : ptr<buffer ro, Light>
+%e   = buffer.elem %h, %i            : ptr<buffer ro, @Light>
 %pos = access %e, .Position          : ptr<buffer ro, f32x3>
 %v   = load %pos                     : f32x3
 %t   = access @Tile, [%gi]           : ptr<groupshared, f32x4>
 store %t, %v4
-%b   = buffer.byte %raw, %offset     : ptr<buffer, u32>    // ByteBuffer，偏移按 4 对齐
+%b   = buffer.byte %raw, %offset     : ptr<buffer, i32>    // ByteBuffer，偏移按 4 对齐
 ```
 
 - 指针只能这样得到：
@@ -167,8 +169,8 @@ store %t, %v4
 入口函数没有参数，它的输入输出是一组模块级变量：
 
 ```text
-global @args : ptr<push, BlurArgs>
-global @tid  : ptr<input, u32x3> builtin(DispatchThreadId)
+global @args : ptr<push, @BlurArgs>
+global @tid  : ptr<input, i32x3> builtin(DispatchThreadId)
 global @uv   : ptr<input, f32x2> location(0) interp(perspective)
 global @col  : ptr<output, f32x4> target(0)
 global @dep  : ptr<output, f32> builtin(Depth)
@@ -216,7 +218,7 @@ entry compute(8, 8, 1) @Blur uses(@args, @tid) { ... }
 
 | 集合 | op | 说明 |
 |---|---|---|
-| 核心集 | `fma sqrt rsqrt rcp exp2 log2 sin cos abs smin smax umin umax fmin fmax floor ceil trunc round_even fract sign dot cross popcount firstbit_hi firstbit_lo bitreverse bitfield_extract bitfield_insert isnan isinf` | 各个 target 普遍有原生指令，优化器也要认识它们 |
+| 核心集 | `fma sqrt rsqrt rcp exp2 log2 sin cos abs smin smax umin umax fmin fmax floor ceil ftrunc round_even fract sign dot cross popcount firstbit_hi.s firstbit_hi.u firstbit_lo bitreverse bitfield_extract.s bitfield_extract.u bitfield_insert isnan isinf` | 各个 target 普遍有原生指令，优化器也要认识它们 |
 | 可替换集 | `pow tan asin acos atan atan2 sinh cosh tanh exp log normalize length distance reflect refract smoothstep step faceforward` | 每个 op 都对应一个用 Marlin 写的标准库实现。target 描述声明它有原生实现就直接用原生的，否则在 legalize 的 5.5 inline 标准库的那个实现 |
 
 - 核心集里 target 没有原生实现的 op，也在 5.5 展开。
@@ -298,9 +300,9 @@ rq.init %q, %accel, %ray, flags(cull_back), mask(0xff)
 rq.commit_triangle %q
 %t = rq.get %q, committed.t
 
-global @verts : ptr<mesh_vertex, [VsOut; 64]>
-global @tris  : ptr<mesh_index, [u32x3; 126]>
-global @prims : ptr<mesh_primitive, [PrimOut; 126]>
+global @verts : ptr<mesh_vertex, [@VsOut; 64]>
+global @tris  : ptr<mesh_index, [i32x3; 126]>
+global @prims : ptr<mesh_primitive, [@PrimOut; 126]>
 mesh.set_counts %nv, %np
 mesh.dispatch %x, %y, %z          // amplification；payload 是 @payload 变量
 ```
@@ -343,6 +345,12 @@ mesh.dispatch %x, %y, %z          // amplification；payload 是 @payload 变量
 - 只有一个解释器，它的语义就是 IR 的语义，所以编译期算出来的结果和 GPU 上跑出来的不会不一致。
 - 依赖泛型参数的 const 表达式在 MIR 里保持符号形式，到单态化时再求值。
 - `const` 函数不能访问资源、groupshared、入口 I/O 和 `debug.*`，由 verifier 检查。
+- 解释器的执行模型（2026-10-17 定）：
+  - 一个 group 的 lane 按 wave 分组，wave 内锁步执行，按结构化控制流维护活动掩码，lane 在 merge 块汇合（§5.3）；wave 大小是参数，测试覆盖多种大小；
+  - group 里的各个 wave 轮流执行，遇到 `barrier` 时切换，所有 wave 都到了才继续；
+  - 数学函数（`sin`、`exp2`、`log2`……）在 ir crate 里用软件实现，所有宿主上逐位一致，所以在不同机器上 cook 出的 blob 相同；精度按 GPU 的容差，不保证正确舍入。f16 也用软件实现；
+  - 资源由调用方提供：buffer 是字节数组，push 和入口 I/O 是变量的初始值；纹理采样、ray query 和 mesh 第一版不支持（第 10 步再加）；
+  - 整数除以 0 在解释器和常量折叠里都得 0（§10 允许 target 定义，两者一致才能做差分测试）。
 
 ## 12. 内存中的表示
 
@@ -356,14 +364,15 @@ mesh.dispatch %x, %y, %z          // amplification；payload 是 @payload 变量
 ## 13. 文本格式
 
 - 打印和解析能往返。
+- 名字：值打印成 `%名字`，名字来自源码，只是提示；重名时加 `.1`、`.2`，没有名字的值打印成 `%序号`。函数、全局变量和 struct 打印成 `@全名`，全名不是标识符时加引号，比如单态化出来的 `@"Game.Grid<4>"`。解析时名字只用来对应定义和使用。
 - pass 的测试是 FileCheck 式的：输入一段 IR 文本，跑指定的 pass，然后比对输出。
 - 不做二进制序列化：跨进程只缓存最终的 blob（0005 §8）。
 
 ```text
-struct BlurArgs { Src: res<Texture2D<f32x4>>, Dst: res<StorageTexture2D<f32x4>>, Linear: res<Sampler>, Radius: f32 }
+struct @BlurArgs { Src: res<Texture2D<f32x4>>, Dst: res<StorageTexture2D<f32x4>>, Linear: res<Sampler>, Radius: f32 }
 
-global @args : ptr<push, BlurArgs>
-global @tid  : ptr<input, u32x3> builtin(DispatchThreadId)
+global @args : ptr<push, @BlurArgs>
+global @tid  : ptr<input, i32x3> builtin(DispatchThreadId)
 
 entry compute(8, 8, 1) @Blur uses(@args, @tid) {
 block0:
@@ -378,6 +387,32 @@ block0:
 ```
 
 为了写起来简洁，文本格式允许嵌套写法，比如 `load (access ...)`。解析时会把它展开成一串独立的指令。
+
+语法（第 6a 步定，2026-10-17）：
+
+```text
+module    := item*
+item      := 'format' N '=' string
+           | 'struct' @name '{' (field ':' type),* '}'
+           | 'global' @name ':' ptr-type attr* ('=' lit)?      attr: builtin(X) location(n) target(n) interp(x)
+           | 'func' @name '(' (%v ':' type),* ')' ('->' type | '->' '(' type,* ')')? body
+           | 'entry' stage @name 'uses' '(' @global,* ')' body  stage: compute(x, y, z) vertex pixel mesh(...) amplification(...)
+body      := '{' (label | inst)* '}'
+label     := name ('(' (%v ':' type),* ')')? ':'               入口块的参数写在函数头上
+inst      := (%v,+ '=')? op-word words* operands suffix*        一行一条
+operand   := %v | @global | type lit | '(' inst ')'
+lit       := number | true | false | zero | any | '(' lit,* ')'
+type      := i1 | i32 | f32x4 | f32x4x4 | '[' type ';' N ']' | @struct
+           | ptr<space ro?, type> | res<Kind<type>?> | handle<Kind<type>?> | rayquery
+```
+
+- 常量都写成"类型 字面量"：`i32 -1`、`f32 1.5`、`f32x2 (1.0, 2.0)`、`@Light zero`。整数按类型的位宽截断；浮点类型后面跟十六进制整数表示原始位（非有限值这样打印）。
+- 结果类型由操作数推出；推不出来的写在后面：转换和 `splat` 写 `: T`，`construct T(...)`、`var function : T` 自带类型。
+- 字段用名字：`access %p, .Color, [2]`、`extract.field %s, .Intensity`；`[3]` 是 `i32` 常量下标。
+- 块按结构化的顺序打印：跳转目标按顺序，region 的 merge 块在整个 region 之后。值必须在使用之前定义；函数、struct 和全局变量可以先用后定义。
+- `//` 到行尾是注释。
+- 数学的 `trunc` 叫 `ftrunc`，免得和转换的 `trunc` 重名；`firstbit_hi` 和 `bitfield_extract` 分 `.s`、`.u` 两种，因为整数不带符号。
+- 纹理、ray query、mesh 和打包操作随第 10 步加入枚举和文本格式。
 
 ## 14. 各 target 的 lower
 
@@ -398,5 +433,5 @@ block0:
 
 - 每个 op 的完整属性表（副作用、convergent、读写哪些地址空间、能不能投机执行）。
 - struct 布局的计算规则在 module 里怎么缓存，以及它和 0004 §16 的对应关系。
-- 文本格式的完整语法。
+- 纹理、ray query、mesh 和打包操作的文本写法（随第 10 步加入）。
 - 64 位原子、存储纹理原子在各个 target 上的 capability 对应关系。

@@ -426,7 +426,7 @@ public const ClosureInfo Flatten<M>() where M : IMaterial { ... }
 | 3 | `common/query`：红绿增量引擎 | 改一个文件只重算依赖它的 query |
 | 4 | `front/hir_def`：4a 是 item tree、def map、名字解析；4b 是函数体降低成 HIR 和局部作用域 | 包内跨文件、跨 namespace 的名字都能解析 |
 | 5 | `shader/hir_ty`：5a 是类型表示、内建类型（0004 §17）、类型降低和签名；5b 是表达式的类型推断、转换、运算符、成员查找和重载；5c 是其余语义检查（确定赋值、readonly、穷尽、接口实现、入口和系统值、push 大小、scalar 布局、capability 推断和 `[Requires]` 契约） | 0004 的类型规则都有诊断 |
-| 6 | `ir`：指令集、builder、verifier、文本打印和解析、解释器 | 文本能往返；解释器能跑 compute 语义 |
+| 6 | `ir`：6a 是类型、指令集、函数和 module 的表示、builder、文本打印和解析；6b 是 verifier；6c 是解释器 | 文本能往返；解释器能跑 compute 语义 |
 | 7 | `mir`、`mono`：降低到 SSA、单态化、CTFE | 泛型入口能单态化，`const` 函数能在编译期求值 |
 | 8 | `opt`：pass manager 和阶段 0–1 的 pass，再加上 SCCP、DCE、CFG 化简 | 第一个 compute 入口能走完整条流水线 |
 | 9 | `target`、`backend_spirv`（SPIR-V 1.6 / Vulkan 1.3 环境）、`reflect`、facade `Session`、真正的核心库 | 第一个 compute shader 生成的 SPIR-V 通过我们自己的验证器；Vulkan RHI 就绪后在真实 GPU 上跑通 |

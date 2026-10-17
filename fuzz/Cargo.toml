@@ -20,6 +20,7 @@ marlin-front-syntax = { path = "../compiler/front/syntax" }
 marlin-hash = { path = "../runtime/core/hash" }
 marlin-reflect = { path = "../runtime/core/reflect" }
 marlin-serial = { path = "../runtime/core/serial" }
+marlin-shaderc-ir = { path = "../compiler/shader/ir" }
 marlin-text = { path = "../runtime/core/text" }
 
 [profile.release]
@@ -32,6 +33,13 @@ debug = 1
 [[bin]]
 name = "front_syntax_parse"
 path = "fuzz_targets/front_syntax_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "shaderc_ir_parse"
+path = "fuzz_targets/shaderc_ir_parse.rs"
 test = false
 doc = false
 bench = false
