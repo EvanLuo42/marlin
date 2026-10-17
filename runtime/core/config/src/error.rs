@@ -1,7 +1,7 @@
 use alloc::string::String;
 use core::fmt;
 
-/// Why a cvar could not be registered or set.
+/// Why a cvar or command could not be registered, set or run.
 #[derive(Clone, Copy, Debug, PartialEq, marlin_std::Error)]
 pub enum Error {
     #[error("unknown cvar")]
@@ -12,6 +12,10 @@ pub enum Error {
     ReadOnly,
     #[error("cheat-protected and cheats are disabled")]
     Cheat,
+    #[error("development only")]
+    DevOnly,
+    #[error("replicated: the server sets it while connected")]
+    Replicated,
     #[error("expected {0}")]
     Invalid(Expected),
     #[error("out of range {0}")]
@@ -28,6 +32,9 @@ pub enum Expected {
     Float,
     String,
     Enum(&'static [&'static str]),
+    /// That many numbers.
+    Vector(u8),
+    Color,
 }
 
 impl fmt::Display for Expected {
@@ -47,6 +54,8 @@ impl fmt::Display for Expected {
                 }
                 Ok(())
             }
+            Self::Vector(n) => write!(f, "{n} finite numbers"),
+            Self::Color => f.write_str("a color: #rrggbb, #rrggbbaa, or 3 or 4 finite numbers"),
         }
     }
 }
@@ -70,6 +79,8 @@ impl fmt::Display for Bounds {
 /// Where a config file or command-line entry came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Location {
+    /// The document as a whole (for a section it lacks).
+    Document,
     /// 1-based line of a config file.
     Line(u32),
     /// Index of the `+name` argument on the command line.
@@ -79,6 +90,7 @@ pub enum Location {
 impl fmt::Display for Location {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Document => f.write_str("document"),
             Self::Line(n) => write!(f, "line {n}"),
             Self::Arg(n) => write!(f, "argument {n}"),
         }
@@ -90,7 +102,8 @@ impl fmt::Display for Location {
 #[error("{location}: `{key}`")]
 pub struct ApplyError {
     pub location: Location,
-    /// The cvar name (dotted, for TOML tables); empty for a syntax error with no key.
+    /// The cvar name (dotted, for TOML tables) or the section; empty for a syntax error with no
+    /// key.
     pub key: String,
     pub source: Cause,
 }
@@ -103,4 +116,7 @@ pub enum Cause {
     /// Malformed TOML or command line, with the parser's message.
     #[error("syntax error: {0}")]
     Syntax(String),
+    /// The document has no such section, or it is not a table.
+    #[error("no such section")]
+    NoSection,
 }

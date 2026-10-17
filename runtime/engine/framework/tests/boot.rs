@@ -12,7 +12,7 @@ package = "build/game.mpak; dlc/extra.mpak"
 [game]
 level = "01992d00-0000-7000-8000-000000000001"
 "#;
-    let errors = marlin_config::apply_config(config, marlin_config::Source::ConfigFile);
+    let errors = marlin_config::apply_config(config, marlin_config::Source::Project);
     assert!(errors.is_empty(), "{errors:?}");
     let errors = marlin_config::apply_command_line(["+content.cookd", "127.0.0.1:47200"]);
     assert!(errors.is_empty(), "{errors:?}");

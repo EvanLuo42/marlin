@@ -2,8 +2,8 @@
 
 use marlin_config::{
     ApplyError, Bounds, Cause, CvarBool, CvarEnum, CvarF64, CvarI64, CvarString, Error, Expected,
-    Location, Source, apply_command_line, apply_config, archive_string, finish_startup,
-    register_all,
+    Location, Source, apply_command_line, apply_config, archive_string, clear_layer,
+    finish_startup, load_layer, register_all,
 };
 
 static VSYNC: CvarBool = CvarBool::new("r.vsync", true, "Wait for vertical blank.").archive();
@@ -49,7 +49,7 @@ MAXFPS = 144
 SCALE = "big"
 QUALITY = [1]
 "#;
-    let errors = apply_config(config, Source::ConfigFile);
+    let errors = apply_config(config, Source::Project);
     assert_eq!(
         errors,
         [
@@ -82,7 +82,7 @@ QUALITY = [1]
     assert_eq!(WINDOW.get(), 1920, "startup: takes effect at once");
 
     // Inline tables and enum indices; strings are not bools in TOML.
-    let errors = apply_config("r = { quality = 0, vsync = \"on\" }", Source::ConfigFile);
+    let errors = apply_config("r = { quality = 0, vsync = \"on\" }", Source::Project);
     assert_eq!(
         errors,
         [err(
@@ -94,7 +94,7 @@ QUALITY = [1]
     assert_eq!(QUALITY.get_name(), "low");
 
     // Malformed TOML: the syntax error is reported, and what parses still applies.
-    let errors = apply_config("r.maxFps = 60\nthis is not toml\n", Source::ConfigFile);
+    let errors = apply_config("r.maxFps = 60\nthis is not toml\n", Source::Project);
     assert!(!errors.is_empty());
     assert!(
         errors
@@ -148,34 +148,38 @@ QUALITY = [1]
     WINDOW.set(2560);
     assert_eq!(WINDOW.get(), 1920);
 
-    // Archive: only archived cvars that differ from the default, pending values included.
+    // Archive: the user layer, and what code or the console set for archived cvars (pending
+    // values included); not the project file or the command line (r.maxFps, r.vsync), nor
+    // unarchived cvars (debug.draw).
     NAME.set("Ann \"The\" # One\\\n\t ");
     QUALITY.set(2);
     SCALE.set(2.0);
+    DEBUG.set(false);
     let archive = archive_string();
     assert_eq!(
         archive,
-        r#"# Archived cvars that differ from their defaults.
+        r#"# User settings.
 # Display name.
 # Shown to others.
 player.name = "Ann \"The\" # One\\\n\t "
-# Frame cap.
-r.maxFps = 70
 r.quality = "high"
 r.scale = 2.0
 r.width = 2560
 "#
     );
 
-    // Round trip.
-    for cvar in [&*NAME, &FPS, &QUALITY, &SCALE] {
-        cvar.reset(Source::Code).unwrap();
-    }
-    assert_eq!(apply_config(&archive, Source::ConfigFile), []);
-    assert_eq!(NAME.get(), "Ann \"The\" # One\\\n\t ");
+    // Round trip: without the session's layers, the user layer decides.
+    clear_layer(Source::Console);
+    clear_layer(Source::CommandLine);
     assert_eq!(
-        (FPS.get(), QUALITY.get_name(), SCALE.get()),
-        (70, "high", 2.0)
+        NAME.get(),
+        "Ann \"The\" # One\\",
+        "back to the project file"
     );
+    assert_eq!(FPS.get(), 60);
+    assert_eq!(load_layer(Source::User, &archive), []);
+    assert_eq!(NAME.get(), "Ann \"The\" # One\\\n\t ");
+    assert_eq!((QUALITY.get_name(), SCALE.get()), ("high", 2.0));
+    assert_eq!(WINDOW.pending_string().as_deref(), Some("2560"));
     assert_eq!(archive_string(), archive);
 }

@@ -99,7 +99,7 @@ pub fn boot<'a>(
     args: impl IntoIterator<Item = &'a str>,
 ) -> Result<Boot, BootError> {
     register_cvars();
-    let mut problems: Vec<String> = marlin_config::apply_config(config, Source::ConfigFile)
+    let mut problems: Vec<String> = marlin_config::apply_config(config, Source::Project)
         .into_iter()
         .map(|e| format!("boot file: {e}"))
         .collect();
