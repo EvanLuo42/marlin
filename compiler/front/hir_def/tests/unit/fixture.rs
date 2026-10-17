@@ -173,6 +173,7 @@ pub fn show(cx: &Cx<'_>, resolution: &Resolution) -> String {
     };
     match resolution {
         Resolution::Namespace(ns) => format!("namespace {ns}"),
+        Resolution::Local(binding) => format!("local {binding:?}"),
         Resolution::Type(item) => format!("type {}", item_path(cx, *item).unwrap()),
         Resolution::TypeParam { owner, index } => {
             format!(

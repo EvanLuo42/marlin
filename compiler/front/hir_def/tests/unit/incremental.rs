@@ -63,3 +63,45 @@ fn adding_a_declaration_updates_the_def_map() {
         post.types.keys().collect::<Vec<_>>()
     );
 }
+
+#[test]
+fn editing_one_body_leaves_the_others_bodies_equal() {
+    let text = "namespace N;\nvoid A() { var x = 1; }\nvoid B() { var y = 2; }\n";
+    let fixture = Fixture::new(&[("P", &[], &[("p.mshader", text)])]);
+    let file = fixture.file("p.mshader");
+    let owner_of = |name: &str| {
+        let snapshot = fixture.db.snapshot();
+        let tree = snapshot
+            .get::<marlin_front_hir_def::ItemTreeQuery>(&file)
+            .unwrap();
+        let (local, _) = tree
+            .items
+            .iter()
+            .find(|(_, i)| i.name.as_ref().is_some_and(|n| n.as_str() == name))
+            .unwrap();
+        marlin_front_hir_def::body_owners(&snapshot, marlin_front_hir_def::ItemId { file, local })
+            .unwrap()[0]
+    };
+    let b = owner_of("B");
+    let scopes_of_b = || {
+        fixture
+            .db
+            .snapshot()
+            .get::<marlin_front_hir_def::ExprScopesQuery>(&b)
+            .unwrap()
+    };
+    scopes_of_b();
+    // A's body grows, which moves B's text.
+    fixture.set_text(
+        "p.mshader",
+        &text.replace("var x = 1;", "var x = 1; x += 2;\n\n"),
+    );
+    let before = fixture.db.stats();
+    scopes_of_b();
+    assert_eq!(
+        fixture.db.stats().executions - before.executions,
+        5,
+        "ParseFile, AstIdMap, ItemTreeQuery, B's BodyWithSourceMap and BodyQuery; \
+         B's scopes are reused"
+    );
+}

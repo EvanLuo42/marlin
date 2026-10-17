@@ -1,0 +1,31 @@
+== Marlin.Post.BlurArgs
+== Marlin.Post.BlurArgs.Src
+type Texture2D<float4>
+== Marlin.Post.BlurArgs.Radius
+type float
+== Marlin.Post.BlurArgs.<indexer>
+params (int i)
+type float
+== Marlin.Post.BlurArgs.Scale
+type float
+== Marlin.Post.BlurArgs.BlurArgs
+params (float r)
+== Marlin.Post.Lobe
+bases uint
+== Marlin.Post.Lobe.Diffuse
+== Marlin.Post.Lobe.Specular
+== Marlin.Post.Lobe.Haze
+== Marlin.Post.Blur
+attribute Compute(16, 16, 1)
+generics <T, const int N>
+params ([DispatchThreadId] uint3 id, [Push] in BlurArgs args, out float3 n, ref float w = 1)
+type void
+where T : IFloat<T>, struct
+== Marlin.Post.<extension block>
+receiver float3 c
+== Marlin.Post.<extension block>.Luma
+type float
+== Marlin.Post.<operator>
+params (Rng a, Rng b)
+operator +
+type Rng

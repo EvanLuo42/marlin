@@ -15,11 +15,17 @@
 //! so the values that carry them stay equal across edits that only move text.
 
 mod ast_id;
+mod body;
 mod def_map;
 mod diagnostics;
 mod imports;
 mod item_tree;
+mod lower;
+mod pretty;
 mod resolver;
+mod scope;
+mod signature;
+pub mod store;
 
 use std::fmt;
 use std::sync::Arc;
@@ -28,6 +34,7 @@ use marlin_front_syntax::{Dialect, Parse};
 use marlin_lang_query::{Cancelled, Cx, Input, Query};
 
 pub use ast_id::{AstId, AstIdMap, AstPtr};
+pub use body::{Body, BodyOwner, BodyPart, BodyQuery, BodyWithSourceMap, body_owners};
 pub use def_map::{DefMap, NamespaceScope, PackageDefMap, VisiblePackages};
 pub use diagnostics::{DefDiagnostic, DefDiagnosticKind, FileDiagnostics};
 pub use imports::{AliasTarget, FileImports, Imports, PackageImports};
@@ -36,7 +43,14 @@ pub use item_tree::{
     UsingKind, Visibility,
 };
 pub use marlin_lang_span::FileId;
+pub use pretty::{pretty_body, pretty_signature};
 pub use resolver::{Resolution, Resolver, item_path};
+pub use scope::{ExprScopes, ExprScopesQuery, ScopeData, ScopeId};
+pub use signature::{
+    Bound, GenericParamSig, ItemSignature, ParamSig, Signature, SignatureWithSourceMap,
+    WhereClauseSig,
+};
+pub use store::Expr;
 
 /// An identifier as written, without `@`.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]

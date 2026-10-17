@@ -1,0 +1,29 @@
+error[E0405]: a local named `a` conflicts with another local of that name
+ --> P/p.mshader:4:9
+  |
+2 | void F(int a)
+  |            - first declared here
+...
+4 |     int a = 1;
+  |         ^
+  |
+  = note: a local's name must be unique in its block, nested blocks included
+
+error[E0405]: a local named `b` conflicts with another local of that name
+ --> P/p.mshader:6:9
+  |
+5 |     { int b = 0; }
+  |           - first declared here
+6 |     int b = 2;
+  |         ^
+  |
+  = note: a local's name must be unique in its block, nested blocks included
+
+error[E0405]: a local named `c` conflicts with another local of that name
+ --> P/p.mshader:7:20
+  |
+7 |     { int c; { int c; } }
+  |                    ^
+  |           - first declared here
+  |
+  = note: a local's name must be unique in its block, nested blocks included

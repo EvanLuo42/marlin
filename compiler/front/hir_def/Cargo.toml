@@ -13,6 +13,7 @@ marlin-lang-query.workspace = true
 marlin-lang-span.workspace = true
 
 [dev-dependencies]
+marlin-math.workspace = true
 marlin-test-support.workspace = true
 
 [lints]

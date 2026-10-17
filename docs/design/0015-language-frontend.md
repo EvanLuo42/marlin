@@ -156,6 +156,17 @@ pub struct Dialect {
 
 按类型查成员（字段、方法、属性）依赖类型，放在各语言的 `hir_ty` 里。
 
+### 3.4 函数体与签名（HIR）
+
+- **一种存储**：`ExprStore` 里有表达式、语句、模式、类型引用和局部绑定，函数体（`Body`）和声明的签名（`Signature`）都用它。常量泛型实参、数组长度、参数默认值、attribute 实参都是这里面的普通表达式。
+- **贴近语法**：HIR 基本保持 C# 的写法，只去掉纯语法的东西（括号、表达式体）。需要类型才能决定的展开（复合赋值、运算符重载、`foreach` 的迭代方式）留到 MIR 降低时再做。HIR 是超集，VM 语言的 `new`、`throw`、`as` 也在里面。
+- **名字不解析**：名字和点号连起来的名字（`Marlin.Math.Dot`、`v.x`）都是一条路径，`hir_ty` 用 `Resolver::resolve_in_body` 解析：第一段先找局部，找到了后面的段就是它的成员。
+- **按 body 做 query**：`BodyWithSourceMap` 和 `SignatureWithSourceMap` 带着源码位置；`BodyQuery` 和 `ItemSignature` 去掉位置。改一个函数体时，同一个文件里其他函数的 `BodyQuery` 值不变，依赖它们的 query 都不重算。
+- **局部作用域**照 C#（`ExprScopesQuery`）：
+  - 局部从声明处起到块尾可见，局部函数在整个块里可见；
+  - 表达式里声明的变量（`out var x`、`is var y`、解构）在表达式语句、声明和 `if` 条件里声明时，`if` 之后的语句也能看到；在循环头、`switch` 分支和 lambda 里声明时只在里面可见；
+  - 两个同名局部，只要一个的声明空间包含另一个（不管先后），就报错 E0405。
+
 ## 4. query 引擎：`common/query`
 
 ### 4.1 决定
@@ -201,6 +212,8 @@ let tree = snap.get::<ItemTree>(&file)?;                    // Err(Cancelled)：
 ## 5. 待定
 
 - 包依赖的可见范围现在是传递闭包；如果要像 C# 的 `PrivateAssets` 那样限制传递，再加。
+- 在局部声明之前用到它的名字（C# 的 CS0841）：现在作用域查不到这个局部，由 `hir_ty` 报错。
+- 局部函数自己的类型参数还没进名字查找。
 - query 的内存回收（LRU、按 revision 清理不再用到的 memo）：等内存成为问题时再做。
 - VM 语言的 dialect 和它的专有构造：VM 语言设计时定。
 - VM 语言是否需要 `protected`，以及它的默认可见性。

@@ -132,6 +132,34 @@ impl Query for FileDiagnostics {
         {
             out.push(d.to_diagnostic(cx)?);
         }
+        // Locals that reuse a name of an enclosing scope.
+        let tree = cx.get::<crate::ItemTreeQuery>(file)?;
+        for (local, _) in tree.items.iter() {
+            let item = crate::ItemId { file: *file, local };
+            for owner in crate::body_owners(cx, item)? {
+                let scopes = cx.get::<crate::ExprScopesQuery>(&owner)?;
+                if scopes.redeclared.is_empty() {
+                    continue;
+                }
+                let (body, map) = cx.get::<crate::BodyWithSourceMap>(&owner)?;
+                for &(binding, previous) in &scopes.redeclared {
+                    let Some(ptr) = map.bindings.get(binding) else {
+                        continue;
+                    };
+                    let name = &body.store.bindings[binding].name;
+                    let mut d = Diagnostic::error(
+                        Code("E0405"),
+                        format!("a local named `{name}` conflicts with another local of that name"),
+                    )
+                    .at(Span::new(*file, ptr.range), "")
+                    .note("a local's name must be unique in its block, nested blocks included");
+                    if let Some(previous) = map.bindings.get(previous) {
+                        d = d.label(Span::new(*file, previous.range), "first declared here");
+                    }
+                    out.push(d);
+                }
+            }
+        }
         out.sort_by_key(|d| d.primary.as_ref().map(|l| l.span.range.start()));
         Ok(out.into())
     }

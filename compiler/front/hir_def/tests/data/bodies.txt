@@ -1,0 +1,92 @@
+== Marlin.Post.BlurArgs.Radius Main
+params: 
+=> 1
+== Marlin.Post.BlurArgs.<indexer> Accessor(0)
+params: i
+=> (Radius * i)
+== Marlin.Post.BlurArgs.<indexer> Accessor(1)
+params: i, value
+{
+    Radius = value;
+}
+== Marlin.Post.BlurArgs.Scale Initializer
+params: 
+=> 2
+== Marlin.Post.BlurArgs.BlurArgs Main
+params: r
+initializer: this(r, 1)
+{
+    Radius = r;
+}
+== Marlin.Post.Lobe.Specular Main
+params: 
+=> 2
+== Marlin.Post.Lobe.Haze Main
+params: 
+=> (Specular + 1)
+== Marlin.Post.Blur Main
+params: id, args, n, w
+{
+    [Precise] float acc = 0, err;
+    const int K = (N * 2);
+    var p = float3(1, 2, 3);
+    var l = Light { Color = p, Intensity = 2 };
+    Light k = { Color = p };
+    var m = (l with { Intensity = 4 });
+    float[4] ws = [0.1, 0.2, 0.3, 0.4];
+    var (wi, pdf) = Sample(id.xy);
+    acc += ((-wi.x * pdf) >> 2);
+    Decode(args, out var decoded, ref w);
+    var c = args.Src.Sample(Linear, uv, lod: 2).xyz;
+    var f = Integrate<float>(64, ((x) => Exp((-x * 0.5))));
+    var g = Integrate(64, ((float x) => {     return x; }));
+    if ((id.x is ((> 0 and < 10) or 20)))
+        acc++;
+    else
+        if ((Lobe.Diffuse is var lobe))
+            acc--;
+    const if (Target.Has(Capability.WaveMatrix))
+        {
+            MatMul16();
+        }
+    for (1 init; (i < K); i++, j--)
+            int i = 0, j = 1;
+        {
+            continue;
+        }
+    foreach (var i in 0..N)
+        acc += i;
+    while ((acc > 0))
+        {
+            acc = (acc / 2);
+        }
+    do
+        {
+            acc--;
+        }
+    while ((acc > 0));
+    switch (id.x)
+    case 0:
+    case 1 when (acc > 0.5):
+        acc = ((float)id.y);
+        break;
+    case { x: > 0 }:
+        break;
+    default:
+        return;
+    var w2 = (id.x switch { 0 => 1, (1 or 2) => 0.5, _ => 0 });
+    Debug.Print($"acc = {acc,4:F2} at {id.xy}");
+    float Local(float x)
+        => (x * 2);
+    static U Twice<U>(U v)
+    {
+        return (v + v);
+    }
+    n = default;
+}
+== Marlin.Post.<extension block>.Luma Main
+params: c
+=> Dot(c, float3(0.2126, 0.7152, 0.0722))
+== Marlin.Post.<operator> Main
+params: a, b
+=> a

@@ -13,6 +13,8 @@ use crate::{
 /// What a path names.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Resolution {
+    /// A local variable, parameter or local function of the body.
+    Local(crate::store::BindingId),
     Namespace(NamespacePath),
     Type(ItemId),
     /// The `index`th type parameter of `owner`.
@@ -108,6 +110,34 @@ impl Resolver {
 
     pub fn namespace(&self) -> &NamespacePath {
         &self.namespace
+    }
+
+    /// Like [`resolve`](Self::resolve), but from inside a body at `scope`: a first segment that
+    /// names a local is that local, and later segments are members of it.
+    pub fn resolve_in_body(
+        &self,
+        cx: &Cx<'_>,
+        path: &Path,
+        values: bool,
+        scopes: &crate::ExprScopes,
+        scope: crate::ScopeId,
+    ) -> Result<Resolution, Cancelled> {
+        if !path.global
+            && let Some(first) = path.segments.first()
+            && first.arity == 0
+            && let Some(binding) = scopes.resolve(scope, &first.name)
+        {
+            let local = Resolution::Local(binding);
+            return Ok(if path.segments.len() == 1 {
+                local
+            } else {
+                Resolution::Partial {
+                    base: Box::new(local),
+                    resolved: 1,
+                }
+            });
+        }
+        self.resolve(cx, path, values)
     }
 
     /// Resolves `path`. With `values`, the last segment may also name functions or fields (an
