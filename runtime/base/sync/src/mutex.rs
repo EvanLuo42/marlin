@@ -4,10 +4,12 @@ use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
 use core::sync::atomic::AtomicU32;
 use core::sync::atomic::Ordering::{Acquire, Relaxed, Release};
+use core::time::Duration;
 
 use marlin_pal::futex;
 
 use crate::SPIN_LIMIT;
+use crate::timeout::{self, Timeout};
 
 const UNLOCKED: u32 = 0;
 /// Locked, and no thread is (known to be) asleep waiting for it.
@@ -38,7 +40,7 @@ impl RawMutex {
             .compare_exchange(UNLOCKED, LOCKED, Acquire, Relaxed)
             .is_err()
         {
-            self.lock_contended();
+            self.lock_contended(None);
         }
     }
 
@@ -47,6 +49,13 @@ impl RawMutex {
         self.state
             .compare_exchange(UNLOCKED, LOCKED, Acquire, Relaxed)
             .is_ok()
+    }
+
+    /// Like [`lock`](Self::lock), giving up after `timeout`; returns `true` if the lock was
+    /// acquired. A zero timeout still spins briefly before giving up.
+    #[inline]
+    pub fn try_lock_for(&self, timeout: Duration) -> bool {
+        self.try_lock() || self.lock_contended(Some(&Timeout::start(timeout)))
     }
 
     /// Releases the lock.
@@ -68,8 +77,9 @@ impl RawMutex {
         self.state.load(Relaxed) != UNLOCKED
     }
 
+    /// Returns `false` on timeout.
     #[cold]
-    fn lock_contended(&self) {
+    fn lock_contended(&self, timeout: Option<&Timeout>) -> bool {
         let mut state = self.spin();
 
         // Still uncontended: take it without announcing a sleeper, so unlock skips the wake.
@@ -78,7 +88,7 @@ impl RawMutex {
                 .state
                 .compare_exchange(UNLOCKED, LOCKED, Acquire, Relaxed)
             {
-                Ok(_) => return,
+                Ok(_) => return true,
                 Err(s) => state = s,
             }
         }
@@ -87,9 +97,14 @@ impl RawMutex {
             // Mark CONTENDED before sleeping. If the swap found it unlocked we now own it, and
             // still leave it CONTENDED: other sleepers may exist and need the wake on unlock.
             if state != CONTENDED && self.state.swap(CONTENDED, Acquire) == UNLOCKED {
-                return;
+                return true;
             }
-            futex::wait(&self.state, CONTENDED, None);
+            // Give up only here, with the word CONTENDED while someone holds the lock: if the
+            // last unlock's wake reached us, the holder's unlock will wake another sleeper.
+            let Some(remaining) = timeout::wait_time(timeout) else {
+                return false;
+            };
+            futex::wait(&self.state, CONTENDED, remaining);
             state = self.spin();
         }
     }
@@ -162,6 +177,14 @@ impl<T: ?Sized> Mutex<T> {
     #[inline]
     pub fn try_lock(&self) -> Option<MutexGuard<'_, T>> {
         self.raw.try_lock().then(|| MutexGuard::new(self))
+    }
+
+    /// Like [`lock`](Self::lock), giving up after `timeout`.
+    #[inline]
+    pub fn try_lock_for(&self, timeout: Duration) -> Option<MutexGuard<'_, T>> {
+        self.raw
+            .try_lock_for(timeout)
+            .then(|| MutexGuard::new(self))
     }
 
     /// Whether the lock is held. Only a hint: it may change immediately.

@@ -31,6 +31,15 @@ impl Timeout {
     }
 }
 
+/// The timeout to pass to `futex::wait`: `Some(None)` to wait without one, `None` once `timeout`
+/// has passed.
+pub(crate) fn wait_time(timeout: Option<&Timeout>) -> Option<Option<Duration>> {
+    match timeout {
+        None => Some(None),
+        Some(t) => t.remaining().map(Some),
+    }
+}
+
 /// `ticks / ticks_per_second` split into whole seconds and a remainder, so nothing overflows.
 fn ticks_to_duration(ticks: u64) -> Duration {
     let tps = time::ticks_per_second();

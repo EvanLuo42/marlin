@@ -4,10 +4,12 @@ use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
 use core::sync::atomic::AtomicU32;
 use core::sync::atomic::Ordering::{Acquire, Relaxed, Release};
+use core::time::Duration;
 
 use marlin_pal::futex;
 
 use crate::SPIN_LIMIT;
+use crate::timeout::{self, Timeout};
 
 // `state` layout:
 //   bits 0..30  reader count, or MASK when write-locked
@@ -71,7 +73,7 @@ impl RawRwLock {
     pub fn try_read(&self) -> bool {
         self.state
             .try_update(Acquire, Relaxed, |s| {
-                is_read_lockable(s).then_some(s + READ_LOCKED)
+                is_read_lockable(s).then(|| s + READ_LOCKED)
             })
             .is_ok()
     }
@@ -85,8 +87,15 @@ impl RawRwLock {
                 .compare_exchange_weak(state, state + READ_LOCKED, Acquire, Relaxed)
                 .is_err()
         {
-            self.read_contended();
+            self.read_contended(None);
         }
+    }
+
+    /// Like [`read`](Self::read), giving up after `timeout`; returns `true` if a read lock was
+    /// acquired.
+    #[inline]
+    pub fn try_read_for(&self, timeout: Duration) -> bool {
+        self.try_read() || self.read_contended(Some(&Timeout::start(timeout)))
     }
 
     /// Releases one read lock.
@@ -108,7 +117,7 @@ impl RawRwLock {
     pub fn try_write(&self) -> bool {
         self.state
             .try_update(Acquire, Relaxed, |s| {
-                is_unlocked(s).then_some(s + WRITE_LOCKED)
+                is_unlocked(s).then(|| s + WRITE_LOCKED)
             })
             .is_ok()
     }
@@ -120,8 +129,15 @@ impl RawRwLock {
             .compare_exchange_weak(0, WRITE_LOCKED, Acquire, Relaxed)
             .is_err()
         {
-            self.write_contended();
+            self.write_contended(None);
         }
+    }
+
+    /// Like [`write`](Self::write), giving up after `timeout`; returns `true` if the write lock
+    /// was acquired.
+    #[inline]
+    pub fn try_write_for(&self, timeout: Duration) -> bool {
+        self.try_write() || self.write_contended(Some(&Timeout::start(timeout)))
     }
 
     /// Releases the write lock.
@@ -144,8 +160,9 @@ impl RawRwLock {
         !is_unlocked(self.state.load(Relaxed))
     }
 
+    /// Returns `false` on timeout.
     #[cold]
-    fn read_contended(&self) {
+    fn read_contended(&self, timeout: Option<&Timeout>) -> bool {
         let mut state = self.spin_read();
         loop {
             if is_read_lockable(state) {
@@ -153,7 +170,7 @@ impl RawRwLock {
                     .state
                     .compare_exchange_weak(state, state + READ_LOCKED, Acquire, Relaxed)
                 {
-                    Ok(_) => return,
+                    Ok(_) => return true,
                     Err(s) => {
                         state = s;
                         continue;
@@ -176,13 +193,19 @@ impl RawRwLock {
                 continue;
             }
 
-            futex::wait(&self.state, state | READERS_WAITING, None);
+            // A reader giving up leaves READERS_WAITING behind. That is harmless: readers only
+            // sleep behind a writer, whose unlock (or the last reader's) clears the bit.
+            let Some(remaining) = timeout::wait_time(timeout) else {
+                return false;
+            };
+            futex::wait(&self.state, state | READERS_WAITING, remaining);
             state = self.spin_read();
         }
     }
 
+    /// Returns `false` on timeout.
     #[cold]
-    fn write_contended(&self) {
+    fn write_contended(&self, timeout: Option<&Timeout>) -> bool {
         let mut state = self.spin_write();
         // Once we have slept, other writers may be asleep too; keep their bit when we lock.
         let mut other_writers_waiting = 0;
@@ -194,7 +217,7 @@ impl RawRwLock {
                     Acquire,
                     Relaxed,
                 ) {
-                    Ok(_) => return,
+                    Ok(_) => return true,
                     Err(s) => {
                         state = s;
                         continue;
@@ -219,7 +242,13 @@ impl RawRwLock {
             if is_unlocked(state) || !has_writers_waiting(state) {
                 continue;
             }
-            futex::wait(&self.writer_notify, seq, None);
+            // Give up only here, having just seen the lock held with WRITERS_WAITING set: if a
+            // writer wakeup reached us, the holder's unlock will issue another for the rest. The
+            // bit itself may stay set for nobody; the next unlock clears it.
+            let Some(remaining) = timeout::wait_time(timeout) else {
+                return false;
+            };
+            futex::wait(&self.writer_notify, seq, remaining);
             state = self.spin_write();
         }
     }
@@ -349,6 +378,14 @@ impl<T: ?Sized> RwLock<T> {
         self.raw.try_read().then(|| RwLockReadGuard::new(self))
     }
 
+    /// Like [`read`](Self::read), giving up after `timeout`.
+    #[inline]
+    pub fn try_read_for(&self, timeout: Duration) -> Option<RwLockReadGuard<'_, T>> {
+        self.raw
+            .try_read_for(timeout)
+            .then(|| RwLockReadGuard::new(self))
+    }
+
     #[inline]
     pub fn write(&self) -> RwLockWriteGuard<'_, T> {
         self.raw.write();
@@ -358,6 +395,14 @@ impl<T: ?Sized> RwLock<T> {
     #[inline]
     pub fn try_write(&self) -> Option<RwLockWriteGuard<'_, T>> {
         self.raw.try_write().then(|| RwLockWriteGuard::new(self))
+    }
+
+    /// Like [`write`](Self::write), giving up after `timeout`.
+    #[inline]
+    pub fn try_write_for(&self, timeout: Duration) -> Option<RwLockWriteGuard<'_, T>> {
+        self.raw
+            .try_write_for(timeout)
+            .then(|| RwLockWriteGuard::new(self))
     }
 
     /// Whether the lock is held. Only a hint: it may change immediately.
