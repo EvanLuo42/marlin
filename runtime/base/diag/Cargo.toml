@@ -13,6 +13,7 @@ workspace = true
 
 [dev-dependencies]
 marlin-error.workspace = true
+marlin-test-support.workspace = true
 
 [target.'cfg(windows)'.dev-dependencies]
 windows-sys = { workspace = true, features = ["Win32_System_Diagnostics_Debug"] }

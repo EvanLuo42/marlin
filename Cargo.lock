@@ -473,6 +473,7 @@ version = "0.1.0"
 dependencies = [
  "marlin-error",
  "marlin-pal",
+ "marlin-test-support",
  "windows-sys",
 ]
 
@@ -656,6 +657,7 @@ version = "0.1.0"
 dependencies = [
  "marlin-math",
  "marlin-pal",
+ "marlin-test-support",
 ]
 
 [[package]]
@@ -679,6 +681,8 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "marlin-error",
+ "marlin-math",
+ "marlin-test-support",
  "windows-sys",
 ]
 
@@ -759,6 +763,7 @@ dependencies = [
  "marlin-diag",
  "marlin-mem",
  "marlin-pal",
+ "marlin-test-support",
 ]
 
 [[package]]
@@ -844,6 +849,7 @@ name = "marlin-thread"
 version = "0.1.0"
 dependencies = [
  "marlin-pal",
+ "marlin-test-support",
 ]
 
 [[package]]

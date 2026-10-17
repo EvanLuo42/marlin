@@ -10,5 +10,8 @@ marlin-diag.workspace = true
 marlin-mem.workspace = true
 marlin-pal.workspace = true
 
+[dev-dependencies]
+marlin-test-support.workspace = true
+
 [lints]
 workspace = true
