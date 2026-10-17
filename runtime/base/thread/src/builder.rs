@@ -11,6 +11,8 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use marlin_pal::thread::ThreadStart;
 use marlin_pal::{CpuSet, Error, ErrorKind, ThreadPriority, futex, process};
 
+use crate::scope::{Scope, ScopeData, ScopedJoinHandle};
+
 /// Configures a thread before spawning it.
 ///
 /// Name, affinity and priority are applied by the new thread itself, before the closure runs.
@@ -71,6 +73,51 @@ impl Builder {
         F: FnOnce() -> T + Send + 'static,
         T: Send + 'static,
     {
+        // SAFETY: `F` and `T` are `'static`, so the thread can outlive every borrow.
+        unsafe { self.spawn_unchecked(f, None) }
+    }
+
+    /// Starts a thread in `scope` running `f`, which may borrow anything that outlives the scope.
+    /// See [`Scope::spawn`].
+    ///
+    /// Fails like [`spawn`](Self::spawn); a thread that failed to start is not counted by the
+    /// scope.
+    pub fn spawn_scoped<'scope, 'env, F, T>(
+        self,
+        scope: &'scope Scope<'scope, 'env>,
+        f: F,
+    ) -> Result<ScopedJoinHandle<'scope, T>, Error>
+    where
+        F: FnOnce() -> T + Send + 'scope,
+        T: Send + 'scope,
+    {
+        // SAFETY: the thread is counted by `scope`, and `crate::scope` does not return (or unwind)
+        // before the count drops to zero, which the thread does only after dropping `f` and its
+        // result slot. Everything `F` and `T` borrow outlives `'scope`, so outlives that wait.
+        let inner = unsafe { self.spawn_unchecked(f, Some(scope.data().clone())) }?;
+        Ok(ScopedJoinHandle::new(inner))
+    }
+
+    /// [`spawn`](Self::spawn) without the `'static` bounds. With a `scope`, the thread is counted
+    /// in it from before it starts until after it has dropped `f` and its reference to the result.
+    ///
+    /// # Safety
+    ///
+    /// Every borrow in `F` and `T` must outlive the thread's use of `f` and of the result slot:
+    /// either they are `'static`, or the caller waits for `scope` to reach zero before any of
+    /// them ends, and drops the returned handle before that too.
+    unsafe fn spawn_unchecked<F, T>(
+        self,
+        f: F,
+        scope: Option<Arc<ScopeData>>,
+    ) -> Result<JoinHandle<T>, Error>
+    where
+        F: FnOnce() -> T + Send,
+        T: Send,
+    {
+        if let Some(scope) = &scope {
+            scope.increment();
+        }
         let shared = Arc::new(Shared {
             setup: AtomicU32::new(SETUP_PENDING),
             setup_error: UnsafeCell::new(None),
@@ -84,18 +131,24 @@ impl Builder {
             },
             config: self,
             shared: shared.clone(),
+            scope,
             main: f,
         });
         let start = NonNull::from(Box::leak(packet)).cast::<ThreadStart>();
 
         // SAFETY: `start` points to a leaked `Packet<F, T>` whose first field is a `ThreadStart`
         // (`repr(C)`); `entry::<F, T>` takes ownership of it. It is reclaimed below if the
-        // thread never starts.
+        // thread never starts. The thread's use of borrowed data is bounded by our caller.
         let native = match unsafe { marlin_pal::thread::spawn(stack_size, start) } {
             Ok(native) => native,
             Err(error) => {
                 // SAFETY: the thread was not created, so we still own the packet.
-                drop(unsafe { Box::from_raw(start.cast::<Packet<F, T>>().as_ptr()) });
+                let mut packet = unsafe { Box::from_raw(start.cast::<Packet<F, T>>().as_ptr()) };
+                let scope = packet.scope.take();
+                drop(packet);
+                if let Some(scope) = scope {
+                    scope.decrement();
+                }
                 return Err(error);
             }
         };
@@ -195,6 +248,8 @@ struct Packet<F, T> {
     start: ThreadStart,
     config: Builder,
     shared: Arc<Shared<T>>,
+    /// The scope counting this thread, if any.
+    scope: Option<Arc<ScopeData>>,
     main: F,
 }
 
@@ -210,7 +265,8 @@ impl Drop for AbortOnUnwind {
 
 /// # Safety
 ///
-/// `start` must come from [`Builder::spawn`] for the same `F` and `T`, and be passed exactly once.
+/// `start` must come from [`Builder::spawn_unchecked`] for the same `F` and `T`, and be passed
+/// exactly once.
 unsafe fn entry<F, T>(start: NonNull<ThreadStart>)
 where
     F: FnOnce() -> T,
@@ -221,10 +277,24 @@ where
         start: _,
         config,
         shared,
+        scope,
         main,
     } = *packet;
     let guard = AbortOnUnwind;
+    run(config, shared, main);
+    // Last: once the count can reach zero the scope may end, so `run` has dropped everything that
+    // might borrow from it. Our `Arc` keeps the counter alive for the wake.
+    if let Some(scope) = scope {
+        scope.decrement();
+    }
+    core::mem::forget(guard);
+}
 
+/// The thread's work. Consumes everything that may borrow from a scope.
+fn run<F, T>(config: Builder, shared: Arc<Shared<T>>, main: F)
+where
+    F: FnOnce() -> T,
+{
     if let Some(name) = &config.name {
         marlin_pal::thread::set_current_name(name);
     }
@@ -242,8 +312,6 @@ where
         shared.setup.store(state, Ordering::Release);
         futex::wake_one(&shared.setup);
         if state == SETUP_FAILED {
-            drop(main);
-            core::mem::forget(guard);
             return;
         }
     }
@@ -251,8 +319,6 @@ where
     let result = main();
     // SAFETY: only this thread writes the cell; `join` reads it after we drop `shared`.
     unsafe { *shared.result.get() = Some(result) };
-    drop(shared);
-    core::mem::forget(guard);
 }
 
 fn apply(config: &Builder) -> Result<(), Error> {

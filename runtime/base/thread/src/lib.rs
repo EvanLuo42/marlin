@@ -1,8 +1,9 @@
 //! Threads, fibers, CPU topology and thread-local storage.
 //!
 //! The safe layer over `marlin_pal::thread`: closure-based [`spawn`] and [`Builder`] (name, stack
-//! size, affinity, priority), [`JoinHandle::join`] returning the closure's value, the calling
-//! thread's settings in [`current`], CPU topology, and [`LocalKey`].
+//! size, affinity, priority), [`JoinHandle::join`] returning the closure's value, [`scope()`] for
+//! threads that borrow from the caller's stack, the calling thread's settings in [`current`], CPU
+//! topology, and [`LocalKey`].
 //!
 //! Panics abort the process, so `join` has no error case for them.
 #![cfg_attr(not(test), no_std)]
@@ -14,6 +15,7 @@ pub mod current;
 pub mod ext;
 pub mod fiber;
 mod local;
+mod scope;
 
 use core::time::Duration;
 
@@ -22,6 +24,7 @@ pub use current::ThreadId;
 pub use local::LocalKey;
 pub use marlin_pal::sysinfo::{LogicalCpu, cpu_topology};
 pub use marlin_pal::{CpuSet, Error, ErrorKind, ThreadPriority};
+pub use scope::{Scope, ScopedJoinHandle, scope};
 
 /// Starts a thread running `f`, with default settings.
 ///
