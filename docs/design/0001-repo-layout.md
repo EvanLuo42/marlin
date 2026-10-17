@@ -537,5 +537,5 @@ runtime/<layer>/<name>/
 - **marlin-render (temporary minimal version)**:
   - **What it does:** extracts entities with `Transform` + `MeshRenderer` from the ECS and renders them from the first `Camera`. It is a reverse-Z forward pass with one directional light plus ambient, and instances of the same mesh are merged into one instanced draw.
   - **Why it exists:** to validate the whole RHI → shader interface → ECS chain end to end. Its tests render offscreen and assert on the pixels read back.
-  - **What replaces it:** the real renderer will be rewritten on top of `render_graph`, with GPU-driven culling and indirect/mesh-shader rendering, materials (tied to the in-house shader language), PBR, clustered lighting, shadows and post-processing, plus streaming uploads.
+  - **What replaces it:** the real renderer will be rewritten on top of `render_graph`, as designed in docs 0008–0013: a cluster DAG with a visibility buffer, Substrate materials with open BSDFs, unified ReSTIR lighting, TSR, and a GPU tile-based UIRenderer. Its migration is stage R1 in 0008 §8.
   - **`apps/demo_cubes`** was removed in asset phase P6: `apps/game` now boots `samples/basic` (cooked and packaged, or streamed from `marlin-cookd`), whose level holds the same kind of scene.
