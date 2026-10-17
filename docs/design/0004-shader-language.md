@@ -1,11 +1,10 @@
-# 0010 — Marlin shader 语言：语法
+# 0004 — Marlin shader 语言：语法
 
 状态：草案 · 2026-10-16
 
 前置：
 - [0002](0002-shader-interface.md)：shader ABI（bindless、push constants、坐标约定）
 - [0003](0003-asset-pipeline.md)：资产文本格式与 cook
-- [0007](0007-material-system.md) §2：材质系统对语言的需求
 
 ## 0. 决定摘要
 
@@ -93,7 +92,7 @@
   - 接口用 `I` 前缀；
   - 内建函数也遵守这套规范：`Dot`、`Cross`、`Lerp`、`Saturate`、`Sqrt`。
 - 例外：向量分量和 swizzle 用小写（§9.4），向量和矩阵的短类型名也是小写（`float3`），和 `float`、`int` 这些关键字保持一致。
-- 和资产的关系：材质参数在 shader 和 `.masset` 里**同名**，都是 PascalCase，中间没有转换。Rust 端手写的参数结构用 snake_case，做布局校验时按 0003 §1.2 的规则对应（0011 §9）。
+- 和资产的关系：材质参数在 shader 和 `.masset` 里**同名**，都是 PascalCase，中间没有转换。Rust 端手写的参数结构用 snake_case，做布局校验时按 0003 §1.2 的规则对应（0005 §9）。
 
 ## 3. 类型
 
@@ -103,7 +102,7 @@ C# 的数值关键字：`bool`、`int`、`uint`、`float`、`double`，另有 16
 
 - `half`、`short` 和 `ushort` 是**真正的** 16 位类型，需要 native 16-bit capability（§12.3）。没有 `min16float` 这类宽松精度类型。
 - `bool` 只能用在寄存器里。要放进 buffer 的 struct 如果含有 `bool` 字段就报错，应改用 `uint` 或 `[Flags]` enum，这样就不存在 bool 在内存里占几个字节的歧义。
-- `long` 和 `ulong` 需要 Int64 capability。0006 §3 提到，以后用 compute 软件光栅写 visbuffer 时要用 64 位原子操作。`double` 需要 Float64 capability。
+- `long` 和 `ulong` 需要 Int64 capability，以后用 compute 软件光栅写 visbuffer 时会用到 64 位原子操作。`double` 需要 Float64 capability。
 - 没有 `byte` 和 `sbyte`，因为 D3D12 没有 8 位算术。打包数据用 `uint` 加位运算，或者用标准库里的打包类型（例如 `Unorm8x4`）。
 
 ### 3.2 向量与矩阵
@@ -297,7 +296,7 @@ public T Sum<T, const int N>(Vector<T, N> v) where T : IArithmetic<T> { ... }
 
 ### 8.2 关联类型
 
-C# 没有关联类型，这是从参考实现借来的，0007 §2.1 需要它：
+C# 没有关联类型，这是从参考实现借来的，材质系统这类库需要它：
 
 ```csharp
 public interface IMaterial
@@ -494,7 +493,7 @@ var c = p.Albedo.Sample(p.Sampler, uv);
 
 ### 10.3 非一致下标
 
-- 编译器做 uniformity 分析：资源下标在 wave 内可能不一致时，自动加 NonUniform 标记（0007 §2.7）。
+- 编译器做 uniformity 分析：资源下标在 wave 内可能不一致时，自动加 NonUniform 标记。
 - 作者可以手工覆盖：
   - 用 `[Uniform]` 断言某个值一致，消除保守分析带来的多余开销；
   - 用 `NonUniform(x)` 强制标为不一致。
@@ -517,7 +516,7 @@ uint mips = t.MipCount;
 ```
 
 - `lod`、`grad` 和 `bias` 三者互斥，同时写两个就报错。
-- 纹理和采样器**保持分离**，各自是一个 4 字节的下标，采样时传入采样器。这和 0007 §8.2 里采样器在 cook 时单独去重是对应的。
+- 纹理和采样器**保持分离**，各自是一个 4 字节的下标，采样时传入采样器。这样采样器可以在 cook 时单独去重。
 - 存储纹理用索引器读写：`dst[px] = c;`。
 
 ## 11. 入口与 stage
@@ -584,7 +583,7 @@ public struct BlurArgs
 
 ### 11.4 泛型入口
 
-引擎模板写成泛型入口。cook 给出类型实参，编译器 API 用"入口全名 + 类型实参"取出一个单态化的入口。这是 0007 §2.6"一份源码生成多个入口"的实现方式：
+引擎模板写成泛型入口。cook 给出类型实参，编译器 API 用"入口全名 + 类型实参"取出一个单态化的入口。这就是"一份源码生成多个入口"的实现方式：
 
 ```csharp
 namespace Marlin.Material.Entries;
@@ -744,7 +743,7 @@ if (id.x == 0) Debug.Print($"count = {n}");
 
 - 语言里没有 `#if` 和 `#define`。
 - permutation 用静态参数（§13.3）、泛型和编译期常量来表达；平台和档位的差异用编译期常量做条件。
-- 这样工具和反射看到的是完整的源码，编译器也能推导出实际依赖的 permutation 维度（0007 §2.4）。
+- 这样工具和反射看到的是完整的源码，编译器也能推导出实际依赖的 permutation 维度。
 
 ### 13.2 编译期分支
 
@@ -774,7 +773,7 @@ public struct Rock : IMaterial
 ```
 
 - 带默认值的 `const` 字段就是静态参数。它的含义比 C# 多了一层：实例化时可以覆盖的编译期常量。
-- 反射把它列为静态参数，它不占参数块的空间（0007 §3）。
+- 反射把它列为静态参数，它不占参数块的空间。
 - 改变它的值会改变 permutation。
 
 ### 13.4 编译期函数与导出
@@ -793,7 +792,7 @@ public void ResolvePixel<M>(...) where M : IMaterial
 
 - 用 `const` 修饰的函数可以在编译期求值。它只能调用其他 `const` 函数，不能访问资源、groupshared、系统值和 `Debug.*`。C# 没有这个特性，它借自 C++ 的 constexpr。
 - `const` 字段和局部 `const` 的初始化表达式可以调用 `const` 函数。
-- 标了 `[Export]` 的 `const`，求出的值会写进反射（0011 §6.2），用来导出 Substrate 拓扑这类"库自己定义的编译期信息"。
+- 标了 `[Export]` 的 `const`，求出的值会写进反射（0005 §6.2），用来导出 Substrate 拓扑这类"库自己定义的编译期信息"。
 
 ## 14. Attribute 与反射
 
@@ -810,7 +809,7 @@ public struct RangeAttribute : IAttribute
 
 - attribute 是实现了 `IAttribute` 的 struct。和 C# 一样，用的时候可以省掉 `Attribute` 后缀，用 `[AttributeUsage]` 限制它能标在什么上。
 - 实参必须是编译期常量，并且要做类型检查。
-- 反射原样输出所有用户 attribute（0007 §2.3）。
+- 反射原样输出所有用户 attribute。
 - 内建 attribute（`Compute`、`Push`、`Differentiable`……）也用同一套机制声明，只是语义由编译器实现。
 
 ## 15. 自动微分
@@ -870,7 +869,7 @@ BackwardDiff(Shade)(ref dn2, ref dl, rough, dOut);
 - `Ddx`、`Ddy`、`Fwidth`，以及隐式选择 LOD 的 `Sample`，在任何 stage 都能用。
   - pixel stage 里用硬件 quad 导数；
   - compute 里（visbuffer resolve、光线命中点），编译器从入口声明的导数源出发，对用到的代码**自动**做前向微分。导数源是 UV 和位置的解析导数，或者 ray cone。
-- 材质代码**不需要**标 `[Differentiable]`，这是 0007 §2.5 的要求。
+- 材质代码**不需要**标 `[Differentiable]`。
 - 不可微的操作导数视为 0，并给出警告。
 - **导数源**用 `Derivatives.Seed(x, dx, dy)` 标记。入口或材质库的适配器调用它，它返回的值类型仍然是 `T`：
 
@@ -904,13 +903,13 @@ internal DiffPair<float> AcosFwd(DiffPair<float> x) => ...;
 ## 16. 内存布局
 
 - 只有一种布局：**scalar 布局**，也就是自然对齐。比如 `float3` 占 12 字节、4 字节对齐。
-- 同一个 struct 在任何地方都是同一种布局，Rust 端也只需要手写一份对应的 struct（0011 §9）。
+- 同一个 struct 在任何地方都是同一种布局，Rust 端也只需要手写一份对应的 struct（0005 §9）。
 - `Uniform<T>` 另外要求字段不能跨 16 字节行，这是 D3D12 cbuffer 的规则。不满足时报错，并建议怎么重排字段。
 - 需要精确控制时，可以用 C# 的 `[StructLayout(LayoutKind.Explicit)]` 和 `[FieldOffset(n)]`。
 - 资源字段占 4 字节（§10）；`bool` 不能放进 buffer（§3.1）。
 
 ## 17. 待定
 
-- 编译器 API 和反射：见 0011。
+- 编译器 API 和反射：见 0005。
 - 标准库的完整清单：各个 namespace 里有哪些函数，打包类型有哪些。
-- 采样反馈（0007 §3）属于材质库的 `SurfaceContext` 采样函数，不属于语法。
+- 采样反馈属于材质库的 `SurfaceContext` 采样函数，不属于语法。

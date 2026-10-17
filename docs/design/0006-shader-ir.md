@@ -1,10 +1,10 @@
-# 0012 — Marlin shader IR：指令集
+# 0006 — Marlin shader IR：指令集
 
 状态：草案 · 2026-10-16
 
 前置：
-- [0010](0010-shader-language.md)：语言
-- [0011](0011-shader-compiler.md)：编译器架构与 pass 流水线
+- [0004](0004-shader-language.md)：语言
+- [0005](0005-shader-compiler.md)：编译器架构与 pass 流水线
 
 ## 0. 决定摘要
 
@@ -30,7 +30,7 @@
 | CTFE | 单态化之后，用 IR 解释器执行 | 11 |
 | 表示 | 每个函数一个 arena，用 u32 下标引用；块内的指令是双向链表；每个值有 use 列表；类型和常量在 module 级 intern | 12 |
 | 文本格式 | 能打印也能解析，可以往返；不做二进制序列化 | 13 |
-| 跨进程缓存 | 只缓存最终的 blob，用 manifest 模式核对依赖（0011 §8） | — |
+| 跨进程缓存 | 只缓存最终的 blob，用 manifest 模式核对依赖（0005 §8） | — |
 
 ## 1. target 约束
 
@@ -63,7 +63,7 @@ IR 停在比这几个 target 都高一层的位置：内存是逻辑的，资源
 | 向量 | `f32x4`、`i32x2`……（元素是标量，长度 2–4） | 一直保留到 legalize 的 5.8，由 target 决定要不要标量化 |
 | 矩阵 | `f32x4x4`（R×C，列主序） | legalize 的 5.1 才降低成向量 |
 | 数组 | `[T; N]` | 只有定长数组 |
-| struct | `struct Name { ... }` | 带 scalar 布局（0010 §16）；布局在 module 级计算并缓存 |
+| struct | `struct Name { ... }` | 带 scalar 布局（0004 §16）；布局在 module 级计算并缓存 |
 | 指针 | `ptr<space, T>`，可以带 `ro` | 逻辑指针（§6） |
 | 资源下标 | `res<K>` | K 是资源种类和元素类型，比如 `res<Texture2D<f32x4>>`、`res<Buffer<Light>>`、`res<Sampler>` |
 | handle | `handle<K>` | 物化之后的描述符（§7） |
@@ -102,7 +102,7 @@ block3(%x: f32, %y: f32):
 - `break` 是跳到循环的 merge，`continue` 是跳到 continue 块；
 - region 正确嵌套。
 
-源语言没有 `goto`，所以降低出来的控制流从一开始就满足这些条件。所有 pass 都必须保持这些不变量（0011 §4.1）。
+源语言没有 `goto`，所以降低出来的控制流从一开始就满足这些条件。所有 pass 都必须保持这些不变量（0005 §4.1）。
 
 ### 5.2 `discard`
 
@@ -119,7 +119,7 @@ block3(%x: f32, %y: f32):
   - wave op；
   - barrier；
   - `mesh.set_counts` 和 `mesh.dispatch`。
-- 对 convergent 的 op，pass 只能在**控制依赖相同**的位置之间移动它，不能把它移进或移出发散的条件。verifier 会检查这一点；能不能移动由 uniformity 分析判断（0011 §4.3）。
+- 对 convergent 的 op，pass 只能在**控制依赖相同**的位置之间移动它，不能把它移进或移出发散的条件。verifier 会检查这一点；能不能移动由 uniformity 分析判断（0005 §4.3）。
 - 不用显式的 convergence token。
 
 ## 6. 内存与逻辑指针
@@ -132,7 +132,7 @@ block3(%x: f32, %y: f32):
 | `groupshared` | 模块级 `[GroupShared]` 变量 | 读写 |
 | `buffer` | 从 `Buffer`/`ByteBuffer` 的 handle 派生；`ReadOnly*` 派生出来的带 `ro` | 读写，或者只读 |
 | `uniform` | `Uniform<T>` 的 handle | 只读 |
-| `constant` | 模块级的常量数据，比如提升出来的常量数组（0011 §4.4 的 1.7） | 只读 |
+| `constant` | 模块级的常量数据，比如提升出来的常量数组（0005 §4.4 的 1.7） | 只读 |
 | `push` | 入口的 `[Push]` 变量 | 只读 |
 | `input`、`output` | 系统值、stage I/O、渲染目标 | 只读 / 只写 |
 | `mesh_vertex`、`mesh_primitive`、`mesh_index` | mesh 输出 | 只写 |
@@ -158,7 +158,7 @@ store %t, %v4
   - 存进内存；
   - 经过块参数或 select；
   - 作为函数返回值。
-- 函数可以接收指针参数：`in`/`out`/`ref` 在 inline 之前会这样表示（0010 §6）。
+- 函数可以接收指针参数：`in`/`out`/`ref` 在 inline 之前会这样表示（0004 §6）。
 - `load` 和 `store` 可以带 `aligned(n)`。`volatile` 和 `nontemporal` 先不做。
 - 编译期就知道越界的 `access` 是错误。运行时越界的结果由 target 定义（D3D12 和 Vulkan 的 robustness 规则）。
 
@@ -190,10 +190,10 @@ entry compute(8, 8, 1) @Blur uses(@args, @tid) { ... }
 ```
 
 - `res<K>` 是一个普通的值，实际上就是 u32 下标。它可以经过块参数、select 和内存，struct 里的资源字段就是它。
-- `desc.get %idx` 把下标物化成 `handle<K>`，可以带 `nonuniform`（0011 §4.4 的 4.1）。`handle` **不能**经过块参数、select 和内存，也不能作为函数返回值。
+- `desc.get %idx` 把下标物化成 `handle<K>`，可以带 `nonuniform`（0005 §4.4 的 4.1）。`handle` **不能**经过块参数、select 和内存，也不能作为函数返回值。
   - 前端和 pass 要在下标上做选择，然后再物化。
   - 所以不需要 DXC 那样的 DxilCleanupDynamicResourceHandle。
-- 描述符获取的 CSE 和外提（0011 §4.4 的 4.2）针对的就是 `desc.get`。
+- 描述符获取的 CSE 和外提（0005 §4.4 的 4.2）针对的就是 `desc.get`。
 - 其他资源查询：`buffer.length %h`、`tex.query %t, size(mip)`、`tex.query %t, levels`。
 
 ## 8. 指令
@@ -209,7 +209,7 @@ entry compute(8, 8, 1) @Blur uses(@args, @tid) { ... }
 | 转换 | `sext zext trunc fpext fptrunc sitofp uitofp fptosi fptoui bitcast` |
 | 打包 | `pack.f16x2`/`unpack.f16x2`、`pack.unorm8x4`/`unpack.unorm8x4`…… |
 
-- 浮点 op 上可以带 `precise` 标记（0010 §9.7）。没有这个标记时，允许重结合、fma 收缩和近似倒数。
+- 浮点 op 上可以带 `precise` 标记（0004 §9.7）。没有这个标记时，允许重结合、fma 收缩和近似倒数。
 - 整数语义见 §10。
 
 ### 8.2 数学
@@ -243,12 +243,12 @@ barrier exec(none) mem(device) spaces(buffer, image)
   - scope：`lane`、`wave`、`group`、`device`；
   - ordering：`relaxed`、`acquire`、`release`、`acq_rel`。
 - `barrier` 由三部分组成：执行 scope（`none`、`wave`、`group`）、内存 scope，以及要同步的地址空间集合。
-- 源语言里的 `Barrier.Group()` 等函数，只是这些参数的常用组合（0010 §12.2）。
+- 源语言里的 `Barrier.Group()` 等函数，只是这些参数的常用组合（0004 §12.2）。
 
 ### 8.5 导数
 
 - `deriv.ddx` 和 `deriv.ddy` 都带 `coarse` 或 `fine`，是 convergent 的，只能在 pixel stage 里出现。
-- compute 里的导数已经在自动微分阶段（0011 §4.4 的 0.3）变成了普通算术，后端 IR 里不会出现。
+- compute 里的导数已经在自动微分阶段（0005 §4.4 的 0.3）变成了普通算术，后端 IR 里不会出现。
 
 ### 8.6 纹理
 
@@ -285,7 +285,7 @@ tex.store %st, %coord, %v
 ### 8.8 调用
 
 - `call @f(args)` 调用已知的函数，`call_iface`（只在 MIR 里）调用接口方法。
-- 默认全部 inline（0011 §4.4 的 1.1），之后只有 target 支持函数调用时才会留下 `call`。
+- 默认全部 inline（0005 §4.4 的 1.1），之后只有 target 支持函数调用时才会留下 `call`。
 - 后端 IR 里没有间接调用。
 
 ### 8.9 ray query 与 mesh
@@ -306,18 +306,18 @@ mesh.dispatch %x, %y, %z          // amplification；payload 是 @payload 变量
 ```
 
 - `rayquery` 是不透明类型，只能存在于 `function` 地址空间的变量里，`rq.*` op 接收指向它的指针，这和 SPIR-V 一样。DXIL 把它降低成 ray query 句柄整数。
-- mesh 输出是 `mesh_*` 地址空间的数组变量，写之前必须先调用 `mesh.set_counts`，由 verifier 检查（0010 §11.6）。
+- mesh 输出是 `mesh_*` 地址空间的数组变量，写之前必须先调用 `mesh.set_counts`，由 verifier 检查（0004 §11.6）。
 
 ### 8.10 调试
 
-- `debug.print fmt_id, (args)` 和 `debug.assert %c, fmt_id, (args)`，只在 Development profile 里出现（0011 §4.4 的 0.4 会把它们降低成写调试 buffer）。
+- `debug.print fmt_id, (args)` 和 `debug.assert %c, fmt_id, (args)`，只在 Development profile 里出现（0005 §4.4 的 0.4 会把它们降低成写调试 buffer）。
 - 格式字符串存在 module 的格式表里，产物的反射里有这张表。
 
 ## 9. 编码与 target op
 
 - 所有 op 是一个**封闭的** Rust enum。pass 可以穷尽匹配，每个 op 的属性（有没有副作用、是不是 convergent、读写哪些地址空间、能不能投机执行）用表来描述。
 - `target { backend, opcode, operands, results }` 是唯一的扩展点：
-  - 只允许出现在后端自己的 lower 阶段（0011 §4.4 的阶段 6），共享的 pass 永远看不到它；
+  - 只允许出现在后端自己的 lower 阶段（0005 §4.4 的阶段 6），共享的 pass 永远看不到它；
   - 由后端 crate 定义，包括它的属性和打印格式。主机平台的后端也用它，不需要改共享代码。
 - 新增一个核心 op 要求：所有共享的 pass 和 verifier 都能处理它（编译器会因为匹配不穷尽而报错），而且每个后端都有对应的 lower 或展开。
 
@@ -326,7 +326,7 @@ mesh.dispatch %x, %y, %z          // amplification；payload 是 @payload 变量
 - 所有 op 都是**全函数**，结果是确定的：
   - 整数溢出时回绕；
   - 移位次数按位宽取模，这是写在 op 定义里的；
-  - 整数除以 0 的结果由 target 定义。源语言要求的"除零结果为 0"由 0011 §4.4 的 0.2 插入检查来保证（0010 §9.6）；
+  - 整数除以 0 的结果由 target 定义。源语言要求的"除零结果为 0"由 0005 §4.4 的 0.2 插入检查来保证（0004 §9.6）；
   - 浮点按 IEEE 规则，`precise` 之外的那些宽松规则见 §8.1；
   - `fptosi` 和 `fptoui` 越界时饱和，NaN 转成 0。
 - 唯一的未定义值是常量 **`any`**：表示一个任意但固定的值，相当于 LLVM 的 `freeze(poison)`。用在确实无所谓的地方，比如没有写到的向量分量、未使用的 struct 字段。
@@ -338,8 +338,8 @@ mesh.dispatch %x, %y, %z          // amplification；payload 是 @payload 变量
   - 数组长度；
   - 静态参数；
   - `const` 字段；
-  - `[Export]`（0010 §13.4）。
-- 编译器先把用到的 `const` 函数单态化成后端 IR，再用 **IR 解释器**执行。这个解释器也是 0011 §4.6 用来做差分测试的那一个。
+  - `[Export]`（0004 §13.4）。
+- 编译器先把用到的 `const` 函数单态化成后端 IR，再用 **IR 解释器**执行。这个解释器也是 0005 §4.6 用来做差分测试的那一个。
 - 只有一个解释器，它的语义就是 IR 的语义，所以编译期算出来的结果和 GPU 上跑出来的不会不一致。
 - 依赖泛型参数的 const 表达式在 MIR 里保持符号形式，到单态化时再求值。
 - `const` 函数不能访问资源、groupshared、入口 I/O 和 `debug.*`，由 verifier 检查。
@@ -357,7 +357,7 @@ mesh.dispatch %x, %y, %z          // amplification；payload 是 @payload 变量
 
 - 打印和解析能往返。
 - pass 的测试是 FileCheck 式的：输入一段 IR 文本，跑指定的 pass，然后比对输出。
-- 不做二进制序列化：跨进程只缓存最终的 blob（0011 §8）。
+- 不做二进制序列化：跨进程只缓存最终的 blob（0005 §8）。
 
 ```text
 struct BlurArgs { Src: res<Texture2D<f32x4>>, Dst: res<StorageTexture2D<f32x4>>, Linear: res<Sampler>, Radius: f32 }
@@ -397,6 +397,6 @@ block0:
 ## 15. 待定
 
 - 每个 op 的完整属性表（副作用、convergent、读写哪些地址空间、能不能投机执行）。
-- struct 布局的计算规则在 module 里怎么缓存，以及它和 0010 §16 的对应关系。
+- struct 布局的计算规则在 module 里怎么缓存，以及它和 0004 §16 的对应关系。
 - 文本格式的完整语法。
 - 64 位原子、存储纹理原子在各个 target 上的 capability 对应关系。

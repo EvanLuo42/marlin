@@ -1,12 +1,11 @@
-# 0011 — Marlin shader 编译器：架构与 API
+# 0005 — Marlin shader 编译器：架构与 API
 
 状态：草案 · 2026-10-16
 
 前置：
 - [0002](0002-shader-interface.md)：shader ABI
 - [0003](0003-asset-pipeline.md)：cook 键、DDC、marlin-reflect
-- [0007](0007-material-system.md) §2：材质系统对编译器的需求
-- [0010](0010-shader-language.md)：语言
+- [0004](0004-shader-language.md)：语言
 
 ## 0. 决定摘要
 
@@ -14,7 +13,7 @@
 |---|---|---|
 | 形态 | 纯 Rust 库，没有 CLI；编译器 crate 放在 `compiler/shader/`，主机平台的后端放在 `platforms/<p>/shader/` | 1 |
 | 前端 | 由 query 驱动，增量编译；query 引擎自己写一个精简版 | 2 |
-| IR | 两层：前端产出泛型的 MIR，单态化之后是后端的 SSA IR；两层共用同一套指令（0012） | 3 |
+| IR | 两层：前端产出泛型的 MIR，单态化之后是后端的 SSA IR；两层共用同一套指令（0006） | 3 |
 | 后端 IR 控制流 | CFG + SSA；分支和循环的终结指令带 merge 块和 continue 块，结构和 SPIR-V 同构，pass 必须保持 | 3.2 |
 | 后端 | pass 流水线（LLVM 新 pass manager 式），所有后端共用一条流水线；后端只负责最后的 lower 和写出 | 4 |
 | pass 清单 | 保留 DXC 有用的 pass；DXC 因为缺 GPU 语义而关掉的 LICM、unswitch、sinking，补上相应的 analysis 后重新打开；再加上 uniformity、资源别名、值域分析，以及 barrier、groupshared、原子聚合、描述符外提这些 GPU 专用的优化 | 4.4 |
@@ -55,7 +54,7 @@ compiler/shader/
   syntax        lexer、无损 CST、能容错的 parser、有类型的 AST 视图
   hir_def       item tree、包与 namespace 的 def map、名字解析、把函数体降低成 HIR
   hir_ty        类型检查与推断、泛型与约束求解、capability 推断、const 求值的入口
-  mir           从 HIR 降低到泛型 MIR（与 ir 共用指令集，0012 §2）；直接构造 SSA
+  mir           从 HIR 降低到泛型 MIR（与 ir 共用指令集，0006 §2）；直接构造 SSA
   mono          从 EntryRequest 收集实例，单态化，产出后端 IR
   ir            指令集、类型、builder、verifier、打印器和解析器；IR 解释器（CTFE 和差分测试都用它）
   opt           pass manager 和各个 pass
@@ -78,11 +77,11 @@ platforms/<p>/shader/  主机平台的后端（在 cook 平台 cfg 下通过 #[p
 
 | 层 | 特点 | 上面做的事 |
 |---|---|---|
-| **MIR** | 前端的产物：泛型的、按函数做 query 的。指令集和后端 IR 相同，但类型里可以有类型参数、关联类型投影和还没求值的 const 表达式，接口调用也还没解析（0012 §2） | 热重载时只重算改动了的函数；作为单态化的输入 |
+| **MIR** | 前端的产物：泛型的、按函数做 query 的。指令集和后端 IR 相同，但类型里可以有类型参数、关联类型投影和还没求值的 const 表达式，接口调用也还没解析（0006 §2） | 热重载时只重算改动了的函数；作为单态化的输入 |
 | **IR** | 单态化之后的 SSA；类型都是具体的；按入口组织成 module | 自动微分、uniformity 和 NonUniform 分析、legalize、所有优化 |
 
-- 单态化（`mono`）从 `EntryRequest` 出发，收集所有用到的实例，包括泛型函数、`Func` 参数和 lambda（0010 §9.2）。
-- 编译期递归在单态化时展开，运行时递归在这里报错（0010 §6）。
+- 单态化（`mono`）从 `EntryRequest` 出发，收集所有用到的实例，包括泛型函数、`Func` 参数和 lambda（0004 §9.2）。
+- 编译期递归在单态化时展开，运行时递归在这里报错（0004 §6）。
 
 ### 3.2 后端 IR 的控制流
 
@@ -103,7 +102,7 @@ platforms/<p>/shader/  主机平台的后端（在 cook 平台 cfg 下通过 #[p
 - 所有 pass 都必须：
   - 保持结构化 CFG（§3.2）；
   - 保持 debug location；
-  - 不对带 `[Precise]` 的计算做重结合、fma 收缩和近似倒数（0010 §9.7）。
+  - 不对带 `[Precise]` 的计算做重结合、fma 收缩和近似倒数（0004 §9.7）。
 - 共享的 pass 只读 target 描述，里面不写 `match target`。
 
 ### 4.2 参照：DXC 的流水线
@@ -142,7 +141,7 @@ DXC **故意关掉**了以下几项：
 | **uniformity（发散）分析** | 新增：按 cycle 处理的发散分析。DXC 只把它用在 WaveSensitivity 验证上 | 自动加 NonUniform 标记；判断 convergent 操作能不能移动；unswitch、if-conversion 和 LICM 的决策；标出 wave 内一致的 load |
 | **convergence 信息** | 新增：显式记录哪些操作是 convergent 的（导数、隐式 LOD 采样、wave 操作、barrier） | 替代 DXC 的 DxilConvergentMark/Clear：不靠临时插桩来阻止优化，而是让每个 pass 都去查询它 |
 | **资源别名分析** | 新增：基于 bindless 类型的别名分析。`ReadOnly*` 在一次 dispatch 内不变；资源种类不同就不会别名；同一 heap 下标、同一偏移就一定别名 | 跨 buffer 访问的 load CSE、DSE、LICM。DXC 只有一个全局开关 `HLSLResMayAlias` |
-| 整数值域分析 | 新增，取代 CorrelatedValuePropagation 依赖的 LVI | 删掉多余的除零检查（0010 §9.6）和多余的边界检查；`Float2Int`；判断移位次数的范围 |
+| 整数值域分析 | 新增，取代 CorrelatedValuePropagation 依赖的 LVI | 删掉多余的除零检查（0004 §9.6）和多余的边界检查；`Float2Int`；判断移位次数的范围 |
 | SCEV | 标准 | IndVarSimplify、unroll 次数、LICM |
 | 寄存器压力估计 | 新增：在 SSA 上按 live 区间数估计，阈值来自 target 描述 | LICM、sinking、rematerialization、unroll 的成本 |
 | demanded bits | 标准 | BitTrackingDCE、窄化 |
@@ -155,10 +154,10 @@ DXC **故意关掉**了以下几项：
 
 | # | pass | 来源 | 说明 |
 |---|---|---|---|
-| 0.1 | 单态化 | — | MIR 本身就是 SSA：HIR 降低到 MIR 时，用 Braun 等人的"简单高效的 SSA 构造"直接构造，局部变量不经过 alloca + mem2reg 绕一圈。这一步把 MIR 拷贝一份、代入类型实参、解析接口调用、求出 const 表达式的值（0012 §2、§11） |
-| 0.2 | 除零检查插入 | 新增 | 0010 §9.6：除数不是常量时，插入 `d == 0 ? 0 : n / d`。放在优化之前，值域分析可以把多余的检查消掉 |
-| 0.3 | 自动微分 | 新增（参考实现） | 前向模式：对 `ForwardDiff` 的调用点生成导数函数；对 `Derivatives.Seed` 出发的数据流，生成 x、y 两个方向的切向量（0010 §15.3）。只为确实用到的导数生成代码。反向模式以后在这里加。放在优化之前，生成的导数代码可以和原代码一起被优化 |
-| 0.4 | `Debug.*` 删除或降低 | 新增 | Shipping 构建删除；Development 构建降低成写调试 buffer（0010 §12.5） |
+| 0.1 | 单态化 | — | MIR 本身就是 SSA：HIR 降低到 MIR 时，用 Braun 等人的"简单高效的 SSA 构造"直接构造，局部变量不经过 alloca + mem2reg 绕一圈。这一步把 MIR 拷贝一份、代入类型实参、解析接口调用、求出 const 表达式的值（0006 §2、§11） |
+| 0.2 | 除零检查插入 | 新增 | 0004 §9.6：除数不是常量时，插入 `d == 0 ? 0 : n / d`。放在优化之前，值域分析可以把多余的检查消掉 |
+| 0.3 | 自动微分 | 新增（参考实现） | 前向模式：对 `ForwardDiff` 的调用点生成导数函数；对 `Derivatives.Seed` 出发的数据流，生成 x、y 两个方向的切向量（0004 §15.3）。只为确实用到的导数生成代码。反向模式以后在这里加。放在优化之前，生成的导数代码可以和原代码一起被优化 |
+| 0.4 | `Debug.*` 删除或降低 | 新增 | Shipping 构建删除；Development 构建降低成写调试 buffer（0004 §12.5） |
 
 **阶段 1：规范化**
 
@@ -208,7 +207,7 @@ DXC **故意关掉**了以下几项：
 
 | # | pass | 来源 | 说明 |
 |---|---|---|---|
-| 4.1 | NonUniform 标记 | 新增 | 基于 uniformity 分析，给发散的资源下标加标记（0010 §10.3），并遵守作者的 `[Uniform]` 和 `NonUniform()` |
+| 4.1 | NonUniform 标记 | 新增 | 基于 uniformity 分析，给发散的资源下标加标记（0004 §10.3），并遵守作者的 `[Uniform]` 和 `NonUniform()` |
 | 4.2 | 描述符获取的 CSE 和外提 | 新增（DXC 只有 DxilCleanupDynamicResourceHandle） | 同一个 heap 下标的描述符只取一次，一致的下标提到入口附近 |
 | 4.3 | 冗余 barrier 删除 | 新增 | 两个 barrier 之间没有 groupshared 或 buffer 访问时，删掉其中一个；入口开头和结尾多余的 barrier 也删掉 |
 | 4.4 | groupshared 的死数据删除与紧凑化 | 新增 | 删掉没有被读过的 groupshared 写入和字段；各个变量的生命周期在 barrier 区间上不重叠时，让它们共用一段空间 |
@@ -277,7 +276,7 @@ s.invalidate(&path);   // 源文件变了，相关的 query 会重算
 ```
 
 - `Session` 的生命周期很长：
-  - cookd 进程里一直保持一个，热重载时只重算受影响的 query（0007 §7.3）；
+  - cookd 进程里一直保持一个，热重载时只重算受影响的 query；
   - build.rs 创建一个，一次编完所有入口；
   - 以后的语言服务器也用同一套前端。
 - 一个请求对应一个入口、一组类型实参和常量、一个 target 和一个 profile，产出**一个单入口 blob**。这和 0002 的"每个 stage 一个 module"一致，也是 cook 键和 DDC 最细的粒度。
@@ -314,7 +313,7 @@ pub trait SourceProvider: Send + Sync {
 
 - 只有一个选项 `profile`：
 
-| profile | 优化 | `Debug.*`（0010 §12.5） | 调试信息 |
+| profile | 优化 | `Debug.*`（0004 §12.5） | 调试信息 |
 |---|---|---|---|
 | Development | 完整优化 | 生效 | 有 |
 | Shipping | 完整优化 | 删除 | 没有 |
@@ -339,8 +338,8 @@ pub trait SourceProvider: Send + Sync {
   - 入口：stage、线程组大小、mesh 的容量和拓扑；
   - push 布局：字段名、类型、偏移、大小，以及字段上的 attribute；
   - 静态参数和它们的值；
-  - 材质参数块的布局（0007 §8.2）：字段名、类型、偏移、默认值、用户 attribute；
-  - 实现了哪些可选方法（0007 §2.4）；
+  - 材质参数块的布局：字段名、类型、偏移、默认值、用户 attribute；
+  - 实现了哪些可选方法；
   - 用到的 capability，以及引用了哪些 `Target.*` 常量（用来推导 permutation 维度）；
   - `[Export]` 常量的值（§6.2）；
   - 用到的源文件和它们的内容哈希。
@@ -348,7 +347,7 @@ pub trait SourceProvider: Send + Sync {
 
 ### 6.2 编译期求值与导出
 
-0007 要求反射给出 Substrate 树展平后的 closure 数量和特性位。这类"库自己定义的编译期信息"，用编译期求值来导出，编译器不需要知道 Substrate 是什么：
+材质库需要反射给出 Substrate 树展平后的 closure 数量和特性位。这类"库自己定义的编译期信息"，用编译期求值来导出，编译器不需要知道 Substrate 是什么：
 
 ```csharp
 public const ClosureInfo Flatten<M>() where M : IMaterial { ... }
@@ -358,8 +357,8 @@ public const ClosureInfo Flatten<M>() where M : IMaterial { ... }
 // 反射：exports["Topology"] = { Count = 2, Features = Aniso | Fuzz }
 ```
 
-- 语言层面的规则见 0010 §13.4。
-- CTFE 的执行方式：先把用到的 `const` 函数单态化，再用 IR 解释器执行（0012 §11）。
+- 语言层面的规则见 0004 §13.4。
+- CTFE 的执行方式：先把用到的 `const` 函数单态化，再用 IR 解释器执行（0006 §11）。
 
 ## 7. 调试信息与统计
 
@@ -390,7 +389,7 @@ public const ClosureInfo Flatten<M>() where M : IMaterial { ... }
 **不生成 Rust 代码。**
 
 - Rust 端手写 `#[repr(C)]` 的 struct，字段名按 0003 §1.2 的规则用 snake_case。
-- 向量字段要用 4 字节对齐的类型，比如 `[f32; 4]` 或者专门的 POD 类型。marlin-math 的 `Vec4` 是 16 字节对齐的，和 scalar 布局对不上（0010 §16）。
+- 向量字段要用 4 字节对齐的类型，比如 `[f32; 4]` 或者专门的 POD 类型。marlin-math 的 `Vec4` 是 16 字节对齐的，和 scalar 布局对不上（0004 §16）。
 - **布局校验**：Development 构建创建 pipeline 时，引擎会做一次比对：
   - 一边是反射里的 push 布局；
   - 另一边是 Rust 类型的 marlin-reflect 布局：字段名（经过 0003 §1.2 的转换）、偏移和大小。
