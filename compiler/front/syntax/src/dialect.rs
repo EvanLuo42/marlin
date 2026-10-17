@@ -32,6 +32,7 @@ pub enum Construct {
     // From the Marlin shader language.
     ConstIf,
     AssocType,
+    TypeAlias,
     ConstGenericParam,
     Extension,
     ExtensionConformance,
@@ -64,6 +65,7 @@ impl Construct {
         Self::ParamsModifier,
         Self::ConstIf,
         Self::AssocType,
+        Self::TypeAlias,
         Self::ConstGenericParam,
         Self::Extension,
         Self::ExtensionConformance,
@@ -97,6 +99,7 @@ impl Construct {
             Self::ParamsModifier => "`params` parameters",
             Self::ConstIf => "`const if`",
             Self::AssocType => "associated types",
+            Self::TypeAlias => "type aliases in namespaces",
             Self::ConstGenericParam => "constant generic parameters",
             Self::Extension => "extension blocks",
             Self::ExtensionConformance => "interface conformance on extension blocks",

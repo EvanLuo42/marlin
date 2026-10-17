@@ -15,7 +15,7 @@
 | 命名 | 完全照 C# 惯例：类型、方法、属性、公开字段用 PascalCase，局部变量和参数用 camelCase；内建函数也用 PascalCase（`Dot`、`Lerp`、`Saturate`） | 2 |
 | 扩展名 | `.mshader` | 2 |
 | 类型声明 | 只有 `struct`、`interface`、`enum`；没有 `class` 和 `record`；所有类型都是值类型 | 3 |
-| 向量/矩阵 | `float3`、`int2`、`half4`、`float4x4` 这类短名，底层是 `Vector<T, N>` 和 `Matrix<T, R, C>` | 3.2 |
+| 向量/矩阵 | `float3`、`int2`、`half4`、`float4x4` 这类短名，底层是 `Vector<T, N>` 和 `Matrix<T, R, C>`；短名是核心库里的 namespace 级类型别名 | 3.2、7.3 |
 | 数组 | `float[4]`，值类型，长度是类型的一部分；用集合表达式 `[a, b, c]` 初始化 | 3.3 |
 | enum | C# 原样，支持 `[Flags]`；对非 Flags enum 做 switch 时要求穷尽 | 3.5 |
 | 构造 | 三种写法：构造函数调用 `T(...)`、对象初始化器 `T { ... }`、`with`；另有 `default` | 4 |
@@ -33,7 +33,7 @@
 | 动态分发 | 不做：接口只能当泛型约束用 | 8.5 |
 | 表达式 | 保留 switch 表达式与模式匹配、元组与解构、lambda 与局部函数、`foreach` 与范围 | 9 |
 | 字面量 | 不带后缀的浮点字面量按上下文定类型，没有上下文时是 `float` | 9.3 |
-| 向量转换 | 标量广播是隐式的，截断必须显式；swizzle 用小写 `v.xyz` | 9.4 |
+| 向量转换 | 标量广播是隐式的，截断必须显式；swizzle 用小写 `v.xyz`，可以赋值（分量不重复） | 9.4 |
 | 矩阵 | `*` 是矩阵乘法（列向量，`M * v`）；元素用 `m[r, c]`，整列整行用 `Column(i)`/`Row(i)`；没有 `m[i]` | 9.5 |
 | 资源 | C# 式的只读/可写成对命名（`ReadOnlyBuffer<T>` 和 `Buffer<T>`……）；资源类型本身就是 32 位 bindless 下标 | 10 |
 | NonUniform | 编译器自动推断，允许手工覆盖 | 10.3 |
@@ -67,6 +67,9 @@
 | 数值接口 | 精简的几层：`IArithmetic<T>`、`IInteger<T>`、`IFloat<T>`、`IComparable<T>` | 8.6 |
 | 浮点语义 | 默认宽松（允许重结合、fma 收缩、近似倒数），`[Precise]` 关闭这些变换 | 9.7 |
 | 编译期函数 | `const` 函数在编译期求值；`[Export]` 常量的值写进反射 | 13.4 |
+| int 与 uint | 两个变量混合运算报错，要显式转换；字面量照 C# | 9.3 |
+| 内建类型 | 核心库里用 `[Builtin]` 声明，编译器实现；`float` 等关键字是它们的别名 | 17.1 |
+| 内建函数 | 核心库里写签名、不写函数体，标 `[Intrinsic("op")]` | 17.2 |
 
 ## 1. 从 C# 去掉的东西
 
@@ -118,7 +121,8 @@ float4x3 n;              // 4 行 3 列
 T Sum<T, const int N>(Vector<T, N> v) where T : IArithmetic<T> { ... }
 ```
 
-- 短名是 `{标量}{N}` 和 `{标量}{R}x{C}`，其中 N、R、C ∈ 2..4。它们是 `Vector<T, N>` 和 `Matrix<T, R, C>` 的别名。
+- 短名是 `{标量}{N}` 和 `{标量}{R}x{C}`，其中 N、R、C ∈ 2..4。它们是核心库里的 namespace 级类型别名（§7.3）：`public type float3 = Vector<float, 3>;`。
+- 标量关键字也是核心库类型的别名：`float` 就是 `Marlin.Float`，`int` 就是 `Marlin.Int`（§17.1）。
 - 矩阵在内存里默认按列主序存储，跟 0002 §4 和 marlin-math 一致。
 
 ### 3.3 数组
@@ -268,6 +272,20 @@ internal float3 F0FromSpecular(float s) => ...;
   - `Wave`、`Barrier`、`Mesh`、`Debug`、`Derivatives` 这些子 namespace 调用时要写前缀。
   - 包里可以用 C# 10 的 `global using` 给所有文件统一导入。
 
+### 7.3 类型别名
+
+```csharp
+namespace Marlin;
+public type float3 = Vector<float, 3>;
+
+namespace Game;
+public type Color = float4;
+```
+
+- namespace 里可以用 `type Name = T;` 声明类型别名，写法和关联类型（§8.2）相同。它是 namespace 的成员，和类型一样按可见性导出、按名字查找，所以核心库的 `float3` 在每个文件里都能直接用。
+- 别名和它指向的类型是同一个类型。
+- 别名本身不带类型参数（`type Vec<T> = ...` 待定）。
+
 ### 7.2 包清单
 
 清单用 0003 的资产文本格式：
@@ -409,6 +427,7 @@ float3 c = c0 * 0.5;    // float
 - 不带后缀的浮点字面量，类型由上下文决定；没有上下文时是 `float`。
 - 带后缀的写法 `1.0f`、`1.0h`、`1.0d` 照样可以用。
 - 非字面量之间的转换照 C# 规则：加宽是隐式的，收窄要显式。
+- `int` 和 `uint`（以及 `short` 和 `ushort`、`long` 和 `ulong`）的变量混在一起运算时**报错**，要写显式转换；不会像 C# 那样提升成 `long`，也不会像 HLSL 那样悄悄转成无符号。字面量照 C#：`id.x + 1` 是 `uint`，因为 `1` 放得进 `uint`。
 
 ### 9.4 向量转换与 swizzle
 
@@ -420,6 +439,7 @@ float3 p = pos4.xyz;    // ok
 ```
 
 - 分量名和 swizzle 用小写，`xyzw` 或 `rgba` 都可以，但不能在同一个 swizzle 里混用。
+- swizzle 可以赋值：`v.xy = a;`、`v.zx = b;`。作为赋值目标时分量不能重复（`v.xx = a` 报错）。
 - 向量 `*` 向量是逐分量相乘。
 
 ### 9.5 矩阵
@@ -911,7 +931,51 @@ internal DiffPair<float> AcosFwd(DiffPair<float> x) => ...;
 - 需要精确控制时，可以用 C# 的 `[StructLayout(LayoutKind.Explicit)]` 和 `[FieldOffset(n)]`。
 - 资源字段占 4 字节（§10）；`bool` 不能放进 buffer（§3.1）。
 
-## 17. 待定
+## 17. 内建类型与内建函数
+
+### 17.1 内建类型
+
+```csharp
+namespace Marlin;
+
+[Builtin("f32")]
+public struct Float : IFloat<Float>, IComparable<Float> { }
+
+[Builtin("vector")]
+public struct Vector<T, const int N> : IArithmetic<Vector<T, N>> where T : IScalar<T> { }
+
+public type float3 = Vector<float, 3>;
+```
+
+- 标量、向量、矩阵、资源类型、`Func`/`Action` 都在核心库里用 Marlin shader **声明**：名字、泛型参数、实现的接口、文档都写在源码里，标上 `[Builtin("名字")]`。
+- 它们的内存布局、运算、swizzle 等由编译器**实现**，声明里不写函数体也不写字段。
+- 标量关键字是这些类型的别名：`bool`、`short`、`ushort`、`int`、`uint`、`long`、`ulong`、`half`、`float`、`double` 对应 `[Builtin]` 名 `bool`、`i16`、`u16`、`i32`、`u32`、`i64`、`u64`、`f16`、`f32`、`f64`。`void` 是编译器自己的类型。
+- C# 有而 shader 没有的关键字类型（`byte`、`sbyte`、`char`、`decimal`、`object`）用在类型位置时报错。
+- `string` 只能用在 attribute 的声明里（实现 `Marlin.IAttribute` 的 struct 的字段和构造函数参数），对应 `[Builtin("string")]`；别处报错（§1：字符串只出现在 attribute 实参、`nameof` 和 `Debug` 消息里）。
+
+### 17.2 内建函数
+
+```csharp
+[Intrinsic("dot")]
+public T Dot<T, const int N>(Vector<T, N> a, Vector<T, N> b) where T : IArithmetic<T>;
+
+public struct Texture2D<T>
+{
+    [Intrinsic("tex.sample")]
+    public T Sample(Sampler s, float2 uv, float lod = 0, ...);
+}
+```
+
+- 由硬件指令实现的函数在核心库里写成正常的签名、**没有函数体**，用 `[Intrinsic("op")]` 指定对应的 IR op（0006 §8）。
+- 重载、泛型、命名参数（`lod:`、`grad:`）都走普通的类型检查。
+- 0006 §8.2 可替换集里的函数（`Pow`、`Normalize`……）在核心库里用 Marlin 写出实现，同时标上 `[Intrinsic]`，target 有原生实现时用原生的。
+
+### 17.3 使用限制
+
+- 只有声明 `Marlin.BuiltinAttribute` 和 `Marlin.IntrinsicAttribute` 的那个包（核心库）能用这两个 attribute。
+- 没有函数体的函数只能出现在 interface 里，或者带 `[Intrinsic]`。
+
+## 18. 待定
 
 - 编译器 API 和反射：见 0005。
 - 标准库的完整清单：各个 namespace 里有哪些函数，打包类型有哪些。

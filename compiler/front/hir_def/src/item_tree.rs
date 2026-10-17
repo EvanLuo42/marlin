@@ -139,6 +139,8 @@ pub enum ItemKind {
     Indexer,
     Field,
     AssocType,
+    /// `type Name = T;` in a namespace.
+    TypeAlias,
 }
 
 impl ItemKind {
@@ -146,7 +148,12 @@ impl ItemKind {
     pub fn is_type(self) -> bool {
         matches!(
             self,
-            Self::Struct | Self::Class | Self::Record | Self::Interface | Self::Enum
+            Self::Struct
+                | Self::Class
+                | Self::Record
+                | Self::Interface
+                | Self::Enum
+                | Self::TypeAlias
         )
     }
 
@@ -168,6 +175,7 @@ impl ItemKind {
             Self::Indexer => "indexer",
             Self::Field => "field",
             Self::AssocType => "associated type",
+            Self::TypeAlias => "type alias",
         }
     }
 }
@@ -296,6 +304,11 @@ impl Lower<'_> {
             PROPERTY_DECL => ItemKind::Property,
             INDEXER_DECL => ItemKind::Indexer,
             FIELD_DECL => ItemKind::Field,
+            ASSOC_TYPE_DECL
+                if parent.is_none_or(|p| self.tree.items[p].kind == ItemKind::Namespace) =>
+            {
+                ItemKind::TypeAlias
+            }
             ASSOC_TYPE_DECL => ItemKind::AssocType,
             _ => return Vec::new(),
         };

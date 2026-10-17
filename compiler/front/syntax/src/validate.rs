@@ -102,6 +102,9 @@ fn constructs_of(node: &SyntaxNode, out: &mut Vec<(Construct, TextRange)>) {
                 push(Construct::ConstIf, t.text_range());
             }
         }
+        ASSOC_TYPE_DECL if is_namespace_level(node) => {
+            push(Construct::TypeAlias, at_token(node, TYPE_KW))
+        }
         ASSOC_TYPE_DECL => push(Construct::AssocType, at_token(node, TYPE_KW)),
         TYPE_PARAM => {
             if let Some(t) = token(node, CONST_KW) {

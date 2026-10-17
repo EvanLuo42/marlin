@@ -76,6 +76,8 @@ marlin-lang-diag = { path = "compiler/common/diag" }
 marlin-lang-arena = { path = "compiler/common/arena" }
 marlin-lang-query = { path = "compiler/common/query" }
 marlin-front-syntax = { path = "compiler/front/syntax" }
+marlin-front-hir-def = { path = "compiler/front/hir_def" }
+marlin-shaderc-syntax = { path = "compiler/shader/syntax" }
 # --- editor ---
 marlin-editor-ui-core = { path = "editor/ui_core" }
 marlin-editor-ui-widgets = { path = "editor/ui_widgets" }

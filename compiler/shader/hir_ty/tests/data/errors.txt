@@ -1,0 +1,95 @@
+error[E1001]: cannot find type `Nope`
+ --> game/Errors.mshader:5:12
+  |
+5 |     public Nope A;
+  |            ^^^^
+
+error[E1002]: `Game` is a namespace, not a type
+ --> game/Errors.mshader:6:12
+  |
+6 |     public Game B;
+  |            ^^^^
+
+error[E1006]: Marlin shader has no `byte` type
+ --> game/Errors.mshader:7:12
+  |
+7 |     public byte C;
+  |            ^^^^
+
+error[E1006]: Marlin shader has no `string` type
+ --> game/Errors.mshader:8:12
+  |
+8 |     public string D;
+  |            ^^^^^^
+
+error[E1008]: an array length must be a positive constant
+ --> game/Errors.mshader:9:12
+  |
+9 |     public float[0] E;
+  |            ^^^^^^^^
+
+error[E1008]: this must be a compile-time constant
+  --> game/Errors.mshader:10:18
+   |
+10 |     public float[Bad] F;
+   |                  ^^^
+
+error[E1004]: `N` is a constant parameter; it takes a constant, not a type
+  --> game/Errors.mshader:11:26
+   |
+11 |     public Vector<float, float> G;
+   |                          ^^^^^
+
+error[E1004]: `T` takes a type, not a constant
+  --> game/Errors.mshader:12:19
+   |
+12 |     public Vector<3, 3> H;
+   |                   ^
+
+error[E1002]: `Dot` is a function or field, not a type
+  --> game/Errors.mshader:13:12
+   |
+13 |     public Dot I;
+   |            ^^^
+
+error[E1007]: this type alias refers to itself
+  --> game/Errors.mshader:16:13
+   |
+16 | public type Loop1 = Loop2;
+   |             ^^^^^
+
+error[E1007]: this type alias refers to itself
+  --> game/Errors.mshader:17:13
+   |
+17 | public type Loop2 = Loop1;
+   |             ^^^^^
+
+error[E1007]: this type alias refers to itself
+  --> game/Errors.mshader:18:13
+   |
+18 | public type SelfRef = Vector<SelfRef, 3>;
+   |             ^^^^^^^
+
+error[E1013]: a function without a body must be `[Intrinsic]` or declared in an interface
+  --> game/Errors.mshader:20:13
+   |
+20 | public void NoBody();
+   |             ^^^^^^
+
+error[E1005]: `[Intrinsic]` is only for the core library
+  --> game/Errors.mshader:22:33
+   |
+22 | [Intrinsic("fake")] public void Fake() { }
+   |                                 ^^^^
+
+error[E1012]: constant parameters are `int` or `uint`, not `float`
+  --> game/Errors.mshader:24:23
+   |
+24 | public struct C<const float N> { }
+   |                       ^^^^^
+
+error[E1011]: `Light` is not an interface; constraints name interfaces
+  --> game/Errors.mshader:26:30
+   |
+26 | public void W<T>() where T : Light { }
+   |                              ^^^^^

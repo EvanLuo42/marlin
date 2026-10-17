@@ -1,0 +1,26 @@
+namespace Game;
+
+public struct Bad
+{
+    public Nope A;
+    public Game B;
+    public byte C;
+    public string D;
+    public float[0] E;
+    public float[Bad] F;
+    public Vector<float, float> G;
+    public Vector<3, 3> H;
+    public Dot I;
+}
+
+public type Loop1 = Loop2;
+public type Loop2 = Loop1;
+public type SelfRef = Vector<SelfRef, 3>;
+
+public void NoBody();
+
+[Intrinsic("fake")] public void Fake() { }
+
+public struct C<const float N> { }
+
+public void W<T>() where T : Light { }

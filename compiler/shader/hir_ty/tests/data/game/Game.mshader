@@ -1,0 +1,37 @@
+namespace Game;
+
+public struct Light
+{
+    public float3 Color;
+    public float Intensity;
+    public Texture2D<float4> Albedo;
+    float[4] Weights;
+    Vector<float, 2 * 2> Packed;
+    public float4x4 World;
+}
+
+public T Sum<T, const int N>(Vector<T, N> v) where T : IArithmetic<T> => default;
+
+public struct Grid<const int N>
+{
+    public float[N * 2] Cells;
+    public Matrix<float, N, N> Weights;
+    public Grid<N - 1> Smaller;
+}
+
+public interface IMaterial
+{
+    type Params;
+}
+
+public float4 Shade<M>(M.Params p, in Light l, out float3 n) where M : IMaterial => default;
+
+public type Color = float4;
+public Color Tint(Color c) => c;
+
+public void Integrate(int n, Func<float, float> f) { }
+
+public const int Taps = 8;
+public struct Kernel { public float[Taps] Weights; }
+
+public enum Lobe : uint { Diffuse, Specular }

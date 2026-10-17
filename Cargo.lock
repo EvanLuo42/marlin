@@ -893,6 +893,20 @@ name = "marlin-shader"
 version = "0.1.0"
 
 [[package]]
+name = "marlin-shaderc-hir-ty"
+version = "0.1.0"
+dependencies = [
+ "marlin-front-hir-def",
+ "marlin-front-syntax",
+ "marlin-lang-arena",
+ "marlin-lang-diag",
+ "marlin-lang-query",
+ "marlin-lang-span",
+ "marlin-shaderc-syntax",
+ "marlin-test-support",
+]
+
+[[package]]
 name = "marlin-shaderc-syntax"
 version = "0.1.0"
 dependencies = [

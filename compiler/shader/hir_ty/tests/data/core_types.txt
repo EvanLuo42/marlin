@@ -1,0 +1,87 @@
+== Marlin.IAttribute
+== Marlin.String
+  builtin String
+== Marlin.BuiltinAttribute
+  bases [IAttribute]
+== Marlin.BuiltinAttribute.Name
+  type string
+== Marlin.BuiltinAttribute.BuiltinAttribute
+  param string name
+  type BuiltinAttribute
+== Marlin.IntrinsicAttribute
+  bases [IAttribute]
+== Marlin.IntrinsicAttribute.Op
+  type string
+== Marlin.IntrinsicAttribute.IntrinsicAttribute
+  param string op
+  type IntrinsicAttribute
+== Marlin.IScalar
+  generic T : [IScalar<T>]
+== Marlin.IArithmetic
+  generic T : [IArithmetic<T>]
+== Marlin.IArithmetic.<operator>
+  param T a
+  param T b
+  type T
+== Marlin.Bool
+  bases [IScalar<bool>]
+  builtin Scalar(Bool)
+== Marlin.Int
+  bases [IScalar<int>, IArithmetic<int>]
+  builtin Scalar(I32)
+== Marlin.UInt
+  bases [IScalar<uint>, IArithmetic<uint>]
+  builtin Scalar(U32)
+== Marlin.Half
+  bases [IScalar<half>, IArithmetic<half>]
+  builtin Scalar(F16)
+== Marlin.Float
+  bases [IScalar<float>, IArithmetic<float>]
+  builtin Scalar(F32)
+== Marlin.Double
+  bases [IScalar<double>, IArithmetic<double>]
+  builtin Scalar(F64)
+== Marlin.Vector
+  generic T : [IScalar<T>]
+  generic const int N : []
+  builtin Vector
+== Marlin.Matrix
+  generic T : [IScalar<T>]
+  generic const int R : []
+  generic const int C : []
+  builtin Matrix
+== Marlin.float2
+  type float2
+== Marlin.float3
+  type float3
+== Marlin.float4
+  type float4
+== Marlin.uint3
+  type uint3
+== Marlin.float4x4
+  type float4x4
+== Marlin.Sampler
+  builtin Resource(Sampler)
+== Marlin.Texture2D
+  generic T : []
+  builtin Resource(Texture2D)
+== Marlin.Texture2D.Sample
+  param Sampler s
+  param float2 uv
+  param float lod
+  type T
+  intrinsic tex.sample
+== Marlin.Func
+  generic TResult : []
+  builtin Func
+== Marlin.Func
+  generic T : []
+  generic TResult : []
+  builtin Func
+== Marlin.Dot
+  generic T : [IArithmetic<T>]
+  generic const int N : []
+  param Vector<T, N> a
+  param Vector<T, N> b
+  type T
+  intrinsic dot

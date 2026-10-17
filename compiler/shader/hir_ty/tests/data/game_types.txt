@@ -1,0 +1,54 @@
+== Game.Light
+== Game.Light.Color
+  type float3
+== Game.Light.Intensity
+  type float
+== Game.Light.Albedo
+  type Texture2D<float4>
+== Game.Light.Weights
+  type float[4]
+== Game.Light.Packed
+  type float4
+== Game.Light.World
+  type float4x4
+== Game.Sum
+  generic T : [IArithmetic<T>]
+  generic const int N : []
+  param Vector<T, N> v
+  type T
+== Game.Grid
+  generic const int N : []
+== Game.Grid.Cells
+  type float[(N * 2)]
+== Game.Grid.Weights
+  type Matrix<float, N, N>
+== Game.Grid.Smaller
+  type Grid<(N - 1)>
+== Game.IMaterial
+== Game.IMaterial.Params
+== Game.Shade
+  generic M : [IMaterial]
+  param M.Params p
+  param In Light l
+  param Out float3 n
+  type float4
+== Game.Color
+  type float4
+== Game.Tint
+  param float4 c
+  type float4
+== Game.Integrate
+  param int n
+  param Func<float, float> f
+  type void
+== Game.Taps
+  type int
+== Game.Kernel
+== Game.Kernel.Weights
+  type float[Game.Taps]
+== Game.Lobe
+  bases [uint]
+== Game.Lobe.Diffuse
+  type Lobe
+== Game.Lobe.Specular
+  type Lobe

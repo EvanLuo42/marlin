@@ -1,0 +1,21 @@
+[package]
+name = "marlin-shaderc-hir-ty"
+description = "Marlin shader compiler: types, built-in declarations, type lowering and type checking."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+marlin-front-hir-def.workspace = true
+marlin-front-syntax.workspace = true
+marlin-lang-arena.workspace = true
+marlin-lang-diag.workspace = true
+marlin-lang-query.workspace = true
+marlin-lang-span.workspace = true
+marlin-shaderc-syntax.workspace = true
+
+[dev-dependencies]
+marlin-test-support.workspace = true
+
+[lints]
+workspace = true

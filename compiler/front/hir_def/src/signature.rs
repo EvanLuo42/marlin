@@ -150,7 +150,8 @@ impl Query for SignatureWithSourceMap {
             | ItemKind::Property
             | ItemKind::Indexer
             | ItemKind::Field
-            | ItemKind::AssocType => child(&node, is_type).map(|t| lower.ty(&t)),
+            | ItemKind::AssocType
+            | ItemKind::TypeAlias => child(&node, is_type).map(|t| lower.ty(&t)),
             _ => None,
         };
         if let Some(list) = child_of_kind(&node, BASE_LIST) {
