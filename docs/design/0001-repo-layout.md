@@ -506,10 +506,10 @@ runtime/<layer>/<name>/
 - **marlin-jobs**：每个 worker 线程在 fiber 上跑调度循环。job 在 counter 上等待时，fiber 被 park，worker 换一个空闲 fiber 继续；counter 归零后，被 park 的 fiber 进入 ready 队列，优先于新 job 执行。凡是"切走之后才能做"的动作（把 fiber 还回池子、登记为等待者）都放进 `Worker::pending`，由切换到的那个 fiber 去完成，避免另一个线程恢复一个还在运行的 fiber。
 - 调度顺序：ready fiber → High 全局队列 → 本 worker 的本地队列（取最新的，深度优先）→ Normal 全局队列 → 从其他 worker 偷最旧的 → Low 全局队列。worker 内部 spawn 的 Normal job 进本地队列。深度优先把嵌套等待占用的 fiber 数限制在大约 worker 数 × 递归深度。只用全局 FIFO 时，4095 个嵌套等待就能耗尽 512 个 fiber。
 - 空闲 worker 用 eventcount（`epoch` + `sleepers`，SeqCst 配对）睡在 Condvar 上，不会丢唤醒。外部线程等待 counter 时直接阻塞（不帮忙执行 job）。counter 由 `Arc` 共享，最后一次 decrement 发生在 scope 返回之后也是安全的。
-- 性能（release，11 个 worker）：空 job（spawn + 执行）约 224 ns；4095 次嵌套等待的 fork-join 约 2.8 ms。
+- 性能（release，11 个 worker）：空 job（spawn + 执行）约 211 ns（主线程注册为 main 时约 150 ns）；4095 次嵌套等待的 fork-join 约 1.0 ms（2026-10-17，此前 2.4–2.8 ms）。
 - **跨帧 handle**：`JobSystem::spawn` / `spawn_after(deps, priority, f)` / `batch(|b| …)` 生成 `'static` 的 detached job，返回可克隆的 `JobHandle`（`wait` 在 job 里会 park fiber，`is_complete`，`JobHandle::complete()`）。`spawn_after` 不占 fiber：continuation 挂在每个依赖的 counter 上，最后一个依赖完成时才把 job 推进队列（创建者自己也持有一份计数，所以登记依赖的过程中 job 不会提前启动）。依赖可以来自别的 JobSystem。`Drop for JobSystem` 会先等完所有 detached 工作，包括还在等依赖的 continuation。
-- 尚未实现：无锁的 Chase-Lev 双端队列（现在是 Mutex<VecDeque>）、fiber 感知的锁（job 不要在等待时持有 `marlin_sync` 的锁）、fiber 池耗尽时的降级处理（现在直接 panic）、主线程作为 worker 参与执行、frame 级的 job 图与 profiler 标记。
 - **约定**：测试一律写在各 crate 中与 `src/` 同级的 `tests/` 目录（集成测试），`src/` 里不放 `#[cfg(test)]` 模块。需要验证内部逻辑时，通过有实际用途的公共 API 来测，例如 mem 的 `good_size()`。测试要随机数时用 `marlin_math::Rng`，临时目录、等待和 Git 仓库这类通用 helper 用 `marlin-test-support`，不要在测试里自己再写一套。只有固定 fixture 或参考向量依赖的旧生成器（compress 的测试数据、hash 的参考 buffer）冻结在原测试里。
+- 上一版列出的 Chase-Lev 双端队列、fiber 感知的锁、fiber 池耗尽降级、主线程参与执行、frame 级 job 图与 profiler 标记都已实现，见文末 "L2 completion"。
 - **marlin-math**（自研，不用 glam）：右手系、Y 向上、相机朝 -Z；列向量（`M * v`），列主序存储；投影统一是 reverse-Z，深度范围 [0, 1]（`perspective_rh`、`perspective_infinite_rh`、`orthographic_rh`）。`Vec4`、`Quat`、`Mat4` 的列都基于 `core::simd::f32x4`（portable_simd，16 字节对齐，通过 `Deref` 用 `.x/.y/.z/.w` 访问字段）；`Vec2`/`Vec3` 是 `repr(C)` 标量（8/12 字节），方便直接作为 GPU 顶点数据。四元数乘法用 SIMD swizzle 实现；`Mat4` 求逆用 MESA 的余子式公式，另提供更快的 `inverse_affine`。
 - **超越函数**：`core::f32::math` 只有 floor/ceil/round/trunc/fract/sqrt/mul_add 等，没有 sin/exp/ln，所以自研：在 f64 里做区间规约和多项式求值（sin/cos 用 FreeBSD k_sinf/k_cosf 的系数，atan/exp/ln 用级数，阶数按误差界选定）。实测和 std libm 相比：sin/cos/atan/asin/acos/exp/exp2/ln/log2/log10 ≤ 1 ulp，tan/pow ≤ 2 ulp。只用基本 IEEE 运算、不用 FMA，所以各平台结果逐位一致；三角函数在 |x| < 约 1.6e6 时保持精度。
 - `core::simd` 没有向量 sqrt（它在 std 的 `std_float` 里），所以需要开方的地方都先归约成标量再用 `core::f32::math::sqrt`。
@@ -523,8 +523,8 @@ runtime/<layer>/<name>/
   - **Commands**：结构性修改都要经过 `Commands`。每个 system 有自己的缓冲，wave 结束后按 system 的加入顺序应用，结果是确定的，和完成顺序无关。
   - 注册 component 时可以附带反射信息（`register_reflected`），供 VM 和 editor 使用。
   - **Change detection**：每个 component 行旁边存 `added`/`changed` 两个 tick（`Column` 里的 `Vec<TickCell>`，随行一起 swap-remove 和迁移）。`&mut T` 查询产出 `Mut<T>`，只有 `DerefMut` 才记录写入（另有 `bypass_change_detection`、`set_if_neq`），`Ref<T>` 只读但带变化信息。过滤器 `Changed<T>`/`Added<T>` 是行级过滤（`QueryFilter::ROW_FILTER`），并声明对 `T` 的读；同一个 query 可以写它自己过滤的类型。每个 system 有自己的 `last_run`，看到的是"自己上次运行以来"的变化；直接通过 World 的查询以 `clear_trackers()` 为界（framework 每帧 extract 之后调用一次）。删除和 despawn 按类型记入 `World::removed`，保留两个周期。tick 是会回绕的 u32，每隔 `CHECK_TICK_THRESHOLD` 把过旧的 tick 钳到 `MAX_CHANGE_AGE`（与 Bevy 相同的方案）。exclusive system 用的是 world 的 tick，没有自己的 `last_run`。
-  - **尚未实现**：query 缓存（目前每次 query 都要重新匹配所有 archetype）、bundle 信息缓存、Commands 里 spawn 时预留实体 id、函数式 system 参数（类似 Bevy 的 `fn(Query, Res)`）、性能基准。另外，system 内部的 job 一旦 panic 会直接 abort；越权访问的 panic 只有在 system 单独占一个 wave 时才能被测试捕获。
-- **Registered same-layer dependencies** (§1.1 rule 3): `marlin-input → marlin-app` (L1: keyboard and mouse input arrives through the app's message pump); `marlin-rt → marlin-diag` (L0: the panic handler logs through the diag sinks); `marlin-std → marlin-rt` (L0: the facade re-exports `rt` and `rt::process`).
+  - 上一版列出的 query 缓存、bundle 缓存、Commands 预留实体 id、函数式 system 参数、性能基准都已实现，见文末 "L2 completion"。system 内部的 job 一旦 panic 仍会直接 abort；越权访问的 panic 只有在 system 单独占一个 wave 时才能被测试捕获。
+- **Registered same-layer dependencies** (§1.1 rule 3): `marlin-input → marlin-app` (L1: keyboard and mouse input arrives through the app's message pump); `marlin-rt → marlin-diag` (L0: the panic handler logs through the diag sinks); `marlin-std → marlin-rt` (L0: the facade re-exports `rt` and `rt::process`). L2 (2026-10-17): `marlin-reflect → marlin-math, marlin-text, marlin-containers` (reflect implements `Reflect` for their types); `marlin-serial → marlin-hash` (cooked layout hashes); `marlin-jobs → marlin-profile` (zones on graph nodes).
 - **L1 first slice**: the Win32 window and message pump (no_std), input (keyboard/mouse/raw input/XInput), and a D3D12 RHI (hand-written COM vtables, enhanced barriers with a legacy fallback, flip-model swapchain, frames in flight). `apps/demo_clear` animates a clear color. The Linux/macOS backends compile but return `Unsupported` at runtime.
 - **marlin-app, second pass (Windows only)**:
   - **Lifecycle:** `Lifecycle` (`Running` / `Constrained` / `Suspended`) and the events `Constrained`/`Unconstrained` (session locked, remote session disconnected, or console display off), `LowMemory` (`CreateMemoryResourceNotification`, edge-triggered), `VisibilityChanged`, `Moved`, `FilesDropped` and `DisplaysChanged`. A hidden top-level helper window receives the system-wide broadcasts (sleep, `WTSRegisterSessionNotification`, `GUID_CONSOLE_DISPLAY_STATE`, `WM_DISPLAYCHANGE`), so an app without windows still sees them. It also owns the clipboard (`App::clipboard_text` / `set_clipboard_text`).
@@ -619,3 +619,80 @@ runtime/<layer>/<name>/
     - An asynchronous macOS file engine: still the blocking QD1 engine, see `pal::file`.
     - IO priority classes, which belong to the asset streaming scheduler.
     - The PAL TLS slow path for hosts without native TLS.
+- **L2 completion (2026-10-17)**: containers, text, hash, jobs, reflect, serial, ecs and config, per the crate audit. Decisions taken with the user: Unicode tables are generated by us, the localization format is our own, ECS function systems infer their access, and method reflection waits for the VM design.
+  - **containers**:
+    - Allocator parameters (default `Global`) on SmallVec, SlotMap, SparseSet and the hash maps (hashbrown's `nightly` feature).
+    - Vec-like operations on SmallVec/ArrayVec.
+    - `ArrayDeque`, `Deque<T, A>` (alloc's `VecDeque<T, A>` is unstable), `BitArray<W>` / `BitSet`, `SecondaryMap`, `IndexMap` / `IndexSet`, and `SpscQueue<T, N>`.
+    - Bounded MPMC is `marlin_sync::Channel`, and pools are `marlin_mem::Pool`.
+  - **hash**:
+    - Streaming `Xxh64` / `Xxh3`, bit-identical to the one-shot functions for any chunking.
+    - `StableHash` + `#[derive(StableHash)]` (new `marlin-hash-derive`). Its byte encoding is part of cook keys and is pinned by tests.
+    - `Guid`; `from_name` gives a UUIDv8 from xxh3_128.
+    - CRC-32.
+    - `KeyedState` (SipHash-1-3 with a per-process secret) for untrusted keys.
+  - **text**:
+    - **Unicode 17.0**: case mapping and full/simple folding, NFC/NFD/NFKC/NFKD, and UAX #29 graphemes and words.
+      - Tables (~59 KB) are generated by `cargo xtask gen-unicode` from UCD files, which are downloaded but not committed; the generator and the conformance tests find them through `MARLIN_UCD_DIR`, and the tests skip without it.
+      - Conformance: NormalizationTest and WordBreakTest pass in full, GraphemeBreakTest passes 750/766. The 16 failures are GB9c, which needs InCB from DerivedCoreProperties.txt.
+      - No SpecialCasing or Turkic folding.
+    - UTF-16 helpers.
+    - `loc`:
+      - BCP 47 `Locale` with a fallback chain.
+      - CLDR cardinal plural rules for 23 locales.
+      - Hand-encoded number and date formats; cross-check against CLDR before relying on exact output.
+      - `Message` (`{name}`, `{n, plural, one {...} other {...}}`).
+      - Zero-copy `StringTable` + `Catalog`. It does not use serial, because serial → reflect → text would be a cycle.
+    - `tools/cook_text` cooks masset `StringTable` sources.
+  - **jobs**:
+    - Chase-Lev deques (Lê et al. 2013).
+    - `jobs::sync` fiber-aware `Mutex` / `RwLock` / `Condvar` / `Event`: these may be held across job waits, `marlin_std::sync` locks may not.
+    - The fiber pool grows to `Config::max_fibers`; at the cap, a waiter helps by resuming ready fibers or running nested jobs.
+    - `JobSystem::main_thread()` with `pump` / `run_until`, and `spawn_on_main`.
+    - `GraphBuilder` / `Graph`: frame graphs with profile zones per node.
+    - `JobHandle::cancel`, which propagates to unstarted dependents.
+  - **reflect**:
+    - Tuple, Map, Set and Pointer kinds.
+    - Reflect impls for math, `Name` and `InlineString`, `Handle`, SmallVec/ArrayVec and the hash maps.
+    - Editor metadata: display name, category, doc from `///`, units, step, `Widget`, `meta`.
+    - Type data and `ReflectTrait` casts.
+    - The derive supports const generics, and lifetimes as `'static` instances.
+    - `compile_fail` doc tests check the derive's errors.
+  - **serial**:
+    - Format v2 (v1 still reads), with maps, sets and tuples.
+    - Custom serializers for opaque types.
+    - Versioned types with `Migrate` steps.
+    - Streaming reader.
+    - `CookedHeader` (magic, version, xxh3 layout hash), checked by `CookedView::with_header`.
+    - `#[derive(Pod)]` (new `marlin-serial-derive`), which checks repr and padding at compile time.
+    - Little-endian is asserted. The text format is masset.
+  - **ecs**:
+    - Tables and sparse-set storage.
+    - `QueryState` and bundle caches.
+    - Commands over a `CommandQueue`; `spawn` reserves the id.
+    - Function systems (`SystemParam`, up to 12 params, access derived and conflicts rejected at build time).
+    - Dynamic access by `ComponentId` and `DynamicQuery`.
+    - `Events<E>`.
+    - Component hooks: run with `&World` + deferred commands, drained FIFO by the outermost structural operation.
+    - Hierarchy (`Parent` / `Children`).
+    - Sets, `before` / `after` (Kahn sort, ties in insertion order, named cycles), and `run_if`.
+    - `spawn_batch`, entity cloning, reflect snapshots, and thread-owned non-send resources.
+    - Benchmarks are in `tests/bench.rs` (ignored): for example, an empty query over 1024 archetypes costs 2.16 µs uncached and 5.2 ns with `QueryState`.
+  - **config**:
+    - Console commands with a parser, `execute`, built-ins (help/list/reset/toggle/exec) and completion.
+    - Self-registration through `declare!`, which puts linker-section slots in COFF `.mcfg$a/m/z`, ELF `__start_/__stop_marlin_config` and Mach-O `section$start$`. Selecting the object format uses `cfg(windows)` / `cfg(target_vendor = "apple")`, a deliberate exception to §1.1 rule 2: it chooses a linker convention, not a platform backend.
+    - The layer stack runs engine < platform < scalability < project < device profile < user < command line < console < server.
+    - Scalability groups and device profiles.
+    - REPLICATED / DEV_ONLY flags.
+    - Vector and color cvars.
+  - **Verification**:
+    - Everything ran on Windows hardware.
+    - Linux and macOS are compile-checked with clippy. The proc-macro crates (`*-derive`) are excluded from cross-target `--tests` checks: their tests build for the host, which gets no `marlin_platform` cfg.
+  - **Left for later**:
+    - Method reflection (VM).
+    - GB9c and SpecialCasing.
+    - Ordinal plurals, and medium/full date styles.
+    - masset reading and writing maps, sets and proxies.
+    - Engine crates moving to `#[derive(Pod)]` + cooked headers.
+    - ECS snapshots through serial.
+    - Job panic isolation (panics still abort).
