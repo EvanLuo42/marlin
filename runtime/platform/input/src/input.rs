@@ -1,4 +1,4 @@
-use marlin_app::App;
+use marlin_app::{App, Rect, Window};
 
 use crate::backend::imp;
 use crate::contract::Input as _;
@@ -9,13 +9,13 @@ pub const KEY_LABEL_CAPACITY: usize = 64;
 
 /// The input system of one [`App`]. Main thread only.
 pub struct Input {
-    inner: imp::Input,
+    pub(crate) inner: imp::Input,
     state: InputState,
 }
 
 impl Input {
-    /// Starts gathering keyboard and mouse input from every window of `app` and polling
-    /// gamepads.
+    /// Starts gathering keyboard, mouse, touch and pen input from every window of `app` and
+    /// polling gamepads.
     pub fn new(app: &App) -> Result<Self> {
         Ok(Self {
             inner: imp::Input::new(app)?,
@@ -52,5 +52,15 @@ impl Input {
         buf: &'b mut [u8; KEY_LABEL_CAPACITY],
     ) -> Option<&'b str> {
         self.inner.key_label(key, buf)
+    }
+
+    /// Turns IME text input on for `window`, with the IME's candidate list placed next to `area`
+    /// (the focused text field, in client pixels), or off with `None`.
+    ///
+    /// Turn it off during gameplay: otherwise a Chinese, Japanese or Korean IME composes from
+    /// movement keys. Typed text arrives in [`InputState::text`] either way; while composing, the
+    /// unfinished text is in [`InputState::composition`].
+    pub fn set_text_input(&mut self, window: &Window, area: Option<Rect>) -> Result<()> {
+        self.inner.set_text_input(window, area)
     }
 }

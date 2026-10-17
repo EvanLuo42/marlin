@@ -1,7 +1,8 @@
 use marlin_app::WindowId;
 use marlin_input::{
-    GamepadButton, GamepadReading, InputEvent, InputState, Key, MouseButton, TEXT_CAPACITY,
-    radial_deadzone,
+    COMPOSITION_CAPACITY, DeviceId, DeviceKind, GamepadButton, GamepadKind, GamepadReading,
+    InputEvent, InputState, Key, MAX_DEVICES, MAX_GAMEPADS, MAX_TOUCHES, MouseButton, PenSample,
+    TEXT_CAPACITY, TouchPhase, radial_deadzone,
 };
 
 fn key(key: Key, down: bool) -> InputEvent {
@@ -122,8 +123,16 @@ fn mouse_accumulates_per_frame() {
         x: 10.0,
         y: 20.0,
     });
-    s.apply(InputEvent::RawMotion { x: 3.0, y: -1.0 });
-    s.apply(InputEvent::RawMotion { x: 2.0, y: -1.0 });
+    s.apply(InputEvent::RawMotion {
+        device: DeviceId::UNKNOWN,
+        x: 3.0,
+        y: -1.0,
+    });
+    s.apply(InputEvent::RawMotion {
+        device: DeviceId::UNKNOWN,
+        x: 2.0,
+        y: -1.0,
+    });
     s.apply(InputEvent::Wheel { x: 0.0, y: 1.0 });
     s.apply(InputEvent::Wheel { x: 0.5, y: 1.0 });
     s.apply(InputEvent::MouseButton {
@@ -205,4 +214,217 @@ fn key_names() {
             assert_eq!(Key::from_name(name), Some(key), "{name}");
         }
     }
+}
+
+#[test]
+fn composition_persists_until_cleared() {
+    let mut s = InputState::new();
+    assert!(s.composition().is_none());
+    s.set_composition(Some(("にほんご", 6)));
+    let c = s.composition().unwrap();
+    assert_eq!((c.text, c.cursor), ("にほんご", 6));
+    s.begin_frame();
+    assert_eq!(s.composition().unwrap().text, "にほんご");
+    // The cursor is clamped to the text and to a char boundary.
+    s.set_composition(Some(("日本", 4)));
+    assert_eq!(s.composition().unwrap().cursor, 3);
+    s.set_composition(Some(("ab", 99)));
+    assert_eq!(s.composition().unwrap().cursor, 2);
+    // Over-long compositions are cut on a char boundary.
+    let long = "語".repeat(COMPOSITION_CAPACITY);
+    s.set_composition(Some((&long, long.len())));
+    let c = s.composition().unwrap();
+    assert_eq!(c.text.len(), COMPOSITION_CAPACITY / 3 * 3);
+    assert_eq!(c.cursor, c.text.len());
+    s.set_composition(None);
+    assert!(s.composition().is_none());
+}
+
+#[test]
+fn text_holds_a_long_ime_commit() {
+    let mut s = InputState::new();
+    let commit = "長い文章を一度に確定する".repeat(20);
+    assert!(commit.len() <= TEXT_CAPACITY);
+    for c in commit.chars() {
+        s.apply(InputEvent::Text(c));
+    }
+    assert_eq!(s.text(), commit);
+    assert!(!s.text_truncated());
+}
+
+fn touch(id: u32, x: f32, phase: TouchPhase) -> InputEvent {
+    InputEvent::Touch {
+        id,
+        window: WindowId::from_raw(1),
+        x,
+        y: 0.0,
+        phase,
+    }
+}
+
+#[test]
+fn touches_live_from_start_to_end() {
+    let mut s = InputState::new();
+    s.apply(touch(7, 1.0, TouchPhase::Started));
+    s.apply(touch(8, 2.0, TouchPhase::Started));
+    let t: Vec<_> = s.touches().copied().collect();
+    assert_eq!(t.len(), 2);
+    assert!(t[0].pressed && !t[0].released && t[0].id == 7);
+
+    s.begin_frame();
+    s.apply(touch(7, 5.0, TouchPhase::Moved));
+    s.apply(touch(8, 2.0, TouchPhase::Ended));
+    let t: Vec<_> = s.touches().copied().collect();
+    assert_eq!(t[0].position, [5.0, 0.0]);
+    assert!(!t[0].pressed);
+    assert!(t[1].released && !t[1].cancelled);
+
+    // Lifted touches are gone the next frame; a tap within one frame is still seen.
+    s.begin_frame();
+    s.apply(touch(9, 3.0, TouchPhase::Started));
+    s.apply(touch(9, 3.0, TouchPhase::Ended));
+    let t: Vec<_> = s.touches().copied().collect();
+    assert_eq!(t.len(), 2);
+    assert!(t[1].id == 9 && t[1].pressed && t[1].released);
+
+    s.begin_frame();
+    s.apply(touch(7, 5.0, TouchPhase::Cancelled));
+    assert!(s.touches().next().unwrap().cancelled);
+    s.begin_frame();
+    assert_eq!(s.touches().count(), 0);
+    // Ends for unknown ids are ignored.
+    s.apply(touch(1, 0.0, TouchPhase::Ended));
+    assert_eq!(s.touches().count(), 0);
+}
+
+#[test]
+fn touches_beyond_capacity_are_ignored() {
+    let mut s = InputState::new();
+    for id in 0..MAX_TOUCHES as u32 + 3 {
+        s.apply(touch(id, 0.0, TouchPhase::Started));
+    }
+    assert_eq!(s.touches().count(), MAX_TOUCHES);
+    s.apply(InputEvent::FocusLost);
+    assert!(s.touches().all(|t| t.released && t.cancelled));
+}
+
+fn pen(contact: bool, pressure: f32) -> InputEvent {
+    InputEvent::Pen(PenSample {
+        window: WindowId::from_raw(1),
+        position: [10.0, 20.0],
+        pressure,
+        tilt: [15.0, -5.0],
+        twist: 90.0,
+        contact,
+        barrel: false,
+        eraser: false,
+    })
+}
+
+#[test]
+fn pen_hover_contact_and_leave() {
+    let mut s = InputState::new();
+    assert!(!s.pen().in_range());
+    s.apply(pen(false, 0.0));
+    assert!(s.pen().in_range() && !s.pen().down() && !s.pen().pressed());
+    s.apply(pen(true, 0.5));
+    assert!(s.pen().down() && s.pen().pressed());
+    assert_eq!(s.pen().sample().unwrap().pressure, 0.5);
+    assert_eq!(s.pen().sample().unwrap().tilt, [15.0, -5.0]);
+
+    s.begin_frame();
+    assert!(s.pen().down() && !s.pen().pressed());
+    s.apply(pen(false, 0.0));
+    assert!(s.pen().released() && s.pen().in_range());
+    s.begin_frame();
+    s.apply(pen(true, 1.0));
+    s.apply(InputEvent::PenLeft);
+    assert!(s.pen().pressed() && s.pen().released() && !s.pen().in_range());
+}
+
+#[test]
+fn devices_are_told_apart() {
+    let (a, b) = (DeviceId::from_raw(1), DeviceId::from_raw(2));
+    let mut s = InputState::new();
+    s.apply(InputEvent::DeviceKey {
+        device: a,
+        key: Key::W,
+        down: true,
+    });
+    s.apply(InputEvent::DeviceKey {
+        device: b,
+        key: Key::UP,
+        down: true,
+    });
+    s.apply(InputEvent::RawMotion {
+        device: DeviceId::from_raw(3),
+        x: 4.0,
+        y: 1.0,
+    });
+    s.apply(InputEvent::DeviceButton {
+        device: DeviceId::from_raw(3),
+        button: MouseButton::Right,
+        down: true,
+    });
+    assert_eq!(s.devices().count(), 3);
+    let da = s.device(a).unwrap();
+    assert_eq!(da.kind(), DeviceKind::Keyboard);
+    assert!(da.key_down(Key::W) && da.key_pressed(Key::W) && !da.key_down(Key::UP));
+    assert!(s.device(b).unwrap().key_down(Key::UP));
+    let mouse = s.device(DeviceId::from_raw(3)).unwrap();
+    assert_eq!(mouse.kind(), DeviceKind::Mouse);
+    assert_eq!(mouse.delta(), [4.0, 1.0]);
+    assert!(mouse.button_down(MouseButton::Right) && mouse.button_pressed(MouseButton::Right));
+    // Device events do not touch the combined key state; raw motion adds to both.
+    assert!(!s.key_down(Key::W));
+    assert_eq!(s.mouse().delta(), [4.0, 1.0]);
+
+    s.begin_frame();
+    s.apply(InputEvent::DeviceKey {
+        device: a,
+        key: Key::W,
+        down: false,
+    });
+    let da = s.device(a).unwrap();
+    assert!(!da.key_down(Key::W) && da.key_released(Key::W) && !da.key_pressed(Key::W));
+    assert_eq!(s.device(DeviceId::from_raw(3)).unwrap().delta(), [0.0, 0.0]);
+
+    s.apply(InputEvent::FocusLost);
+    assert!(s.device(b).unwrap().key_released(Key::UP));
+    let mouse = s.device(DeviceId::from_raw(3)).unwrap();
+    assert!(!mouse.button_down(MouseButton::Right) && mouse.button_released(MouseButton::Right));
+
+    s.apply(InputEvent::DeviceRemoved(a));
+    assert!(s.device(a).is_none());
+    assert_eq!(s.devices().count(), 2);
+}
+
+#[test]
+fn device_slots_are_bounded() {
+    let mut s = InputState::new();
+    for i in 0..MAX_DEVICES as u32 + 4 {
+        s.apply(InputEvent::RawMotion {
+            device: DeviceId::from_raw(i + 1),
+            x: 1.0,
+            y: 0.0,
+        });
+    }
+    assert_eq!(s.devices().count(), MAX_DEVICES);
+    // Every device's motion still reaches the combined delta.
+    assert_eq!(s.mouse().delta(), [(MAX_DEVICES + 4) as f32, 0.0]);
+}
+
+#[test]
+fn gamepad_kind_and_new_buttons() {
+    let mut s = InputState::new();
+    let reading = GamepadReading {
+        buttons: GamepadButton::Home.bit() | GamepadButton::Touchpad.bit(),
+        kind: GamepadKind::DualSense,
+        ..GamepadReading::default()
+    };
+    s.set_gamepad(MAX_GAMEPADS - 1, Some(&reading));
+    let pad = s.gamepad(MAX_GAMEPADS - 1);
+    assert_eq!(pad.kind(), GamepadKind::DualSense);
+    assert!(pad.pressed(GamepadButton::Home) && pad.down(GamepadButton::Touchpad));
+    assert!(!pad.down(GamepadButton::Misc));
 }

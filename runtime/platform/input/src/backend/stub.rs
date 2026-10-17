@@ -1,6 +1,6 @@
 //! Placeholder for platforms without an input backend yet.
 
-use marlin_app::App;
+use marlin_app::{App, Rect, Window};
 
 use crate::{Error, ErrorKind, InputState, Key, Result};
 
@@ -20,6 +20,10 @@ impl crate::contract::Input for Input {
     }
 
     fn key_label<'b>(&self, _: Key, _: &'b mut [u8]) -> Option<&'b str> {
+        match *self {}
+    }
+
+    fn set_text_input(&mut self, _: &Window, _: Option<Rect>) -> Result<()> {
         match *self {}
     }
 }

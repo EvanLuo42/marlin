@@ -20,7 +20,9 @@ use windows_sys::Win32::UI::Input::XboxController::{
 };
 use windows_sys::{s, w};
 
-use crate::{Error, ErrorKind, GamepadButton, GamepadReading, Result, radial_deadzone};
+use crate::{
+    Error, ErrorKind, GamepadButton, GamepadKind, GamepadReading, Result, radial_deadzone,
+};
 
 type Proc = unsafe extern "system" fn() -> isize;
 type GetState = unsafe extern "system" fn(u32, *mut XINPUT_STATE) -> u32;
@@ -117,6 +119,8 @@ impl XInput {
             ),
             left_trigger,
             right_trigger,
+            kind: GamepadKind::Xbox,
+            motion: None,
         })
     }
 

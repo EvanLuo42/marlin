@@ -113,7 +113,7 @@ unsafe_op_in_unsafe_fn = "deny"
 # `marlin_build` from the xtask build configuration (see `cargo xtask gen-cfg` / `build`).
 unexpected_cfgs = { level = "warn", check-cfg = [
     'cfg(marlin_platform, values("windows", "linux", "macos", "ps5", "xbox", "switch2"))',
-    'cfg(marlin_ext, values("large_pages", "physical_memory", "vmem_alias", "gpu_memory", "hybrid_cores", "hw_decompression", "direct_storage", "crash_dump", "cpu_markers", "dylib"))',
+    'cfg(marlin_ext, values("large_pages", "physical_memory", "vmem_alias", "gpu_memory", "hybrid_cores", "hw_decompression", "direct_storage", "crash_dump", "cpu_markers", "dylib", "gyro", "adaptive_triggers", "haptics"))',
     'cfg(marlin_build, values("debug", "development", "profile", "shipping"))',
 ] }
 
