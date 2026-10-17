@@ -22,8 +22,9 @@ use core::ops::{Deref, DerefMut};
 
 use crate::archetype::Archetype;
 use crate::component::{Component, ComponentId};
+use crate::entity::Entity;
 use crate::query::{Access, QueryFilter};
-use crate::storage::ComponentTicks;
+use crate::storage::{ComponentTicks, SparseSet, Table};
 use crate::world::World;
 
 /// How often (in ticks) old ticks are clamped.
@@ -244,21 +245,55 @@ pub struct Changed<T>(PhantomData<fn() -> T>);
 /// Entities whose `T` was added since the reader last looked.
 pub struct Added<T>(PhantomData<fn() -> T>);
 
-/// The ticks column of `T` in an archetype, for the row filters.
+/// The ticks of `T` in a table or its sparse set, for the row filters.
 #[derive(Clone, Copy)]
 pub struct TickFetch {
+    /// The table column's ticks; unused for sparse sets.
     ticks: *const TickCell,
+    /// Null for table storage.
+    sparse: *const SparseSet,
     change: ChangeTicks,
 }
 
-fn tick_fetch(id: &Option<ComponentId>, archetype: &Archetype, change: ChangeTicks) -> TickFetch {
-    // `matches` admitted only archetypes with the column.
-    let column = id
-        .and_then(|id| archetype.column(id))
-        .expect("filtered archetype has the column");
+fn tick_fetch(
+    id: &Option<ComponentId>,
+    world: &World,
+    table: &Table,
+    change: ChangeTicks,
+) -> TickFetch {
+    // `matches` admitted only archetypes with the component.
+    let id = id.expect("filtered archetype has the component");
+    if let Some(column) = table.column(id) {
+        return TickFetch {
+            ticks: column.ticks_ptr(),
+            sparse: core::ptr::null(),
+            change,
+        };
+    }
+    let set = world
+        .sparse_sets
+        .get(id)
+        .expect("filtered archetype has the component");
     TickFetch {
-        ticks: column.ticks_ptr(),
+        ticks: core::ptr::null(),
+        sparse: set,
         change,
+    }
+}
+
+impl TickFetch {
+    /// # Safety
+    /// `row` and `entity` as for [`QueryFilter::filter`].
+    #[inline]
+    unsafe fn ticks(self, row: usize, entity: Entity) -> ComponentTicks {
+        if self.sparse.is_null() {
+            // SAFETY: `row` is in bounds (the caller); readers of `T` exclude its writers.
+            return unsafe { (*self.ticks.add(row)).read() };
+        }
+        // SAFETY: the set outlives the fetch, and nothing restructures it meanwhile.
+        let set = unsafe { &*self.sparse };
+        let row = set.row(entity).expect("filtered entity has the component");
+        set.dense.ticks(row)
     }
 }
 
@@ -283,15 +318,17 @@ macro_rules! tick_filter {
 
             unsafe fn fetch(
                 id: &Option<ComponentId>,
-                archetype: &Archetype,
+                world: &World,
+                table: &Table,
                 change: ChangeTicks,
             ) -> TickFetch {
-                tick_fetch(id, archetype, change)
+                tick_fetch(id, world, table, change)
             }
 
-            unsafe fn filter(fetch: TickFetch, row: usize) -> bool {
-                // SAFETY: `row` is in bounds (the caller); the access declares a read of `T`.
-                let ticks = unsafe { (*fetch.ticks.add(row)).read() };
+            #[inline]
+            unsafe fn filter(fetch: TickFetch, row: usize, entity: Entity) -> bool {
+                // SAFETY: forwarded from the caller; the access declares a read of `T`.
+                let ticks = unsafe { fetch.ticks(row, entity) };
                 fetch.change.$test(&ticks)
             }
         }
