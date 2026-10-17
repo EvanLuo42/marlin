@@ -24,7 +24,12 @@ windows-sys = { workspace = true, features = [
 ] }
 
 [dev-dependencies]
+marlin-bench.workspace = true
 marlin-test-support.workspace = true
+
+[[bench]]
+name = "index"
+harness = false
 
 [lints]
 workspace = true

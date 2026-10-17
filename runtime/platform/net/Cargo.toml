@@ -20,8 +20,13 @@ windows-sys = { workspace = true, features = [
 ] }
 
 [dev-dependencies]
+marlin-bench.workspace = true
 marlin-math.workspace = true
 marlin-test-support.workspace = true
+
+[[bench]]
+name = "loopback"
+harness = false
 
 [lints]
 workspace = true

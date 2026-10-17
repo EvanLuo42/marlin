@@ -1,30 +1,24 @@
-//! Loopback throughput. Ignored by default; run in release:
-//!
-//! ```text
-//! cargo test -p marlin-net --release --test bench -- --ignored --nocapture
-//! ```
-//!
 //! Client and server each run one queue on one thread.
-#![cfg(marlin_platform = "windows")]
-
-mod support;
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+use marlin_bench::Bench;
 use marlin_net::{Completed, IoBuffer, NetQueue, Shutdown, SocketId, SocketOptions};
-use support::{Mode, Server, drain_frames, frame, next};
+
+use crate::support::{Mode, Server, drain_frames, frame, next};
 
 const RUN: Duration = Duration::from_secs(3);
 
 /// Pipelined small requests: `connections` x `depth` outstanding, `batch` requests per send.
+/// Runs for [`RUN`]; returns the time taken and the requests answered in it.
 fn requests(
     options: &SocketOptions,
     connections: usize,
     depth: usize,
     batch: usize,
     body_len: usize,
-) -> f64 {
+) -> (Duration, u64) {
     let server = Server::start_with(Mode::Frames, *options);
     // A send's completion may be reported after its answers, so the window alone does not bound
     // the sends in flight; this does.
@@ -114,7 +108,7 @@ fn requests(
                 top_up(&mut queue, &mut pool, socket, conn);
                 queue.recv(socket, buffer, ..).unwrap();
                 if start.elapsed() >= RUN {
-                    measured = Some(answered as f64 / start.elapsed().as_secs_f64());
+                    measured = Some((start.elapsed(), answered));
                 }
             }
             other => panic!("unexpected {other:?}"),
@@ -127,14 +121,14 @@ fn requests(
 }
 
 /// One-way bulk transfer of `total` bytes over `connections`, `in_flight` sends of `chunk`
-/// bytes each per connection, until the server has read everything.
+/// bytes each per connection, until the server has read everything. Returns the time taken.
 fn bulk(
     options: &SocketOptions,
     connections: usize,
     total: usize,
     chunk: usize,
     in_flight: usize,
-) -> f64 {
+) -> Duration {
     let server = Server::start_with(Mode::Discard, *options);
     let mut queue = NetQueue::new((connections * (in_flight + 1)) as u32).unwrap();
     let mut sockets = Vec::new();
@@ -197,27 +191,47 @@ fn bulk(
     drop(queue);
     let stats = server.stop();
     assert_eq!(stats.received, (per_conn * connections) as u64);
-    stats.received as f64 / elapsed.as_secs_f64() / 1e9
+    elapsed
 }
 
-#[test]
-#[ignore = "benchmark; run in release with --ignored --nocapture"]
-fn loopback_throughput() {
-    // Both receive modes; see `SocketOptions::recv_when_readable`.
-    let modes = [false, true].map(|recv_when_readable| SocketOptions {
-        recv_when_readable,
-        ..SocketOptions::default()
-    });
-    println!("requests/s (16 B body, pipelined)      buffer first  when readable");
+/// Both receive modes; see `SocketOptions::recv_when_readable`.
+fn modes() -> [(&'static str, SocketOptions); 2] {
+    [("buffer_first", false), ("when_readable", true)].map(|(name, recv_when_readable)| {
+        (
+            name,
+            SocketOptions {
+                recv_when_readable,
+                ..SocketOptions::default()
+            },
+        )
+    })
+}
+
+/// Requests per second, 16 B bodies, pipelined.
+pub fn requests_per_second() {
     for (connections, depth, batch) in [(1, 64, 1), (32, 64, 1), (1, 64, 64), (32, 64, 16)] {
-        let [a, b] = modes.map(|m| requests(&m, connections, depth, batch, 16));
-        println!(
-            "  {connections:>2} conn x {depth} deep, {batch:>2} req/send: {a:>12.0} {b:>14.0}"
-        );
+        for (mode, options) in modes() {
+            Bench::new(format!(
+                "requests/{connections}conn_{depth}deep_{batch}per_send/{mode}"
+            ))
+            .throughput_items(1, "req")
+            .warmup(Duration::ZERO)
+            .samples(3)
+            .run_custom(|| requests(&options, connections, depth, batch, 16));
+        }
     }
-    println!("bulk GB/s (1 MiB sends, 4 in flight)   buffer first  when readable");
+}
+
+/// Bulk transfer of 8 GiB in 1 MiB sends, 4 in flight per connection.
+pub fn bulk_transfer() {
+    const TOTAL: usize = 8 << 30;
     for connections in [1, 4] {
-        let [a, b] = modes.map(|m| bulk(&m, connections, 8 << 30, 1 << 20, 4));
-        println!("  {connections} conn: {a:>34.2} {b:>14.2}");
+        for (mode, options) in modes() {
+            Bench::new(format!("bulk/{connections}conn/{mode}"))
+                .throughput_bytes(TOTAL as u64)
+                .warmup(Duration::ZERO)
+                .samples(3)
+                .run_custom(|| (bulk(&options, connections, TOTAL, 1 << 20, 4), 1));
+        }
     }
 }

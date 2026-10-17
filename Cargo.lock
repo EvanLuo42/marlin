@@ -294,6 +294,7 @@ name = "marlin-asset-db"
 version = "0.1.0"
 dependencies = [
  "marlin-asset",
+ "marlin-bench",
  "marlin-error",
  "marlin-hash",
  "marlin-masset",
@@ -312,9 +313,17 @@ name = "marlin-audio-device"
 version = "0.1.0"
 
 [[package]]
+name = "marlin-bench"
+version = "0.1.0"
+dependencies = [
+ "marlin-time",
+]
+
+[[package]]
 name = "marlin-compress"
 version = "0.1.0"
 dependencies = [
+ "marlin-bench",
  "marlin-compress",
  "marlin-hash",
  "marlin-std",
@@ -410,6 +419,7 @@ dependencies = [
  "image",
  "marlin-asset",
  "marlin-asset-db",
+ "marlin-bench",
  "marlin-cook-core",
  "marlin-gpu-test-support",
  "marlin-math",
@@ -487,6 +497,7 @@ dependencies = [
 name = "marlin-ecs"
 version = "0.1.0"
 dependencies = [
+ "marlin-bench",
  "marlin-containers",
  "marlin-jobs",
  "marlin-math",
@@ -682,6 +693,7 @@ version = "0.1.0"
 name = "marlin-net"
 version = "0.1.0"
 dependencies = [
+ "marlin-bench",
  "marlin-error",
  "marlin-io",
  "marlin-math",

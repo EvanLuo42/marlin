@@ -46,6 +46,8 @@ pub enum Tier {
     Desktop,
     Stress,
     Manual,
+    /// `benches/`, run by bench.rs rather than as test binaries.
+    Bench,
     All,
 }
 
@@ -58,15 +60,11 @@ impl Tier {
             "stress" => Self::Stress,
             "manual" => Self::Manual,
             "all" => Self::All,
-            "bench" => {
-                return Err("`--tier bench` arrives with the marlin-bench harness \
-                            (0014 §7.2); until then run `cargo bench`"
-                    .into());
-            }
+            "bench" => Self::Bench,
             "fuzz" => return Err("`--tier fuzz` arrives with fuzz/ (0014 §7.3)".into()),
             _ => {
                 return Err(format!(
-                    "unknown tier `{s}` (quick, gpu, desktop, stress, manual, all)"
+                    "unknown tier `{s}` (quick, gpu, desktop, stress, manual, bench, all)"
                 )
                 .into());
             }
@@ -80,6 +78,7 @@ impl Tier {
             Self::Desktop => class == Class::Desktop,
             Self::Stress => class == Class::Stress,
             Self::Manual | Self::All => true,
+            Self::Bench => false,
         }
     }
 
@@ -166,7 +165,11 @@ impl Options {
 }
 
 pub fn run(root: &Path, args: &[String]) -> Result {
-    let options = Options::parse(args, Tier::Quick, |_, _| Ok(false))?;
+    let mut bench = crate::bench::Flags::default();
+    let options = Options::parse(args, Tier::Quick, |arg, it| bench.parse(arg, it))?;
+    if options.tier == Tier::Bench || bench.given() {
+        return crate::bench::run(root, &options, &bench);
+    }
     let binaries = build(root, &options.packages, &[], None)?;
     let report = execute(root, &binaries, &options, &[])?;
     let doc_ok = if options.tier.runs_doctests() {

@@ -15,7 +15,12 @@ marlin-std.workspace = true
 
 [dev-dependencies]
 marlin-compress = { path = ".", features = ["encode"] }
+marlin-bench.workspace = true
 marlin-test-support.workspace = true
+
+[[bench]]
+name = "codecs"
+harness = false
 
 [lints]
 workspace = true

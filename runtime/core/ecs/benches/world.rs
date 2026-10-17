@@ -1,9 +1,9 @@
-//! Timings, ignored by default. Run with
-//! `cargo test -p marlin-ecs --release --test bench -- --ignored --nocapture --test-threads 1`.
+//! World, query and schedule timings. `cargo xtask test --tier bench -p marlin-ecs`, or
+//! `cargo bench -p marlin-ecs --bench world -- [filter]`.
 
 use std::hint::black_box;
-use std::time::{Duration, Instant};
 
+use marlin_bench::Bench;
 use marlin_ecs::{
     CommandQueue, Commands, Entity, Query, QueryState, Schedule, StorageType, With, World,
 };
@@ -21,27 +21,6 @@ struct Tag;
 #[derive(Clone, Copy)]
 struct SparseTag;
 
-/// The best of `runs` timings of `f`, which gets a fresh setup each time.
-fn best<S>(runs: usize, mut setup: impl FnMut() -> S, mut f: impl FnMut(S)) -> Duration {
-    (0..runs)
-        .map(|_| {
-            let s = setup();
-            let start = Instant::now();
-            f(s);
-            start.elapsed()
-        })
-        .min()
-        .unwrap()
-}
-
-fn report(what: &str, time: Duration, per: usize) {
-    println!(
-        "{what:<52} {:>9.3} ms  {:>7.2} ns/item",
-        time.as_secs_f64() * 1e3,
-        time.as_nanos() as f64 / per as f64
-    );
-}
-
 const SPAWN: usize = 100_000;
 const ITER: usize = 1_000_000;
 
@@ -50,48 +29,49 @@ fn bundle(i: usize) -> (Pos, Vel) {
     (Pos(f, f, f), Vel(1.0, 0.5, 0.25))
 }
 
-#[test]
-#[ignore]
 fn spawn() {
-    let t = best(5, World::new, |mut world| {
-        for i in 0..SPAWN {
-            world.spawn(bundle(i));
-        }
-        black_box(world);
-    });
-    report("spawn 100k (Pos, Vel), one by one", t, SPAWN);
-
-    let t = best(5, World::new, |mut world| {
-        black_box(world.spawn_batch((0..SPAWN).map(bundle)));
-    });
-    report("spawn_batch 100k (Pos, Vel)", t, SPAWN);
-
-    let t = best(5, World::new, |mut world| {
-        let mut queue = CommandQueue::new();
-        let mut commands = Commands::new(&mut queue, &world);
-        for i in 0..SPAWN {
-            commands.spawn(bundle(i));
-        }
-        world.apply(&mut queue);
-        black_box(world);
-    });
-    report("Commands::spawn 100k + apply", t, SPAWN);
-
-    let t = best(
-        5,
-        || {
-            let mut world = World::new();
-            let es = world.spawn_batch((0..SPAWN).map(bundle));
-            (world, es)
-        },
-        |(mut world, es): (World, Vec<Entity>)| {
-            for e in es {
-                world.despawn(e);
+    Bench::new("spawn/one_by_one")
+        .throughput_items(SPAWN as u64, "entity")
+        .run_with_setup(World::new, |mut world| {
+            for i in 0..SPAWN {
+                world.spawn(bundle(i));
             }
             black_box(world);
-        },
-    );
-    report("despawn 100k", t, SPAWN);
+        });
+
+    Bench::new("spawn/batch")
+        .throughput_items(SPAWN as u64, "entity")
+        .run_with_setup(World::new, |mut world| {
+            black_box(world.spawn_batch((0..SPAWN).map(bundle)));
+        });
+
+    Bench::new("spawn/commands_apply")
+        .throughput_items(SPAWN as u64, "entity")
+        .run_with_setup(World::new, |mut world| {
+            let mut queue = CommandQueue::new();
+            let mut commands = Commands::new(&mut queue, &world);
+            for i in 0..SPAWN {
+                commands.spawn(bundle(i));
+            }
+            world.apply(&mut queue);
+            black_box(world);
+        });
+
+    Bench::new("despawn")
+        .throughput_items(SPAWN as u64, "entity")
+        .run_with_setup(
+            || {
+                let mut world = World::new();
+                let es = world.spawn_batch((0..SPAWN).map(bundle));
+                (world, es)
+            },
+            |(mut world, es): (World, Vec<Entity>)| {
+                for e in es {
+                    world.despawn(e);
+                }
+                black_box(world);
+            },
+        );
 }
 
 /// A world with `ITER` movers, plus `extra` archetypes of a few non-matching entities each.
@@ -133,60 +113,45 @@ fn step((mut p, v): (marlin_ecs::Mut<'_, Pos>, &Vel)) {
     p.2 += v.2;
 }
 
-#[test]
-#[ignore]
 fn iterate() {
     let mut world = movers(0);
-    let t = best(
-        10,
-        || (),
-        |_| world.query::<(&mut Pos, &Vel)>().for_each(step),
-    );
-    report("iterate 1M (&mut Pos, &Vel), uncached", t, ITER);
+    Bench::new("iterate/uncached")
+        .throughput_items(ITER as u64, "entity")
+        .run(|| world.query::<(&mut Pos, &Vel)>().for_each(step));
 
     let mut state: QueryState<(&mut Pos, &Vel)> = world.query_state();
-    let t = best(10, || (), |_| state.iter_mut(&mut world).for_each(step));
-    report("iterate 1M (&mut Pos, &Vel), QueryState", t, ITER);
+    Bench::new("iterate/query_state")
+        .throughput_items(ITER as u64, "entity")
+        .run(|| state.iter_mut(&mut world).for_each(step));
 
-    let t = best(
-        10,
-        || (),
-        |_| {
+    Bench::new("iterate/query_state_for_loop")
+        .throughput_items(ITER as u64, "entity")
+        .run(|| {
             for item in state.iter_mut(&mut world) {
                 step(item);
             }
-        },
-    );
-    report("iterate 1M (&mut Pos, &Vel), QueryState, for loop", t, ITER);
+        });
 
     // Where the cache matters: a small query in a world of many archetypes, every frame.
     let mut world = movers(1023);
     let frames = 1000;
-    let t = best(
-        5,
-        || (),
-        |_| {
+    Bench::new("empty_query_1024_archetypes/uncached")
+        .throughput_items(frames, "query")
+        .run(|| {
             for _ in 0..frames {
                 black_box(world.query_filtered::<&Pos, With<Tag>>().count());
             }
-        },
-    );
-    report("1000x empty query, 1024 archetypes, uncached", t, frames);
+        });
     let mut state: QueryState<&Pos, With<Tag>> = world.query_state();
-    let t = best(
-        5,
-        || (),
-        |_| {
+    Bench::new("empty_query_1024_archetypes/query_state")
+        .throughput_items(frames, "query")
+        .run(|| {
             for _ in 0..frames {
                 black_box(state.iter(&world).count());
             }
-        },
-    );
-    report("1000x empty query, 1024 archetypes, QueryState", t, frames);
+        });
 }
 
-#[test]
-#[ignore]
 fn migrate() {
     let setup = || {
         let mut world = World::new();
@@ -194,31 +159,31 @@ fn migrate() {
         let es = world.spawn_batch((0..SPAWN).map(bundle));
         (world, es)
     };
-    let t = best(5, setup, |(mut world, es)| {
-        for &e in &es {
-            world.insert(e, Tag);
-        }
-        for &e in &es {
-            world.remove::<Tag>(e);
-        }
-        black_box(world);
-    });
-    report("insert + remove table Tag, 100k", t, 2 * SPAWN);
+    Bench::new("migrate/insert_remove_table_tag")
+        .throughput_items(2 * SPAWN as u64, "op")
+        .run_with_setup(setup, |(mut world, es)| {
+            for &e in &es {
+                world.insert(e, Tag);
+            }
+            for &e in &es {
+                world.remove::<Tag>(e);
+            }
+            black_box(world);
+        });
 
-    let t = best(5, setup, |(mut world, es)| {
-        for &e in &es {
-            world.insert(e, SparseTag);
-        }
-        for &e in &es {
-            world.remove::<SparseTag>(e);
-        }
-        black_box(world);
-    });
-    report("insert + remove sparse Tag, 100k", t, 2 * SPAWN);
+    Bench::new("migrate/insert_remove_sparse_tag")
+        .throughput_items(2 * SPAWN as u64, "op")
+        .run_with_setup(setup, |(mut world, es)| {
+            for &e in &es {
+                world.insert(e, SparseTag);
+            }
+            for &e in &es {
+                world.remove::<SparseTag>(e);
+            }
+            black_box(world);
+        });
 }
 
-#[test]
-#[ignore]
 fn schedule() {
     let jobs = JobSystem::new(Config::default()).unwrap();
     let mut world = World::new();
@@ -229,16 +194,13 @@ fn schedule() {
     let mut schedule = Schedule::new();
     schedule.add_system(empty);
     schedule.run(&mut world, &jobs);
-    let t = best(
-        5,
-        || (),
-        |_| {
+    Bench::new("schedule/1_empty_system")
+        .throughput_items(runs, "run")
+        .run(|| {
             for _ in 0..runs {
                 schedule.run(&mut world, &jobs);
             }
-        },
-    );
-    report("schedule run, 1 empty system", t, runs);
+        });
 
     // 100 systems that conflict pairwise: 100 waves, run inline.
     let mut serial = Schedule::new();
@@ -248,16 +210,13 @@ fn schedule() {
         });
     }
     serial.run(&mut world, &jobs);
-    let t = best(
-        5,
-        || (),
-        |_| {
+    Bench::new("schedule/100_conflicting_systems")
+        .throughput_items(runs, "run")
+        .run(|| {
             for _ in 0..runs {
                 serial.run(&mut world, &jobs);
             }
-        },
-    );
-    report("schedule run, 100 conflicting systems (per run)", t, runs);
+        });
 
     // 100 systems that share one wave: run as parallel jobs.
     let mut parallel = Schedule::new();
@@ -267,14 +226,13 @@ fn schedule() {
         });
     }
     parallel.run(&mut world, &jobs);
-    let t = best(
-        5,
-        || (),
-        |_| {
+    Bench::new("schedule/100_parallel_systems")
+        .throughput_items(runs, "run")
+        .run(|| {
             for _ in 0..runs {
                 parallel.run(&mut world, &jobs);
             }
-        },
-    );
-    report("schedule run, 100 parallel systems (per run)", t, runs);
+        });
 }
+
+marlin_bench::main!(spawn, iterate, migrate, schedule);

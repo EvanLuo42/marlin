@@ -33,7 +33,7 @@ pub fn run(root: &Path, args: &[String]) -> Result {
         }
         Ok(true)
     })?;
-    if matches!(options.tier, Tier::Stress | Tier::Manual) {
+    if matches!(options.tier, Tier::Stress | Tier::Manual | Tier::Bench) {
         return Err("coverage counts the quick, gpu and desktop tiers (or all of them)".into());
     }
     // `all` here means every automated tier the report counts, not stress.

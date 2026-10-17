@@ -12,8 +12,13 @@ marlin-reflect.workspace = true
 marlin-std.workspace = true
 
 [dev-dependencies]
+marlin-bench.workspace = true
 marlin-math.workspace = true
 marlin-test-support.workspace = true
+
+[[bench]]
+name = "world"
+harness = false
 
 [lints]
 workspace = true
