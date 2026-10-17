@@ -188,10 +188,10 @@ fn process_secret() -> u64 {
         return secret;
     }
     let stack = 0u8;
-    let t0 = marlin_std::time::cycles();
+    let t0 = timestamp();
     let a = ptr::from_ref(&stack).addr() as u64;
     let b = ptr::from_ref(&SECRET).addr() as u64;
-    let t1 = marlin_std::time::cycles();
+    let t1 = timestamp();
     let mixed = folded_multiply(t0 ^ 0x243f_6a88_85a3_08d3, a ^ 0x1319_8a2e_0370_7344)
         ^ folded_multiply(t1 ^ 0xa409_3822_299f_31d0, b ^ 0x082e_fa98_ec4e_6c89);
     let fresh = mixed | 1;
@@ -200,4 +200,27 @@ fn process_secret() -> u64 {
         Ok(_) => fresh,
         Err(winner) => winner,
     }
+}
+
+/// The CPU's timestamp counter (`rdtsc`, `cntvct_el0`), read with the instruction itself. This
+/// crate cannot reach the platform layer: the derive crates use it on the build host, where no
+/// platform is configured. The instructions need no OS support, like SIMD; other architectures
+/// fall back to the address entropy alone.
+#[inline]
+fn timestamp() -> u64 {
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: rdtsc exists on every x86-64 CPU and has no memory effects.
+    let value = unsafe { core::arch::x86_64::_rdtsc() };
+    #[cfg(target_arch = "aarch64")]
+    let value = {
+        let value: u64;
+        // SAFETY: cntvct_el0 is readable at EL0 on every OS Marlin targets.
+        unsafe {
+            core::arch::asm!("mrs {}, cntvct_el0", out(reg) value, options(nomem, nostack));
+        }
+        value
+    };
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    let value = 0;
+    value
 }

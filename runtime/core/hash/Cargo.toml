@@ -7,7 +7,6 @@ publish.workspace = true
 
 [dependencies]
 marlin-hash-derive.workspace = true
-marlin-std.workspace = true
 
 [dev-dependencies]
 marlin-math.workspace = true

@@ -589,7 +589,6 @@ version = "0.1.0"
 dependencies = [
  "marlin-hash-derive",
  "marlin-math",
- "marlin-std",
 ]
 
 [[package]]
