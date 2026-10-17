@@ -60,7 +60,9 @@ pub fn record_skip(test: &str, reason: &str) {
             .append(true)
             .open(path)
         {
-            let _ = writeln!(file, "{test}: {reason}");
+            // One write per record: tests skip concurrently, and an append of one buffer stays
+            // whole.
+            let _ = file.write_all(format!("{test}: {reason}\n").as_bytes());
         }
     }
 }

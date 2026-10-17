@@ -15,7 +15,7 @@ use marlin_framework::{
 use marlin_gpu_test_support::{Image, assert_image, hardware_device};
 use marlin_render::{Renderer, RendererDesc};
 use marlin_rhi::Device;
-use marlin_test_support::{BackgroundServer, TempDir, wait_until};
+use marlin_test_support::{BackgroundService, TempDir, wait_until};
 
 const LEVEL: &str = "01992d00-0000-7000-8000-000000000001";
 const WIDTH: u32 = 160;
@@ -157,16 +157,11 @@ fn check_sample(pixels: &[u32]) {
     );
 }
 
-/// A cook service for the project at `root` on a background thread, ready for clients.
-///
-/// cookd listens through its own network queue, not a std listener, so it takes over the port
-/// `BackgroundServer` reserved: the listener is closed (it never accepted a connection, so the
-/// port is free at once) and cookd binds the same address. Clients connect only after cookd says
-/// it is listening.
-fn start_cookd(root: &Path) -> BackgroundServer {
+/// A cook service for the project at `root` on a background thread, ready for clients: cookd
+/// binds its own network queue, so it reports its address once it listens.
+fn start_cookd(root: &Path) -> BackgroundService {
     let root = root.to_owned();
-    let (ready, listening) = std::sync::mpsc::channel();
-    let server = BackgroundServer::spawn(move |listener, stop| {
+    BackgroundService::spawn(move |ready, stop| {
         let (db, _) = AssetDb::open(&root, Options::default()).unwrap();
         let ddc = open_ddc(&root, None).unwrap();
         let options = CookdOptions {
@@ -174,16 +169,10 @@ fn start_cookd(root: &Path) -> BackgroundServer {
             watch_interval: Duration::from_millis(30),
         };
         let mut cookd = Cookd::new(db, engine_cookers(), ddc, &options);
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
-        let mut server = bind(addr).unwrap();
-        ready.send(()).unwrap();
+        let mut server = bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        ready.listening(server.local_addr());
         cookd.serve(&mut server, stop).unwrap();
-    });
-    listening
-        .recv_timeout(Duration::from_secs(60))
-        .expect("cookd to start listening");
-    server
+    })
 }
 
 #[test]

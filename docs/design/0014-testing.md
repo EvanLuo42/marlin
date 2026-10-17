@@ -154,7 +154,9 @@ GPU 层的看门狗：xtask 监控测试进程，超时没有输出就报告卡�
 | `DropCounter` / `Tracked<T>` | 10 处 drop 计数器 |
 | `panic_message(f)`、`assert_panics_with(text, f)` | 6 处 panic 信息提取 |
 | `isolated::run(test, env)` / `isolated::is_child()` | 3 处子进程重入 |
-| `BackgroundServer::spawn(|listener, stop| …)` | 5 处后台服务线程 |
+| `BackgroundServer::spawn(|listener, stop| …)`：helper 先在回环临时端口上 bind 一个 std `TcpListener` 交给服务 | 用 std socket 的后台服务线程 |
+| `BackgroundService::spawn(|ready, stop| …)`：服务自己 bind，`ready.listening(addr)` 报告地址 | 自己建监听的服务（cookd、store、cooker 的共享 store、framework 端到端） |
+| `one_at_a_time()`：进程内互斥的 guard | 共享 OS 会话状态（前台窗口、光标裁剪、注入输入）的 desktop 测试轮流跑 |
 | `MemCap<A: GlobalAlloc>`：带上限的计数全局分配器 | fuzz/鲁棒性/压力测试的内存上限（目前没有） |
 | `seed()`：读 `MARLIN_TEST_SEED`，否则用固定默认值；失败时打印 | 各处写死的种子 |
 | `scale()`：读 `MARLIN_TEST_SCALE` 放大迭代次数 | 属性测试的固定次数 |
@@ -165,7 +167,7 @@ GPU 层的看门狗：xtask 监控测试进程，超时没有输出就报告卡�
 
 ### 6.2 `marlin-gpu-test-support`（新 crate，`tools/gpu_test_support`）
 
-依赖 `marlin-rhi`（以后加 PNG 读写），只做 dev-dependency；xtask `check-layers` 本来就不管 dev-dependency。内容从 rhi 的 `tests/support` 搬过来，再补上其他 crate 自己抄的部分：
+依赖 `marlin-rhi` 和只读写 PNG 的 `png` crate（不用 `image`：`png` 不和任何 runtime crate 共享依赖，不会经 feature 统一漏进 runtime 构建），只做 dev-dependency；xtask `check-layers` 本来就不管 dev-dependency。内容从 rhi 的 `tests/support` 搬过来，再补上其他 crate 自己抄的部分：
 
 - `devices()` / `device()`：每个测试二进制一对（enhanced + legacy barrier）共享、永不 drop 的硬件设备，开 validation。**禁止在 `gpu` 二进制里自己建 `Device`**，需要独占设备的测试放 `isolated_*`。
 - `run` / `run_on`：录制、提交、等待。
@@ -174,30 +176,35 @@ GPU 层的看门狗：xtask 监控测试进程，超时没有输出就报告卡�
 - `read_texture(device, texture) -> Image`：纹理回读（render、cook_texture、framework 都要）。
 - 测试 shader 查找：先保留按名字 + stage 查 DXIL；Marlin shader 编译器落地后换成 build.rs 生成的查找表（见 placeholder DXIL 清单）。
 - `require_feature!(device, ray_tracing)`：缺特性时 `skip!`。
-- `assert_image(name, &image, Tolerance)`：§7.1。
+- `assert_image!(name, &image)` / `assert_image!(name, &image, Tolerance { .. })`：§7.1。是宏，自动取调用 crate 的目录和包名；`Image::from_words` 从回读的 u32 构造。
 
 ### 6.3 crate 内的 `tests/support/`
 
-只放这个 crate 特有、别处不会用的 helper，例如 asset_db 的 `Project`、cook_mesh 的 glTF 构造器、jobs 的 `system()`、diag 的日志 `Capture`。cook 系列共用的 `Project` 收到 `marlin-cook-core` 的测试 helper 里（或 asset_db 暴露一个测试用构造函数，待定）。
+只放这个 crate 特有、别处不会用的 helper，例如 cook_mesh 的 glTF 构造器、jobs 的 `system()` 和 `tree_sum`、diag 的日志 `Capture` 和 `setup()`。
+
+几个 crate 共用、又依赖 workspace crate 的测试 helper，留在"拥有者" crate 的 `tests/support/` 里，别的 crate 用 `#[path]` 相对路径引入，不新建 crate、不进任何库：`Project`（临时目录 + 写文件 + 建 AssetDb）在 `tools/asset_db/tests/support/project.rs`，cook 相关的在 `tools/cook_core/tests/support/cook.rs`，cook_* 都引这两个文件。
 
 ## 7. 新的测试设施
 
 ### 7.1 渲染 golden image
 
 - 场景离屏渲染到小分辨率（64×64～256×256）目标，回读成 RGBA8。
-- 参考图：`tests/data/golden/<backend>/<name>.png`，用 Git LFS（`.gitattributes` 加 `tests/data/golden/** filter=lfs`）。
+- 参考图：`tests/data/golden/<backend>/<name>.png`，用 Git LFS（`.gitattributes` 的 `**/tests/data/golden/** filter=lfs diff=lfs merge=lfs -text`；不带 `**/` 只匹配仓库根）。RHI 还没有 backend 名，`marlin_gpu_test_support::image::backend()` 暂按构建平台返回 `"d3d12"`。
 - 比较：每像素通道差 ≤ `per_channel`，且超差像素比例 ≤ `max_ratio`；默认 `per_channel = 2`、`max_ratio = 0`，个别测试可放宽。
 - 失败时在 `target/golden/<crate>/<name>.{actual,diff}.png` 输出实际图和差异图，错误信息里给出路径（相对路径）。
-- `MARLIN_BLESS=1` 或 `xtask test --tier gpu --bless` 重写参考图；更新参考图要单独提交，提交信息写明原因。
+- `MARLIN_BLESS=1` 或 `xtask test --tier gpu --bless` 只重写**比较失败**的参考图（已匹配的 LFS 文件不动）；更新参考图要单独提交，提交信息写明原因。
+- 场景必须确定：渲染不依赖时间、随机数或线程完成顺序（framework 的首帧图成立，是因为这些帧里时间不走）。
+- 现有：render 的 `golden` 二进制（正面受光的立方体、旋转立方体、地面上前后遮挡的几个立方体），framework 的 `gpu/end_to_end`（样例首帧）。
 - 不同 GPU 厂商有差异时再按 `<backend>-<vendor>` 分目录，先不分。
 
 ### 7.2 性能基准：`marlin-bench`（`tools/bench`）
 
 - `benches/<name>.rs`，`[[bench]] harness = false`，release profile。
-- API：`Bench::new("name").throughput(bytes).run(|| …)`；预热，然后多轮采样，报告中位数、p10/p90、吞吐。计时用 `marlin-time`。
-- 结果写到 `target/bench/<crate>/<name>.json`。`xtask test --tier bench --save-baseline <tag>` 存基线，`--baseline <tag>` 比较，中位数变慢超过阈值（默认 5%）标红。
+- API：`Bench::new("name").throughput_bytes(n)`（或 `.throughput_items(n, "unit")`）`.metric("ratio", r).run(|| …)`，另有 `run_with_setup`、`run_custom`（自计时）；`samples` / `warmup` / `sample_time` / `max_time` 可调。文件里用 `marlin_bench::main!(a, b, …)` 生成 `main`。预热后自动定每个样本的调用次数，多轮采样，报告中位数、p10/p90、吞吐；每次调用过 `black_box`。计时用 `marlin_time::Instant`（因此 marlin-pal、marlin-time 自己不能用它测）。
+- 命令行：位置参数是名字过滤；`--quick` 少量短样本；`--list` 只列名字。`cargo test --benches`（不带 `--bench`）时每个基准只跑一次当冒烟测试，不写结果。
+- 结果写到 `target/bench/<crate>/<name>.json`。`xtask test --tier bench --save-baseline <tag>` 存到 `target/bench/baselines/<tag>/`，`--baseline <tag>` 比较，中位数变慢超过 `--threshold`（默认 5%）标出来，不改退出码；每个基准进程超过 `--stall`（默认 1800 秒）就结束。
 - 基线只存在本地 `target/` 下（目前只有一台机器）。
-- 现在的 `#[ignore]` 基准（compress、ecs、net、asset_db、cook_texture、mem/global_heap、hash/simd、jobs、masset）全部迁过来，删掉各自的计时函数。
+- 已迁：compress（`codecs`）、ecs（`world`）、net（`loopback`）、asset_db（`index`）、cook_texture（`encode`）。还嵌在测试文件里的 `#[ignore]` 基准（mem `isolated_global_heap`、hash/simd 的 `gbps`、jobs/jobs、masset/extract、profile/stats 的 `spin`）待迁，见 §9。
 - GPU 计时（timestamp query）以后加到 `marlin-gpu-test-support`。
 
 ### 7.3 Fuzz 与属性测试
@@ -237,21 +244,33 @@ GPU 层的看门狗：xtask 监控测试进程，超时没有输出就报告卡�
 | `MARLIN_BLESS` | 重写 golden 文件和图 |
 | `MARLIN_UCD_DIR` | Unicode 一致性测试的数据目录 |
 | `MARLIN_SKIP_LOG` | xtask 设置后，`skip!` 把跳过记录追加到这个文件，供汇总 |
-| `MARLIN_ISOLATED_CHILD` | `isolated::run` 子进程标记（统一现在的 3 个专用变量） |
+| `MARLIN_ISOLATED_CHILD` | `isolated::run` 子进程标记（统一了原来的 3 个专用变量） |
+| `MARLIN_TEST_DUMP_DIR` | diag、pal 的 crash dump 子进程把 dump 写到这里 |
 
 ## 9. 迁移步骤
 
 1. ✅ 扩充 `marlin-test-support`（§6.1）；新建 `marlin-gpu-test-support`（§6.2），把 rhi 的 `tests/support` 和测试 shader 搬过去；render、framework、cook_texture 的 GPU 测试改用它（2026-10-17）。
 2. ✅ `cargo xtask test`（§4），先支持 `quick`/`gpu`/`desktop`/`stress`/`manual`/`all`；`cargo xtask coverage`（§7.4）。还没迁到 §5 目录的扁平测试文件，xtask 归为"未分类"，只在 `all` 里跑并列出来，迁移完成后未分类应为零。
-3. 按层（base / core / platform+engine / tools）去重：换成共享 helper，修正门控（§3）。这一步可以几个 session 并行，各管一层。
-4. 按层把扁平的 `tests/*.rs` 重组成 §5 的二进制目录，统一 `support/`、`data/`。样板：marlin-sync（全部进 `unit`）和 marlin-rhi（`unit`、`gpu`，以及 `isolated_gpu_device` / `_device_lost` / `_validation` / `_misuse`、`isolated_desktop_present`）已经迁完。注意：几个文件各自声明 `#[global_allocator]` 时（jobs）不能合进同一个二进制，要么统一成一个，要么拆成 `isolated_*`。
-5. `marlin-bench` 和 `--tier bench`，迁移现有基准。
-6. Git LFS + golden image，先给 render/forward 和 framework 的端到端各加几张。
+3. ✅ 按层（base / core / platform+engine / tools）去重：换成共享 helper，修正门控（§3）（2026-10-17，四个 session 并行）。
+4. ✅ 按层把扁平的 `tests/*.rs` 重组成 §5 的二进制目录，统一 `support/`、`data/`（2026-10-17）。值得记下的特例：
+   - 进程级全局状态迫使拆成 `isolated_*`：diag 每个日志测试文件一个 `isolated_log_*`（日志过滤器全局；致命报告按线程 id 存，Windows 会复用线程 id）；config（全局 cvar 注册表）和 profile（全局 profiler）各有几个；mem 的 `isolated_global_heap` / `_purge` / `_debug` / `_debug_global`。
+   - jobs、text 在 `main.rs` 里统一声明一次 `#[global_allocator]`。
+   - 只有 clipboard（会覆盖用户剪贴板）和 `connected_gamepads`（要插手柄）还是手动测试；其余 12 个"需要桌面会话"的测试进了 desktop 层。
+   - 顺带修掉一个真 bug：config 的注册测试按大小写敏感过滤 cvar，链接顺序不同时会失败。
+5. ✅ `marlin-bench` 和 `--tier bench`；compress、ecs、net、asset_db、cook_texture 的基准已迁到 `benches/`。
+6. ✅ Git LFS + golden image：render 3 张、framework 1 张（2026-10-17）。
 7. `fuzz/` 和 `--tier fuzz`，先覆盖 text、serial、compress、cooked 格式。
 8. ✅ 0001 §11 的"约定"一条改成指向本文档。
 
+迁移后留下的后续：
+- 嵌在测试文件里的 `#[ignore]` 基准迁到 `benches/`（见 §7.2）。
+- pal/thread 里有一个没有上限的 `while !job.ran` 循环，改成 `wait_until`；diag 里几个有界的自旋等待可以顺手换掉。
+- pal 的 `windows_command_line_quoting` 需要精确的原始命令行，`isolated::run` 传不了，仍自己重入。
+- app 的窗口测试和 input 的触摸/原始输入注入测试并行时偶尔失败，现在靠 `one_at_a_time()` 串行；app 那部分也可能是多个 `App` 在不同线程上的真 bug，还没查。
+- fuzz 找到的崩溃输入进 `tests/data/regress/` 后，各 crate 的 `unit` 里要加回放测试。
+
 ## 10. 待定
 
-1. cook 系列共用的 `Project` helper 放哪：cook_core 暴露一个测试用 API，还是新的测试 crate。
+1. ~~cook 系列共用的 `Project` helper 放哪~~ **已定**：留在 asset_db / cook_core 的 `tests/support/`，用 `#[path]` 共享（§6.3）。
 2. cargo-fuzz 在 Windows MSVC 上依赖 ASan 支持，可用性要先验证；不行就先在 Linux 上跑长跑层，或自研一个无覆盖引导的随机输入循环。
 3. 基线是否入库：多台机器以后，按机器名存在仓库里还是只放本地。
