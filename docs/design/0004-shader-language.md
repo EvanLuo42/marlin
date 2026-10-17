@@ -463,6 +463,7 @@ float4 r0 = m.Row(0);
 | `D2Array` | `Texture2DArray<T>` | `StorageTexture2DArray<T>` |
 | `Cube` | `TextureCube<T>` | — |
 | `Sampler` | `Sampler`、`ComparisonSampler` | — |
+| 加速结构视图（0007 §9） | `AccelerationStructure` | — |
 
 ```csharp
 public struct RockParams

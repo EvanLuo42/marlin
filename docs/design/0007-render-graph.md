@@ -23,8 +23,9 @@
 | 编译缓存 | 按拓扑哈希缓存 `CompiledPlan`；命中时连同物理资源和 bindless 视图一起复用 | 5 |
 | 并行录制 | 按代价切段，每段一个 job、一个 command list，按队列顺序提交 | 6 |
 | 历史资源 | `g.history(name, view, desc)` 返回 (上一帧, 本帧)；graph 负责交换、尺寸变化时重建、长期不用时退休 | 8 |
-| 调试 | 每 pass 计时与标记、Development 校验、图导出 JSON、资源捕获，第一版都做 | 9 |
-| 验收 | 把现有前向渲染器、`Offscreen` 和 present 迁到 graph 上，`samples/basic` 画面不变；再加一条用到别名和异步计算的后处理链 | 10 |
+| 加速结构 | 只有 inline ray query，没有 RT 专用的 pass；AS 是第三种资源；BLAS 按组导入，静态的建完就不再写、动态的每帧 refit；TLAS 的实例由 GPU 生成，每帧重建；设计写全，实现排在 RHI 补齐 AS 之后 | 9 |
+| 调试 | 每 pass 计时与标记、Development 校验、图导出 JSON、资源捕获，第一版都做 | 10 |
+| 验收 | 把现有前向渲染器、`Offscreen` 和 present 迁到 graph 上，`samples/basic` 画面不变；再加一条用到别名和异步计算的后处理链 | 11 |
 
 ## 1. 模型
 
@@ -42,6 +43,7 @@
 
 - **管**：本帧中会改变状态的资源，也就是会被写入、或者在不同访问方式之间切换的资源。
 - **不管**：常驻只读资源，例如网格的顶点/index buffer、cook 出来的纹理、采样器。它们上传后一直停在 `SHADER_READ`（或 `INDEX`）状态，shader 直接用 bindless 下标访问。参数结构里直接放它们的下标，graph 不跟踪。
+- 构建和 compaction 都完成之后的静态 BLAS 也属于这一类，但它们仍然作为 AS 组导入，好让 ray query 和下一次构建之间的依赖可见（§9.4）。
 - 上传完成之前的那次状态切换（`COPY_DST → SHADER_READ`）由上传方负责。以后流送上传改成 graph 里的 Copy pass 时，这条规则不变：资源交给 shader 之前，状态已经切好。
 
 ### 1.3 整帧一个图
@@ -63,6 +65,8 @@
 | 导入 | `g.import_texture` / `g.import_buffer` / `g.import_swapchain` | 调用方持有 | 调用方的 | 状态由 graph 的状态表跟踪（§2.3） |
 | 历史 | `g.history` | graph 持有，双缓冲 | committed，不参与别名 | 是，见 §8 |
 | 持久 | `g.persistent` | graph 持有，单份 | committed，不参与别名 | 是，见 §8 |
+
+这四类都可以是 texture 或 buffer。加速结构是第三种资源，另外还有"AS 组"，见 §9。
 
 ### 2.2 瞬态资源的描述
 
@@ -116,15 +120,13 @@ let half = g.add_compute("BloomDown", |b| {
   | `Uniform` | uniform 读 |
   | `Indirect`、`Index` | indirect 参数、index buffer |
   | `CopySrc`、`CopyDst` | 拷贝 |
-  | `RayQueryAs` | 加速结构（ext，以后用） |
-
-  render target 和深度不在这里，由 `b.color`、`b.depth` 声明（§3.3）。
+  render target 和深度不在这里，由 `b.color`、`b.depth` 声明（§3.3）。加速结构的访问方式见 §9.2。
 - shader 通过 buffer 里存的下标间接访问的 graph 资源（例如材质表引用的反馈 buffer），也照样用 `b.read_*`/`b.write_*` 声明。
 - 执行闭包是 `FnOnce(&mut PassContext) + Send`，捕获 setup 里拿到的句柄。
 
 ### 3.2 PassContext
 
-- `ctx.srv(h)`、`ctx.uav(h)`、`ctx.cbv(h)`：返回 bindless 下标，视图覆盖声明时的子资源范围。只能解析本 pass 声明过的句柄（§9.2）。
+- `ctx.srv(h)`、`ctx.uav(h)`、`ctx.cbv(h)`：返回 bindless 下标，视图覆盖声明时的子资源范围。只能解析本 pass 声明过的句柄（§10.2）。
 - 参数结构是 Rust 端手写的 `#[repr(C)]` struct，资源字段就是 `u32`（0004 §10、0005 §9）。布局由 0005 §9 的反射比对负责，graph 不做额外检查。
 - 闭包不能插 barrier、不能开关 render pass，也看不到 RHI 对象本身，只能通过 `PassContext`：
   - `set_pipeline`、`dispatch`、`dispatch_indirect`、`draw*`、`dispatch_mesh*`、`set_viewport`、`set_scissor`、`set_stencil_reference`；
@@ -156,7 +158,7 @@ let lum = g.add_compute("Luminance", |b| {
   - `b.async_compute()`：放到 Compute 队列（§4.3）；
   - `b.side_effect()`：没有输出也不剔除，用于 readback、present、捕获；
   - `b.cost(us)`：录制代价的提示，没有历史计时的时候用（§4.7）。
-- 内置的 side-effect pass：`g.present(image)`、`g.readback(buf) -> Readback`、`g.capture(h, "name")`（§9.4）。
+- 内置的 side-effect pass：`g.present(image)`、`g.readback(buf) -> Readback`、`g.capture(h, "name")`（§10.4）。
 
 ### 3.4 子系统的接入约定
 
@@ -191,12 +193,13 @@ let lum = g.add_compute("Luminance", |b| {
 - 同一对队列之间相邻的多个同步点合并成一个。
 - 异步 pass 用到的瞬态资源，生命周期延长到对应的等待点之后，避免和 Graphics 队列上的资源别名冲突。
 - 跨队列的资源状态交接：生产方队列上先把资源切换到消费方需要的状态（D3D12 enhanced barrier 和 Vulkan 的队列族所有权转移都按这个顺序做）。
+- **跨帧**：跨帧状态表（§2.3）除了状态，还记录每个导入、历史和持久资源最后一次访问所在的队列和 fence 值。下一帧第一次访问它的 pass 如果在另一个队列上，graph 插入对那个 fence 值的等待。否则下一帧的异步 pass 可能和上一帧另一个队列上还没跑完的 pass 重叠（§9.9 是一个例子）。
 
 ### 4.5 生命周期与别名
 
 - 每个瞬态资源的生命周期是一个区间，按"各队列时间线上的全局位置"计算，跨队列的资源用 §4.4 延长后的区间。
 - 用区间图上的 first-fit 给每个资源分配 heap 偏移。
-- buffer 和 texture 分开放 heap，render target/深度纹理再单独一类（`HeapKind::Buffers`、`Textures`、`Targets`）：既能满足 D3D12 heap tier 1，也方便统计。tier 2 时也不合并，保持统一。
+- buffer 和 texture 分开放 heap，render target/深度纹理再单独一类（`HeapKind::Buffers`、`Textures`、`Targets`）：既能满足 D3D12 heap tier 1，也方便统计。tier 2 时也不合并，保持统一。加速结构单独一类，暂不参与别名（§9.5）。
 - 别名的接手方在第一次使用时 before = `Undefined`，RHI 按现有实现激活别名（enhanced 的 `DISCARD`、legacy 的 aliasing barrier）。
 
 ### 4.6 barrier 推导
@@ -204,7 +207,7 @@ let lum = g.add_compute("Luminance", |b| {
 - 按子资源跟踪状态：默认整个资源，用了 `mip`/`layer` 视图的按范围跟踪。
 - 每个 pass 之前需要的 barrier 合成一批，一次 `texture_barriers`/`buffer_barriers` 调用发出。
 - 导入资源的最终状态写回 §2.3 的状态表；历史和持久资源同样处理。
-- **legacy 路径的真实状态**：RHI 的 legacy 实现目前按录制顺序记录每个纹理上一次 barrier 的状态，用来替换 `Undefined`。并行录制时各段的录制顺序和执行顺序不一致，这个记录会出错。graph 知道每个物理资源在执行顺序上的真实状态，所以改为由 graph 提供（RHI 的改动见 §10.3）。
+- **legacy 路径的真实状态**：RHI 的 legacy 实现目前按录制顺序记录每个纹理上一次 barrier 的状态，用来替换 `Undefined`。并行录制时各段的录制顺序和执行顺序不一致，这个记录会出错。graph 知道每个物理资源在执行顺序上的真实状态，所以改为由 graph 提供（RHI 的改动见 §11.3）。
 
 ### 4.7 分段
 
@@ -295,16 +298,151 @@ let probes = g.persistent("ProbeCache", PERSISTENT_SCOPE, BufferDesc::structured
 - 历史和持久资源都不参与别名，不进瞬态 heap，状态由 graph 跨帧跟踪。
 - 它们的 usage 按历次访问的并集推导；出现新的访问方式时，资源重建（只在开发期偶尔发生）。
 
-## 9. 调试与工具
+## 9. 加速结构
 
-### 9.1 计时与标记
+光追只用 inline ray query（0002 §1、0004 §12.4），没有 RT pipeline，所以 graph 不需要 RT 专用的 pass 类型：ray query 写在普通的 compute pass（或 raster pass 的 pixel shader）里。graph 要管的是**加速结构（AS）本身**：它的构建、它和构建输入之间的依赖，以及它被 ray query 读取时的同步。
+
+本节先把设计写全，实现排在 RHI 补齐加速结构之后（§11.3）。graph 第一版不等它。
+
+### 9.1 AS 作为资源
+
+- AS 是第三种资源，和 texture、buffer 并列：`AccelHandle<'g>`，描述是 `AccelDesc { kind: Tlas | Blas, size }`。
+  - `size` 来自 RHI 的 prebuild 查询（D3D12 `GetRaytracingAccelerationStructurePrebuildInfo`、Vulkan `vkGetAccelerationStructureBuildSizesKHR`）：输入几何或实例上限 → AS 大小、构建 scratch 大小、refit scratch 大小。
+  - D3D12 和 Vulkan 的 AS 都放在 buffer 里；Metal 是单独的对象。RHI 统一成一个 `Accel` 类型，graph 只看 `Accel`。
+- **没有 layout**：AS 一直处于"加速结构"状态（D3D12 legacy 要求它创建时就在 `RAYTRACING_ACCELERATION_STRUCTURE` 状态，并且永远不切换）。所以 AS 上的 barrier 只有执行依赖和内存可见性，没有布局转换。
+- **bindless**：ray query 用的 TLAS 占一个资源表槽位，shader 里的 `AccelerationStructure` 就是这个下标（0004 §10）。执行闭包里用 `ctx.accel(h)` 取。BLAS 不需要槽位，它只通过 TLAS 的实例被引用。
+
+### 9.2 访问方式
+
+`Access` 表（§3.1）为 AS 增加以下几项：
+
+| `Access` | 用在 | RHI 映射（D3D12 enhanced / Vulkan） |
+|---|---|---|
+| `AccelBuildWrite` | 构建或 refit 的目标 AS | sync `BUILD_RAYTRACING_ACCELERATION_STRUCTURE`，access `RAYTRACING_ACCELERATION_STRUCTURE_WRITE` / `ACCELERATION_STRUCTURE_WRITE_KHR` |
+| `AccelBuildRead` | refit 的源 AS；TLAS 构建时被引用的 BLAS | 同上 sync，access `..._READ` |
+| `AccelBuildInput` | 顶点、index、实例描述 buffer | sync `BUILD_RAYTRACING_ACCELERATION_STRUCTURE`，access `SHADER_RESOURCE`（legacy：`NON_PIXEL_SHADER_RESOURCE`） |
+| `AccelScratch` | 构建 scratch | sync 同上，access `UNORDERED_ACCESS` |
+| `AccelCopySrc`、`AccelCopyDst` | compaction 的拷贝 | sync `COPY_RAYTRACING_ACCELERATION_STRUCTURE` |
+| `AccelPostbuild` | 写入 compaction 后大小的 buffer | sync `EMIT_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO` |
+| `ComputeRead`、`PixelRead`（作用在 AS 上） | ray query | 对应 stage 的 sync，access `RAYTRACING_ACCELERATION_STRUCTURE_READ` |
+
+- 声明方式和其他资源一样：`b.write_accel(h, Access::AccelBuildWrite)` 返回新版本，`b.read_accel(h, Access::ComputeRead)`。
+- legacy D3D12 没有这些 sync 类型，AS 之间的依赖用 AS buffer 上的 UAV barrier 表达；构建输入切到 `NON_PIXEL_SHADER_RESOURCE`。这层映射在 RHI 里，graph 只发 (stage, access) 对。
+
+### 9.3 构建 pass
+
+```rust
+let tlas = g.create_accel("SceneTlas", AccelDesc::tlas(capacity));
+let tlas = g.add_accel("BuildTlas", |b| {
+    let inst = b.read_buffer(instances, Access::AccelBuildInput);
+    b.read_accel_group(&static_blas, Access::AccelBuildRead);
+    b.read_accel_group(&dynamic_blas, Access::AccelBuildRead);
+    let scratch = b.create_buffer("TlasScratch", BufferDesc::scratch(capacity_scratch));
+    let scratch = b.write_buffer(scratch, Access::AccelScratch);
+    let tlas = b.write_accel(tlas, Access::AccelBuildWrite);
+    (tlas, move |ctx: &mut PassContext| {
+        ctx.build_tlas(tlas, inst, capacity, scratch);
+    })
+});
+```
+
+- 新的 pass 类型 `add_accel`，**默认就是异步计算**（§4.3），用 `b.graphics_queue()` 改回 Graphics 队列。AS 构建不能放在 Copy 队列上。
+- `PassContext` 增加：
+  - `build_blas(dst, geometry, scratch)`、`refit_blas(dst, src, geometry, scratch)`（`src` 可以等于 `dst`，原地 refit）；
+  - `build_tlas(dst, instances, count, scratch)`；
+  - `copy_accel_compact(dst, src)`、`emit_compacted_size(src, out_buffer, offset)`。
+- 同一个 pass 里连续的多次构建如果共用一块 scratch，graph 在它们之间自动插 scratch 的 UAV barrier。更好的做法是每次构建用 scratch 的不同区段，这样它们可以并行；`BufferDesc::scratch` 的大小按区段之和给出。
+
+### 9.4 AS 组
+
+问题：每帧要建的 BLAS 数量是变化的（流送进来的新网格、预算内能建几个）。如果每个 BLAS 都是图里单独的资源、单独声明，拓扑每帧都变，编译缓存（§5）就失效了。
+
+做法：
+
+- 把一批 BLAS 当作**一个逻辑资源**导入：`g.import_accel_group("StaticBlas", &pool)`，得到一个 `AccelGroupHandle`。
+- 对组的访问在拓扑上就是一次访问，不管这一帧组里有几个 BLAS 被构建。拓扑键只记录"这一帧有没有写这个组"。
+- 组上的 barrier 用**全局内存 barrier**（D3D12 enhanced 的 global barrier、Vulkan 的 `VkMemoryBarrier2`、D3D12 legacy 的空资源 UAV barrier），而不是逐个 BLAS 的 barrier。RHI 需要补这个命令（§11.3）。
+- 组里具体建哪几个、写到哪里，是执行闭包里的数据（一个列表），不进拓扑。
+
+### 9.5 谁持有 AS
+
+| AS | 持有者 | graph 里的身份 | 生命周期 |
+|---|---|---|---|
+| 静态网格的 BLAS | 网格驻留系统，和顶点/index buffer 放在一起 | 组 `StaticBlas` | 网格驻留期间一直存在；构建和 compaction 完成后就不再被写 |
+| 蒙皮/形变网格的 BLAS | 场景渲染器 | 组 `DynamicBlas`，每帧导入 | 实例存在期间；每帧 refit |
+| TLAS | graph | 瞬态 AS，每帧重建 | 本帧 |
+
+- **TLAS 每帧完整重建**，不做 TLAS refit：实例的增删和大幅移动都很常见，完整重建的质量更稳定，代价也小（实例数而不是三角形数）。
+- TLAS 是瞬态的，不需要跨帧。需要上一帧 TLAS 的子系统用历史资源（§8）。
+- 实例上限 `capacity` 是 TLAS 描述的一部分，也就进了拓扑键。为了不让实例数的小变化导致缓存失效，`capacity` 按 2 的幂向上取整，并且只增不减；连续若干帧低于一半时才缩小。
+- AS 的内存：
+  - BLAS 数量多、大小不一，不能每个都是一个 committed 资源。它们由 RHI 之上的 GPU 内存子分配层管理（RHI 只提供 heap 和 placed 资源，子分配策略放在它上面；这一层和流送的纹理、网格共用），按 AS 要求的 256 字节对齐；
+  - 瞬态 TLAS 和 scratch 放在帧槽的瞬态 heap 里。AS 单独一个内存类别，不和其他资源别名；同类之间是否可以别名，等 RHI 实测之后再放开（§13）。
+
+### 9.6 TLAS 的实例由 GPU 生成
+
+```
+GPU Scene 实例表 ─┐
+网格表（BLAS 引用）─┼─ compute "WriteTlasInstances" ─→ 实例描述 buffer（瞬态）─→ "BuildTlas"
+可见性/距离参数 ───┘
+```
+
+- CPU 不碰每个实例。CPU 只知道 GPU Scene 的实例数 N，用它定 `capacity`。
+- 一个 compute pass 遍历 GPU Scene 的实例表，为每个实例写一条实例描述：变换（3×4）、mask、flags 和 BLAS 引用。第 i 条描述对应 GPU Scene 的第 i 个实例，所以 ray query 命中后的 `q.Committed.InstanceIndex` 就是 GPU Scene 的实例下标；24 位的自定义 `InstanceID` 字段先保留不用。
+- 不进 TLAS 的实例（距离剔除、BLAS 还没建好、被禁用）写成**非激活实例**：BLAS 引用为 0。D3D12 和 Vulkan 都会跳过这种实例。这样构建时传的实例数可以直接用 `capacity`，不需要 GPU 端的计数。
+- **实例描述的格式是 target 相关的**：D3D12 和 Vulkan 都是 64 字节、布局相同；Metal 是另一种格式。shader 标准库提供一个写实例描述的函数，按 `Target.*` 常量选择布局；RHI 提供实例描述的大小和"BLAS 引用"值（D3D12/Vulkan 是 GPU 地址，Metal 是资源 ID）。网格表里存的就是这个引用值，BLAS 换了（比如 compaction 之后）就通过场景的 scatter 上传更新。
+
+### 9.7 静态 BLAS：预算、异步构建与 compaction
+
+```
+帧 N      : BuildBlas（预算内的一批，ALLOW_COMPACTION）→ emit 压缩后大小 → readback
+帧 N+k    : readback 就绪 → 按大小分配 → CompactBlas（拷贝压缩）→ 网格表换成新引用
+帧 N+k+F  : 旧的未压缩 BLAS 经退休队列释放
+```
+
+- **构建预算**：网格驻留系统维护一个待建队列。每帧按三角形数预算（cvar，比如 `r.rt.blas_budget_tris`）从队头取一批来建。预算之外的网格这一帧没有 BLAS，它们的实例在 TLAS 里是非激活的（§9.6）。
+- **异步**：`BuildBlas` 和 `CompactBlas` 都是 `add_accel` pass，默认在 Compute 队列上，和光栅重叠。
+- **compaction**：
+  - 构建时带 `ALLOW_COMPACTION`，构建后用 `emit_compacted_size` 把大小写进一个 buffer，再用 `g.readback` 读回；
+  - 读回在若干帧后就绪（按帧槽 fence），这时分配精确大小的内存，在一个 `CompactBlas` pass 里拷贝压缩；
+  - 在压缩完成之前，网格一直用未压缩的 BLAS，不影响渲染；
+  - 旧 BLAS 交给退休队列，等引用它的所有帧完成后再释放。
+- 构建和 compaction 都只写 `StaticBlas` 组；完成之后这个 BLAS 不再被写，就像上传完成的顶点 buffer 一样。
+
+### 9.8 动态 BLAS：refit 与重建
+
+- 蒙皮 compute pass 把形变后的顶点写进一个持久 buffer（每个蒙皮实例一份）。
+- `RefitBlas` pass 读这些顶点（`AccelBuildInput`），对 `DynamicBlas` 组里的 BLAS 原地 refit（`ALLOW_UPDATE`）。
+- refit 的质量会随形变累积下降，所以下面两种情况改为完整重建：
+  - 距上次重建已经过了 N 帧（cvar，默认 30），各实例的重建时间错开，避免集中在同一帧；
+  - CPU 端标记了不连续的形变（瞬移、换动画、布料重置）。
+- 重建和 refit 在同一个 pass 里，按实例选择，不影响拓扑。
+
+### 9.9 同步
+
+- **帧内**：BLAS 构建 → TLAS 构建 → ray query 的依赖都是普通的依赖边，由 §4.2–4.4 处理。
+- **ray query 隐式读 BLAS**：ray query 读 TLAS 时，实际上也在读 TLAS 引用的所有 BLAS。graph 记录"这个 TLAS 由哪些组构建"，ray query pass 对 TLAS 的每次读，自动加上对这些组的读。这样，组的下一次写（例如下一个 refit）一定排在这些 ray query 之后。
+- **跨帧**：动态 BLAS 的 refit 跑在 Compute 队列上，可能和上一帧 Graphics 队列上还没跑完的 ray query 重叠。§4.4 的跨帧规则对 AS 组同样适用：组上一帧最后一次被访问的队列和 fence 值记在状态表里，下一帧的 refit 在另一个队列上时先等它。
+
+### 9.10 调试
+
+- 图导出（§10.3）列出 AS、组、每帧构建的数量和三角形数、TLAS 的 capacity 和激活实例数。
+- Development 校验：
+  - 对 AS 做 `AccelBuildWrite` 之外的写访问；
+  - 实例描述 buffer 的大小小于 `capacity × 实例描述大小`；
+  - ray query 读了本帧还没构建的瞬态 TLAS。
+- 调试视图（实例 ID、BLAS 是否压缩、refit 次数）通过 ray query 的 compute pass 输出到一张纹理，再走资源捕获（§10.4）。
+
+## 10. 调试与工具
+
+### 10.1 计时与标记
 
 - 每个 pass 自动包一对 `begin_event`/`end_event`，名字就是 pass 名。
 - 每个 pass 前后各写一个 timestamp；copy 队列上的用 `CopyTimestamp`。
 - 结果在帧槽回收时 resolve，通过 `marlin_profile::set_gpu_timings` 注册的 `GpuTimings` 实现交给 profiler，每个队列一条 track。
 - 同一份数据也提供给 §4.7 的分段：GPU 时间以后可以用来做调度提示，第一版只用 CPU 录制时间。
 
-### 9.2 Development 校验
+### 10.2 Development 校验
 
 只在 debug/development 构建里开，shipping 构建里关掉：
 
@@ -315,26 +453,26 @@ let probes = g.persistent("ProbeCache", PERSISTENT_SCOPE, BufferDesc::structured
 
 graph 的误用一律 panic，并给出 pass 名和资源名。RHI 本身返回的错误（设备丢失、内存不够）通过 `marlin-error` 以 `Result` 返回。
 
-### 9.3 图导出
+### 10.3 图导出
 
 - `g.dump()` 把编译后的图写成 JSON：pass、队列、段、资源、生命周期区间、别名偏移、barrier、同步点、上一帧的计时。
 - runtime 是 no_std 的，JSON 由 render_graph 里一个很小的写出器生成。
 - 用途：编辑器的图可视化面板，以及测试里的快照比对。
 
-### 9.4 资源捕获
+### 10.4 资源捕获
 
 - `g.capture(h, "name")` 在 h 的当前版本之后插一个 side-effect 的 copy pass，把内容拷到一个以 name 为键的持久调试纹理。
 - 编辑器的调试视图都走这条路。
 - 捕获只在被请求的帧上发生；它改变拓扑键，所以开着捕获时用的是另一份 plan。
 
-## 10. 落地
+## 11. 落地
 
-### 10.1 crate 与依赖
+### 11.1 crate 与依赖
 
 - `marlin-render-graph`（`runtime/engine/render_graph`）依赖 `marlin-rhi`、`marlin-mem`、`marlin-jobs`、`marlin-containers`、`marlin-hash`、`marlin-profile`、`marlin-diag`、`marlin-error`。
-- RHI 保持"薄"：状态跟踪、barrier 推导、延迟销毁都在 graph 里，RHI 不变（§10.3 的改动除外）。
+- RHI 保持"薄"：状态跟踪、barrier 推导、延迟销毁都在 graph 里，RHI 不变（§11.3 的改动除外）。
 
-### 10.2 迁移现有代码
+### 11.2 迁移现有代码
 
 - **`marlin-render`**：前向渲染器改成 `add_passes`：
   - 深度缓冲变成瞬态资源，`DepthTarget` 和 `resize` 里重建深度的逻辑删掉；
@@ -348,12 +486,19 @@ graph 的误用一律 panic，并给出 pass 名和资源名。RHI 本身返回�
   2. 加一条后处理链：HDR 场景目标 → bloom 降采样/升采样链（多个瞬态纹理，别名可以发生）→ 异步计算的亮度直方图与自动曝光 → tonemap 到 swapchain。
 - 后处理链的 shader 用 Marlin shader 编写，所以第 2 步在编译器能产出 DXIL 之后做。graph 本身和第 1 步不依赖新 shader。
 
-### 10.3 RHI 需要的改动
+### 11.3 RHI 需要的改动
 
 - **legacy barrier 的真实 before 状态由调用方提供**：去掉 backend 按录制顺序记录纹理状态的做法（并行录制下会出错，§4.6）。具体做法是在 `TextureBarrier` 上加一个"别名激活时资源的真实上一状态"字段，enhanced 路径忽略它。
 - 建议同时补上 R0 推迟的 `fill_buffer` 和 `clear_texture_uav`：graph 的清零（计数器、直方图）要用到。没有它们时用一个 compute pass 代替。
+- **加速结构**（§9，实现 RT 时再做）：
+  - `Accel` 类型：D3D12/Vulkan 是 buffer 上的 AS，Metal 是独立对象；可以 committed，也可以 placed 在 heap 里；
+  - prebuild 查询：AS 大小、构建 scratch、refit scratch；
+  - 命令：`build_blas`、`refit_blas`（允许原地）、`build_tlas`、`copy_accel_compact`、`emit_compacted_size`，可以录在 Graphics 和 Compute 队列的 list 上；
+  - AS 的 bindless 视图，以及 `Stage`/`Access` 里的 AS 构建、拷贝、postbuild 和读取；
+  - **全局内存 barrier**（`memory_barrier(before, after)`），AS 组要用（§9.4），别的地方也用得上；
+  - 实例描述的大小常量和 BLAS 引用值（D3D12/Vulkan 是 GPU 地址，Metal 是资源 ID）。
 
-## 11. 测试
+## 12. 测试
 
 测试放在各 crate 的 `tests/` 里。
 
@@ -366,6 +511,8 @@ graph 的误用一律 panic，并给出 pass 名和资源名。RHI 本身返回�
   - 缓存：拓扑相同命中，改了任一访问或描述就失效；
   - 句柄版本：读写旧版本时 panic，消息里有 pass 名和资源名；
   - 历史资源：交换、`prev` 为 `None` 的三种情况、退休。
+  - 跨帧的跨队列等待：上一帧最后一次访问在另一个队列上时插入等待，在同一队列上时不插；
+  - 加速结构：AS 组的访问不随组内 BLAS 数量改变拓扑键；ray query 读 TLAS 时隐式加上对组的读；TLAS 的 `capacity` 取整与缩小规则。
 
   这些测试用一个不发 GPU 命令的录制后端，或者直接断言 `CompiledPlan`。
 - **GPU 测试**（平台相关，在真实硬件上跑，不用 WARP 之类的软件设备）：
@@ -373,9 +520,13 @@ graph 的误用一律 panic，并给出 pass 名和资源名。RHI 本身返回�
   - 异步计算的结果和强制同步执行逐字节一致；
   - legacy barrier 路径和 enhanced barrier 路径在同一台机器上结果一致；
   - 并行录制和单段录制结果一致；
-  - §10.2 的两条验收。
+  - §11.2 的两条验收。
+  - 加速结构（RT 实现时）：
+    - 用 GPU 写的实例描述建 TLAS，ray query 的命中结果（实例下标、T）和 CPU 端用 marlin-math 的 `Ray` 求交的结果一致（射线避开三角形边缘）；
+    - compaction 前后，同一组射线的命中结果逐个相同；
+    - refit 之后和完整重建的命中结果相同。
 
-## 12. 待定
+## 13. 待定
 
 - 瞬态 heap 收缩的水位和帧数阈值。
 - 提交流水化（§6.1）的收益要实测之后再定。
@@ -383,3 +534,5 @@ graph 的误用一律 panic，并给出 pass 名和资源名。RHI 本身返回�
 - split barrier：enhanced barrier 没有，legacy 有；目前不用。
 - 跨帧的异步重叠（本帧的异步计算和下一帧的图形重叠）。
 - 以 GPU 计时为依据的异步调度提示。
+- 加速结构：瞬态 TLAS 之间能否别名；BLAS 构建预算和动态 BLAS 重建间隔的默认值；opacity micromap 以后是否加入 BLAS 构建；Metal 的实例描述格式和 BLAS 引用方式。
+- 写实例描述的 shader 标准库函数（§9.6）的具体形状，属于标准库清单（0004 §17）。

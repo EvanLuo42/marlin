@@ -49,6 +49,7 @@
 | `TextureViewDimension::D2Array` | `Texture2DArray<T>` | `RWTexture2DArray<T>` |
 | `TextureViewDimension::Cube` | `TextureCube<T>` | — |
 | `Sampler` | `SamplerState` / `SamplerComparisonState`（`compare` 有值时） | — |
+| 加速结构视图（RHI 补齐 AS 之后，见 0007 §9） | `RaytracingAccelerationStructure` | — |
 
 深度纹理的只读视图按 `R32Float` 读。
 
