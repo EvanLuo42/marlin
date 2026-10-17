@@ -1,0 +1,141 @@
+SOURCE_FILE@0..97
+  ERROR@0..9
+    ERROR_TOKEN@0..9 "#if DEBUG"
+  WHITESPACE@9..10 "\n"
+  ERROR@10..16
+    STRUCT_KW@10..16 "struct"
+  WHITESPACE@16..17 " "
+  ERROR@17..18
+    PATH_TYPE@17..18
+      PATH@17..18
+        PATH_SEGMENT@17..18
+          NAME_REF@17..18
+            IDENT@17..18 "A"
+  WHITESPACE@18..19 " "
+  ERROR@19..20
+    L_CURLY@19..20 "{"
+  WHITESPACE@20..21 " "
+  FIELD_DECL@21..27
+    PREDEFINED_TYPE@21..24
+      INT_KW@21..24 "int"
+    WHITESPACE@24..25 " "
+    VARIABLE_DECLARATOR@25..26
+      NAME@25..26
+        IDENT@25..26 "X"
+    SEMICOLON@26..27 ";"
+  WHITESPACE@27..28 " "
+  ERROR@28..29
+    R_CURLY@28..29 "}"
+  WHITESPACE@29..30 " "
+  ERROR@30..31
+    R_CURLY@30..31 "}"
+  WHITESPACE@31..32 "\n"
+  ERROR@32..33
+    ERROR_TOKEN@32..33 "@"
+  WHITESPACE@33..34 " "
+  ERROR@34..35
+    ERROR_TOKEN@34..35 "$"
+  WHITESPACE@35..36 " "
+  ERROR@36..37
+    ERROR_TOKEN@36..37 "`"
+  WHITESPACE@37..38 " "
+  ERROR@38..40
+    ERROR_TOKEN@38..40 "¤"
+  WHITESPACE@40..41 "\n"
+  FUNCTION_DECL@41..84
+    PREDEFINED_TYPE@41..45
+      VOID_KW@41..45 "void"
+    WHITESPACE@45..46 " "
+    NAME@46..47
+      IDENT@46..47 "G"
+    PARAM_LIST@47..49
+      L_PAREN@47..48 "("
+      R_PAREN@48..49 ")"
+    WHITESPACE@49..50 " "
+    BLOCK@50..84
+      L_CURLY@50..51 "{"
+      WHITESPACE@51..52 " "
+      LOCAL_DECL_STMT@52..61
+        PATH_TYPE@52..55
+          PATH@52..55
+            PATH_SEGMENT@52..55
+              NAME_REF@52..55
+                IDENT@52..55 "var"
+        WHITESPACE@55..56 " "
+        VARIABLE_DECLARATOR@56..59
+          NAME@56..57
+            IDENT@56..57 "x"
+          WHITESPACE@57..58 " "
+          EQ@58..59 "="
+        WHITESPACE@59..60 " "
+        SEMICOLON@60..61 ";"
+      WHITESPACE@61..62 " "
+      LOCAL_DECL_STMT@62..76
+        PATH_TYPE@62..65
+          PATH@62..65
+            PATH_SEGMENT@62..65
+              NAME_REF@62..65
+                IDENT@62..65 "var"
+        WHITESPACE@65..66 " "
+        VARIABLE_DECLARATOR@66..74
+          NAME@66..67
+            IDENT@66..67 "y"
+          WHITESPACE@67..68 " "
+          EQ@68..69 "="
+          WHITESPACE@69..70 " "
+          PAREN_EXPR@70..74
+            L_PAREN@70..71 "("
+            BIN_EXPR@71..74
+              LITERAL@71..72
+                INT_NUMBER@71..72 "1"
+              WHITESPACE@72..73 " "
+              PLUS@73..74 "+"
+        WHITESPACE@74..75 " "
+        SEMICOLON@75..76 ";"
+      WHITESPACE@76..77 " "
+      EXPR_STMT@77..82
+        CALL_EXPR@77..81
+          NAME_EXPR@77..78
+            NAME_REF@77..78
+              IDENT@77..78 "F"
+          ARG_LIST@78..81
+            L_PAREN@78..79 "("
+            COMMA@79..80 ","
+            R_PAREN@80..81 ")"
+        SEMICOLON@81..82 ";"
+      WHITESPACE@82..83 " "
+      R_CURLY@83..84 "}"
+  WHITESPACE@84..85 "\n"
+  FIELD_DECL@85..96
+    PREDEFINED_TYPE@85..90
+      FLOAT_KW@85..90 "float"
+    WHITESPACE@90..91 " "
+    VARIABLE_DECLARATOR@91..95
+      NAME@91..92
+        IDENT@91..92 "x"
+      ERROR@92..95
+        L_BRACK@92..93 "["
+        INT_NUMBER@93..94 "4"
+        R_BRACK@94..95 "]"
+    SEMICOLON@95..96 ";"
+  WHITESPACE@96..97 "\n"
+E0101 0..9: there is no preprocessor; `#` directives are not supported
+E0201 0..9: expected a declaration
+E0201 18..18: expected a member name, found `{`
+E0201 19..20: expected a declaration
+E0201 28..29: unmatched `}`
+E0201 30..31: unmatched `}`
+E0101 32..33: unexpected character `@`
+E0201 32..33: expected a declaration
+E0101 34..35: unexpected character `$`
+E0201 34..35: expected a declaration
+E0101 36..37: unexpected character ```
+E0201 36..37: expected a declaration
+E0101 38..40: unexpected character `¤`
+E0201 38..40: expected a declaration
+E0201 59..59: expected an expression, found `;`
+E0201 74..74: expected an expression, found `;`
+E0201 74..74: expected `)`, found `;`
+E0201 79..79: expected an expression, found `,`
+E0201 79..80: expected an argument
+E0201 92..93: the array length belongs to the type: `float[4] x`, not `float x[4]`

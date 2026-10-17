@@ -1,0 +1,773 @@
+SOURCE_FILE@0..994
+  INTERFACE_DECL@0..168
+    MODIFIERS@0..6
+      PUBLIC_KW@0..6 "public"
+    WHITESPACE@6..7 " "
+    INTERFACE_KW@7..16 "interface"
+    WHITESPACE@16..17 " "
+    NAME@17..28
+      IDENT@17..28 "IArithmetic"
+    TYPE_PARAM_LIST@28..35
+      LT@28..29 "<"
+      TYPE_PARAM@29..34
+        NAME@29..34
+          IDENT@29..34 "TSelf"
+      GT@34..35 ">"
+    WHITESPACE@35..36 " "
+    WHERE_CLAUSE@36..68
+      WHERE_KW@36..41 "where"
+      WHITESPACE@41..42 " "
+      PATH_TYPE@42..47
+        PATH@42..47
+          PATH_SEGMENT@42..47
+            NAME_REF@42..47
+              IDENT@42..47 "TSelf"
+      WHITESPACE@47..48 " "
+      COLON@48..49 ":"
+      WHITESPACE@49..50 " "
+      PATH_TYPE@50..68
+        PATH@50..68
+          PATH_SEGMENT@50..68
+            NAME_REF@50..61
+              IDENT@50..61 "IArithmetic"
+            GENERIC_ARG_LIST@61..68
+              LT@61..62 "<"
+              TYPE_ARG@62..67
+                PATH_TYPE@62..67
+                  PATH@62..67
+                    PATH_SEGMENT@62..67
+                      NAME_REF@62..67
+                        IDENT@62..67 "TSelf"
+              GT@67..68 ">"
+    WHITESPACE@68..69 "\n"
+    MEMBER_LIST@69..168
+      L_CURLY@69..70 "{"
+      WHITESPACE@70..75 "\n    "
+      OPERATOR_DECL@75..126
+        MODIFIERS@75..90
+          STATIC_KW@75..81 "static"
+          WHITESPACE@81..82 " "
+          ABSTRACT_KW@82..90 "abstract"
+        WHITESPACE@90..91 " "
+        PATH_TYPE@91..96
+          PATH@91..96
+            PATH_SEGMENT@91..96
+              NAME_REF@91..96
+                IDENT@91..96 "TSelf"
+        WHITESPACE@96..97 " "
+        OPERATOR_KW@97..105 "operator"
+        WHITESPACE@105..106 " "
+        PLUS@106..107 "+"
+        PARAM_LIST@107..125
+          L_PAREN@107..108 "("
+          PARAM@108..115
+            PATH_TYPE@108..113
+              PATH@108..113
+                PATH_SEGMENT@108..113
+                  NAME_REF@108..113
+                    IDENT@108..113 "TSelf"
+            WHITESPACE@113..114 " "
+            NAME@114..115
+              IDENT@114..115 "a"
+          COMMA@115..116 ","
+          WHITESPACE@116..117 " "
+          PARAM@117..124
+            PATH_TYPE@117..122
+              PATH@117..122
+                PATH_SEGMENT@117..122
+                  NAME_REF@117..122
+                    IDENT@117..122 "TSelf"
+            WHITESPACE@122..123 " "
+            NAME@123..124
+              IDENT@123..124 "b"
+          R_PAREN@124..125 ")"
+        SEMICOLON@125..126 ";"
+      WHITESPACE@126..131 "\n    "
+      PROPERTY_DECL@131..166
+        MODIFIERS@131..146
+          STATIC_KW@131..137 "static"
+          WHITESPACE@137..138 " "
+          ABSTRACT_KW@138..146 "abstract"
+        WHITESPACE@146..147 " "
+        PATH_TYPE@147..152
+          PATH@147..152
+            PATH_SEGMENT@147..152
+              NAME_REF@147..152
+                IDENT@147..152 "TSelf"
+        WHITESPACE@152..153 " "
+        NAME@153..157
+          IDENT@153..157 "Zero"
+        WHITESPACE@157..158 " "
+        ACCESSOR_LIST@158..166
+          L_CURLY@158..159 "{"
+          WHITESPACE@159..160 " "
+          ACCESSOR@160..164
+            GET_KW@160..163 "get"
+            SEMICOLON@163..164 ";"
+          WHITESPACE@164..165 " "
+          R_CURLY@165..166 "}"
+      WHITESPACE@166..167 "\n"
+      R_CURLY@167..168 "}"
+  WHITESPACE@168..170 "\n\n"
+  INTERFACE_DECL@170..311
+    MODIFIERS@170..176
+      PUBLIC_KW@170..176 "public"
+    WHITESPACE@176..177 " "
+    INTERFACE_KW@177..186 "interface"
+    WHITESPACE@186..187 " "
+    NAME@187..196
+      IDENT@187..196 "IMaterial"
+    WHITESPACE@196..197 "\n"
+    MEMBER_LIST@197..311
+      L_CURLY@197..198 "{"
+      WHITESPACE@198..203 "\n    "
+      ASSOC_TYPE_DECL@203..225
+        TYPE_KW@203..207 "type"
+        WHITESPACE@207..208 " "
+        NAME@208..214
+          IDENT@208..214 "Params"
+        WHITESPACE@214..215 " "
+        BASE_LIST@215..224
+          COLON@215..216 ":"
+          WHITESPACE@216..217 " "
+          PATH_TYPE@217..224
+            PATH@217..224
+              PATH_SEGMENT@217..224
+                NAME_REF@217..224
+                  IDENT@217..224 "IParams"
+        SEMICOLON@224..225 ";"
+      WHITESPACE@225..230 "\n    "
+      FUNCTION_DECL@230..275
+        PATH_TYPE@230..243
+          PATH@230..243
+            PATH_SEGMENT@230..243
+              NAME_REF@230..243
+                IDENT@230..243 "SurfaceOutput"
+        WHITESPACE@243..244 " "
+        NAME@244..251
+          IDENT@244..251 "Surface"
+        PARAM_LIST@251..274
+          L_PAREN@251..252 "("
+          PARAM@252..273
+            MODIFIERS@252..254
+              IN_KW@252..254 "in"
+            WHITESPACE@254..255 " "
+            PATH_TYPE@255..269
+              PATH@255..269
+                PATH_SEGMENT@255..269
+                  NAME_REF@255..269
+                    IDENT@255..269 "SurfaceContext"
+            WHITESPACE@269..270 " "
+            NAME@270..273
+              IDENT@270..273 "ctx"
+          R_PAREN@273..274 ")"
+        SEMICOLON@274..275 ";"
+      WHITESPACE@275..280 "\n    "
+      FUNCTION_DECL@280..309
+        PREDEFINED_TYPE@280..285
+          FLOAT_KW@280..285 "float"
+        WHITESPACE@285..286 " "
+        NAME@286..292
+          IDENT@286..292 "Albedo"
+        PARAM_LIST@292..303
+          L_PAREN@292..293 "("
+          PARAM@293..302
+            PATH_TYPE@293..299
+              PATH@293..299
+                PATH_SEGMENT@293..299
+                  NAME_REF@293..299
+                    IDENT@293..299 "float3"
+            WHITESPACE@299..300 " "
+            NAME@300..302
+              IDENT@300..302 "wo"
+          R_PAREN@302..303 ")"
+        WHITESPACE@303..304 " "
+        EXPR_BODY@304..308
+          FAT_ARROW@304..306 "=>"
+          WHITESPACE@306..307 " "
+          LITERAL@307..308
+            INT_NUMBER@307..308 "1"
+        SEMICOLON@308..309 ";"
+      WHITESPACE@309..310 "\n"
+      R_CURLY@310..311 "}"
+  WHITESPACE@311..313 "\n\n"
+  STRUCT_DECL@313..474
+    MODIFIERS@313..319
+      PUBLIC_KW@313..319 "public"
+    WHITESPACE@319..320 " "
+    STRUCT_KW@320..326 "struct"
+    WHITESPACE@326..327 " "
+    NAME@327..331
+      IDENT@327..331 "Rock"
+    WHITESPACE@331..332 " "
+    BASE_LIST@332..343
+      COLON@332..333 ":"
+      WHITESPACE@333..334 " "
+      PATH_TYPE@334..343
+        PATH@334..343
+          PATH_SEGMENT@334..343
+            NAME_REF@334..343
+              IDENT@334..343 "IMaterial"
+    WHITESPACE@343..344 "\n"
+    MEMBER_LIST@344..474
+      L_CURLY@344..345 "{"
+      WHITESPACE@345..350 "\n    "
+      ASSOC_TYPE_DECL@350..382
+        MODIFIERS@350..356
+          PUBLIC_KW@350..356 "public"
+        WHITESPACE@356..357 " "
+        TYPE_KW@357..361 "type"
+        WHITESPACE@361..362 " "
+        NAME@362..368
+          IDENT@362..368 "Params"
+        WHITESPACE@368..369 " "
+        EQ@369..370 "="
+        WHITESPACE@370..371 " "
+        PATH_TYPE@371..381
+          PATH@371..381
+            PATH_SEGMENT@371..381
+              NAME_REF@371..381
+                IDENT@371..381 "RockParams"
+        SEMICOLON@381..382 ";"
+      WHITESPACE@382..387 "\n    "
+      FIELD_DECL@387..433
+        ATTRIBUTE_LIST@387..400
+          L_BRACK@387..388 "["
+          ATTRIBUTE@388..399
+            PATH@388..393
+              PATH_SEGMENT@388..393
+                NAME_REF@388..393
+                  IDENT@388..393 "Range"
+            ARG_LIST@393..399
+              L_PAREN@393..394 "("
+              ARG@394..395
+                LITERAL@394..395
+                  INT_NUMBER@394..395 "0"
+              COMMA@395..396 ","
+              WHITESPACE@396..397 " "
+              ARG@397..398
+                LITERAL@397..398
+                  INT_NUMBER@397..398 "2"
+              R_PAREN@398..399 ")"
+          R_BRACK@399..400 "]"
+        WHITESPACE@400..401 " "
+        MODIFIERS@401..407
+          PUBLIC_KW@401..407 "public"
+        WHITESPACE@407..408 " "
+        PREDEFINED_TYPE@408..413
+          FLOAT_KW@408..413 "float"
+        WHITESPACE@413..414 " "
+        VARIABLE_DECLARATOR@414..432
+          NAME@414..428
+            IDENT@414..428 "RoughnessScale"
+          WHITESPACE@428..429 " "
+          EQ@429..430 "="
+          WHITESPACE@430..431 " "
+          LITERAL@431..432
+            INT_NUMBER@431..432 "1"
+        SEMICOLON@432..433 ";"
+      WHITESPACE@433..438 "\n    "
+      FIELD_DECL@438..472
+        MODIFIERS@438..450
+          PUBLIC_KW@438..444 "public"
+          WHITESPACE@444..445 " "
+          CONST_KW@445..450 "const"
+        WHITESPACE@450..451 " "
+        PREDEFINED_TYPE@451..455
+          BOOL_KW@451..455 "bool"
+        WHITESPACE@455..456 " "
+        VARIABLE_DECLARATOR@456..471
+          NAME@456..463
+            IDENT@456..463 "UseMoss"
+          WHITESPACE@463..464 " "
+          EQ@464..465 "="
+          WHITESPACE@465..466 " "
+          LITERAL@466..471
+            FALSE_KW@466..471 "false"
+        SEMICOLON@471..472 ";"
+      WHITESPACE@472..473 "\n"
+      R_CURLY@473..474 "}"
+  WHITESPACE@474..476 "\n\n"
+  STRUCT_DECL@476..516
+    MODIFIERS@476..482
+      PUBLIC_KW@476..482 "public"
+    WHITESPACE@482..483 " "
+    STRUCT_KW@483..489 "struct"
+    WHITESPACE@489..490 " "
+    NAME@490..496
+      IDENT@490..496 "Vector"
+    TYPE_PARAM_LIST@496..512
+      LT@496..497 "<"
+      TYPE_PARAM@497..498
+        NAME@497..498
+          IDENT@497..498 "T"
+      COMMA@498..499 ","
+      WHITESPACE@499..500 " "
+      TYPE_PARAM@500..511
+        CONST_KW@500..505 "const"
+        WHITESPACE@505..506 " "
+        PREDEFINED_TYPE@506..509
+          INT_KW@506..509 "int"
+        WHITESPACE@509..510 " "
+        NAME@510..511
+          IDENT@510..511 "N"
+      GT@511..512 ">"
+    WHITESPACE@512..513 " "
+    MEMBER_LIST@513..516
+      L_CURLY@513..514 "{"
+      WHITESPACE@514..515 " "
+      R_CURLY@515..516 "}"
+  WHITESPACE@516..518 "\n\n"
+  FUNCTION_DECL@518..607
+    MODIFIERS@518..524
+      PUBLIC_KW@518..524 "public"
+    WHITESPACE@524..525 " "
+    PATH_TYPE@525..526
+      PATH@525..526
+        PATH_SEGMENT@525..526
+          NAME_REF@525..526
+            IDENT@525..526 "T"
+    WHITESPACE@526..527 " "
+    NAME@527..530
+      IDENT@527..530 "Sum"
+    TYPE_PARAM_LIST@530..546
+      LT@530..531 "<"
+      TYPE_PARAM@531..532
+        NAME@531..532
+          IDENT@531..532 "T"
+      COMMA@532..533 ","
+      WHITESPACE@533..534 " "
+      TYPE_PARAM@534..545
+        CONST_KW@534..539 "const"
+        WHITESPACE@539..540 " "
+        PREDEFINED_TYPE@540..543
+          INT_KW@540..543 "int"
+        WHITESPACE@543..544 " "
+        NAME@544..545
+          IDENT@544..545 "N"
+      GT@545..546 ">"
+    PARAM_LIST@546..562
+      L_PAREN@546..547 "("
+      PARAM@547..561
+        PATH_TYPE@547..559
+          PATH@547..559
+            PATH_SEGMENT@547..559
+              NAME_REF@547..553
+                IDENT@547..553 "Vector"
+              GENERIC_ARG_LIST@553..559
+                LT@553..554 "<"
+                TYPE_ARG@554..555
+                  PATH_TYPE@554..555
+                    PATH@554..555
+                      PATH_SEGMENT@554..555
+                        NAME_REF@554..555
+                          IDENT@554..555 "T"
+                COMMA@555..556 ","
+                WHITESPACE@556..557 " "
+                TYPE_ARG@557..558
+                  PATH_TYPE@557..558
+                    PATH@557..558
+                      PATH_SEGMENT@557..558
+                        NAME_REF@557..558
+                          IDENT@557..558 "N"
+                GT@558..559 ">"
+        WHITESPACE@559..560 " "
+        NAME@560..561
+          IDENT@560..561 "v"
+      R_PAREN@561..562 ")"
+    WHITESPACE@562..563 " "
+    WHERE_CLAUSE@563..587
+      WHERE_KW@563..568 "where"
+      WHITESPACE@568..569 " "
+      PATH_TYPE@569..570
+        PATH@569..570
+          PATH_SEGMENT@569..570
+            NAME_REF@569..570
+              IDENT@569..570 "T"
+      WHITESPACE@570..571 " "
+      COLON@571..572 ":"
+      WHITESPACE@572..573 " "
+      PATH_TYPE@573..587
+        PATH@573..587
+          PATH_SEGMENT@573..587
+            NAME_REF@573..584
+              IDENT@573..584 "IArithmetic"
+            GENERIC_ARG_LIST@584..587
+              LT@584..585 "<"
+              TYPE_ARG@585..586
+                PATH_TYPE@585..586
+                  PATH@585..586
+                    PATH_SEGMENT@585..586
+                      NAME_REF@585..586
+                        IDENT@585..586 "T"
+              GT@586..587 ">"
+    WHITESPACE@587..588 "\n"
+    BLOCK@588..607
+      L_CURLY@588..589 "{"
+      WHITESPACE@589..594 "\n    "
+      RETURN_STMT@594..605
+        RETURN_KW@594..600 "return"
+        WHITESPACE@600..601 " "
+        MEMBER_EXPR@601..604
+          NAME_EXPR@601..602
+            NAME_REF@601..602
+              IDENT@601..602 "v"
+          DOT@602..603 "."
+          NAME_REF@603..604
+            IDENT@603..604 "x"
+        SEMICOLON@604..605 ";"
+      WHITESPACE@605..606 "\n"
+      R_CURLY@606..607 "}"
+  WHITESPACE@607..609 "\n\n"
+  FUNCTION_DECL@609..708
+    MODIFIERS@609..621
+      PUBLIC_KW@609..615 "public"
+      WHITESPACE@615..616 " "
+      CONST_KW@616..621 "const"
+    WHITESPACE@621..622 " "
+    PATH_TYPE@622..633
+      PATH@622..633
+        PATH_SEGMENT@622..633
+          NAME_REF@622..633
+            IDENT@622..633 "ClosureInfo"
+    WHITESPACE@633..634 " "
+    NAME@634..641
+      IDENT@634..641 "Flatten"
+    TYPE_PARAM_LIST@641..644
+      LT@641..642 "<"
+      TYPE_PARAM@642..643
+        NAME@642..643
+          IDENT@642..643 "M"
+      GT@643..644 ">"
+    PARAM_LIST@644..646
+      L_PAREN@644..645 "("
+      R_PAREN@645..646 ")"
+    WHITESPACE@646..647 " "
+    WHERE_CLAUSE@647..666
+      WHERE_KW@647..652 "where"
+      WHITESPACE@652..653 " "
+      PATH_TYPE@653..654
+        PATH@653..654
+          PATH_SEGMENT@653..654
+            NAME_REF@653..654
+              IDENT@653..654 "M"
+      WHITESPACE@654..655 " "
+      COLON@655..656 ":"
+      WHITESPACE@656..657 " "
+      PATH_TYPE@657..666
+        PATH@657..666
+          PATH_SEGMENT@657..666
+            NAME_REF@657..666
+              IDENT@657..666 "IMaterial"
+    WHITESPACE@666..667 " "
+    WHERE_CLAUSE@667..688
+      WHERE_KW@667..672 "where"
+      WHITESPACE@672..673 " "
+      PATH_TYPE@673..681
+        PATH@673..681
+          PATH_SEGMENT@673..674
+            NAME_REF@673..674
+              IDENT@673..674 "M"
+          DOT@674..675 "."
+          PATH_SEGMENT@675..681
+            NAME_REF@675..681
+              IDENT@675..681 "Params"
+      WHITESPACE@681..682 " "
+      COLON@682..683 ":"
+      WHITESPACE@683..684 " "
+      PATH_TYPE@684..688
+        PATH@684..688
+          PATH_SEGMENT@684..688
+            NAME_REF@684..688
+              IDENT@684..688 "IFoo"
+    WHITESPACE@688..689 " "
+    BLOCK@689..708
+      L_CURLY@689..690 "{"
+      WHITESPACE@690..691 " "
+      RETURN_STMT@691..706
+        RETURN_KW@691..697 "return"
+        WHITESPACE@697..698 " "
+        DEFAULT_EXPR@698..705
+          DEFAULT_KW@698..705 "default"
+        SEMICOLON@705..706 ";"
+      WHITESPACE@706..707 " "
+      R_CURLY@707..708 "}"
+  WHITESPACE@708..710 "\n\n"
+  EXTENSION_DECL@710..897
+    EXTENSION_KW@710..719 "extension"
+    PARAM_LIST@719..729
+      L_PAREN@719..720 "("
+      PARAM@720..728
+        PATH_TYPE@720..726
+          PATH@720..726
+            PATH_SEGMENT@720..726
+              NAME_REF@720..726
+                IDENT@720..726 "float3"
+        WHITESPACE@726..727 " "
+        NAME@727..728
+          IDENT@727..728 "c"
+      R_PAREN@728..729 ")"
+    WHITESPACE@729..730 " "
+    BASE_LIST@730..749
+      COLON@730..731 ":"
+      WHITESPACE@731..732 " "
+      PATH_TYPE@732..749
+        PATH@732..749
+          PATH_SEGMENT@732..749
+            NAME_REF@732..741
+              IDENT@732..741 "ILerpable"
+            GENERIC_ARG_LIST@741..749
+              LT@741..742 "<"
+              TYPE_ARG@742..748
+                PATH_TYPE@742..748
+                  PATH@742..748
+                    PATH_SEGMENT@742..748
+                      NAME_REF@742..748
+                        IDENT@742..748 "float3"
+              GT@748..749 ">"
+    WHITESPACE@749..750 "\n"
+    MEMBER_LIST@750..897
+      L_CURLY@750..751 "{"
+      WHITESPACE@751..756 "\n    "
+      PROPERTY_DECL@756..816
+        MODIFIERS@756..762
+          PUBLIC_KW@756..762 "public"
+        WHITESPACE@762..763 " "
+        PREDEFINED_TYPE@763..768
+          FLOAT_KW@763..768 "float"
+        WHITESPACE@768..769 " "
+        NAME@769..773
+          IDENT@769..773 "Luma"
+        WHITESPACE@773..774 " "
+        EXPR_BODY@774..815
+          FAT_ARROW@774..776 "=>"
+          WHITESPACE@776..777 " "
+          CALL_EXPR@777..815
+            NAME_EXPR@777..780
+              NAME_REF@777..780
+                IDENT@777..780 "Dot"
+            ARG_LIST@780..815
+              L_PAREN@780..781 "("
+              ARG@781..782
+                NAME_EXPR@781..782
+                  NAME_REF@781..782
+                    IDENT@781..782 "c"
+              COMMA@782..783 ","
+              WHITESPACE@783..784 " "
+              ARG@784..814
+                CALL_EXPR@784..814
+                  NAME_EXPR@784..790
+                    NAME_REF@784..790
+                      IDENT@784..790 "float3"
+                  ARG_LIST@790..814
+                    L_PAREN@790..791 "("
+                    ARG@791..797
+                      LITERAL@791..797
+                        FLOAT_NUMBER@791..797 "0.2126"
+                    COMMA@797..798 ","
+                    WHITESPACE@798..799 " "
+                    ARG@799..805
+                      LITERAL@799..805
+                        FLOAT_NUMBER@799..805 "0.7152"
+                    COMMA@805..806 ","
+                    WHITESPACE@806..807 " "
+                    ARG@807..813
+                      LITERAL@807..813
+                        FLOAT_NUMBER@807..813 "0.0722"
+                    R_PAREN@813..814 ")"
+              R_PAREN@814..815 ")"
+        SEMICOLON@815..816 ";"
+      WHITESPACE@816..821 "\n    "
+      FUNCTION_DECL@821..895
+        MODIFIERS@821..834
+          PUBLIC_KW@821..827 "public"
+          WHITESPACE@827..828 " "
+          STATIC_KW@828..834 "static"
+        WHITESPACE@834..835 " "
+        PATH_TYPE@835..841
+          PATH@835..841
+            PATH_SEGMENT@835..841
+              NAME_REF@835..841
+                IDENT@835..841 "float3"
+        WHITESPACE@841..842 " "
+        NAME@842..846
+          IDENT@842..846 "Lerp"
+        PARAM_LIST@846..875
+          L_PAREN@846..847 "("
+          PARAM@847..855
+            PATH_TYPE@847..853
+              PATH@847..853
+                PATH_SEGMENT@847..853
+                  NAME_REF@847..853
+                    IDENT@847..853 "float3"
+            WHITESPACE@853..854 " "
+            NAME@854..855
+              IDENT@854..855 "a"
+          COMMA@855..856 ","
+          WHITESPACE@856..857 " "
+          PARAM@857..865
+            PATH_TYPE@857..863
+              PATH@857..863
+                PATH_SEGMENT@857..863
+                  NAME_REF@857..863
+                    IDENT@857..863 "float3"
+            WHITESPACE@863..864 " "
+            NAME@864..865
+              IDENT@864..865 "b"
+          COMMA@865..866 ","
+          WHITESPACE@866..867 " "
+          PARAM@867..874
+            PREDEFINED_TYPE@867..872
+              FLOAT_KW@867..872 "float"
+            WHITESPACE@872..873 " "
+            NAME@873..874
+              IDENT@873..874 "t"
+          R_PAREN@874..875 ")"
+        WHITESPACE@875..876 " "
+        EXPR_BODY@876..894
+          FAT_ARROW@876..878 "=>"
+          WHITESPACE@878..879 " "
+          BIN_EXPR@879..894
+            NAME_EXPR@879..880
+              NAME_REF@879..880
+                IDENT@879..880 "a"
+            WHITESPACE@880..881 " "
+            PLUS@881..882 "+"
+            WHITESPACE@882..883 " "
+            BIN_EXPR@883..894
+              PAREN_EXPR@883..890
+                L_PAREN@883..884 "("
+                BIN_EXPR@884..889
+                  NAME_EXPR@884..885
+                    NAME_REF@884..885
+                      IDENT@884..885 "b"
+                  WHITESPACE@885..886 " "
+                  MINUS@886..887 "-"
+                  WHITESPACE@887..888 " "
+                  NAME_EXPR@888..889
+                    NAME_REF@888..889
+                      IDENT@888..889 "a"
+                R_PAREN@889..890 ")"
+              WHITESPACE@890..891 " "
+              STAR@891..892 "*"
+              WHITESPACE@892..893 " "
+              NAME_EXPR@893..894
+                NAME_REF@893..894
+                  IDENT@893..894 "t"
+        SEMICOLON@894..895 ";"
+      WHITESPACE@895..896 "\n"
+      R_CURLY@896..897 "}"
+  WHITESPACE@897..899 "\n\n"
+  EXTENSION_DECL@899..993
+    EXTENSION_KW@899..908 "extension"
+    TYPE_PARAM_LIST@908..911
+      LT@908..909 "<"
+      TYPE_PARAM@909..910
+        NAME@909..910
+          IDENT@909..910 "T"
+      GT@910..911 ">"
+    PARAM_LIST@911..927
+      L_PAREN@911..912 "("
+      PARAM@912..926
+        PATH_TYPE@912..924
+          PATH@912..924
+            PATH_SEGMENT@912..924
+              NAME_REF@912..918
+                IDENT@912..918 "Vector"
+              GENERIC_ARG_LIST@918..924
+                LT@918..919 "<"
+                TYPE_ARG@919..920
+                  PATH_TYPE@919..920
+                    PATH@919..920
+                      PATH_SEGMENT@919..920
+                        NAME_REF@919..920
+                          IDENT@919..920 "T"
+                COMMA@920..921 ","
+                WHITESPACE@921..922 " "
+                CONST_ARG@922..923
+                  LITERAL@922..923
+                    INT_NUMBER@922..923 "3"
+                GT@923..924 ">"
+        WHITESPACE@924..925 " "
+        NAME@925..926
+          IDENT@925..926 "v"
+      R_PAREN@926..927 ")"
+    WHITESPACE@927..928 " "
+    WHERE_CLAUSE@928..952
+      WHERE_KW@928..933 "where"
+      WHITESPACE@933..934 " "
+      PATH_TYPE@934..935
+        PATH@934..935
+          PATH_SEGMENT@934..935
+            NAME_REF@934..935
+              IDENT@934..935 "T"
+      WHITESPACE@935..936 " "
+      COLON@936..937 ":"
+      WHITESPACE@937..938 " "
+      PATH_TYPE@938..952
+        PATH@938..952
+          PATH_SEGMENT@938..952
+            NAME_REF@938..949
+              IDENT@938..949 "IArithmetic"
+            GENERIC_ARG_LIST@949..952
+              LT@949..950 "<"
+              TYPE_ARG@950..951
+                PATH_TYPE@950..951
+                  PATH@950..951
+                    PATH_SEGMENT@950..951
+                      NAME_REF@950..951
+                        IDENT@950..951 "T"
+              GT@951..952 ">"
+    WHITESPACE@952..953 "\n"
+    MEMBER_LIST@953..993
+      L_CURLY@953..954 "{"
+      WHITESPACE@954..959 "\n    "
+      PROPERTY_DECL@959..991
+        MODIFIERS@959..965
+          PUBLIC_KW@959..965 "public"
+        WHITESPACE@965..966 " "
+        PATH_TYPE@966..967
+          PATH@966..967
+            PATH_SEGMENT@966..967
+              NAME_REF@966..967
+                IDENT@966..967 "T"
+        WHITESPACE@967..968 " "
+        NAME@968..971
+          IDENT@968..971 "Sum"
+        WHITESPACE@971..972 " "
+        EXPR_BODY@972..990
+          FAT_ARROW@972..974 "=>"
+          WHITESPACE@974..975 " "
+          BIN_EXPR@975..990
+            BIN_EXPR@975..984
+              MEMBER_EXPR@975..978
+                NAME_EXPR@975..976
+                  NAME_REF@975..976
+                    IDENT@975..976 "v"
+                DOT@976..977 "."
+                NAME_REF@977..978
+                  IDENT@977..978 "x"
+              WHITESPACE@978..979 " "
+              PLUS@979..980 "+"
+              WHITESPACE@980..981 " "
+              MEMBER_EXPR@981..984
+                NAME_EXPR@981..982
+                  NAME_REF@981..982
+                    IDENT@981..982 "v"
+                DOT@982..983 "."
+                NAME_REF@983..984
+                  IDENT@983..984 "y"
+            WHITESPACE@984..985 " "
+            PLUS@985..986 "+"
+            WHITESPACE@986..987 " "
+            MEMBER_EXPR@987..990
+              NAME_EXPR@987..988
+                NAME_REF@987..988
+                  IDENT@987..988 "v"
+              DOT@988..989 "."
+              NAME_REF@989..990
+                IDENT@989..990 "z"
+        SEMICOLON@990..991 ";"
+      WHITESPACE@991..992 "\n"
+      R_CURLY@992..993 "}"
+  WHITESPACE@993..994 "\n"

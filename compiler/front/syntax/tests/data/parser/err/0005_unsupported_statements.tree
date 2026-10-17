@@ -1,0 +1,62 @@
+SOURCE_FILE@0..66
+  FUNCTION_DECL@0..65
+    PREDEFINED_TYPE@0..4
+      VOID_KW@0..4 "void"
+    WHITESPACE@4..5 " "
+    NAME@5..6
+      IDENT@5..6 "F"
+    PARAM_LIST@6..8
+      L_PAREN@6..7 "("
+      R_PAREN@7..8 ")"
+    WHITESPACE@8..9 "\n"
+    BLOCK@9..65
+      L_CURLY@9..10 "{"
+      WHITESPACE@10..15 "\n    "
+      ERROR@15..18
+        TRY_KW@15..18 "try"
+      WHITESPACE@18..19 " "
+      BLOCK@19..22
+        L_CURLY@19..20 "{"
+        WHITESPACE@20..21 " "
+        R_CURLY@21..22 "}"
+      WHITESPACE@22..23 " "
+      ERROR@23..28
+        CATCH_KW@23..28 "catch"
+      WHITESPACE@28..29 " "
+      BLOCK@29..32
+        L_CURLY@29..30 "{"
+        WHITESPACE@30..31 " "
+        R_CURLY@31..32 "}"
+      WHITESPACE@32..37 "\n    "
+      ERROR@37..41
+        GOTO_KW@37..41 "goto"
+      WHITESPACE@41..42 " "
+      EXPR_STMT@42..46
+        NAME_EXPR@42..45
+          NAME_REF@42..45
+            IDENT@42..45 "end"
+        SEMICOLON@45..46 ";"
+      WHITESPACE@46..51 "\n    "
+      ERROR@51..55
+        LOCK_KW@51..55 "lock"
+      WHITESPACE@55..56 " "
+      EXPR_STMT@56..59
+        PAREN_EXPR@56..59
+          L_PAREN@56..57 "("
+          NAME_EXPR@57..58
+            NAME_REF@57..58
+              IDENT@57..58 "x"
+          R_PAREN@58..59 ")"
+      WHITESPACE@59..60 " "
+      BLOCK@60..63
+        L_CURLY@60..61 "{"
+        WHITESPACE@61..62 " "
+        R_CURLY@62..63 "}"
+      WHITESPACE@63..64 "\n"
+      R_CURLY@64..65 "}"
+  WHITESPACE@65..66 "\n"
+E0201 15..18: `try` statements are not supported
+E0201 23..28: `catch` statements are not supported
+E0201 37..41: `goto` statements are not supported
+E0201 51..55: `lock` statements are not supported
+E0201 59..59: expected `;`, found `{`

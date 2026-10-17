@@ -49,7 +49,7 @@ marlin/
 │   ├── engine/                #   L3  引擎子系统：render/asset/world/physics…
 │   └── marlin/                #   umbrella crate `marlin`：game 与 editor 共同链接的 runtime
 │
-├── compiler/                  # 语言工具链（待建）：VM 语言的编译器与运行时放在 compiler/vm
+├── compiler/                  # 语言工具链：common（语言无关）、front（C# 系共享前端，0015）、shader（0005）、vm（待建）
 ├── editor/                    # editor-only 库（std 可用，仅桌面）
 ├── tools/                     # 离线工具（std）：cooker 与各资源类型的 cook…
 ├── apps/                      # 最终可执行文件：game、editor（全局符号只允许在这里定义）

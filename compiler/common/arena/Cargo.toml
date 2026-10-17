@@ -1,0 +1,11 @@
+[package]
+name = "marlin-lang-arena"
+description = "Marlin language toolchain: arenas, typed indices and interning."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

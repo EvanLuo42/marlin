@@ -6,6 +6,9 @@ members = [
     "runtime/core/*",
     "runtime/engine/*",
     "runtime/marlin",
+    "compiler/common/*",
+    "compiler/front/*",
+    "compiler/shader/*",
     "editor/*",
     "tools/*",
     "apps/*",
@@ -67,6 +70,10 @@ marlin-vfx = { path = "runtime/engine/vfx" }
 marlin-framework = { path = "runtime/engine/framework" }
 # --- umbrella ---
 marlin = { path = "runtime/marlin" }
+# --- compiler ---
+marlin-lang-span = { path = "compiler/common/span" }
+marlin-lang-diag = { path = "compiler/common/diag" }
+marlin-front-syntax = { path = "compiler/front/syntax" }
 # --- editor ---
 marlin-editor-ui-core = { path = "editor/ui_core" }
 marlin-editor-ui-widgets = { path = "editor/ui_widgets" }

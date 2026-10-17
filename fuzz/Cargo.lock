@@ -133,12 +133,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "marlin-front-syntax"
+version = "0.1.0"
+dependencies = [
+ "marlin-lang-diag",
+ "marlin-lang-span",
+]
+
+[[package]]
 name = "marlin-fuzz"
 version = "0.0.0"
 dependencies = [
  "libfuzzer-sys",
  "marlin-asset",
  "marlin-compress",
+ "marlin-front-syntax",
  "marlin-hash",
  "marlin-reflect",
  "marlin-serial",
@@ -175,6 +184,17 @@ dependencies = [
  "marlin-profile",
  "marlin-std",
 ]
+
+[[package]]
+name = "marlin-lang-diag"
+version = "0.1.0"
+dependencies = [
+ "marlin-lang-span",
+]
+
+[[package]]
+name = "marlin-lang-span"
+version = "0.1.0"
 
 [[package]]
 name = "marlin-math"

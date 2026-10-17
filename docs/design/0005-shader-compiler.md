@@ -11,7 +11,7 @@
 
 | 维度 | 决定 | § |
 |---|---|---|
-| 形态 | 纯 Rust 库，没有 CLI；编译器 crate 放在 `compiler/shader/`，主机平台的后端放在 `platforms/<p>/shader/` | 1 |
+| 形态 | 纯 Rust 库，没有 CLI；shader 专有的 crate 放在 `compiler/shader/`，和 VM 语言共用的前端放在 `compiler/common/`、`compiler/front/`（0015）；主机平台的后端放在 `platforms/<p>/shader/` | 2 |
 | 前端 | 由 query 驱动，增量编译；query 引擎自己写一个精简版 | 2 |
 | IR | 两层：前端产出泛型的 MIR，单态化之后是后端的 SSA IR；两层共用同一套指令（0006） | 3 |
 | 后端 IR 控制流 | CFG + SSA；分支和循环的终结指令带 merge 块和 continue 块，结构和 SPIR-V 同构，pass 必须保持 | 3.2 |
@@ -45,14 +45,19 @@
 
 ## 2. crate 划分
 
+前端的通用部分和以后的 VM 语言共用（0015）：语言无关的基础设施在 `compiler/common`，C# 系语言共用的语法和名字解析在 `compiler/front`，shader 专有的部分在 `compiler/shader`。
+
 ```
-compiler/shader/
+compiler/common/          （0015 §1，包名 marlin-lang-*）
   span          源码位置、文件 id、行列映射
   diag          结构化诊断与文本渲染器
   arena         arena、interning、类型化下标
   query         增量 query 引擎（红绿算法、依赖记录、取消、确定性）
-  syntax        lexer、无损 CST、能容错的 parser、有类型的 AST 视图
+compiler/front/           （0015 §1，包名 marlin-front-*）
+  syntax        lexer、无损 CST、超集文法的 parser、按 dialect 的 validation、有类型的 AST 视图
   hir_def       item tree、包与 namespace 的 def map、名字解析、把函数体降低成 HIR
+compiler/shader/          （包名 marlin-shaderc-*）
+  syntax        shader 的 Dialect（0015 §2.2）和解析入口
   hir_ty        类型检查与推断、泛型与约束求解、capability 推断、const 求值的入口
   mir           从 HIR 降低到泛型 MIR（与 ir 共用指令集，0006 §2）；直接构造 SSA
   mono          从 EntryRequest 收集实例，单态化，产出后端 IR
@@ -62,14 +67,18 @@ compiler/shader/
   backend_dxil  DXIL：LLVM 3.7 bitcode 写出器、DXIL 元数据、容器和验证哈希
   backend_spirv SPIR-V 写出器
   reflect       反射数据类型（运行时也能依赖）
-  marlin-shader facade：Session、target 注册表、EntryRequest
+  shaderc       facade marlin-shaderc：Session、target 注册表、EntryRequest
 platforms/<p>/shader/  主机平台的后端（在 cook 平台 cfg 下通过 #[path] 引入）
 ```
 
+- facade 叫 `marlin-shaderc`：`marlin-shader` 这个名字已经给了运行时的 shader 容器（`runtime/engine/shader`）。
+- `compiler/` 在 0001 的分层里位于 runtime 之上、tools 之下：可以依赖 runtime，tools 可以依赖它，runtime 不能依赖它。
+
 依赖方向：
+- `common` ← `front` ← `shader`（0015 §1）；
 - `syntax` → `hir_def` → `hir_ty` → `mir` → `mono` → `ir`，每一层都只依赖它前面的层；`opt` 只依赖 `ir` 和 `target`；
 - 每个后端只依赖 `ir`、`target` 和 `reflect`；
-- `marlin-shader` 把上面这些组装起来。
+- `marlin-shaderc` 把上面这些组装起来。
 
 ## 3. IR
 
@@ -402,3 +411,22 @@ public const ClosureInfo Flatten<M>() where M : IMaterial { ... }
 - peephole 规则表的格式；寄存器压力模型的参数（按 target）。
 - DXIL 写出器：LLVM 3.7 bitcode 的子集，以及验证哈希的算法。
 - 语言服务器的范围。
+- `reflect` crate 要让运行时依赖，但运行时不能依赖 `compiler/`：它要么放到 runtime 里（比如并进 `runtime/engine/shader`），要么拆成运行时的数据类型和编译器端的构造代码两部分。
+
+## 11. 实现顺序
+
+按 §2 的依赖方向自下而上，每一步都带测试、单独提交：
+
+| 步 | 内容 | 完成的标志 |
+|---|---|---|
+| 1 | `common`：`span`、`diag`（含文本渲染器）、`arena` | 诊断能渲染成 rustc 风格的文本 |
+| 2 | `front/syntax`：lexer、无损 CST、超集文法的 parser、validation、有类型的 AST 视图；`shader/syntax`：shader 的 dialect | 覆盖 0004 的全部语法；任意输入都不 panic，并且能原样往返 |
+| 3 | `common/query`：红绿增量引擎 | 改一个文件只重算依赖它的 query |
+| 4 | `front/hir_def`：item tree、def map、名字解析、函数体降低成 HIR | 包内跨文件、跨 namespace 的名字都能解析 |
+| 5 | `hir_ty`：类型检查与推断、泛型与约束、capability 推断 | 0004 的类型规则都有诊断 |
+| 6 | `ir`：指令集、builder、verifier、文本打印和解析、解释器 | 文本能往返；解释器能跑 compute 语义 |
+| 7 | `mir`、`mono`：降低到 SSA、单态化、CTFE | 泛型入口能单态化，`const` 函数能在编译期求值 |
+| 8 | `opt`：pass manager 和阶段 0–1 的 pass，再加上 SCCP、DCE、CFG 化简 | 第一个 compute 入口能走完整条流水线 |
+| 9 | `target`、`backend_dxil`、`reflect`、facade `Session` | 第一个 compute shader 在真实 GPU 上跑通，替换掉一个占位 `.dxil` |
+| 10 | 补齐其余 stage、资源、wave、纹理；cook 和 build.rs 接入；替换全部占位 shader | |
+| 11 | 阶段 2–5 的其余 pass、自动微分、调试信息、SPIR-V 等其他后端 | |

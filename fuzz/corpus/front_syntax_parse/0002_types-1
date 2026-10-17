@@ -1,0 +1,26 @@
+public struct Light
+{
+    public float3 Color = 1;
+    public float Intensity = 1;
+    public Texture2D<float4> Albedo;
+    float[4] Weights;
+    float3[N * 2] Taps;
+    (float3 Wi, float Pdf) Sample;
+    Vector<T, 3> V;
+    Layer<N - 1> Inner;
+    Map<A, B<C>> Nested;
+    Map<A, B<C<D>>> Deeper;
+    global::Marlin.Light Qualified;
+    public float Min, Max;
+}
+
+public readonly struct Ray
+{
+    public float3 Origin;
+    public float3 Dir;
+    public float3 At(float t) => Origin + Dir * t;
+}
+
+public enum Lobe : uint { Diffuse, Specular, Haze, Fuzz }
+
+[Flags] public enum Features : uint { Aniso = 1, Fuzz = 2, Haze = 4, }

@@ -1,0 +1,84 @@
+SOURCE_FILE@0..88
+  STRUCT_DECL@0..33
+    STRUCT_KW@0..6 "struct"
+    WHITESPACE@6..7 " "
+    NAME@7..8
+      IDENT@7..8 "A"
+    WHITESPACE@8..9 "\n"
+    MEMBER_LIST@9..33
+      L_CURLY@9..10 "{"
+      WHITESPACE@10..15 "\n    "
+      FIELD_DECL@15..20
+        PREDEFINED_TYPE@15..18
+          INT_KW@15..18 "int"
+        WHITESPACE@18..19 " "
+        VARIABLE_DECLARATOR@19..20
+          NAME@19..20
+            IDENT@19..20 "X"
+      WHITESPACE@20..25 "\n    "
+      FIELD_DECL@25..31
+        PREDEFINED_TYPE@25..28
+          INT_KW@25..28 "int"
+        WHITESPACE@28..29 " "
+        VARIABLE_DECLARATOR@29..30
+          NAME@29..30
+            IDENT@29..30 "Y"
+        SEMICOLON@30..31 ";"
+      WHITESPACE@31..32 "\n"
+      R_CURLY@32..33 "}"
+  WHITESPACE@33..35 "\n\n"
+  FUNCTION_DECL@35..87
+    PREDEFINED_TYPE@35..39
+      VOID_KW@35..39 "void"
+    WHITESPACE@39..40 " "
+    NAME@40..41
+      IDENT@40..41 "F"
+    PARAM_LIST@41..43
+      L_PAREN@41..42 "("
+      R_PAREN@42..43 ")"
+    WHITESPACE@43..44 "\n"
+    BLOCK@44..87
+      L_CURLY@44..45 "{"
+      WHITESPACE@45..50 "\n    "
+      LOCAL_DECL_STMT@50..59
+        PATH_TYPE@50..53
+          PATH@50..53
+            PATH_SEGMENT@50..53
+              NAME_REF@50..53
+                IDENT@50..53 "var"
+        WHITESPACE@53..54 " "
+        VARIABLE_DECLARATOR@54..59
+          NAME@54..55
+            IDENT@54..55 "a"
+          WHITESPACE@55..56 " "
+          EQ@56..57 "="
+          WHITESPACE@57..58 " "
+          LITERAL@58..59
+            INT_NUMBER@58..59 "1"
+      WHITESPACE@59..64 "\n    "
+      LOCAL_DECL_STMT@64..74
+        PATH_TYPE@64..67
+          PATH@64..67
+            PATH_SEGMENT@64..67
+              NAME_REF@64..67
+                IDENT@64..67 "var"
+        WHITESPACE@67..68 " "
+        VARIABLE_DECLARATOR@68..73
+          NAME@68..69
+            IDENT@68..69 "b"
+          WHITESPACE@69..70 " "
+          EQ@70..71 "="
+          WHITESPACE@71..72 " "
+          LITERAL@72..73
+            INT_NUMBER@72..73 "2"
+        SEMICOLON@73..74 ";"
+      WHITESPACE@74..79 "\n    "
+      RETURN_STMT@79..85
+        RETURN_KW@79..85 "return"
+      WHITESPACE@85..86 "\n"
+      R_CURLY@86..87 "}"
+  WHITESPACE@87..88 "\n"
+E0201 20..20: expected `;`, found `int`
+E0201 59..59: expected `;`, found `var`
+E0201 85..85: expected an expression, found `}`
+E0201 85..85: expected `;`, found `}`

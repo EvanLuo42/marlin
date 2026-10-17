@@ -1,0 +1,60 @@
+SOURCE_FILE@0..68
+  FUNCTION_DECL@0..36
+    PREDEFINED_TYPE@0..4
+      VOID_KW@0..4 "void"
+    WHITESPACE@4..5 " "
+    NAME@5..6
+      IDENT@5..6 "F"
+    PARAM_LIST@6..8
+      L_PAREN@6..7 "("
+      R_PAREN@7..8 ")"
+    WHITESPACE@8..9 "\n"
+    BLOCK@9..36
+      L_CURLY@9..10 "{"
+      WHITESPACE@10..15 "\n    "
+      IF_STMT@15..36
+        IF_KW@15..17 "if"
+        WHITESPACE@17..18 " "
+        L_PAREN@18..19 "("
+        NAME_EXPR@19..20
+          NAME_REF@19..20
+            IDENT@19..20 "x"
+        R_PAREN@20..21 ")"
+        WHITESPACE@21..22 " "
+        BLOCK@22..36
+          L_CURLY@22..23 "{"
+          WHITESPACE@23..32 "\n        "
+          EXPR_STMT@32..36
+            CALL_EXPR@32..35
+              NAME_EXPR@32..33
+                NAME_REF@32..33
+                  IDENT@32..33 "y"
+              ARG_LIST@33..35
+                L_PAREN@33..34 "("
+                R_PAREN@34..35 ")"
+            SEMICOLON@35..36 ";"
+  WHITESPACE@36..38 "\n\n"
+  STRUCT_DECL@38..67
+    MODIFIERS@38..44
+      PUBLIC_KW@38..44 "public"
+    WHITESPACE@44..45 " "
+    STRUCT_KW@45..51 "struct"
+    WHITESPACE@51..52 " "
+    NAME@52..56
+      IDENT@52..56 "Next"
+    WHITESPACE@56..57 " "
+    MEMBER_LIST@57..67
+      L_CURLY@57..58 "{"
+      WHITESPACE@58..59 " "
+      FIELD_DECL@59..65
+        PREDEFINED_TYPE@59..62
+          INT_KW@59..62 "int"
+        WHITESPACE@62..63 " "
+        VARIABLE_DECLARATOR@63..64
+          NAME@63..64
+            IDENT@63..64 "Z"
+        SEMICOLON@64..65 ";"
+      WHITESPACE@65..66 " "
+      R_CURLY@66..67 "}"
+  WHITESPACE@67..68 "\n"
+E0201 36..36: expected `}`, found `public`

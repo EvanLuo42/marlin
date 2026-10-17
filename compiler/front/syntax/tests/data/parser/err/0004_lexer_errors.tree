@@ -1,0 +1,71 @@
+SOURCE_FILE@0..75
+  FIELD_DECL@0..21
+    PATH_TYPE@0..3
+      PATH@0..3
+        PATH_SEGMENT@0..3
+          NAME_REF@0..3
+            IDENT@0..3 "var"
+    WHITESPACE@3..4 " "
+    VARIABLE_DECLARATOR@4..21
+      NAME@4..5
+        IDENT@4..5 "s"
+      WHITESPACE@5..6 " "
+      EQ@6..7 "="
+      WHITESPACE@7..8 " "
+      LITERAL@8..21
+        STRING@8..21 "\"unterminated"
+  WHITESPACE@21..22 "\n"
+  FIELD_DECL@22..39
+    PATH_TYPE@22..25
+      PATH@22..25
+        PATH_SEGMENT@22..25
+          NAME_REF@22..25
+            IDENT@22..25 "var"
+    WHITESPACE@25..26 " "
+    VARIABLE_DECLARATOR@26..39
+      NAME@26..27
+        IDENT@26..27 "t"
+      WHITESPACE@27..28 " "
+      EQ@28..29 "="
+      WHITESPACE@29..30 " "
+      INTERPOLATED_STRING@30..39
+        INTERP_START@30..32 "$\""
+        INTERP_TEXT@32..37 "hole "
+        INTERPOLATION@37..39
+          L_CURLY@37..38 "{"
+          NAME_EXPR@38..39
+            NAME_REF@38..39
+              IDENT@38..39 "x"
+  WHITESPACE@39..40 "\n"
+  FIELD_DECL@40..58
+    PATH_TYPE@40..43
+      PATH@40..43
+        PATH_SEGMENT@40..43
+          NAME_REF@40..43
+            IDENT@40..43 "var"
+    WHITESPACE@43..44 " "
+    VARIABLE_DECLARATOR@44..57
+      NAME@44..45
+        IDENT@44..45 "u"
+      WHITESPACE@45..46 " "
+      EQ@46..47 "="
+      WHITESPACE@47..48 " "
+      BIN_EXPR@48..57
+        LITERAL@48..52
+          FLOAT_NUMBER@48..52 "1.5q"
+        WHITESPACE@52..53 " "
+        PLUS@53..54 "+"
+        WHITESPACE@54..55 " "
+        LITERAL@55..57
+          INT_NUMBER@55..57 "0x"
+    SEMICOLON@57..58 ";"
+  WHITESPACE@58..59 "\n"
+  BLOCK_COMMENT@59..75 "/* never closed\n"
+E0101 8..21: unterminated string
+E0201 21..21: expected `;`, found `var`
+E0101 39..39: unterminated interpolated string
+E0201 39..39: expected `}`, found `var`
+E0201 39..39: expected `;`, found `var`
+E0101 48..52: invalid suffix `q` on a number
+E0101 55..57: missing digits after the radix prefix
+E0101 59..61: unterminated block comment

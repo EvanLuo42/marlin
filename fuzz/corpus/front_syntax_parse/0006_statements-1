@@ -1,0 +1,32 @@
+void F()
+{
+    [Precise] float acc = 0, err;
+    const int N = 4;
+    [Export] const ClosureInfo Topology = Flatten<M>();
+    if (a) b(); else if (c) { d(); } else e();
+    const if (Target.Has(Capability.WaveMatrix)) { MatMul16(); } else { }
+    for (int i = 0, j = 1; i < n; i++, j--) { continue; }
+    for (;;) break;
+    foreach (var i in 0..n) s += i;
+    foreach (float3 t in taps) { }
+    while (q.Proceed()) { if (AlphaTest(q.Candidate)) q.CommitTriangle(); }
+    do { x--; } while (x > 0);
+    switch (lobe)
+    {
+        case Lobe.Diffuse:
+        case Lobe.Specular when rough > 0.5:
+            w = 1;
+            break;
+        case { Weight: > 0, Kind: Lobe.Haze }:
+            break;
+        default:
+            return;
+    }
+    float Local(float x) => x * 2;
+    static T Twice<T>(T v) where T : IArithmetic<T> { return v + v; }
+    A<B> c;
+    T[4] arr;
+    arr[2] = 1;
+    ;
+    return;
+}

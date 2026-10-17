@@ -1,0 +1,15 @@
+public struct Rng
+{
+    uint State;
+
+    public Rng(uint seed) { State = seed; }
+    public Rng(int seed) : this((uint)seed) { }
+    public float Next() { State = Hash(State); return ToUnorm(State); }
+    public readonly float Peek() => ToUnorm(Hash(State));
+    public float this[int i] { get => i; set { State = (uint)value; } }
+    public float Value { get; set; } = 1;
+    public static Rng operator +(Rng a, Rng b) => a;
+    public static Rng operator >>(Rng a, int b) => a;
+    public static implicit operator uint(Rng r) => r.State;
+    public static explicit operator Rng(uint s) => Rng(s);
+}

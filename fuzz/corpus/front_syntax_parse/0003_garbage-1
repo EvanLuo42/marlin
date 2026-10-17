@@ -1,0 +1,5 @@
+#if DEBUG
+struct A { int X; } }
+@ $ ` ¤
+void G() { var x = ; var y = (1 + ; F(,); }
+float x[4];

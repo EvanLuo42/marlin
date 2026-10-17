@@ -1,0 +1,12 @@
+[package]
+name = "marlin-lang-diag"
+description = "Marlin language toolchain: structured diagnostics and their rustc-style text rendering."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+marlin-lang-span.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,6 @@
+void F()
+{
+    try { } catch { }
+    goto end;
+    lock (x) { }
+}

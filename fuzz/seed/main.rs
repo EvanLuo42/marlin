@@ -33,6 +33,7 @@ fn main() {
     serial(&mut out);
     compress_seeds(&mut out, repo);
     asset(&mut out);
+    front_syntax(&mut out, repo);
 }
 
 struct Corpus {
@@ -464,4 +465,32 @@ fn package_of(units: &[(u64, &Vec<u8>)]) -> Vec<u8> {
         assert_eq!(&decoded, bytes);
     }
     file
+}
+
+/// `front_syntax_parse`: the parser's snapshot sources and the shader syntax tour, each under
+/// both dialect selectors.
+fn front_syntax(out: &mut Corpus, repo: &Path) {
+    let mut sources: Vec<PathBuf> = Vec::new();
+    for dir in [
+        "compiler/front/syntax/tests/data/parser/ok",
+        "compiler/front/syntax/tests/data/parser/err",
+    ] {
+        for entry in fs::read_dir(repo.join(dir)).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_some_and(|e| e == "src") {
+                sources.push(path);
+            }
+        }
+    }
+    sources.push(repo.join("compiler/shader/syntax/tests/data/tour.mshader"));
+    sources.sort();
+    for path in sources {
+        let text = fs::read(&path).unwrap();
+        let stem = path.file_stem().unwrap().to_string_lossy();
+        for selector in [0u8, 1] {
+            let mut input = vec![selector];
+            input.extend_from_slice(&text);
+            out.put("front_syntax_parse", &format!("{stem}-{selector}"), &input);
+        }
+    }
 }

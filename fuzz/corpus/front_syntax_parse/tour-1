@@ -1,0 +1,175 @@
+// A tour of the syntax decided in docs/design/0004-shader-language.md.
+namespace Marlin.Post;
+
+using Marlin.Math;
+using static Marlin.Math.Constants;
+
+public enum Lobe : uint { Diffuse, Specular, Haze, Fuzz }
+
+[Flags] public enum Features : uint { Aniso = 1, Fuzz = 2, Haze = 4 }
+
+public struct Light
+{
+    public float3 Color = 1;
+    public float Intensity = 1;
+}
+
+public struct Rng
+{
+    uint State;
+
+    public float Next() { State = Hash(State); return ToUnorm(State); }
+    public readonly float Peek() => ToUnorm(Hash(State));
+}
+
+public readonly struct Ray
+{
+    public float3 Origin;
+    public float3 Dir;
+    public float3 At(float t) => Origin + Dir * t;
+}
+
+public interface IArithmetic<TSelf> where TSelf : IArithmetic<TSelf>
+{
+    static abstract TSelf operator +(TSelf a, TSelf b);
+    static abstract TSelf Zero { get; }
+}
+
+public interface IMaterial
+{
+    type Params : IParams;
+    SurfaceOutput Surface(in SurfaceContext ctx);
+}
+
+public struct Rock : IMaterial
+{
+    public type Params = RockParams;
+    [Group("Base")] public Texture2D<float4> Albedo;
+    [Range(0, 2)]   public float RoughnessScale = 1;
+    public const bool UseMoss = false;
+}
+
+public struct Vector<T, const int N> { }
+
+public T Sum<T, const int N>(Vector<T, N> v) where T : IArithmetic<T> { return T.Zero; }
+
+extension(float3 c) : ILerpable<float3>
+{
+    public float Luma => Dot(c, float3(0.2126, 0.7152, 0.0722));
+    public static float3 Lerp(float3 a, float3 b, float t) => a + (b - a) * t;
+}
+
+extension<T>(Vector<T, 3> v) where T : IArithmetic<T>
+{
+    public T Sum => v.x + v.y + v.z;
+}
+
+public float Luma(float3 c) => Dot(c, float3(0.2126, 0.7152, 0.0722));
+
+public void Decode(in GBuffer g, out float3 n, ref float w) { n = 0; }
+
+float Integrate(int n, Func<float, float> f)
+{
+    float s = 0;
+    foreach (var i in 0..n) s += f((i + 0.5) / n);
+    return s / n;
+}
+
+public struct BlurArgs
+{
+    public Texture2D<float4> Src;
+    public StorageTexture2D<float4> Dst;
+    public Sampler Linear;
+    public float Radius;
+}
+
+[GroupShared] float4[18 * 18] Tile;
+
+[Compute(16, 16, 1)]
+public void Blur([DispatchThreadId] uint3 id, [GroupIndex] uint gi, [Push] in BlurArgs args)
+{
+    Tile[gi] = args.Src.Sample(args.Linear, float2(id.xy), lod: 0);
+    Barrier.Group();
+    var total = Wave.Sum(Tile[gi].x);
+    if (Wave.IsFirstLane) counters.AtomicAdd(0, (uint)total);
+    args.Dst[id.xy] = Tile[gi];
+    Debug.Assert(total > 0, $"total = {total} at {id.xy}");
+}
+
+public struct VsOut
+{
+    [Position] public float4 Pos;
+    public float2 Uv;
+    [Flat] public uint Material;
+}
+
+[Vertex]
+public VsOut Vs([VertexId] uint vid, [InstanceId] uint iid, [Push] in DrawArgs args)
+{
+    float4 clip = args.ViewProj * float4(Positions[vid], 1);
+    return VsOut { Pos = clip, Uv = 0, Material = iid };
+}
+
+public struct PsOut
+{
+    [Target(0)] public float4 Color;
+    [Target(1)] public float2 Velocity;
+}
+
+[Pixel]
+public PsOut Ps(in VsOut i, [IsFrontFace] bool front)
+{
+    half h = 0.5;
+    var x = 0.5;
+    float3 c = 1;
+    var d = c * 2h;
+    float m01 = Model[0, 1];
+    float3 t = Model.Column(3).xyz;
+    var light = Light { Color = c, Intensity = 2 };
+    Light k = { Color = c };
+    var n = light with { Intensity = 4 };
+    var z = default(Light);
+    float[4] w = [0.1, 0.2, 0.3, 0.4];
+    var (wi, pdf) = SampleLobe(i.Uv);
+    float weight = Lobe.Diffuse switch
+    {
+        Lobe.Diffuse => 1,
+        Lobe.Specular => 2,
+        Lobe.Haze or Lobe.Fuzz => 0.5,
+    };
+    if (i.Uv.x < 0) Discard();
+    return PsOut { Color = float4(c, 1), Velocity = 0 };
+}
+
+[Mesh(128, 1, 1, MaxVertices = 64, MaxPrimitives = 126, Topology = Triangle)]
+public void Ms([GroupThreadId] uint3 tid, [Payload] in ClusterPayload p, MeshOutput<VsOut, PrimOut> o)
+{
+    o.SetCounts(64, 126);
+    o.Triangles[tid.x] = uint3(0, 1, 2);
+    o.Primitives[tid.x] = PrimOut { Cluster = p.Id };
+}
+
+[Compute(64, 1, 1)]
+public void ResolvePixel<M>([DispatchThreadId] uint3 id, [Push] in ResolveArgs a) where M : IMaterial
+{
+    [Export] const ClosureInfo Topology = Flatten<M>();
+    const if (Target.Has(Capability.WaveMatrix)) { MatMul16(); }
+    else { }
+    var q = RayQuery(a.Accel, ray, RayFlags.CullBackFace, mask: 0xFF);
+    while (q.Proceed())
+    {
+        if (AlphaTest(q.Candidate)) q.CommitTriangle();
+    }
+    var uv = Derivatives.Seed(uv0, dx: dUvDx, dy: dUvDy);
+    var r = ForwardDiff(Shade)(DiffPair(n, dn), DiffPair(l, float3(0)), rough);
+}
+
+[Differentiable]
+public float3 Shade(float3 n, float3 l, [NoDiff] float roughness)
+{
+    var ndl = Saturate(Dot(n, l));
+    return ndl * Albedo(Detach(n));
+}
+
+[ForwardDerivative(nameof(SafeSqrtFwd))]
+public float SafeSqrt(float x) => Sqrt(Max(x, 1e-8));

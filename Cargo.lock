@@ -597,6 +597,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "marlin-front-syntax"
+version = "0.1.0"
+dependencies = [
+ "marlin-lang-diag",
+ "marlin-lang-span",
+ "marlin-math",
+ "marlin-test-support",
+]
+
+[[package]]
 name = "marlin-game"
 version = "0.1.0"
 dependencies = [
@@ -672,6 +682,24 @@ dependencies = [
  "marlin-bench",
  "marlin-profile",
  "marlin-std",
+ "marlin-test-support",
+]
+
+[[package]]
+name = "marlin-lang-arena"
+version = "0.1.0"
+
+[[package]]
+name = "marlin-lang-diag"
+version = "0.1.0"
+dependencies = [
+ "marlin-lang-span",
+]
+
+[[package]]
+name = "marlin-lang-span"
+version = "0.1.0"
+dependencies = [
  "marlin-test-support",
 ]
 
@@ -842,6 +870,14 @@ version = "0.1.0"
 [[package]]
 name = "marlin-shader"
 version = "0.1.0"
+
+[[package]]
+name = "marlin-shaderc-syntax"
+version = "0.1.0"
+dependencies = [
+ "marlin-front-syntax",
+ "marlin-lang-diag",
+]
 
 [[package]]
 name = "marlin-std"

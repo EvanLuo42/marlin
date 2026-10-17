@@ -1,0 +1,39 @@
+public interface IArithmetic<TSelf> where TSelf : IArithmetic<TSelf>
+{
+    static abstract TSelf operator +(TSelf a, TSelf b);
+    static abstract TSelf Zero { get; }
+}
+
+public interface IMaterial
+{
+    type Params : IParams;
+    SurfaceOutput Surface(in SurfaceContext ctx);
+    float Albedo(float3 wo) => 1;
+}
+
+public struct Rock : IMaterial
+{
+    public type Params = RockParams;
+    [Range(0, 2)] public float RoughnessScale = 1;
+    public const bool UseMoss = false;
+}
+
+public struct Vector<T, const int N> { }
+
+public T Sum<T, const int N>(Vector<T, N> v) where T : IArithmetic<T>
+{
+    return v.x;
+}
+
+public const ClosureInfo Flatten<M>() where M : IMaterial where M.Params : IFoo { return default; }
+
+extension(float3 c) : ILerpable<float3>
+{
+    public float Luma => Dot(c, float3(0.2126, 0.7152, 0.0722));
+    public static float3 Lerp(float3 a, float3 b, float t) => a + (b - a) * t;
+}
+
+extension<T>(Vector<T, 3> v) where T : IArithmetic<T>
+{
+    public T Sum => v.x + v.y + v.z;
+}

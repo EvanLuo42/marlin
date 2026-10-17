@@ -1,0 +1,13 @@
+global using Marlin.Math;
+
+namespace Marlin.Post;
+
+using Marlin.Core;
+using static Marlin.Math.Constants;
+using Vec = Marlin.Vector<float, 3>;
+using global::Marlin.Wave;
+
+// Namespace-level declarations.
+[GroupShared] float4[18 * 18] Tile;
+const int Radius = 4;
+public float Luma(float3 c) => Dot(c, float3(0.2126, 0.7152, 0.0722));

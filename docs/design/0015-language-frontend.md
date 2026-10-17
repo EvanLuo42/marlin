@@ -1,0 +1,130 @@
+# 0015 — C# 系语言的共享前端
+
+状态：草案 · 2026-10-17
+
+前置：
+- [0004](0004-shader-language.md)：shader 语言
+- [0005](0005-shader-compiler.md)：shader 编译器
+
+## 0. 决定摘要
+
+Marlin shader 的语法照着 C# 走（0004），以后的 VM 语言大概率也照着 C# 走，只是比 shader 多出 `new`、`class` 这些东西。所以前端按"一族语言"来做，两种语言共用尽量多的代码。
+
+| 维度 | 决定 | § |
+|---|---|---|
+| 复用范围 | 基础设施、语法、名字解析共享；类型检查（`hir_ty`）及之后各语言自己实现 | 1 |
+| 语法差异 | 一份**超集文法**，每种语言提供一个 **`Dialect`**；parser 不看 dialect，解析之后由 validation 按 dialect 报错 | 2 |
+| 目录 | `compiler/common`（语言无关）、`compiler/front`（C# 系共享前端）、`compiler/shader`、`compiler/vm` | 1 |
+| VM 专有语法 | 结构现在搭好；shader 为了给出好提示本来就要解析的构造现在就建成正式节点，其余等 VM 语言设计时再加 | 2.4 |
+
+## 1. 分层
+
+```
+compiler/
+  common/   语言无关，不知道 C#                          包名 marlin-lang-*
+    span      源码位置、文件 id、行列映射
+    diag      结构化诊断与文本渲染器
+    arena     arena、interning、类型化下标
+    query     增量 query 引擎
+  front/    C# 系语言共用的前端                          包名 marlin-front-*
+    syntax    lexer、无损 CST、超集文法的 parser、validation、有类型的 AST 视图
+    hir_def   包与 namespace、using、item tree、def map、路径解析、函数体降低成 HIR
+  shader/   shader 专有                                  包名 marlin-shaderc-*
+    syntax    shader 的 Dialect 和解析入口
+    hir_ty mir mono ir opt target backend_* reflect，facade marlin-shaderc
+  vm/       VM 语言专有（以后）                          包名 marlin-vmc-*
+```
+
+依赖规则：
+- `common` 不依赖 `compiler/` 里的任何东西；
+- `front` 只依赖 `common`；
+- `shader/*` 和 `vm/*` 可以依赖 `front` 和 `common`，两者之间不能互相依赖；
+- `common` 和 `front` 里不允许出现针对某种语言的分支（`if shader`、`match language`）。语言之间的差异写进 `Dialect`（§2）或者语言描述（§4）里，这和后端的"共享代码里不写 `match target`"是同一条原则（0005 §1）。
+
+为什么类型检查不共享：shader 只有值类型、跑在 GPU 上，有 capability、uniformity、自动微分；VM 语言有 class、引用、GC、继承和可空性。两边的类型系统差别太大，硬共享 `hir_ty` 会让两边都背上对方的复杂度。共享到名字解析为止，两边重复的只是"按类型查成员"这类较小的部分。
+
+## 2. 语法：超集文法 + Dialect
+
+### 2.1 流程
+
+```
+parse(text, &dialect)
+  ├─ lex       C# 的保留字 + dialect 额外保留的关键字
+  ├─ parse     超集文法：任何一种语言用到的构造都建成正式节点，不看 dialect
+  └─ validate  遍历 CST，dialect 不允许的构造报错并给出修改建议
+```
+
+例如 shader 里写 `new Light(c, 2)`：parser 建出一个正常的 `NEW_EXPR` 节点，validation 报"Marlin shader has no `new`"，并建议改成 `Light(c, 2)`。VM 语言里写 `const if`：parser 照样建出 `IF_STMT`，VM 的 validation 报错。
+
+- 树的结构对所有语言都一样：同一段源码在两种语言里解析出同一棵 CST，只是诊断不同。所以 AST 视图、格式化、语法高亮、IDE 的大部分功能都只写一份。
+- parser 里没有语言判断，加一种语言不需要改文法。
+- 所有语言都不支持的 C# 构造（目前有 `try`/`catch`、`goto`、`lock`、`unsafe`、`fixed` 等）由 parser 报通用的"不支持"错误；等哪种语言需要了，再把它加进文法和那种语言的 dialect。
+
+### 2.2 `Dialect`
+
+```rust
+pub struct Dialect {
+    /// 诊断里用的语言名，比如 "Marlin shader"
+    pub name: &'static str,
+    /// 在 C# 保留字之外额外保留的关键字，比如 shader 的 `half`
+    pub extra_keywords: &'static [SyntaxKind],
+    /// 允许的构造
+    pub allowed: ConstructSet,
+    /// 不允许时给出的修改建议
+    pub hint: fn(Construct) -> Option<&'static str>,
+}
+```
+
+- `SyntaxKind` 是所有语言的超集，`HALF_KW` 也在里面；只是 VM 的 dialect 不保留 `half`，它的 lexer 就把 `half` 当成普通标识符。
+- `Construct` 列出所有"有的语言有、有的语言没有"的构造，分两类：
+  - C# 有而 shader 没有：`new`、`class`、`record`、`null`、`as`、`typeof`、`sizeof`、`base`、`throw`、char 字面量、`decimal` 字面量……
+  - shader 新增而 VM 不一定要：`const if`、关联类型、const 泛型参数、带接口实现的 `extension`、`half` 字面量后缀、namespace 级函数和字段……
+- 字面量后缀、关键字这类词法上的差异，lexer 只负责识别，是否允许也交给 validation。
+- 每种语言的 dialect 定义在它自己的 `syntax` crate 里（shader 的在 `compiler/shader/syntax`）。`front/syntax` 自己的测试用一个允许所有构造的 dialect。
+
+### 2.3 诊断码
+
+| 段 | 来源 |
+|---|---|
+| `E00xx` | 宿主和驱动（找不到入口、读不到源文件……） |
+| `E01xx` | lexer |
+| `E02xx` | parser |
+| `E03xx` | validation（dialect 不允许的构造） |
+| `E04xx`–`E09xx` | `front` 的名字解析等共享阶段 |
+| `E1xxx` | shader 专有阶段 |
+| `E2xxx` | VM 语言专有阶段 |
+
+同一个语法错误在两种语言里是同一个码。
+
+### 2.4 现在实现哪些构造
+
+- 超集结构、`Dialect` 和 validation 现在就做。
+- shader 为了给出好的错误提示本来就要解析的那些 C# 构造，现在就建成正式节点：`new`、`class`、`record`、`null`、`as`、`typeof`、`sizeof`、`base`、`throw`、char 字面量。
+- 其余 VM 专有的构造（继承列表里的基类、`virtual`/`override` 的语义、`try`/`catch`、`?.`/`??`、可空类型、事件、委托……）等 VM 语言设计时再加进文法和 VM 的 dialect，只改 `front/syntax` 的文法和 VM 自己的 crate。
+
+## 3. 名字解析：`front/hir_def`
+
+共享的部分：
+- 包、`SourceProvider`、文件到包的映射（0005 §5.2）；
+- file-scoped `namespace`、跨文件合并 namespace；
+- `using`、`using static`、`using` 别名、`global using`；
+- 可见性 `public`/`internal`/`private`；
+- item tree：item 的种类是超集（namespace、using、struct、class、interface、enum、extension、函数、字段、属性、索引器、运算符、转换、关联类型），每种语言只会遇到它的 dialect 允许的那些；
+- 泛型参数表（包括 const 参数）和 `where` 约束的语法形式；
+- attribute 作为数据：路径加实参的语法树，含义由各语言解释；
+- 类型路径和 namespace 路径的解析。按类型查成员依赖类型，放在各语言的 `hir_ty` 里；
+- 函数体降低成 HIR：HIR 的表达式和语句也是超集。
+
+语言之间的差异由一个语言描述提供，例如：
+- 每个文件隐式导入的根 namespace（shader 是 `Marlin`，0004 §7.1）；
+- 核心库所在的包；
+- 默认可见性。
+
+接口的具体形状到实现 `hir_def` 时再定（0005 §11 的第 4 步）。
+
+## 4. 待定
+
+- `hir_def` 里语言描述的具体接口。
+- query 数据库在多种语言之间怎么组合：`front` 定义自己的 query，各语言的 facade 把它们和自己的 query 组装起来，细节在实现 `query` 时定。
+- VM 语言的 dialect 和它的专有构造：VM 语言设计时定。
+- VM 语言是否需要 `protected`，以及它的默认可见性。

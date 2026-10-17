@@ -16,6 +16,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 marlin-asset = { path = "../runtime/engine/asset" }
 marlin-compress = { path = "../runtime/core/compress", features = ["encode"] }
+marlin-front-syntax = { path = "../compiler/front/syntax" }
 marlin-hash = { path = "../runtime/core/hash" }
 marlin-reflect = { path = "../runtime/core/reflect" }
 marlin-serial = { path = "../runtime/core/serial" }
@@ -27,6 +28,13 @@ debug = 1
 
 # Targets are named `<crate>_<what>`; `cargo xtask test --tier fuzz` copies a crash to that
 # crate's tests/data/regress/<target>/.
+
+[[bin]]
+name = "front_syntax_parse"
+path = "fuzz_targets/front_syntax_parse.rs"
+test = false
+doc = false
+bench = false
 
 [[bin]]
 name = "text_message"

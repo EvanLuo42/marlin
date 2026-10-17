@@ -1,0 +1,6 @@
+void F()
+{
+    if (x) {
+        y();
+
+public struct Next { int Z; }
