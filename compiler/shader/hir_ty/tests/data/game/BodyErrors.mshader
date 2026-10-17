@@ -1,0 +1,22 @@
+namespace Game;
+
+void Errors(uint3 id, int n)
+{
+    var mixed = id.x + n;
+    float f = 1.5;
+    half h = f;
+    int3 truncated = float3(1, 2, 3);
+    float3 narrowed = float4(1, 2, 3, 4);
+    var missing = Nope;
+    id.xx = 2;
+    float3 short3 = float3(1, 2);
+    bool b = 1 && true;
+    if (id.x) { }
+    var lambda = x => x;
+    var unknown = default;
+    var cast = (bool)f;
+    var noDot = Dot(1, 2);
+    3 = n;
+    var noMember = f.Nope;
+    return 1;
+}

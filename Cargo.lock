@@ -902,6 +902,7 @@ dependencies = [
  "marlin-lang-diag",
  "marlin-lang-query",
  "marlin-lang-span",
+ "marlin-math",
  "marlin-shaderc-syntax",
  "marlin-test-support",
 ]

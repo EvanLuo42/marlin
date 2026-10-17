@@ -54,3 +54,25 @@ public struct Texture2D<T>
 
 [Intrinsic("dot")]
 public T Dot<T, const int N>(Vector<T, N> a, Vector<T, N> b) where T : IArithmetic<T>;
+
+public type float4x3 = Matrix<float, 4, 3>;
+public type int2 = Vector<int, 2>;
+public type int3 = Vector<int, 3>;
+public type uint2 = Vector<uint, 2>;
+public type half4 = Vector<half, 4>;
+public type bool3 = Vector<bool, 3>;
+
+[Intrinsic("all")]
+public bool All<const int N>(Vector<bool, N> v);
+
+[Intrinsic("select")]
+public Vector<T, N> Select<T, const int N>(Vector<bool, N> c, Vector<T, N> a, Vector<T, N> b)
+    where T : IScalar<T>;
+
+[Intrinsic("lerp")]
+public Vector<T, N> Lerp<T, const int N>(Vector<T, N> a, Vector<T, N> b, T t)
+    where T : IArithmetic<T>;
+
+[Intrinsic("max")] public float Max(float a, float b);
+[Intrinsic("max")] public double Max(double a, double b);
+[Intrinsic("max")] public int Max(int a, int b);

@@ -1,0 +1,74 @@
+== Game.Rng.Rng Main
+  seed : uint
+== Game.Rng.Next Main
+== Game.Rng.<operator> Main
+  a : Rng
+  b : Rng
+== Game.Rng.<conversion> Main
+  r : Rng
+== Game.Lamp.Color Main
+== Game.Lamp.Intensity Main
+== Game.Luma Main
+  c : float3
+== Game.Twice Main
+  v : T
+== Game.Accumulate Main
+  n : int
+  f : Func<float, float>
+  s : float
+  i : int
+== Game.<extension block>.Sum Main
+  c : float3
+== Game.Body Main
+  id : uint3
+  tex : Texture2D<float4>
+  smp : Sampler
+  mvp : float4x4
+  a : float
+  h : half
+  d : double
+  i : int
+  u : uint
+  big : uint
+  c : float3
+  c2 : float3
+  hv : half
+  mixed : float
+  v : float3
+  xy : uint2
+  l : Lamp
+  k : Lamp
+  m : Lamp
+  z : Lamp
+  w : float[4]
+  w0 : float
+  len : int
+  less : bool3
+  equal : bool3
+  all : bool
+  picked : float3
+  blended : float3
+  luma : float
+  twice : float
+  biggest : float
+  r : Rng
+  r2 : Rng
+  asUint : uint
+  next : float
+  integral : float
+  x : float
+  texel : float4
+  texel2 : float4
+  cond : float
+  arms : float
+  matched : bool
+  tuple : (int, float)
+  p : int
+  q : float
+  clip : float4
+  sum : float
+  shifted : uint
+  negated : float3
+  local : <untyped>
+  x : float
+  viaLocal : float

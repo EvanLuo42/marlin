@@ -85,3 +85,51 @@
   param Vector<T, N> b
   type T
   intrinsic dot
+== Marlin.float4x3
+  type float4x3
+== Marlin.int2
+  type int2
+== Marlin.int3
+  type int3
+== Marlin.uint2
+  type uint2
+== Marlin.half4
+  type half4
+== Marlin.bool3
+  type bool3
+== Marlin.All
+  generic const int N : []
+  param Vector<bool, N> v
+  type bool
+  intrinsic all
+== Marlin.Select
+  generic T : [IScalar<T>]
+  generic const int N : []
+  param Vector<bool, N> c
+  param Vector<T, N> a
+  param Vector<T, N> b
+  type Vector<T, N>
+  intrinsic select
+== Marlin.Lerp
+  generic T : [IArithmetic<T>]
+  generic const int N : []
+  param Vector<T, N> a
+  param Vector<T, N> b
+  param T t
+  type Vector<T, N>
+  intrinsic lerp
+== Marlin.Max
+  param float a
+  param float b
+  type float
+  intrinsic max
+== Marlin.Max
+  param double a
+  param double b
+  type double
+  intrinsic max
+== Marlin.Max
+  param int a
+  param int b
+  type int
+  intrinsic max

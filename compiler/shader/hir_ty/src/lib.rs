@@ -12,12 +12,20 @@
 //!   bounds, parameters, the result or field type, implemented interfaces, `[Builtin]` and
 //!   `[Intrinsic]`.
 //! - [`FileTyDiagnostics`]: every diagnostic of a file up to here.
+//!
+//! Step 5b: [`InferQuery`] types each body C#-style and bidirectionally: literals take their type
+//! from context, implicit conversions follow 0004 §9.3–9.4, operators and calls go through
+//! C#'s overload rules (§9.8) with generic and constant-parameter inference, members include
+//! swizzles, extension blocks and interface members of bounds. The result records what MIR
+//! lowering needs: types, value paths, callees and implicit conversions.
 
 mod builtins;
 mod diagnostics;
 mod display;
+mod infer;
 mod item;
 mod lower;
+mod subst;
 mod ty;
 
 use marlin_front_hir_def::Language;
@@ -26,7 +34,11 @@ use marlin_shaderc_syntax::SHADER;
 pub use builtins::{BuiltinKind, Builtins, BuiltinsQuery, Resource, Scalar};
 pub use diagnostics::{FileTyDiagnostics, TyDiagnostic, TyDiagnosticKind, TyLoc};
 pub use display::{display_const, display_ty};
+pub use infer::{
+    Callee, InferDiagnostic, InferLoc, InferQuery, InferenceResult, Root, Step, ValuePath,
+};
 pub use item::{AliasTargetQuery, GenericParamTy, ItemTypes, ItemTypesQuery, ParamTy, self_ty};
+pub use subst::Subst;
 pub use ty::{ConstExpr, ConstOp, ConstTy, GenericArgTy, Ty};
 
 /// The Marlin shader language, for `hir_def`'s `LanguageInput`.

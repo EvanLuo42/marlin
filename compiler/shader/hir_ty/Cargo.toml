@@ -15,6 +15,7 @@ marlin-lang-span.workspace = true
 marlin-shaderc-syntax.workspace = true
 
 [dev-dependencies]
+marlin-math.workspace = true
 marlin-test-support.workspace = true
 
 [lints]

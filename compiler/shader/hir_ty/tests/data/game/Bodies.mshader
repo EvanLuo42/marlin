@@ -1,0 +1,87 @@
+namespace Game;
+
+public struct Rng
+{
+    uint State;
+
+    public Rng(uint seed) { State = seed; }
+    public float Next()
+    {
+        State = State * 747796405u + 2891336453u;
+        return (float)State / 4294967295.0;
+    }
+    public static Rng operator +(Rng a, Rng b) => Rng(a.State + b.State);
+    public static implicit operator uint(Rng r) => r.State;
+}
+
+public struct Lamp
+{
+    public float3 Color = 1;
+    public float Intensity = 1;
+}
+
+float Luma(float3 c) => Dot(c, float3(0.2126, 0.7152, 0.0722));
+
+T Twice<T>(T v) where T : IArithmetic<T> => v + v;
+
+float Accumulate(int n, Func<float, float> f)
+{
+    float s = 0;
+    foreach (var i in 0..n) s += f((i + 0.5) / n);
+    return s / n;
+}
+
+extension(float3 c)
+{
+    public float Sum => c.x + c.y + c.z;
+}
+
+void Body(uint3 id, Texture2D<float4> tex, Sampler smp, float4x4 mvp)
+{
+    var a = 0.5;
+    half h = 0.5;
+    double d = 0.5;
+    var i = 1;
+    var u = id.x + 1;
+    var big = 3000000000;
+    float3 c = 1;
+    var c2 = c * 2;
+    var hv = h * 0.5;
+    var mixed = h + i;
+    float3 v = id.xyz;
+    var xy = id.xy;
+    v.xy = float2(1, 2);
+    var l = Lamp { Color = c, Intensity = 2 };
+    Lamp k = { Color = c };
+    var m = l with { Intensity = 4 };
+    var z = default(Lamp);
+    float[4] w = [0.1, 0.2, 0.3, 0.4];
+    var w0 = w[2];
+    var len = w.Length;
+    var less = c < v;
+    var equal = c == v;
+    var all = All(c == v);
+    var picked = Select(less, c, v);
+    var blended = Lerp(c, v, 0.5);
+    var luma = Luma(c);
+    var twice = Twice(2.0f);
+    var biggest = Max(1.0f, 2.0f);
+    var r = Rng(5u);
+    var r2 = r + r;
+    uint asUint = r;
+    var next = r.Next();
+    var integral = Accumulate(64, x => x * 2);
+    var texel = tex.Sample(smp, float2(0.5, 0.5));
+    var texel2 = tex.Sample(smp, xy, lod: 2);
+    var cond = i > 0 ? 1.0 : 2.0;
+    var arms = i switch { 0 => 1.0, 1 => 0.5, _ => 0.0 };
+    var matched = id.x is > 0 and < 10;
+    var tuple = (1, 2.0);
+    var (p, q) = tuple;
+    var clip = mvp * float4(v, 1);
+    var sum = c.Sum;
+    var shifted = u << 2;
+    var negated = -c;
+    float local(float x) => x * 2;
+    var viaLocal = local(3);
+}

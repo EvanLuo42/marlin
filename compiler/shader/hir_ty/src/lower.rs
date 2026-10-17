@@ -126,9 +126,13 @@ impl TyLowerer<'_, '_> {
     }
 
     fn path_ty(&mut self, path: &HirPath, t: TypeRefId) -> Result<Ty, Cancelled> {
+        self.path_type(path, TyLoc::Type(t))
+    }
+
+    /// The type a path names, reporting problems at `loc`.
+    pub(crate) fn path_type(&mut self, path: &HirPath, loc: TyLoc) -> Result<Ty, Cancelled> {
         let def_path = path.to_def_path();
         let text = def_path.to_string();
-        let loc = TyLoc::Type(t);
         let resolution = self.resolver.resolve(self.cx, &def_path, false)?;
         Ok(match resolution {
             Resolution::Type(item) => {

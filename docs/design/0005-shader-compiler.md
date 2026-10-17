@@ -415,6 +415,8 @@ public const ClosureInfo Flatten<M>() where M : IMaterial { ... }
 
 ## 11. 实现顺序
 
+桌面平台（Windows、Linux）以后只用 Vulkan，Windows 上的 D3D12 支持会移除（2026-10-17）。所以第一个后端是 SPIR-V；DXIL 留给仍然需要 D3D12 的平台（Xbox 等），放到第 11 步。
+
 按 §2 的依赖方向自下而上，每一步都带测试、单独提交：
 
 | 步 | 内容 | 完成的标志 |
@@ -427,6 +429,6 @@ public const ClosureInfo Flatten<M>() where M : IMaterial { ... }
 | 6 | `ir`：指令集、builder、verifier、文本打印和解析、解释器 | 文本能往返；解释器能跑 compute 语义 |
 | 7 | `mir`、`mono`：降低到 SSA、单态化、CTFE | 泛型入口能单态化，`const` 函数能在编译期求值 |
 | 8 | `opt`：pass manager 和阶段 0–1 的 pass，再加上 SCCP、DCE、CFG 化简 | 第一个 compute 入口能走完整条流水线 |
-| 9 | `target`、`backend_dxil`、`reflect`、facade `Session` | 第一个 compute shader 在真实 GPU 上跑通，替换掉一个占位 `.dxil` |
-| 10 | 补齐其余 stage、资源、wave、纹理；cook 和 build.rs 接入；替换全部占位 shader | |
-| 11 | 阶段 2–5 的其余 pass、自动微分、调试信息、SPIR-V 等其他后端 | |
+| 9 | `target`、`backend_spirv`（SPIR-V 1.6 / Vulkan 1.3 环境）、`reflect`、facade `Session`、真正的核心库 | 第一个 compute shader 生成的 SPIR-V 通过我们自己的验证器；Vulkan RHI 就绪后在真实 GPU 上跑通 |
+| 10 | 补齐其余 stage、资源、wave、纹理；cook 和 build.rs 接入；随 Vulkan RHI 替换占位 shader | |
+| 11 | 阶段 2–5 的其余 pass、自动微分、调试信息（NonSemantic.Shader.DebugInfo）、其他后端：DXIL（Xbox 等需要 D3D12 的平台）、Metal、主机 | |

@@ -148,16 +148,7 @@ impl TyDiagnostic {
     pub fn to_diagnostic(&self, cx: &Cx<'_>) -> Result<Diagnostic, Cancelled> {
         let file = self.item.file;
         let range = match self.loc {
-            TyLoc::Item => {
-                let tree = cx.get::<ItemTreeQuery>(&file)?;
-                let ids = cx.get::<AstIdMap>(&file)?;
-                let parse = cx.get::<ParseFile>(&file)?;
-                let node = ids
-                    .ptr(tree.items[self.item.local].ast)
-                    .to_node(&parse.syntax_node());
-                let name = node.children().find(|n| n.kind() == SyntaxKind::NAME);
-                name.unwrap_or(node).text_range()
-            }
+            TyLoc::Item => item_name_range(cx, self.item)?,
             TyLoc::Type(t) => {
                 let (_, map) = cx.get::<SignatureWithSourceMap>(&self.item)?;
                 match map.types.get(t) {
@@ -189,6 +180,21 @@ impl TyDiagnostic {
     }
 }
 
+/// The range of a declaration's name (or of the whole declaration when it has none).
+pub(crate) fn item_name_range(
+    cx: &Cx<'_>,
+    item: ItemId,
+) -> Result<marlin_lang_span::TextRange, Cancelled> {
+    let tree = cx.get::<ItemTreeQuery>(&item.file)?;
+    let ids = cx.get::<AstIdMap>(&item.file)?;
+    let parse = cx.get::<ParseFile>(&item.file)?;
+    let node = ids
+        .ptr(tree.items[item.local].ast)
+        .to_node(&parse.syntax_node());
+    let name = node.children().find(|n| n.kind() == SyntaxKind::NAME);
+    Ok(name.unwrap_or(node).text_range())
+}
+
 /// Every diagnostic of one file so far: syntax, declarations and types.
 pub struct FileTyDiagnostics;
 impl Query for FileTyDiagnostics {
@@ -206,6 +212,11 @@ impl Query for FileTyDiagnostics {
             let item = ItemId { file: *file, local };
             for d in &cx.get::<ItemTypesQuery>(&item)?.diagnostics {
                 out.push(d.to_diagnostic(cx)?);
+            }
+            for owner in marlin_front_hir_def::body_owners(cx, item)? {
+                for d in &cx.get::<crate::InferQuery>(&owner)?.diagnostics {
+                    out.push(d.to_diagnostic(cx)?);
+                }
             }
         }
         out.sort_by_key(|d| d.primary.as_ref().map(|l| l.span.range.start()));

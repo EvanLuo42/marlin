@@ -1,0 +1,95 @@
+error[E1102]: `uint` and `int` do not mix; convert one of them explicitly
+ --> game/BodyErrors.mshader:5:17
+  |
+5 |     var mixed = id.x + n;
+  |                 ^^^^^^^^
+
+error[E1103]: cannot convert `float` to `half` implicitly; write `(half)` to convert explicitly
+ --> game/BodyErrors.mshader:7:14
+  |
+7 |     half h = f;
+  |              ^
+
+error[E1103]: cannot convert `float3` to `int3` implicitly; write `(int3)` to convert explicitly
+ --> game/BodyErrors.mshader:8:22
+  |
+8 |     int3 truncated = float3(1, 2, 3);
+  |                      ^^^^^^^^^^^^^^^
+
+error[E1103]: cannot convert `float4` to `float3` implicitly; write `(float3)` to convert explicitly
+ --> game/BodyErrors.mshader:9:23
+  |
+9 |     float3 narrowed = float4(1, 2, 3, 4);
+  |                       ^^^^^^^^^^^^^^^^^^
+
+error[E1111]: cannot find `Nope` in this scope
+  --> game/BodyErrors.mshader:10:19
+   |
+10 |     var missing = Nope;
+   |                   ^^^^
+
+error[E1107]: a swizzle that is assigned to cannot repeat a component
+  --> game/BodyErrors.mshader:11:5
+   |
+11 |     id.xx = 2;
+   |     ^^^^^
+
+error[E1104]: `float3` needs 3 components, 2 given
+  --> game/BodyErrors.mshader:12:21
+   |
+12 |     float3 short3 = float3(1, 2);
+   |                     ^^^^^^^^^^^^
+
+error[E1103]: cannot convert `int` to `bool` implicitly
+  --> game/BodyErrors.mshader:13:14
+   |
+13 |     bool b = 1 && true;
+   |              ^
+
+error[E1103]: cannot convert `uint` to `bool` implicitly
+  --> game/BodyErrors.mshader:14:9
+   |
+14 |     if (id.x) { }
+   |         ^^^^
+
+error[E1110]: a lambda can only be passed to a `Func` or `Action` parameter
+  --> game/BodyErrors.mshader:15:18
+   |
+15 |     var lambda = x => x;
+   |                  ^^^^^^
+
+error[E1117]: the type of `default` cannot be inferred here; write `default(T)`
+  --> game/BodyErrors.mshader:16:19
+   |
+16 |     var unknown = default;
+   |                   ^^^^^^^
+
+error[E1108]: cannot convert `float` to `bool`
+  --> game/BodyErrors.mshader:17:16
+   |
+17 |     var cast = (bool)f;
+   |                ^^^^^^^
+
+error[E1104]: no overload of `Dot` takes (int, int)
+  --> game/BodyErrors.mshader:18:17
+   |
+18 |     var noDot = Dot(1, 2);
+   |                 ^^^^^^^^^
+
+error[E1107]: this cannot be assigned to
+  --> game/BodyErrors.mshader:19:5
+   |
+19 |     3 = n;
+   |     ^
+
+error[E1111]: `float` has no member `Nope`
+  --> game/BodyErrors.mshader:20:20
+   |
+20 |     var noMember = f.Nope;
+   |                    ^^^^^^
+
+error[E1124]: this function returns nothing
+  --> game/BodyErrors.mshader:21:12
+   |
+21 |     return 1;
+   |            ^
