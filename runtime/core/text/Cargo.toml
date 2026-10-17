@@ -12,3 +12,7 @@ marlin-std.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+marlin-math.workspace = true
+marlin-test-support.workspace = true

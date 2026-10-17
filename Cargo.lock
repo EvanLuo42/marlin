@@ -316,6 +316,7 @@ dependencies = [
  "marlin-compress",
  "marlin-hash",
  "marlin-std",
+ "marlin-test-support",
 ]
 
 [[package]]
@@ -338,6 +339,7 @@ dependencies = [
  "marlin-hash",
  "marlin-math",
  "marlin-std",
+ "marlin-test-support",
 ]
 
 [[package]]
@@ -486,6 +488,7 @@ dependencies = [
  "marlin-math",
  "marlin-reflect",
  "marlin-std",
+ "marlin-test-support",
 ]
 
 [[package]]
@@ -635,6 +638,7 @@ version = "0.1.0"
 dependencies = [
  "marlin-profile",
  "marlin-std",
+ "marlin-test-support",
 ]
 
 [[package]]
@@ -650,6 +654,9 @@ dependencies = [
 [[package]]
 name = "marlin-math"
 version = "0.1.0"
+dependencies = [
+ "marlin-test-support",
+]
 
 [[package]]
 name = "marlin-mem"
@@ -776,6 +783,7 @@ dependencies = [
  "marlin-reflect",
  "marlin-serial-derive",
  "marlin-std",
+ "marlin-test-support",
  "marlin-text",
 ]
 
@@ -841,7 +849,9 @@ version = "0.1.0"
 dependencies = [
  "marlin-containers",
  "marlin-hash",
+ "marlin-math",
  "marlin-std",
+ "marlin-test-support",
 ]
 
 [[package]]
