@@ -14,12 +14,15 @@
 //! `Vec4`, `Quat` and `Mat4` columns are 16-byte-aligned `core::simd::f32x4`. `Vec2`/`Vec3` are plain
 //! `repr(C)` floats (8 and 12 bytes) for tight GPU vertex layouts. Transcendental functions are
 //! implemented in [`scalar`] (`core` has none) and are bit-identical across platforms.
+//!
+//! [`Rng`] is the engine's deterministic random number generator.
 #![cfg_attr(not(test), no_std)]
 #![feature(core_float_math, portable_simd)]
 
 mod geom;
 mod mat;
 mod quat;
+pub mod random;
 pub mod scalar;
 mod transform;
 mod vec;
@@ -27,5 +30,6 @@ mod vec;
 pub use geom::{Aabb, Frustum, Plane, Ray, Sphere};
 pub use mat::{Mat3, Mat4};
 pub use quat::Quat;
+pub use random::Rng;
 pub use transform::Transform;
 pub use vec::{IVec2, IVec3, UVec2, Vec2, Vec3, Vec4, Xyzw};
