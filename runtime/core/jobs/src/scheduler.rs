@@ -131,6 +131,9 @@ impl<T> Queue<T> {
         self.len.store(items.len(), Ordering::Relaxed);
     }
 
+    /// `None` also while another thread holds the lock: takers move on to other work rather
+    /// than queue up on a busy lock (the ready queue in a fork-join storm), and `is_empty` still
+    /// says there is work, so nobody sleeps on it.
     fn pop(&self) -> Option<T> {
         if self.is_empty() || self.items.is_locked() {
             return None;
@@ -142,12 +145,14 @@ impl<T> Queue<T> {
     }
 
     /// Pops one item and moves a `1 / takers` share of the rest (at most `max`) into `rest`: one
-    /// lock for several items when `takers` threads drain one queue.
+    /// lock for several items when `takers` threads drain one queue. Waits for the lock: a
+    /// thread queuing a stream of jobs then hands them over at its own pace (measured: spinning
+    /// takers slow it down).
     fn pop_share(&self, takers: usize, max: usize, mut rest: impl FnMut(T)) -> Option<T> {
-        if self.is_empty() || self.items.is_locked() {
+        if self.is_empty() {
             return None;
         }
-        let mut items = self.items.try_lock()?;
+        let mut items = self.items.lock();
         let item = items.pop_front()?;
         let n = (items.len() / takers).min(max);
         for item in items.drain(..n) {
@@ -202,6 +207,8 @@ pub(crate) struct Shared {
     pub(crate) helpers: Line<AtomicU32>,
     /// Workers (and the main thread) looking for work in `idle`.
     searching: Line<AtomicU32>,
+    /// A quarter of the workers: more searchers slow down whoever queues (they poll its
+    /// lines), fewer ramp up slower.
     max_searchers: u32,
     /// Searches handed to woken sleepers (see `notify`); under `idle`.
     search_tokens: AtomicU32,
@@ -854,7 +861,7 @@ impl JobSystem {
             stack_size: config.fiber_stack_size,
             helpers: Line(AtomicU32::new(0)),
             searching: Line(AtomicU32::new(0)),
-            max_searchers: workers.div_ceil(2) as u32,
+            max_searchers: workers.div_ceil(4) as u32,
             search_tokens: AtomicU32::new(0),
             sleepers: Line(AtomicU32::new(0)),
             main_sleeping: AtomicBool::new(false),
