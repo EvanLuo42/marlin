@@ -4,7 +4,7 @@
 //! - **Case** ([`case`]): full and simple case folding (CaseFolding.txt, statuses C+F and
 //!   C+S), caseless comparison ([`eq_ignore_case`], [`cmp_ignore_case`], [`Caseless`]) and the
 //!   simple lowercase and uppercase mappings of UnicodeData.txt.
-//! - **Normalization** ([`normalize`]): NFC, NFD, NFKC and NFKD (UAX #15) as iterators, into a
+//! - **Normalization** ([`normalize`](mod@normalize)): NFC, NFD, NFKC and NFKD (UAX #15) as iterators, into a
 //!   `fmt::Write` or a `String`, plus the quick check and [`is_nfc`] and friends.
 //! - **Segmentation** ([`segment`]): extended grapheme clusters and word boundaries (UAX #29).
 //!

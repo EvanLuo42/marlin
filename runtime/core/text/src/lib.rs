@@ -1,4 +1,4 @@
-//! Interned names, UTF-8 and UTF-16 utilities, Unicode algorithms and formatting.
+//! Interned names, UTF-8 and UTF-16 utilities, Unicode algorithms, formatting and localization.
 //!
 //! - [`Name`]: an interned string in the spirit of Unreal's `FName`: 12 bytes, `Copy`, O(1)
 //!   compare and hash, ASCII-case-insensitive but case-preserving, with a split-off number suffix.
@@ -9,12 +9,15 @@
 //! - [`utf16`]: encoding to and decoding from UTF-16, strict or lossy.
 //! - [`unicode`]: case folding and caseless comparison, normalization (NFC/NFD/NFKC/NFKD),
 //!   grapheme clusters and word boundaries, from our own generated UCD tables.
+//! - [`loc`]: localization: locales, CLDR plural rules, number and date formatting, messages
+//!   with placeholders and plurals, and cooked string tables.
 #![cfg_attr(not(test), no_std)]
 
 extern crate alloc;
 
 pub mod fmt;
 mod inline_string;
+pub mod loc;
 mod name;
 pub mod unicode;
 pub mod utf16;
