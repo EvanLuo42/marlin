@@ -1,6 +1,7 @@
 //! GPU test helpers shared by every crate that tests on the GPU (dev-dependency only; conventions in
 //! docs/design/0014-testing.md §6.2): the shared hardware devices, submit-and-wait, buffers and
-//! readback, common render targets and pipelines, and the test shaders.
+//! readback, common render targets and pipelines, the test shaders, and golden images
+//! ([`assert_image!`], [`read_texture`]).
 //!
 //! Shaders are looked up by name and stage. This is the shape the planned test-shader crate will
 //! have: its build.rs compiles every Marlin shader under `shaders/` with the Marlin shader
@@ -30,6 +31,10 @@
 //! dxc -HV 2021 -Qstrip_debug -Qstrip_reflect -T cs_6_6 -E cube_main    -Fo sample.cube.cs.dxil sample.hlsl
 //! dxc -HV 2021 -Qstrip_debug -Qstrip_reflect -T cs_6_6 -E main         -Fo rayquery.cs.dxil rayquery.hlsl
 //! ```
+
+pub mod image;
+
+pub use image::{Image, Tolerance, read_texture};
 
 use marlin_rhi::{
     AdapterPreference, Buffer, BufferDesc, BufferUsage, CommandList, Device, DeviceDesc, Instance,

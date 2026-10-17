@@ -104,6 +104,10 @@ memmap2 = "0.9"
 # Tools only: parsers for external source formats (0003: third-party parsers, our own processing).
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tga", "hdr", "exr"] }
 gltf = { version = "1.4", default-features = false, features = ["names", "utils"] }
+# Dev only (marlin-gpu-test-support): golden image PNGs. `png`, not `image`: one format, and its
+# dependencies (flate2, miniz_oxide, crc32fast, ...) share none with runtime crates, so a test
+# build's feature unification cannot change how a runtime crate's dependencies are built.
+png = "0.18"
 # toml and toml_writer are no_std with default features off. Never enable their `std` feature in
 # this workspace: features unify, and std would reach the no_std game binary via marlin-config.
 toml = { version = "1", default-features = false }

@@ -10,9 +10,8 @@ use marlin_rhi::{
     ClearValue, ColorAttachment, ColorTargetState, CommandList, DepthAttachment, DepthState,
     DepthStencilView, DepthStencilViewDesc, Device, Error, ErrorKind, Format, GraphicsPipeline,
     GraphicsPipelineDesc, IndexFormat, LoadOp, MemoryLocation, MultisampleState, PrimitiveTopology,
-    RasterState,
-    Rect, RenderPassDesc, RenderTargetView, Result, ShaderView, StoreOp, Texture, TextureBarrier,
-    TextureDesc, TextureState, TextureUsage, Viewport,
+    RasterState, Rect, RenderPassDesc, RenderTargetView, Result, ShaderView, StoreOp, Texture,
+    TextureBarrier, TextureDesc, TextureState, TextureUsage, Viewport,
 };
 
 use crate::mesh::{MeshData, Vertex};

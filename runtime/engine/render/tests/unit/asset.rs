@@ -1,6 +1,7 @@
 //! The cooked mesh and texture encodings.
 
-use marlin_math::Rng;
+use marlin_math::scalar::abs_diff_eq;
+use marlin_math::{Rng, Vec3};
 use marlin_render::asset::mesh::{
     basis, decode_tangent_frame, dequantize_position, encode_tangent_frame, f16_to_f32, f32_to_f16,
     position_scale, quantize_position,
@@ -8,35 +9,20 @@ use marlin_render::asset::mesh::{
 use marlin_render::asset::texture::{PixelFormat, TextureError, TextureView};
 use marlin_serial::cooked::CookedBuffer;
 
-fn normalize(v: [f32; 3]) -> [f32; 3] {
-    let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-    v.map(|c| c / l)
-}
-
-fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
 #[test]
 fn basis_is_orthonormal() {
     let mut rng = Rng::new(1);
     let mut next = || rng.range_f32(-1.0, 1.0);
     for _ in 0..10_000 {
-        let n = normalize([next(), next(), next()]);
-        let (a, b) = basis(n);
+        let n = Vec3::new(next(), next(), next()).normalize();
+        let (a, b) = basis(n.to_array());
+        let (a, b) = (Vec3::from(a), Vec3::from(b));
         for (x, y) in [(a, b), (a, n), (b, n)] {
-            assert!(dot(x, y).abs() < 1e-5);
+            assert!(abs_diff_eq(x.dot(y), 0.0, 1e-5));
         }
-        assert!((dot(a, a) - 1.0).abs() < 1e-5 && (dot(b, b) - 1.0).abs() < 1e-5);
-        assert!(dot(cross(a, b), n) > 0.99, "right-handed");
+        assert!(abs_diff_eq(a.length_squared(), 1.0, 1e-5));
+        assert!(abs_diff_eq(b.length_squared(), 1.0, 1e-5));
+        assert!(a.cross(b).dot(n) > 0.99, "right-handed");
     }
 }
 
@@ -47,15 +33,20 @@ fn tangent_frames_round_trip_within_a_fraction_of_a_degree() {
     let mut worst_normal = 1.0f32;
     let mut worst_tangent = 1.0f32;
     for i in 0..20_000 {
-        let n = normalize([next(), next(), next()]);
-        let r = normalize([next(), next(), next()]);
-        let t = normalize(cross(n, r));
+        let n = Vec3::new(next(), next(), next()).normalize();
+        let r = Vec3::new(next(), next(), next()).normalize();
+        let t = n.cross(r).normalize();
         let sign = if i % 2 == 0 { 1.0 } else { -1.0 };
-        let (dn, dt, ds) = decode_tangent_frame(encode_tangent_frame(n, t, sign));
+        let (dn, dt, ds) =
+            decode_tangent_frame(encode_tangent_frame(n.to_array(), t.to_array(), sign));
+        let (dn, dt) = (Vec3::from(dn), Vec3::from(dt));
         assert_eq!(ds, sign);
-        worst_normal = worst_normal.min(dot(n, dn));
-        worst_tangent = worst_tangent.min(dot(t, dt));
-        assert!(dot(dn, dt).abs() < 1e-4, "decoded frame is orthogonal");
+        worst_normal = worst_normal.min(n.dot(dn));
+        worst_tangent = worst_tangent.min(t.dot(dt));
+        assert!(
+            abs_diff_eq(dn.dot(dt), 0.0, 1e-4),
+            "decoded frame is orthogonal"
+        );
     }
     // 10-bit octahedral normals: ~0.2°; 11-bit tangent angle plus the normal's error: ~0.4°.
     assert!(
@@ -93,7 +84,7 @@ fn positions_quantize_over_their_bounds() {
         let q = quantize_position(p, min, scale);
         let d = dequantize_position(q, min, scale);
         for i in 0..3 {
-            assert!((d[i] - p[i]).abs() <= scale[i] * 0.5 + 1e-6);
+            assert!(abs_diff_eq(d[i], p[i], scale[i] * 0.5 + 1e-6), "{p:?}");
         }
     }
 }

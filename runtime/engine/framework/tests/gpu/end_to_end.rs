@@ -1,11 +1,8 @@
 //! The whole pipeline on real hardware: `samples/basic` cooked, packaged, booted, rendered and
 //! read back; the same through a live cook service; and an edit hot-reloading into the picture.
-#![cfg(marlin_platform = "windows")]
 
 use std::path::Path;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use marlin_asset::Uuid;
 use marlin_asset_db::{AssetDb, Options};
@@ -15,10 +12,10 @@ use marlin_cooker::{engine_cookers, open_ddc};
 use marlin_framework::{
     Boot, ContentSettings, Engine, OFFSCREEN_FORMAT, Offscreen, RenderSide, mount,
 };
-use marlin_gpu_test_support::hardware_device;
+use marlin_gpu_test_support::{Image, assert_image, hardware_device};
 use marlin_render::{Renderer, RendererDesc};
 use marlin_rhi::Device;
-use marlin_test_support::{TempDir, wait_until};
+use marlin_test_support::{BackgroundServer, TempDir, wait_until};
 
 const LEVEL: &str = "01992d00-0000-7000-8000-000000000001";
 const WIDTH: u32 = 160;
@@ -109,23 +106,21 @@ impl Viewer {
     }
 }
 
-/// Runs frames until the level is loaded, then returns the picture.
-fn load(boot: &Boot, viewer: &mut Viewer) -> Vec<u32> {
+/// Starts `boot`'s level and runs frames until it is loaded; returns the engine and the first
+/// complete picture.
+fn start<'a>(boot: &'a Boot, viewer: &mut Viewer) -> (Engine<'a>, Vec<u32>) {
     let mut engine = Engine::new(&boot.vfs).unwrap();
     engine.load_level(boot.level);
-    let start = Instant::now();
-    while !engine.is_ready() {
-        assert!(
-            start.elapsed() < Duration::from_secs(60),
-            "the level never loaded: {:?}",
-            engine.level_state()
-        );
-        viewer.frame(&mut engine);
-        std::thread::sleep(Duration::from_millis(2));
-    }
+    wait_until(Duration::from_secs(60), "the level to load", || {
+        engine.is_ready() || {
+            viewer.frame(&mut engine);
+            false
+        }
+    });
     // The frame that sent the last uploads, then one more to be sure everything is drawn.
     viewer.frame(&mut engine);
-    viewer.frame(&mut engine)
+    let pixels = viewer.frame(&mut engine);
+    (engine, pixels)
 }
 
 fn rgb(p: u32) -> [u8; 3] {
@@ -162,44 +157,33 @@ fn check_sample(pixels: &[u32]) {
     );
 }
 
-struct RunningCookd {
-    addr: std::net::SocketAddr,
-    stop: Arc<AtomicBool>,
-    thread: Option<std::thread::JoinHandle<()>>,
-}
-
-impl RunningCookd {
-    fn start(root: &Path) -> Self {
-        let stop = Arc::new(AtomicBool::new(false));
-        let (tx, rx) = std::sync::mpsc::channel();
-        let (root, s) = (root.to_owned(), stop.clone());
-        let thread = std::thread::spawn(move || {
-            let (db, _) = AssetDb::open(&root, Options::default()).unwrap();
-            let ddc = open_ddc(&root, None).unwrap();
-            let options = CookdOptions {
-                workers: 2,
-                watch_interval: Duration::from_millis(30),
-            };
-            let mut cookd = Cookd::new(db, engine_cookers(), ddc, &options);
-            let mut server = bind("127.0.0.1:0".parse().unwrap()).unwrap();
-            tx.send(server.local_addr()).unwrap();
-            cookd.serve(&mut server, &s).unwrap();
-        });
-        Self {
-            addr: rx.recv().unwrap(),
-            stop,
-            thread: Some(thread),
-        }
-    }
-}
-
-impl Drop for RunningCookd {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        if let Some(t) = self.thread.take() {
-            t.join().unwrap();
-        }
-    }
+/// A cook service for the project at `root` on a background thread, ready for clients.
+///
+/// cookd listens through its own network queue, not a std listener, so it takes over the port
+/// `BackgroundServer` reserved: the listener is closed (it never accepted a connection, so the
+/// port is free at once) and cookd binds the same address. Clients connect only after cookd says
+/// it is listening.
+fn start_cookd(root: &Path) -> BackgroundServer {
+    let root = root.to_owned();
+    let (ready, listening) = std::sync::mpsc::channel();
+    let server = BackgroundServer::spawn(move |listener, stop| {
+        let (db, _) = AssetDb::open(&root, Options::default()).unwrap();
+        let ddc = open_ddc(&root, None).unwrap();
+        let options = CookdOptions {
+            workers: 2,
+            watch_interval: Duration::from_millis(30),
+        };
+        let mut cookd = Cookd::new(db, engine_cookers(), ddc, &options);
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        let mut server = bind(addr).unwrap();
+        ready.send(()).unwrap();
+        cookd.serve(&mut server, stop).unwrap();
+    });
+    listening
+        .recv_timeout(Duration::from_secs(60))
+        .expect("cookd to start listening");
+    server
 }
 
 #[test]
@@ -216,25 +200,30 @@ fn the_sample_cooks_packages_and_renders_the_same_from_cookd() {
         level,
     })
     .unwrap();
-    let packaged = load(&boot, &mut viewer);
+    let (_, packaged) = start(&boot, &mut viewer);
     check_sample(&packaged);
     assert_eq!(
         viewer.render.mesh_count(),
         3,
         "cube, sphere and torus on the GPU"
     );
+    // Time stands still in these frames, so the first complete one is always the same picture.
+    assert_image!(
+        "sample_first_frame",
+        &Image::from_words(WIDTH, HEIGHT, &packaged)
+    );
 
     // The same content streamed from a cook service: the same picture, pixel for pixel.
-    let cookd = RunningCookd::start(&root);
+    let cookd = start_cookd(&root);
     let boot = mount(&ContentSettings {
         packages: Vec::new(),
-        cookd: Some(cookd.addr),
+        cookd: Some(cookd.addr()),
         platform: "windows".into(),
         level,
     })
     .unwrap();
     let mut viewer2 = Viewer::new();
-    let streamed = load(&boot, &mut viewer2);
+    let (_, streamed) = start(&boot, &mut viewer2);
     assert!(
         streamed == packaged,
         "cookd and the package render the same"
@@ -245,26 +234,17 @@ fn the_sample_cooks_packages_and_renders_the_same_from_cookd() {
 #[test]
 fn editing_the_level_changes_the_picture_live() {
     let root = sample("reload");
-    let cookd = RunningCookd::start(&root);
+    let cookd = start_cookd(&root);
     let level: Uuid = LEVEL.parse().unwrap();
     let boot = mount(&ContentSettings {
         packages: Vec::new(),
-        cookd: Some(cookd.addr),
+        cookd: Some(cookd.addr()),
         platform: "windows".into(),
         level,
     })
     .unwrap();
     let mut viewer = Viewer::new();
-    let mut engine = Engine::new(&boot.vfs).unwrap();
-    engine.load_level(boot.level);
-    wait_until(Duration::from_secs(60), "the level to load", || {
-        engine.is_ready() || {
-            viewer.frame(&mut engine);
-            false
-        }
-    });
-    viewer.frame(&mut engine);
-    let before = viewer.frame(&mut engine);
+    let (mut engine, before) = start(&boot, &mut viewer);
     check_sample(&before);
 
     // The sphere turns green in the text; the running game follows.
@@ -276,20 +256,11 @@ fn editing_the_level_changes_the_picture_live() {
     );
     assert_ne!(edited, text);
     std::fs::write(&path, edited).unwrap();
-    let start = Instant::now();
-    loop {
+    wait_until(Duration::from_secs(30), "the sphere to turn green", || {
         let pixels = viewer.frame(&mut engine);
-        let c = at(&pixels, WIDTH / 2, HEIGHT / 2);
-        let [r, g, b] = c.map(u32::from);
-        if g > r * 2 && g > b * 2 {
-            break;
-        }
-        assert!(
-            start.elapsed() < Duration::from_secs(30),
-            "the edit never showed: {c:?}"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
+        let [r, g, b] = at(&pixels, WIDTH / 2, HEIGHT / 2).map(u32::from);
+        g > r * 2 && g > b * 2
+    });
     // Only the level reloaded; its meshes stayed on the GPU.
     assert_eq!(viewer.render.mesh_count(), 3);
     drop(cookd);
