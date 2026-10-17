@@ -398,6 +398,8 @@ dependencies = [
  "marlin-asset-db",
  "marlin-cook-core",
  "marlin-reflect",
+ "marlin-serial",
+ "marlin-test-support",
  "marlin-text",
 ]
 
@@ -832,6 +834,7 @@ dependencies = [
  "marlin-cook-core",
  "marlin-error",
  "marlin-hash",
+ "marlin-math",
  "marlin-net",
  "marlin-test-support",
 ]

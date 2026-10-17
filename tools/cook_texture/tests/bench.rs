@@ -1,6 +1,7 @@
 //! Encoder throughput and quality. `cargo test --release -p marlin-cook-texture --test bench --
 //! --ignored --nocapture`.
 
+#[path = "support/mod.rs"]
 mod common;
 
 use std::time::Instant;

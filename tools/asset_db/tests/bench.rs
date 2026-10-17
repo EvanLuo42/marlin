@@ -1,6 +1,7 @@
 //! Index timings at scale; `cargo test -p marlin-asset-db --release --test bench -- --ignored
 //! --nocapture`.
 
+#[path = "support/mod.rs"]
 mod common;
 
 use std::time::Instant;

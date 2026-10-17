@@ -16,6 +16,7 @@ pub mod golden;
 pub mod isolated;
 mod panic;
 mod server;
+mod service;
 mod time;
 mod wait;
 
@@ -27,5 +28,6 @@ pub use fs::{TempDir, TempFile};
 pub use git::{git, git_init, git_output};
 pub use panic::{assert_panics_with, panic_message};
 pub use server::BackgroundServer;
+pub use service::{BackgroundService, Ready};
 pub use time::{CLOCK_SLACK, assert_duration_in, assert_elapsed, assert_waited, with_timeout};
 pub use wait::wait_until;

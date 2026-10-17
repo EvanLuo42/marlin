@@ -13,6 +13,8 @@ marlin-text.workspace = true
 
 [dev-dependencies]
 marlin-asset-db.workspace = true
+marlin-serial.workspace = true
+marlin-test-support.workspace = true
 
 [lints]
 workspace = true
