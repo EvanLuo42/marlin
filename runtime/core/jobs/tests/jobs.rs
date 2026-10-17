@@ -15,6 +15,7 @@ fn system(workers: usize, fibers: usize) -> JobSystem {
     JobSystem::new(Config {
         workers,
         fibers,
+        max_fibers: fibers,
         fiber_stack_size: 128 << 10,
         pin_workers: false,
     })
@@ -215,4 +216,21 @@ fn bench() {
     jobs.scope(|s| s.spawn(|| result = tree_sum(&jobs, 0, 64 * 4096)));
     println!("fork-join tree, 4095 nested waits: {:?}", start.elapsed());
     assert_eq!(result, (64 * 4096) * (64 * 4096 - 1) / 2);
+
+    // The same empty jobs with this thread registered as the main thread: it queues into its
+    // own local queue and runs jobs while it waits.
+    let main = jobs.main_thread();
+    counter.store(0, Ordering::Relaxed);
+    let start = Instant::now();
+    jobs.scope(|s| {
+        for _ in 0..n {
+            s.spawn(|| {
+                counter.fetch_add(1, Ordering::Relaxed);
+            });
+        }
+    });
+    let per_job = start.elapsed().as_nanos() as f64 / n as f64;
+    println!("main thread registered: {per_job:.0} ns per empty job (spawn + run)");
+    assert_eq!(counter.load(Ordering::Relaxed), n);
+    drop(main);
 }

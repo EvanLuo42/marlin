@@ -5,7 +5,7 @@ use alloc::sync::Arc;
 use core::marker::PhantomData;
 use core::ops::Range;
 
-use crate::counter::Counter;
+use crate::counter::{Counter, Target};
 use crate::scheduler::{Job, JobSystem, Priority, Shared};
 
 /// Spawns jobs that may borrow anything outliving the scope. See [`JobSystem::scope`].
@@ -27,6 +27,22 @@ impl<'scope> Scope<'scope, '_> {
     }
 
     pub fn spawn_with<F>(&'scope self, priority: Priority, f: F)
+    where
+        F: FnOnce() + Send + 'scope,
+    {
+        self.push(Target::Queue(priority), f);
+    }
+
+    /// Queues `f` for the main thread only, as [`JobSystem::spawn_on_main`]. The scope still
+    /// waits for it: away from the main thread, it returns only once the main thread has run it.
+    pub fn spawn_on_main<F>(&'scope self, f: F)
+    where
+        F: FnOnce() + Send + 'scope,
+    {
+        self.push(Target::Main, f);
+    }
+
+    fn push<F>(&'scope self, target: Target, f: F)
     where
         F: FnOnce() + Send + 'scope,
     {
@@ -56,7 +72,7 @@ impl<'scope> Scope<'scope, '_> {
             run: run::<F>,
             data: Box::into_raw(payload).cast(),
         };
-        self.shared.push_job(job, priority);
+        target.push(self.shared, job);
     }
 }
 

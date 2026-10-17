@@ -14,6 +14,7 @@ fn system(workers: usize, fibers: usize) -> JobSystem {
     JobSystem::new(Config {
         workers,
         fibers,
+        max_fibers: fibers,
         fiber_stack_size: 128 << 10,
         pin_workers: false,
     })
@@ -84,7 +85,14 @@ fn complete_dependencies_do_not_delay() {
 #[test]
 fn waiting_dependents_hold_no_fibers() {
     // Far more dependents than fibers: they must wait as continuations, not parked fibers.
-    let jobs = system(2, 8);
+    let jobs = JobSystem::new(Config {
+        workers: 2,
+        fibers: 8,
+        max_fibers: 4096,
+        fiber_stack_size: 128 << 10,
+        pin_workers: false,
+    })
+    .unwrap();
     let gate = Arc::new(AtomicBool::new(false));
     let g = gate.clone();
     let blocker = jobs.spawn(move || {
@@ -107,6 +115,8 @@ fn waiting_dependents_hold_no_fibers() {
     gate.store(true, Ordering::Release);
     dependents.iter().for_each(JobHandle::wait);
     assert_eq!(count.load(Ordering::Relaxed), 1000);
+    // The pool could have grown, but nothing needed it to.
+    assert_eq!(jobs.fiber_count(), 8);
 }
 
 #[test]

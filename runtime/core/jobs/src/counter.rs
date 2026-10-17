@@ -3,12 +3,10 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
-use core::ptr::null_mut;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-use marlin_std::sync::{Condvar, Mutex};
-
-use crate::scheduler::{self, Fiber, Job, Priority, Shared};
+use crate::scheduler::{Job, Priority, Shared};
+use crate::wait::{self, Queue, Wait, WaitNode, WaitQueue};
 
 /// Counts unfinished jobs. Waiting for zero parks the fiber on a worker, or blocks an outside
 /// thread; continuations registered on it are released at zero. The count may rise again after
@@ -18,34 +16,27 @@ use crate::scheduler::{self, Fiber, Job, Priority, Shared};
 /// still touch it after the waiter has moved on.
 pub(crate) struct Counter {
     value: AtomicU32,
-    waiters: Mutex<Waiters>,
-    /// For threads that are not workers.
-    zero: Condvar,
+    /// Set by `JobHandle::cancel`; see `handle.rs`.
+    pub(crate) cancelled: AtomicBool,
+    /// Waiters, and the continuations to release at zero.
+    waiters: WaitQueue<Vec<Arc<Continuation>>>,
 }
-
-pub(crate) struct Waiters {
-    /// Fibers parked until the count reaches zero, linked through `Fiber::next`.
-    fibers: *mut Fiber,
-    continuations: Vec<Arc<Continuation>>,
-}
-
-// SAFETY: the list is only touched under the mutex; the fibers it links are parked.
-unsafe impl Send for Waiters {}
 
 impl Counter {
     pub(crate) const fn new() -> Self {
         Self {
             value: AtomicU32::new(0),
-            waiters: Mutex::new(Waiters {
-                fibers: null_mut(),
-                continuations: Vec::new(),
-            }),
-            zero: Condvar::new(),
+            cancelled: AtomicBool::new(false),
+            waiters: WaitQueue::new(Vec::new()),
         }
     }
 
     pub(crate) fn increment(&self) {
-        self.value.fetch_add(1, Ordering::Relaxed);
+        self.add(1);
+    }
+
+    pub(crate) fn add(&self, n: u32) {
+        self.value.fetch_add(n, Ordering::Relaxed);
     }
 
     /// Releases everyone waiting once the count reaches zero.
@@ -53,22 +44,11 @@ impl Counter {
         if self.value.fetch_sub(1, Ordering::AcqRel) != 1 {
             return;
         }
-        let (mut fiber, continuations) = {
+        let continuations = {
             let mut waiters = self.waiters.lock();
-            self.zero.notify_all();
-            (
-                core::mem::replace(&mut waiters.fibers, null_mut()),
-                core::mem::take(&mut waiters.continuations),
-            )
+            waiters.grant_all();
+            core::mem::take(waiters.state())
         };
-        while !fiber.is_null() {
-            // SAFETY: parked fibers are only reachable through this list until made ready.
-            unsafe {
-                let next = (*fiber).next;
-                scheduler::make_ready(fiber);
-                fiber = next;
-            }
-        }
         for continuation in continuations {
             continuation.release();
         }
@@ -78,42 +58,57 @@ impl Counter {
         self.value.load(Ordering::Acquire) == 0
     }
 
-    /// Waits until the count is zero: parks the current fiber when called from a job, blocks the
-    /// thread otherwise.
+    /// Waits until the count is zero: parks the current fiber when called from a job (or from
+    /// the main thread, which runs jobs meanwhile), blocks the thread otherwise.
     pub(crate) fn wait(&self) {
-        if self.is_zero() || scheduler::park_current_until_zero(self) {
-            return;
-        }
-        let mut waiters = self.waiters.lock();
-        while !self.is_zero() {
-            self.zero.wait(&mut waiters);
-        }
-    }
-
-    /// Parks `fiber` until the count is zero, or makes it ready at once if it already is.
-    /// Called by the fiber that took over from `fiber`, after `fiber`'s context was saved.
-    pub(crate) fn add_waiter(&self, fiber: *mut Fiber) {
-        let mut waiters = self.waiters.lock();
-        // Under the lock, so `decrement` either finds this waiter or we see zero.
-        if self.is_zero() {
-            drop(waiters);
-            // SAFETY: the fiber is parked and ours to hand over.
-            unsafe { scheduler::make_ready(fiber) };
-        } else {
-            // SAFETY: the fiber is parked and owned by this list from now on.
-            unsafe { (*fiber).next = waiters.fibers };
-            waiters.fibers = fiber;
+        if !self.is_zero() {
+            // Counters may help at the fiber cap: a counter's work is queued jobs.
+            wait::block(self, 0, true);
         }
     }
 
     /// Releases `continuation` once the count is zero (at once if it already is).
     pub(crate) fn add_continuation(&self, continuation: &Arc<Continuation>) {
         let mut waiters = self.waiters.lock();
+        // Under the lock, so `decrement` either finds this continuation or we see zero.
         if self.is_zero() {
             drop(waiters);
             continuation.release();
         } else {
-            waiters.continuations.push(continuation.clone());
+            waiters.state().push(continuation.clone());
+        }
+    }
+}
+
+impl Wait for Counter {
+    fn register(&self, node: *mut WaitNode) -> bool {
+        let mut waiters = self.waiters.lock();
+        // Under the lock, so `decrement` either grants this node or we see zero.
+        if self.is_zero() {
+            return false;
+        }
+        waiters.push(node);
+        true
+    }
+
+    fn queue(&self) -> &dyn Queue {
+        &self.waiters
+    }
+}
+
+/// Where a job goes once it may run.
+#[derive(Clone, Copy)]
+pub(crate) enum Target {
+    Queue(Priority),
+    /// The main thread's queue.
+    Main,
+}
+
+impl Target {
+    pub(crate) fn push(self, shared: &Shared, job: Job) {
+        match self {
+            Target::Queue(priority) => shared.push_job(job, priority),
+            Target::Main => shared.push_main(job),
         }
     }
 }
@@ -124,7 +119,7 @@ pub(crate) struct Continuation {
     remaining: AtomicU32,
     /// Taken by the release that brings `remaining` to zero.
     job: UnsafeCell<Option<Job>>,
-    priority: Priority,
+    target: Target,
     shared: *const Shared,
 }
 
@@ -137,18 +132,19 @@ unsafe impl Send for Continuation {}
 unsafe impl Sync for Continuation {}
 
 impl Continuation {
-    pub(crate) fn new(
-        dependencies: u32,
-        job: Job,
-        priority: Priority,
-        shared: &Shared,
-    ) -> Arc<Self> {
+    /// Holds only the creator's share: [`retain`](Self::retain) once per dependency.
+    pub(crate) fn new(job: Job, target: Target, shared: &Shared) -> Arc<Self> {
         Arc::new(Self {
-            remaining: AtomicU32::new(dependencies + 1),
+            remaining: AtomicU32::new(1),
             job: UnsafeCell::new(Some(job)),
-            priority,
+            target,
             shared,
         })
+    }
+
+    /// One more release to wait for. Only while the creator still holds its share.
+    pub(crate) fn retain(&self) {
+        self.remaining.fetch_add(1, Ordering::Relaxed);
     }
 
     pub(crate) fn release(&self) {
@@ -161,7 +157,7 @@ impl Continuation {
             let job = (*self.job.get())
                 .take()
                 .expect("continuation released twice");
-            (*self.shared).push_job(job, self.priority);
+            self.target.push(&*self.shared, job);
         }
     }
 }
