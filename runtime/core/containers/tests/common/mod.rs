@@ -4,6 +4,7 @@
 use std::cell::RefCell;
 use std::fmt;
 
+#[allow(unused_imports)]
 pub use marlin_math::Rng;
 
 /// Hands out [`Tracked`] values and records which are alive: dropping one twice panics at once,

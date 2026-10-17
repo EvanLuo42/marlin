@@ -75,7 +75,7 @@ fn matches_a_hash_map_model() {
             }
             2 | 3 if !handles.is_empty() => {
                 let h = handles[rng.below(handles.len())];
-                let v = rng.next() as u32;
+                let v = rng.next_u64() as u32;
                 let old = extra.insert(h, t.make(v)).map(|x| x.value);
                 assert_eq!(old, model.insert(h, v), "step {step}");
             }

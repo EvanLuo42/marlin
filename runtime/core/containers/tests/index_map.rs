@@ -57,7 +57,7 @@ fn matches_an_ordered_model() {
         let pos = model.iter().position(|(mk, _)| *mk == k);
         match rng.below(6) {
             0 | 1 => {
-                let v = rng.next() as u32;
+                let v = rng.next_u64() as u32;
                 let old = m.insert(k, t.make(v)).map(|x| x.value);
                 match pos {
                     Some(i) => assert_eq!(old, Some(std::mem::replace(&mut model[i].1, v))),

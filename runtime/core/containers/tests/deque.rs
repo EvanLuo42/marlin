@@ -17,12 +17,12 @@ macro_rules! check_model {
         for step in 0..5_000 {
             match rng.below(7) {
                 0 | 1 if model.len() < cap => {
-                    let x = rng.next();
+                    let x = rng.next_u64();
                     d.push_back(x);
                     model.push_back(x);
                 }
                 2 if model.len() < cap => {
-                    let x = rng.next();
+                    let x = rng.next_u64();
                     d.push_front(x);
                     model.push_front(x);
                 }

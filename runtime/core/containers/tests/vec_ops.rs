@@ -20,7 +20,7 @@ fn small_vec_matches_vec() {
         for step in 0..3_000 {
             match rng.below(8) {
                 0 | 1 => {
-                    let x = rng.next() % 4;
+                    let x = rng.next_u64() % 4;
                     v.push(x);
                     model.push(x);
                 }
@@ -42,7 +42,7 @@ fn small_vec_matches_vec() {
                 }
                 5 => {
                     let n = rng.below(model.len() + 8);
-                    let x = rng.next() % 4;
+                    let x = rng.next_u64() % 4;
                     v.resize(n, x);
                     model.resize(n, x);
                 }
@@ -79,7 +79,7 @@ fn array_vec_matches_vec() {
     for step in 0..3_000 {
         match rng.below(6) {
             0 | 1 if model.len() < 64 => {
-                let x = rng.next() % 4;
+                let x = rng.next_u64() % 4;
                 v.push(x);
                 model.push(x);
             }
