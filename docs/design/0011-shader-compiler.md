@@ -17,6 +17,7 @@
 | IR | 两层：前端产出泛型的 MIR，单态化之后是后端的 SSA IR | 3 |
 | 后端 IR 控制流 | CFG + SSA；分支和循环的终结指令带 merge 块和 continue 块，结构和 SPIR-V 同构，pass 必须保持 | 3.2 |
 | 后端 | pass 流水线（LLVM 新 pass manager 式），所有后端共用一条流水线；后端只负责最后的 lower 和写出 | 4 |
+| pass 清单 | 保留 DXC 有用的 pass；DXC 因为缺 GPU 语义而关掉的 LICM、unswitch、sinking，补上相应的 analysis 后重新打开；再加上 uniformity、资源别名、值域分析，以及 barrier、groupshared、原子聚合、描述符外提这些 GPU 专用的优化 | 4.4 |
 | 调用模型 | 长生命周期的增量 `Session`；一次请求对应一个单态化入口和一个 target，产出一个 blob | 5 |
 | 源码输入 | 宿主实现 `SourceProvider`；编译器自己不访问文件系统 | 5.2 |
 | 诊断 | 以结构化的 `Diagnostic` 返回，编译器从不自己打印；库里自带 rustc 风格的文本渲染器 | 5.3 |
@@ -93,17 +94,167 @@ platforms/<p>/shader/  主机平台的后端（在 cook 平台 cfg 下通过 #[p
 
 ## 4. 后端流水线
 
-- pass manager 参照 LLVM 新 pass manager 的模式：
+### 4.1 pass manager
+
+- 参照 LLVM 新 pass manager 的模式：
   - analysis 结果有缓存，每个 pass 声明自己保留了哪些 analysis；
   - pipeline 由 profile 和 target 描述组装出来。
-- 大致顺序：
-  1. 自动微分：前向模式，以后加反向模式（0010 §15）；
-  2. inline、SROA、mem2reg；
-  3. 一轮通用优化：GVN、DCE、LICM、常量传播、CFG 化简（保持结构）；
-  4. uniformity 分析，自动加上 NonUniform 标记（0010 §10.3）；
-  5. 按 target 参数化的 legalize：资源变成 bindless 堆访问，处理 16 位类型、矩阵布局和 scalar 布局，展开 target 不支持的操作；
-  6. 后端各自的 lower，然后写出。
-- 浮点：默认允许重结合、fma 收缩和近似倒数；带 `[Precise]` 的值和函数不做这些变换（0010 §9.7）。
+- 两个 profile 都做完整优化，区别只在 `Debug.*` 和调试信息（§5.4）。
+- 所有 pass 都必须：
+  - 保持结构化 CFG（§3.2）；
+  - 保持 debug location；
+  - 不对带 `[Precise]` 的计算做重结合、fma 收缩和近似倒数（0010 §9.7）。
+- 共享的 pass 只读 target 描述，里面不写 `match target`。
+
+### 4.2 参照：DXC 的流水线
+
+下面是 DXC 的 `PassManagerBuilder::populateModulePassManager` 和 `addHLSLPasses`，以及 `lib/HLSL`、`lib/Transforms/Scalar` 里的 HLSL 专用 pass：
+
+| 阶段 | DXC 的 pass |
+|---|---|
+| HL 降低 | HLPreprocess、HLDeadFunctionElimination、LowerStaticGlobalIntoAlloca、HLExpandStoreIntrinsics、SROA_Parameter_HLSL、HLMatrixLower、DynamicIndexingVectorToArray、DxilConditionalMem2Reg（跳过 precise）、CleanupDxBreak、DxilConvergentMark、DxilPromoteLocal/StaticResources、DxilGeneration、DxilPrecisePropagate、Scalarizer、DxilEliminateVector、DxilLoopUnroll（`[unroll]`）、DxilFixConstArrayInitializer |
+| 标量优化 | IPSCCP、GlobalOpt、DeadArgElim、InstCombine（关掉 sinking）、SimplifyCFG、Inliner、FunctionAttrs、SROA/ScalarRepl、CorrelatedValuePropagation、Reassociate（可选 aggressive）、LoopRotate、IndVarSimplify、LoopDeletion、SimpleLoopUnroll、MergedLoadStoreMotion、GVN、DxilSimpleGVNHoist、DxilSimpleGVNEliminateRegion、SCCP、BitTrackingDCE、DSE、HoistConstantArray、ADCE、Float2Int、LoopUnroll、GlobalDCE、ConstantMerge |
+| DXIL 收尾 | DxilEraseDeadRegion、DxilConvergentClear、MultiDimArrayToOneDimArray、DxilRemoveDeadBlocks、DxilMutateResourceToHandle、DxilCleanupDynamicResourceHandle、DxilLowerCreateHandleForLib、DxilTranslateRawBuffer、DxilLegalizeSampleOffset、DxilFinalizeModule、ComputeViewIdState、DxilValidateWaveSensitivity、DxilEmitMetadata |
+
+DXC **故意关掉**了以下几项：
+- LICM：不考虑寄存器压力；
+- LoopUnswitch：可能把 barrier 移进发散的 if；
+- JumpThreading 和 EarlyCSE；
+- 指令下沉（HLSLNoSink）；
+- 向量化。
+
+另外，SPIR-V 那条路用的是 SPIRV-Tools 的 legalization 和 performance 两套 recipe（这台机器上 DXC 仓库里的这个 submodule 没有检出，内容是按 SPIRV-Tools 上游整理的）。和 LLVM 那套相比，它多出这些 pass：
+- vector DCE；
+- dead insert elimination；
+- if-conversion；
+- copy propagate arrays；
+- reduce load size；
+- combine access chains；
+- private-to-local。
+
+我们的思路：DXC 里有用的 pass 都保留；它因为缺少 GPU 语义而关掉的那几项，补上相应的 analysis 后重新打开；再加上 GPU 特有的优化。
+
+### 4.3 关键 analysis
+
+| analysis | 来源 | 用途 |
+|---|---|---|
+| 支配树、后支配树、loop info、控制依赖 | 标准 | 几乎所有 pass |
+| **uniformity（发散）分析** | 新增：按 cycle 处理的发散分析。DXC 只把它用在 WaveSensitivity 验证上 | 自动加 NonUniform 标记；判断 convergent 操作能不能移动；unswitch、if-conversion 和 LICM 的决策；标出 wave 内一致的 load |
+| **convergence 信息** | 新增：显式记录哪些操作是 convergent 的（导数、隐式 LOD 采样、wave 操作、barrier） | 替代 DXC 的 DxilConvergentMark/Clear：不靠临时插桩来阻止优化，而是让每个 pass 都去查询它 |
+| **资源别名分析** | 新增：基于 bindless 类型的别名分析。`ReadOnly*` 在一次 dispatch 内不变；资源种类不同就不会别名；同一 heap 下标、同一偏移就一定别名 | 跨 buffer 访问的 load CSE、DSE、LICM。DXC 只有一个全局开关 `HLSLResMayAlias` |
+| 整数值域分析 | 新增，取代 CorrelatedValuePropagation 依赖的 LVI | 删掉多余的除零检查（0010 §9.6）和多余的边界检查；`Float2Int`；判断移位次数的范围 |
+| SCEV | 标准 | IndVarSimplify、unroll 次数、LICM |
+| 寄存器压力估计 | 新增：在 SSA 上按 live 区间数估计，阈值来自 target 描述 | LICM、sinking、rematerialization、unroll 的成本 |
+| demanded bits | 标准 | BitTrackingDCE、窄化 |
+
+### 4.4 pass 清单与顺序
+
+按阶段列出。"来源"一栏写的是 DXC 有没有这个 pass。
+
+**阶段 0：单态化之后（还没开始优化）**
+
+| # | pass | 来源 | 说明 |
+|---|---|---|---|
+| 0.1 | 直接构造 SSA | 新增 | MIR 降低成 IR 时，用 Braun 等人的"简单高效的 SSA 构造"直接得到 SSA，局部变量不经过 alloca + mem2reg 绕一圈 |
+| 0.2 | 除零检查插入 | 新增 | 0010 §9.6：除数不是常量时，插入 `d == 0 ? 0 : n / d`。放在优化之前，值域分析可以把多余的检查消掉 |
+| 0.3 | 自动微分 | 新增（参考实现） | 前向模式：对 `ForwardDiff` 的调用点生成导数函数；对 `Derivatives.Seed` 出发的数据流，生成 x、y 两个方向的切向量（0010 §15.3）。只为确实用到的导数生成代码。反向模式以后在这里加。放在优化之前，生成的导数代码可以和原代码一起被优化 |
+| 0.4 | `Debug.*` 删除或降低 | 新增 | Shipping 构建删除；Development 构建降低成写调试 buffer（0010 §12.5） |
+
+**阶段 1：规范化**
+
+| # | pass | 来源 | 说明 |
+|---|---|---|---|
+| 1.1 | 全量 inline | DXC Inliner | 默认全部内联。只有 target 支持函数调用、并且体积超过阈值时，才保留调用 |
+| 1.2 | SROA | DXC SROA、ScalarReplAggregatesHLSL、SROA_Parameter_HLSL | 拆开 struct、元组和下标为常量的数组 |
+| 1.3 | mem2reg | DXC DxilConditionalMem2Reg | 处理 SROA 拆出来的局部变量 |
+| 1.4 | 动态下标的向量 → 数组 | DXC DynamicIndexingVectorToArray | |
+| 1.5 | 多维数组 → 一维数组 | DXC MultiDimArrayToOneDimArray | |
+| 1.6 | precise 传播 | DXC DxilPrecisePropagate | 把 `[Precise]` 从值传播到产生它的整条计算链 |
+| 1.7 | 局部常量数组提升 | DXC HoistConstantArray、DxilFixConstArrayInitializer | 只读的局部常量数组变成模块级常量 |
+| 1.8 | 死函数和死全局变量删除 | DXC GlobalDCE、HLDeadFunctionElimination | |
+
+**阶段 2：标量优化（这一组跑两轮）**
+
+| # | pass | 来源 | 说明 |
+|---|---|---|---|
+| 2.1 | SCCP | DXC SCCP | 稀疏条件常量传播，同时删掉不可达的 region |
+| 2.2 | peephole 合并 | DXC InstCombine | 代数化简和窥孔优化。规则用一张声明式的表来写，不像 InstCombine 那样写成手工代码；每条规则都在测试里用 IR 解释器做随机验证（§4.6） |
+| 2.3 | 重结合 | DXC Reassociate | 默认就是 aggressive 的（浮点默认宽松），跳过 precise 链 |
+| 2.4 | GVN + load PRE | DXC GVN | 用资源别名分析，跨 buffer 访问也能做 load 去重和 PRE |
+| 2.5 | GVN 外提 | DXC DxilSimpleGVNHoist | if 的两边都有的相同计算，提到分支之前 |
+| 2.6 | 等价 region 消除 | DXC DxilSimpleGVNEliminateRegion | if 的两边计算结果相同时，去掉这个分支 |
+| 2.7 | 值域传播 | DXC CorrelatedValuePropagation（替代） | 基于整数值域分析：化简比较，删掉多余的除零检查和边界检查 |
+| 2.8 | DSE | DXC DSE | 局部变量、groupshared 和 buffer 上的死写删除，用资源别名分析 |
+| 2.9 | 位级 DCE | DXC BitTrackingDCE | |
+| 2.10 | ADCE | DXC ADCE | 基于控制依赖，会连同删掉的代码一起删掉空的结构化 region |
+| 2.11 | 向量 DCE、死 insert 删除 | SPIRV-Tools | 只对保留向量的 target 生效 |
+| 2.12 | 结构保持的 CFG 化简 | DXC SimplifyCFG、DxilEraseDeadRegion、DxilRemoveDeadBlocks | 合并块、折叠常量分支、删除死 region，始终保持 merge 结构 |
+| 2.13 | Float2Int | DXC Float2Int | 值域允许时，把浮点运算改成整数运算 |
+
+**阶段 3：循环**
+
+| # | pass | 来源 | 说明 |
+|---|---|---|---|
+| 3.1 | 循环旋转 | DXC LoopRotate | |
+| 3.2 | 归纳变量化简 | DXC IndVarSimplify | 基于 SCEV |
+| 3.3 | 死循环删除 | DXC LoopDeletion、DxilLoopDeletion | |
+| 3.4 | 强制展开 | DXC DxilLoopUnroll | `[Unroll]`；还有为了合法性必须展开的循环，比如采样偏移和 `const` 数组的下标依赖归纳变量时。展开失败就报错 |
+| 3.5 | 启发式展开 | DXC LoopUnroll、SimpleLoopUnroll | 成本模型里算上寄存器压力 |
+| 3.6 | **按压力做 LICM** | 新增（DXC 关掉了） | 外提不变量，但外提后的估计压力不能超过 target 的预算；convergent 操作只在循环条件一致时外提 |
+| 3.7 | **按 convergence 做 unswitch** | 新增（DXC 关掉了） | 只对一致的条件做 unswitch，循环里有 convergent 操作时更要求这一点，所以不会把 barrier 移进发散的分支 |
+| 3.8 | 合并 if 两边的 load/store | DXC MergedLoadStoreMotion | |
+
+**阶段 4：GPU 专用**
+
+| # | pass | 来源 | 说明 |
+|---|---|---|---|
+| 4.1 | NonUniform 标记 | 新增 | 基于 uniformity 分析，给发散的资源下标加标记（0010 §10.3），并遵守作者的 `[Uniform]` 和 `NonUniform()` |
+| 4.2 | 描述符获取的 CSE 和外提 | 新增（DXC 只有 DxilCleanupDynamicResourceHandle） | 同一个 heap 下标的描述符只取一次，一致的下标提到入口附近 |
+| 4.3 | 冗余 barrier 删除 | 新增 | 两个 barrier 之间没有 groupshared 或 buffer 访问时，删掉其中一个；入口开头和结尾多余的 barrier 也删掉 |
+| 4.4 | groupshared 的死数据删除与紧凑化 | 新增 | 删掉没有被读过的 groupshared 写入和字段；各个变量的生命周期在 barrier 区间上不重叠时，让它们共用一段空间 |
+| 4.5 | wave 级原子聚合 | 新增（target 描述打开时才做） | 同一个 wave 对一致地址做的 `AtomicAdd`/`Min`/`Max`/`Or`/`And`，改成 `Wave.Sum`（或相应的规约）加上一个 lane 执行一次原子操作 |
+| 4.6 | 小菱形 if-conversion | SPIRV-Tools | 发散的、两边都很小又没有副作用的 if，改成 select；一致的 if 保留分支 |
+| 4.7 | **按压力做 sinking 和 rematerialization** | 新增（DXC 关掉了 sinking） | 把计算下沉到使用它的分支里；地址计算、描述符获取这类廉价的值在使用处重算，降低 live 范围；阈值来自 target 描述 |
+
+**阶段 5：按 target 参数化的 legalize**
+
+| # | pass | 来源 | 说明 |
+|---|---|---|---|
+| 5.1 | 矩阵降低 | DXC HLMatrixLower | 矩阵变成向量和标量，按存储布局读写 |
+| 5.2 | 资源降低 | DXC DxilPromote*Resources、DxilMutateResourceToHandle、DxilLowerCreateHandleForLib | 资源值（下标）→ heap 访问；target 描述决定怎么取描述符 |
+| 5.3 | 内存访问降低 | DXC DxilTranslateRawBuffer、SPIRV-Tools reduce load size | scalar 布局的 load/store → target 的内存操作：按对齐拆分或合并，`Uniform<T>` 按 16 字节行读取 |
+| 5.4 | 类型 legalize | 新增 | 16 位、64 位、bool 的寄存器表示；target 不支持的类型直接报错（已经由 capability 检查过） |
+| 5.5 | 内建函数展开 | DXC DxilExpandTrigIntrinsics | target 没有原生指令的函数（三角函数、`Fwidth` 等）展开成多条指令 |
+| 5.6 | 采样偏移 legalize | DXC DxilLegalizeSampleOffset | 偏移必须是立即数；不是就报错，并给出原因 |
+| 5.7 | 插值和 eval legalize | DXC DxilLegalizeEvalOperations | |
+| 5.8 | 向量化策略 | DXC Scalarizer、DxilEliminateVector | 标量 target（DXIL）全部标量化；向量 target（SPIR-V、Metal）保留向量 |
+| 5.9 | stage I/O 打包 | DXC DxilPackSignatureElement | 按 target 规则把 stage I/O 字段打包进寄存器 |
+| 5.10 | 收尾清理 | DXC DxilFinalizeModule、DxilDeleteRedundantDebugValues | 跑一轮 DCE 和 CFG 化简，清理多余的 debug value |
+
+**阶段 6：后端**
+
+- 后端自己的 lower 和写出（DXIL 元数据、SPIR-V 装饰等），然后由后端做验证（§4.6）。
+
+### 4.5 不做的
+
+| pass | 原因 |
+|---|---|
+| JumpThreading | 会破坏结构化 CFG；能带来的收益大部分由 SCCP、值域传播和 if-conversion 覆盖 |
+| 自动向量化（Loop/SLP） | 标量 target 不需要；向量 target 本来就保留源码里的向量 |
+| 尾调用消除、异常相关 | 语言里没有对应的概念 |
+| memcpy 和 memset 优化（LoopIdiom、MemCpyOpt） | IR 里没有 memcpy |
+| 跨过程优化（IPSCCP、DeadArgElim、ArgumentPromotion） | 默认全量 inline 之后就用不上了 |
+
+### 4.6 正确性保证
+
+- **IR verifier**：
+  - 检查 SSA、类型、结构化 CFG 的不变量，以及 convergent 操作没有被移进发散控制流；
+  - Development 构建的编译器在每个 pass 后都跑一遍；release 构建只在流水线的开头和结尾跑。
+- **IR 解释器**：
+  - 后端 IR 有一个参考解释器，按 wave 语义执行，也支持 groupshared 和 barrier；
+  - 测试里对每个 pass 做差分测试：用随机生成的 IR 和随机输入，比较 pass 前后的执行结果；
+  - peephole 规则表里的每条规则也用它验证。
+- **后端验证**：DXIL 写出之后跑我们自己的验证器（规则对齐 DxilValidation），SPIR-V 写出之后检查 SPIR-V 的合法性规则。都不依赖外部工具。
 
 ## 5. API
 
@@ -242,6 +393,6 @@ public const ClosureInfo Flatten<M>() where M : IMaterial { ... }
 
 - query 引擎的具体设计：持久化缓存（跨进程复用 query 结果），以及取消的语义。
 - MIR 和 IR 的指令集。
-- pass 的具体清单与顺序；自动微分 pass 在流水线里的确切位置。
+- peephole 规则表的格式；寄存器压力模型的参数（按 target）。
 - DXIL 写出器：LLVM 3.7 bitcode 的子集，以及验证哈希的算法。
 - 语言服务器的范围。
