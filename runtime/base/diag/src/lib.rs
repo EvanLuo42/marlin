@@ -9,6 +9,8 @@
 //! - Sinks: [`DebugOutput`] (the default), [`ConsoleSink`] (optionally colored), [`FileSink`],
 //!   [`RingSink`] (recent text, for crash reports) and [`AsyncSink`] (writes a [`LineSink`] from
 //!   a background thread). Records are stamped with a monotonic tick; [`init`] starts the clock.
+//! - [`Backtrace`]: allocation-free stack capture, symbolized when displayed; [`ext::crash_dump`]
+//!   writes minidumps and reports unhandled crashes where the platform supports it.
 //! - [`marlin_assert!`] / [`marlin_verify!`] log, break into an attached debugger, then panic.
 //! - Errors are logged once, where they are handled: [`chain`] displays one with its sources;
 //!   [`fatal!`] and [`OrFatal`] report an unrecoverable one and panic. See [`report`].
@@ -17,9 +19,11 @@
 extern crate alloc;
 
 mod async_sink;
+pub mod backtrace;
 mod buf;
 mod clock;
 pub mod debugger;
+pub mod ext;
 mod file;
 mod level;
 mod lock;
@@ -29,6 +33,7 @@ mod ring;
 mod sink;
 
 pub use async_sink::AsyncSink;
+pub use backtrace::Backtrace;
 pub use buf::FixedBuf;
 pub use clock::init;
 pub use file::FileSink;
