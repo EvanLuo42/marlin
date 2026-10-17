@@ -39,7 +39,7 @@ mod traits;
 mod value;
 
 pub use access::{Mut, PathError, PathErrorKind, Ref, get_path, set_path};
-pub use id::{TypeId, TypeName, fnv1a64, fnv1a64_extend, name_hash};
+pub use id::{TypeId, TypeName, name_hash};
 pub use info::{
     ArrayInfo, EnumInfo, FieldAttrs, FieldInfo, ListInfo, OptionInfo, Primitive, RangeAttr,
     StringInfo, StructInfo, StructStyle, TypeInfo, TypeKind, TypeOps, VARIANT_FIELD, VariantInfo,

@@ -151,10 +151,7 @@ unsafe impl Thread for Backend {
             }
         }
 
-        let ms = duration
-            .as_nanos()
-            .div_ceil(1_000_000)
-            .min(u128::from(INFINITE - 1)) as u32;
+        let ms = crate::os::windows::timeout_ms(Some(duration));
         // SAFETY: no preconditions.
         unsafe { Sleep(ms) };
     }

@@ -25,6 +25,7 @@ use marlin_hash::xxh3_64;
 
 use crate::Uuid;
 use crate::cooked::BULK_ALIGN;
+use crate::le::{u16_at, u32_at, u64_at, u128_at};
 
 pub const PACKAGE_MAGIC: [u8; 4] = *b"MPK1";
 pub const PACKAGE_VERSION: u16 = 1;
@@ -152,22 +153,6 @@ impl fmt::Display for PackageError {
 }
 
 impl core::error::Error for PackageError {}
-
-fn u16_at(b: &[u8], at: usize) -> u16 {
-    u16::from_le_bytes([b[at], b[at + 1]])
-}
-
-fn u32_at(b: &[u8], at: usize) -> u32 {
-    u32::from_le_bytes(b[at..at + 4].try_into().unwrap_or_default())
-}
-
-fn u64_at(b: &[u8], at: usize) -> u64 {
-    u64::from_le_bytes(b[at..at + 8].try_into().unwrap_or_default())
-}
-
-fn u128_at(b: &[u8], at: usize) -> u128 {
-    u128::from_le_bytes(b[at..at + 16].try_into().unwrap_or_default())
-}
 
 /// Reads the header at the start of a package.
 pub fn read_header(bytes: &[u8]) -> Result<PackageHeader, PackageError> {

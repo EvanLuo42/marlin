@@ -9,6 +9,7 @@
 //! ```
 
 use marlin_asset::Uuid;
+use marlin_asset::wire::{Reader, WireError, Writer};
 use marlin_hash::xxh3_128;
 
 const MAGIC: &[u8; 4] = b"MMAN";
@@ -32,89 +33,46 @@ pub struct Manifest {
 #[error("not a build manifest, or a damaged one")]
 pub struct ManifestError;
 
-struct Reader<'a> {
-    b: &'a [u8],
-    at: usize,
-}
-
-impl Reader<'_> {
-    fn take(&mut self, n: usize) -> Result<&[u8], ManifestError> {
-        let end = self.at.checked_add(n).ok_or(ManifestError)?;
-        let s = self.b.get(self.at..end).ok_or(ManifestError)?;
-        self.at = end;
-        Ok(s)
-    }
-
-    fn u32(&mut self) -> Result<u32, ManifestError> {
-        Ok(u32::from_le_bytes(
-            self.take(4)?.try_into().map_err(|_| ManifestError)?,
-        ))
-    }
-
-    fn u64(&mut self) -> Result<u64, ManifestError> {
-        Ok(u64::from_le_bytes(
-            self.take(8)?.try_into().map_err(|_| ManifestError)?,
-        ))
-    }
-
-    fn u128(&mut self) -> Result<u128, ManifestError> {
-        Ok(u128::from_le_bytes(
-            self.take(16)?.try_into().map_err(|_| ManifestError)?,
-        ))
-    }
-
-    fn string(&mut self) -> Result<String, ManifestError> {
-        let len = self.u32()? as usize;
-        String::from_utf8(self.take(len)?.to_vec()).map_err(|_| ManifestError)
-    }
-}
-
 impl Manifest {
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut out = Vec::new();
-        out.extend_from_slice(MAGIC);
-        out.extend_from_slice(&VERSION.to_le_bytes());
-        let string = |out: &mut Vec<u8>, s: &str| {
-            out.extend_from_slice(&(s.len() as u32).to_le_bytes());
-            out.extend_from_slice(s.as_bytes());
-        };
-        string(&mut out, &self.platform);
-        out.extend_from_slice(&(self.units.len() as u32).to_le_bytes());
+        let mut w = Writer::new();
+        w.raw(MAGIC).u32(VERSION).str(&self.platform);
+        w.u32(self.units.len() as u32);
         for u in &self.units {
-            out.extend_from_slice(&u.unit.to_le_bytes());
-            out.extend_from_slice(&u.key.to_le_bytes());
-            string(&mut out, &u.path);
+            w.u64(u.unit).u128(u.key).str(&u.path);
         }
-        out.extend_from_slice(&(self.objects.len() as u32).to_le_bytes());
-        for (uuid, unit) in &self.objects {
-            out.extend_from_slice(&uuid.as_u128().to_le_bytes());
-            out.extend_from_slice(&unit.to_le_bytes());
+        w.u32(self.objects.len() as u32);
+        for &(uuid, unit) in &self.objects {
+            w.uuid(uuid).u64(unit);
         }
-        out
+        w.finish()
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, ManifestError> {
-        let mut r = Reader { b: bytes, at: 0 };
-        if r.take(4)? != MAGIC || r.u32()? != VERSION {
-            return Err(ManifestError);
+        Self::read(&mut Reader::new(bytes), bytes.len()).map_err(|_| ManifestError)
+    }
+
+    fn read(r: &mut Reader<'_>, len: usize) -> Result<Self, WireError> {
+        if r.u32()? != u32::from_le_bytes(*MAGIC) || r.u32()? != VERSION {
+            return Err(WireError::Malformed);
         }
-        let platform = r.string()?;
+        let platform = r.str()?;
         let count = r.u32()? as usize;
-        let mut units = Vec::with_capacity(count.min(bytes.len() / 28));
+        let mut units = Vec::with_capacity(count.min(len / 28));
         for _ in 0..count {
             units.push(ManifestUnit {
                 unit: r.u64()?,
                 key: r.u128()?,
-                path: r.string()?,
+                path: r.str()?,
             });
         }
         let count = r.u32()? as usize;
-        let mut objects = Vec::with_capacity(count.min(bytes.len() / 24));
+        let mut objects = Vec::with_capacity(count.min(len / 24));
         for _ in 0..count {
-            objects.push((Uuid::from_u128(r.u128()?), r.u64()?));
+            objects.push((r.uuid()?, r.u64()?));
         }
-        if r.at != bytes.len() {
-            return Err(ManifestError);
+        if !r.rest().is_empty() {
+            return Err(WireError::Malformed);
         }
         Ok(Self {
             platform,

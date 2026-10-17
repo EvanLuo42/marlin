@@ -10,6 +10,7 @@ use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::time::Duration;
 
+use marlin_pal::os::windows::timeout_ms;
 use windows_sys::Win32::Foundation::{
     ERROR_ACCESS_DENIED, ERROR_CONNECTION_ABORTED, ERROR_CONNECTION_REFUSED,
     ERROR_HOST_UNREACHABLE, ERROR_INVALID_HANDLE, ERROR_INVALID_PARAMETER, ERROR_NETNAME_DELETED,
@@ -552,16 +553,4 @@ pub(crate) fn from_code(code: u32) -> Error {
         },
     };
     Error::new(kind, wsa)
-}
-
-/// Milliseconds for a Win32 wait: rounded up, `INFINITE` for `None`.
-fn timeout_ms(timeout: Option<Duration>) -> u32 {
-    const INFINITE: u32 = u32::MAX;
-    match timeout {
-        None => INFINITE,
-        Some(t) => {
-            let ms = t.as_nanos().div_ceil(1_000_000);
-            ms.min(u128::from(INFINITE - 1)) as u32
-        }
-    }
 }

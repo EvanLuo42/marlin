@@ -2,21 +2,14 @@ use core::sync::atomic::AtomicU32;
 use core::time::Duration;
 
 use windows_sys::Win32::Foundation::{ERROR_TIMEOUT, GetLastError};
-use windows_sys::Win32::System::Threading::{
-    INFINITE, WaitOnAddress, WakeByAddressAll, WakeByAddressSingle,
-};
+use windows_sys::Win32::System::Threading::{WaitOnAddress, WakeByAddressAll, WakeByAddressSingle};
 
 use super::Backend;
 use crate::contract::{Futex, Time};
 
 impl Futex for Backend {
     fn wait(addr: &AtomicU32, expected: u32, timeout: Option<Duration>) -> bool {
-        // Milliseconds, rounded up so short timeouts do not become non-blocking.
-        let ms = timeout.map_or(INFINITE, |t| {
-            t.as_nanos()
-                .div_ceil(1_000_000)
-                .min(u128::from(INFINITE - 1)) as u32
-        });
+        let ms = crate::os::windows::timeout_ms(timeout);
         let start = timeout.map(|_| <Backend as Time>::ticks());
         // SAFETY: both pointers are valid for 4 bytes for the duration of the call.
         let woken = unsafe {

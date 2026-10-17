@@ -177,11 +177,7 @@ fn parse_bound(input: ParseStream) -> Result<Option<f64>> {
 
 /// Same hash as `marlin_reflect::name_hash`; used here only to reject collisions at compile time.
 fn name_hash(name: &str) -> u32 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in name.bytes() {
-        h ^= u64::from(b);
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-    }
+    let h = marlin_hash::fnv1a_64(name.as_bytes());
     (h ^ (h >> 32)) as u32
 }
 

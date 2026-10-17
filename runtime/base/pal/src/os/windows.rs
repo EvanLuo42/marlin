@@ -19,3 +19,15 @@ pub fn last_error() -> Error {
 pub fn check(ok: i32) -> Result<()> {
     crate::backend::windows::error::check(ok)
 }
+
+/// Milliseconds for a Win32 wait: `INFINITE` for `None`, otherwise rounded up (and capped below
+/// `INFINITE`), so a short timeout never turns into a non-blocking poll.
+#[inline]
+pub fn timeout_ms(timeout: Option<core::time::Duration>) -> u32 {
+    const INFINITE: u32 = u32::MAX;
+    timeout.map_or(INFINITE, |t| {
+        t.as_nanos()
+            .div_ceil(1_000_000)
+            .min(u128::from(INFINITE - 1)) as u32
+    })
+}

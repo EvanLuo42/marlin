@@ -5,6 +5,7 @@ use alloc::vec::Vec;
 use marlin_rhi::{
     Buffer, BufferDesc, BufferTextureCopy, BufferUsage, ClearValue, Device, Format, MemoryLocation,
     RenderTargetViewDesc, Texture, TextureBarrier, TextureDesc, TextureState, TextureUsage,
+    aligned_row_pitch,
 };
 
 use crate::delta::{RenderDelta, RenderSide};
@@ -45,7 +46,7 @@ impl Offscreen {
     pub fn new(device: &Device, width: u32, height: u32) -> marlin_rhi::Result<Self> {
         let clear = marlin_render::Environment::default().clear_color;
         let target = create_target(device, width, height, clear)?;
-        let row_pitch = (width * 4).next_multiple_of(256);
+        let row_pitch = aligned_row_pitch(OFFSCREEN_FORMAT, width);
         let readback = device.create_buffer(&BufferDesc {
             size: row_pitch as u64 * height as u64,
             usage: BufferUsage::COPY_DST,

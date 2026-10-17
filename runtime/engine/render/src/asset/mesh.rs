@@ -19,6 +19,7 @@ use alloc::vec::Vec;
 use marlin_anim::Skeleton;
 use marlin_asset::{Link, SourceFile};
 use marlin_math::scalar::{atan2, cos, sin, sqrt};
+pub use marlin_math::scalar::{f16_to_f32, f32_to_f16};
 use marlin_reflect::Reflect;
 use marlin_serial::cooked::{CookedView, LayoutError, Pod, RelSlice};
 
@@ -576,57 +577,6 @@ pub struct VertexAttributes {
     pub bitangent_sign: f32,
     pub uvs: [[f32; 2]; 4],
     pub color: Option<[u8; 4]>,
-}
-
-/// IEEE half to single precision.
-pub fn f16_to_f32(h: u16) -> f32 {
-    let sign = ((h >> 15) as u32) << 31;
-    let exp = ((h >> 10) & 0x1f) as u32;
-    let man = (h & 0x3ff) as u32;
-    let bits = match (exp, man) {
-        (0, 0) => sign,
-        (0, _) => {
-            // Subnormal: normalize.
-            let shift = man.leading_zeros() - 21;
-            let man = (man << shift) & 0x3ff;
-            sign | (113 - shift) << 23 | man << 13
-        }
-        (31, 0) => sign | 0x7f80_0000,
-        (31, _) => sign | 0x7fc0_0000 | man << 13,
-        _ => sign | (exp + 112) << 23 | man << 13,
-    };
-    f32::from_bits(bits)
-}
-
-/// Single to half precision, rounding to nearest even.
-pub fn f32_to_f16(v: f32) -> u16 {
-    let bits = v.to_bits();
-    let sign = ((bits >> 16) & 0x8000) as u16;
-    let exp = ((bits >> 23) & 0xff) as i32;
-    let man = bits & 0x7f_ffff;
-    if exp == 0xff {
-        return sign | 0x7c00 | if man != 0 { 0x200 } else { 0 };
-    }
-    let e = exp - 127 + 15;
-    if e >= 31 {
-        return sign | 0x7c00;
-    }
-    if e <= 0 {
-        if e < -10 {
-            return sign;
-        }
-        let man = man | 0x80_0000;
-        let shift = (14 - e) as u32;
-        let half = man >> shift;
-        let rest = man & ((1 << shift) - 1);
-        let mid = 1 << (shift - 1);
-        let round = u32::from(rest > mid || (rest == mid && half & 1 != 0));
-        return sign | (half + round) as u16;
-    }
-    let half = ((e as u32) << 10) | (man >> 13);
-    let rest = man & 0x1fff;
-    let round = u32::from(rest > 0x1000 || (rest == 0x1000 && half & 1 != 0));
-    sign | (half + round) as u16
 }
 
 impl MeshView<'_> {

@@ -24,7 +24,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT};
-use windows_sys::Win32::System::Threading::{CreateEventW, INFINITE, WaitForSingleObject};
+use windows_sys::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
 use windows_sys::core::{BOOL, HRESULT};
 
 use com::*;
@@ -129,7 +129,7 @@ fn event() -> Result<Handle> {
 
 /// Waits on `handle` for up to `timeout`. `Ok(false)` on timeout.
 fn wait_handle(handle: HANDLE, timeout: Option<Duration>) -> Result<bool> {
-    let ms = timeout.map_or(INFINITE, |t| t.as_millis().min(INFINITE as u128 - 1) as u32);
+    let ms = marlin_pal::os::windows::timeout_ms(timeout);
     // SAFETY: `handle` is a live waitable handle.
     match unsafe { WaitForSingleObject(handle, ms) } {
         WAIT_OBJECT_0 => Ok(true),

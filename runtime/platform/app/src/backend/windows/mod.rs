@@ -45,7 +45,6 @@ use crate::os::windows::{Message, MessageHook};
 use crate::{Display, Error, ErrorKind, Event, EventQueue, Lifecycle, Result, WindowDesc};
 
 const CLASS_NAME: *const u16 = w!("MarlinWindow");
-const INFINITE: u32 = u32::MAX;
 
 /// Hooks per [`App`]; one per input system is the expected use.
 const MAX_HOOKS: usize = 8;
@@ -214,7 +213,7 @@ impl crate::contract::App for App {
 
     fn pump(&mut self, timeout: Option<Duration>, out: &mut EventQueue) {
         if timeout != Some(Duration::ZERO) {
-            let ms = timeout.map_or(INFINITE, |t| t.as_millis().min(INFINITE as u128 - 1) as u32);
+            let ms = marlin_pal::os::windows::timeout_ms(timeout);
             // SAFETY: no handles; MWMO_INPUTAVAILABLE also returns for messages already queued.
             unsafe {
                 MsgWaitForMultipleObjectsEx(0, ptr::null(), ms, QS_ALLINPUT, MWMO_INPUTAVAILABLE)

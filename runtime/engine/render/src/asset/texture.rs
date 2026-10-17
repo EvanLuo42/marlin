@@ -10,7 +10,7 @@
 
 use marlin_asset::SourceFile;
 use marlin_reflect::Reflect;
-use marlin_rhi::Format;
+use marlin_rhi::{Format, TEXTURE_OFFSET_ALIGNMENT, TEXTURE_ROW_PITCH_ALIGNMENT};
 use marlin_serial::cooked::{CookedView, LayoutError, Pod, RelSlice};
 
 /// What a texture holds. Decides filtering, the default format and how the cooker treats it.
@@ -325,8 +325,8 @@ impl<'a> TextureView<'a> {
                     || r.width != mw.next_multiple_of(extent)
                     || r.height != mh.next_multiple_of(extent)
                     || r.bytes_per_row < row_bytes
-                    || r.bytes_per_row % 256 != 0
-                    || r.offset % 512 != 0
+                    || !r.bytes_per_row.is_multiple_of(TEXTURE_ROW_PITCH_ALIGNMENT)
+                    || !(r.offset as u64).is_multiple_of(TEXTURE_OFFSET_ALIGNMENT)
                     || bulk_sizes.get(blob).is_none_or(|&size| end > size)
                 {
                     return Err(TextureError::Malformed);

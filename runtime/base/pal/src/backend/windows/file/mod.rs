@@ -21,13 +21,14 @@ use windows_sys::Win32::Storage::FileSystem::{
 use windows_sys::Win32::System::IO::{
     GetOverlappedResult, OVERLAPPED, OVERLAPPED_0, OVERLAPPED_0_0,
 };
-use windows_sys::Win32::System::Threading::{CreateEventW, INFINITE};
+use windows_sys::Win32::System::Threading::CreateEventW;
 use windows_sys::core::HRESULT;
 
 use super::error::{check, from_win32, last_error};
 use super::{Backend, with_wide_path};
 use crate::contract;
 use crate::file::{Completion, Disposition, Engine, Op, OpKind, OpenOptions};
+pub(super) use crate::os::windows::timeout_ms;
 use crate::{Error, ErrorKind, Result};
 
 pub(crate) struct File {
@@ -279,15 +280,6 @@ fn hresult_result(hr: HRESULT, bytes: usize) -> Result<usize> {
     } else {
         Err(hresult_error(hr))
     }
-}
-
-/// Milliseconds for a Win32 wait, rounded up so short timeouts do not become non-blocking.
-pub(super) fn timeout_ms(timeout: Option<Duration>) -> u32 {
-    timeout.map_or(INFINITE, |t| {
-        t.as_nanos()
-            .div_ceil(1_000_000)
-            .min(u128::from(INFINITE - 1)) as u32
-    })
 }
 
 /// A sync read or write on an overlapped handle.

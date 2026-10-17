@@ -8,12 +8,13 @@
 
 use core::fmt::Write as _;
 use core::ptr;
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
+use marlin_sync::Once;
 use windows_sys::core::HRESULT;
 
 use super::com::{self, *};
@@ -22,30 +23,18 @@ use crate::{Error, ErrorKind, Result};
 
 // --- Process-wide switches ---
 
-/// 0 = not tried, 1 = enabling, 2 = done (enabled or unavailable).
-static DEBUG_LAYER: AtomicU8 = AtomicU8::new(0);
+/// Done once per process (enabled or unavailable); threads that arrive meanwhile wait for the
+/// attempt to finish, since a device created meanwhile would miss the setting (or be removed by
+/// the debug layer).
+static DEBUG_LAYER: Once = Once::new();
 static GPU_VALIDATION: AtomicBool = AtomicBool::new(false);
-static DRED: AtomicU8 = AtomicU8::new(0);
-
-/// Runs `enable` once per process; other threads wait for the attempt to finish (a device
-/// created meanwhile would miss the setting, or be removed by the debug layer).
-fn once(state: &AtomicU8, enable: impl FnOnce()) {
-    loop {
-        match state.compare_exchange(0, 1, Ordering::Acquire, Ordering::Acquire) {
-            Ok(_) => break,
-            Err(2) => return,
-            Err(_) => core::hint::spin_loop(),
-        }
-    }
-    enable();
-    state.store(2, Ordering::Release);
-}
+static DRED: Once = Once::new();
 
 /// Enables the debug layer (and GPU-based validation) once per process, before any device that
 /// should be validated.
 pub(super) fn enable_debug_layer(gpu_validation: bool) {
     let mut ran = false;
-    once(&DEBUG_LAYER, || {
+    DEBUG_LAYER.call_once(|| {
         ran = true;
         let Some(get) = d3d12_get_debug_interface() else {
             return;
@@ -83,7 +72,7 @@ pub(super) fn enable_debug_layer(gpu_validation: bool) {
 /// Turns on DRED auto-breadcrumbs and page-fault tracking once per process, before the first
 /// device.
 pub(super) fn enable_crash_diagnostics() {
-    once(&DRED, || {
+    DRED.call_once(|| {
         let Some(get) = d3d12_get_debug_interface() else {
             return;
         };

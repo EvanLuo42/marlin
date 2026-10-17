@@ -17,6 +17,7 @@
 use core::mem::size_of;
 
 use crate::Uuid;
+use crate::le::{u16_at, u32_at, u64_at, u128_at};
 
 pub const UNIT_MAGIC: [u8; 4] = *b"MCU1";
 pub const UNIT_VERSION: u16 = 1;
@@ -127,28 +128,6 @@ pub enum UnitError {
     BadEnum,
     #[error("cooked unit tables are not sorted by UUID")]
     Unsorted,
-}
-
-fn u16_at(b: &[u8], at: usize) -> u16 {
-    u16::from_le_bytes([b[at], b[at + 1]])
-}
-
-fn u32_at(b: &[u8], at: usize) -> u32 {
-    let mut w = [0; 4];
-    w.copy_from_slice(&b[at..at + 4]);
-    u32::from_le_bytes(w)
-}
-
-fn u64_at(b: &[u8], at: usize) -> u64 {
-    let mut w = [0; 8];
-    w.copy_from_slice(&b[at..at + 8]);
-    u64::from_le_bytes(w)
-}
-
-fn u128_at(b: &[u8], at: usize) -> u128 {
-    let mut w = [0; 16];
-    w.copy_from_slice(&b[at..at + 16]);
-    u128::from_le_bytes(w)
 }
 
 /// A checked view of a cooked unit's bytes.
