@@ -63,18 +63,20 @@ macro_rules! flags {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct InstanceDesc {
-    /// Enables the API's validation layer (D3D12 debug layer, Vulkan validation) when installed.
-    /// Its messages go to the `marlin_diag` log. On D3D12 this is process-wide and permanent: the
-    /// first instance that enables it enables it for every later device.
+    /// Enables the API's validation layer (the Vulkan validation layer, the D3D12 debug layer) when
+    /// installed. Its messages go to the `marlin_diag` log. Where the API makes it process-wide
+    /// and permanent (D3D12), the first instance that enables it enables it for every later
+    /// device.
     pub validation: bool,
-    /// GPU-based validation on top of `validation` (D3D12 GPU-based validation, Vulkan GPU-AV):
+    /// GPU-based validation on top of `validation` (Vulkan GPU-AV, D3D12 GPU-based validation):
     /// checks descriptor indices and resource states as shaders run. Several times slower; for
-    /// hunting bindless and barrier bugs. Process-wide and permanent like `validation`.
+    /// hunting bindless and barrier bugs. Process-wide and permanent where `validation` is.
     pub gpu_validation: bool,
     /// Records what the GPU was doing so that a lost device reports the command lists, the last
-    /// operations reached and any page fault (D3D12 DRED auto-breadcrumbs and page-fault
-    /// tracking) in the `marlin_diag` log. A few percent of GPU time; on by default so crashes in
-    /// the field are diagnosable. Process-wide: it must be set before the first device exists.
+    /// operations reached and any page fault (Vulkan device fault reports with checkpoints or
+    /// buffer markers, D3D12 DRED auto-breadcrumbs and page-fault tracking) in the `marlin_diag`
+    /// log. A few percent of GPU time; on by default so crashes in the field are diagnosable.
+    /// Process-wide on some APIs (D3D12): set it before the first device exists.
     pub crash_diagnostics: bool,
 }
 
@@ -108,10 +110,11 @@ pub struct AdapterInfo {
     pub vendor_id: u32,
     pub device_id: u32,
     pub dedicated_video_memory: u64,
-    /// System memory the adapter may use (D3D12 "shared system memory").
+    /// System memory the adapter may use (Vulkan: its memory heaps that are not device-local;
+    /// D3D12 "shared system memory").
     pub shared_system_memory: u64,
     /// The OS's locally unique adapter id: what OpenXR and other APIs name the adapter by
-    /// (DXGI `AdapterLuid`, Vulkan `deviceLUID`), low part in the low 32 bits.
+    /// (Vulkan `deviceLUID`, DXGI `AdapterLuid`), low part in the low 32 bits.
     pub luid: u64,
     name: [u8; ADAPTER_NAME_CAPACITY],
     name_len: u8,
@@ -167,7 +170,9 @@ pub enum AdapterPreference {
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct DeviceDesc {
     pub adapter: AdapterPreference,
-    /// Use the legacy barrier path even where enhanced barriers exist. For testing the fallback.
+    /// D3D12 only, a test knob: use the legacy resource-state barrier path even where enhanced
+    /// barriers exist, to test that fallback. Backends with a single barrier path (Vulkan's
+    /// synchronization2, ...) ignore it. It goes away with the D3D12 backend on desktop.
     pub disable_enhanced_barriers: bool,
 }
 
@@ -178,28 +183,31 @@ pub struct DeviceDesc {
 pub enum VariableRateShading {
     #[default]
     None,
-    /// One rate per draw (D3D12 VRS tier 1).
+    /// One rate per draw (Vulkan pipeline shading rate, D3D12 VRS tier 1).
     PerDraw,
     /// Per draw, per primitive (`SV_ShadingRate`) and per screen tile from a shading-rate image
-    /// (tier 2).
+    /// (Vulkan primitive and attachment shading rates, D3D12 VRS tier 2).
     Image,
 }
 
-/// Optional capabilities of a device, beyond the baseline (D3D12: feature level 12_0, shader
-/// model 6.6, resource binding tier 3).
+/// Optional capabilities of a device, beyond the baseline every backend requires (mesh shaders,
+/// bindless tables; Vulkan: 1.4 with descriptor heaps and device-generated commands; D3D12:
+/// feature level 12_0, shader model 6.6, resource binding tier 3).
 #[non_exhaustive]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Features {
-    /// Highest shader model as `(major, minor)`; at least 6.6 on D3D12.
+    /// D3D12 only: the highest shader model as `(major, minor)`, at least 6.6. Other backends
+    /// leave it `(0, 0)`; their shader capabilities are the other fields.
     pub shader_model: (u8, u8),
-    /// Barriers run natively as sync/access/layout (D3D12 enhanced barriers, Vulkan
-    /// synchronization2). Without it, D3D12 translates them into legacy resource states.
+    /// Barriers run natively as sync/access/layout (Vulkan synchronization2, always; D3D12
+    /// enhanced barriers). Without it, D3D12 translates them into legacy resource states.
     pub enhanced_barriers: bool,
     /// [`PresentMode::Immediate`] can tear (variable refresh displays).
     pub tearing: bool,
     /// Mesh and amplification shaders. Part of the baseline: devices without them are refused.
     pub mesh_shader: bool,
-    /// Inline ray queries (DXR 1.1) against [`AccelerationStructure`]s, from any shader stage.
+    /// Inline ray queries (Vulkan `VK_KHR_ray_query`, DXR 1.1) against
+    /// [`AccelerationStructure`]s, from any shader stage.
     ///
     /// [`AccelerationStructure`]: crate::AccelerationStructure
     pub ray_query: bool,
@@ -226,12 +234,13 @@ pub struct Features {
     pub pipeline_statistics: bool,
     /// [`CommandList::write_marker`](crate::CommandList::write_marker) on every queue type.
     pub buffer_markers: bool,
-    /// Sparse buffers and 2D textures ([`Device::create_sparse_texture`]): D3D12 tiled resources
-    /// tier 2 (unmapped tiles read zero, shaders can test residency).
+    /// Sparse buffers and 2D textures ([`Device::create_sparse_texture`]): unmapped tiles read
+    /// zero, shaders can test residency (Vulkan sparse binding and residency, D3D12 tiled
+    /// resources tier 2).
     ///
     /// [`Device::create_sparse_texture`]: crate::Device::create_sparse_texture
     pub sparse_resources: bool,
-    /// Sparse volume textures (tiled resources tier 3).
+    /// Sparse volume textures (Vulkan `sparseResidencyImage3D`, D3D12 tiled resources tier 3).
     pub sparse_volumes: bool,
     /// [`MemoryLocation::GpuUpload`]: CPU-writable device-local memory (resizable BAR).
     pub gpu_upload_heap: bool,
@@ -239,8 +248,8 @@ pub struct Features {
     pub atomic_int64: bool,
     /// Timestamps can be written on the copy queue.
     pub copy_queue_timestamps: bool,
-    /// Heaps may hold buffers and every kind of texture together (D3D12 resource heap tier 2).
-    /// Otherwise each heap takes one [`HeapKind`].
+    /// Heaps may hold buffers and every kind of texture together (always on Vulkan; D3D12
+    /// resource heap tier 2). Otherwise each heap takes one [`HeapKind`].
     pub mixed_heaps: bool,
     /// The smallest and largest wave (subgroup) sizes, for shaders that pick one with
     /// `[WaveSize]`.
@@ -258,8 +267,9 @@ pub enum QueueType {
 
 /// Texel formats. Component order is memory order (lowest address first).
 ///
-/// Not every format exists on every API: ETC2/EAC and ASTC are mobile and console formats that
-/// D3D12 lacks. [`Device::format_support`](crate::Device::format_support) says what a device does
+/// Not every format exists on every device: ETC2/EAC and ASTC are mobile and console formats
+/// that D3D12 lacks and desktop Vulkan drivers often lack.
+/// [`Device::format_support`](crate::Device::format_support) says what a device does
 /// with each; creating a texture in a format the device lacks fails with `Unsupported`.
 #[non_exhaustive]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -548,7 +558,8 @@ impl FormatSupport {
     }
 }
 
-/// Row pitch alignment of buffer↔texture copies (D3D12's; the strictest of the APIs).
+/// Row pitch alignment of buffer↔texture copies (D3D12's requirement, the strictest of the
+/// APIs; Vulkan needs only texel alignment).
 pub const TEXTURE_ROW_PITCH_ALIGNMENT: u32 = 256;
 /// Buffer offset alignment of buffer↔texture copies.
 pub const TEXTURE_OFFSET_ALIGNMENT: u64 = 512;
@@ -556,13 +567,14 @@ pub const TEXTURE_OFFSET_ALIGNMENT: u64 = 512;
 pub const UNIFORM_ALIGNMENT: u64 = 256;
 /// Largest uniform buffer view.
 pub const MAX_UNIFORM_SIZE: u64 = 65536;
-/// 32-bit words of push constants (D3D12 root constants, Vulkan push constants).
+/// 32-bit words of push constants (Vulkan push data, D3D12 root constants).
 pub const MAX_PUSH_CONSTANTS: u32 = 32;
 /// Slots in the bindless resource table: buffer and texture views, see [`ShaderView`].
 ///
 /// [`ShaderView`]: crate::ShaderView
 pub const MAX_BINDLESS_RESOURCES: u32 = 1 << 18;
-/// Slots in the bindless sampler table (D3D12's shader-visible sampler heap limit).
+/// Slots in the bindless sampler table (the smallest API limit: D3D12's shader-visible sampler
+/// heap).
 pub const MAX_BINDLESS_SAMPLERS: u32 = 2048;
 
 // --- Memory, buffers and textures ---
@@ -580,7 +592,8 @@ pub enum MemoryLocation {
     /// device, so crash markers ([`CommandList::write_marker`](crate::CommandList::write_marker))
     /// go here.
     Readback,
-    /// Device-local memory the CPU writes directly (resizable BAR; D3D12 GPU upload heaps):
+    /// Device-local memory the CPU writes directly (resizable BAR: Vulkan device-local
+    /// host-visible memory, D3D12 GPU upload heaps):
     /// per-frame data the GPU reads at full speed without a staging copy. Write-combined like
     /// [`Upload`](Self::Upload). Requires [`Features::gpu_upload_heap`]; buffers only.
     GpuUpload,
@@ -603,8 +616,8 @@ pub struct BufferDesc {
     pub memory: MemoryLocation,
 }
 
-/// A texture's clear value the hardware is optimized for (D3D12 "optimized clear value"; other
-/// APIs ignore it). Clearing to any other value works, only slower.
+/// A texture's clear value the hardware is optimized for (D3D12 "optimized clear value"; APIs
+/// without one, Vulkan among them, ignore it). Clearing to any other value works, only slower.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum ClearValue {
     Color([f32; 4]),
@@ -783,8 +796,8 @@ pub struct DepthStencilViewDesc {
 /// and read as `Texture2DMS` / `Texture2DMSArray`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum TextureViewDimension {
-    /// One layer: layer 0 of the range. D3D12 cannot view a later layer of an array as a plain 2D
-    /// texture; use a one-layer `D2Array` for that.
+    /// One layer: layer 0 of the range. Not every API can view a later layer of an array as a
+    /// plain 2D texture (D3D12 cannot); use a one-layer `D2Array` for that.
     D2,
     D2Array,
     /// A volume texture. Writable views see every slice of one mip.
@@ -981,7 +994,8 @@ pub enum ShaderFormat {
     MetalLib,
 }
 
-/// Compiled shader bytecode: DXIL on D3D12, SPIR-V on Vulkan, the console formats on consoles.
+/// Compiled shader bytecode in the backend's [`SHADER_FORMAT`](crate::SHADER_FORMAT): SPIR-V on
+/// Vulkan, DXIL on D3D12, the console formats on consoles.
 /// The RHI never compiles source; see `docs/design/0002-shader-interface.md` for the interface
 /// shaders must follow (bindless tables, push constants, vertex pulling).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -1419,8 +1433,8 @@ pub const fn aligned_row_pitch(format: Format, width: u32) -> u32 {
 }
 
 flags! {
-    /// Pipeline stages a barrier waits for (before) or blocks (after). Bit values match D3D12's
-    /// `D3D12_BARRIER_SYNC`; Vulkan maps them to `VkPipelineStageFlags2`.
+    /// Pipeline stages a barrier waits for (before) or blocks (after). Vulkan maps them to
+    /// `VkPipelineStageFlags2`; the bit values happen to match D3D12's `D3D12_BARRIER_SYNC`.
     Stage {
         NONE = 0,
         ALL = 0x1,
@@ -1449,8 +1463,9 @@ flags! {
 }
 
 flags! {
-    /// How a resource is accessed. Bit values match D3D12's `D3D12_BARRIER_ACCESS`, except that
-    /// [`NONE`](Self::NONE) (Vulkan's 0) is D3D12's `NO_ACCESS`.
+    /// How a resource is accessed. Vulkan maps them to `VkAccessFlags2` ([`NONE`](Self::NONE) is
+    /// its 0); the bit values happen to match D3D12's `D3D12_BARRIER_ACCESS`, whose `NO_ACCESS`
+    /// is `NONE`.
     Access {
         NONE = 0,
         VERTEX_BUFFER = 0x1,
@@ -1475,7 +1490,7 @@ flags! {
     }
 }
 
-/// How a texture's memory is arranged. Maps 1:1 to D3D12 barrier layouts and Vulkan image
+/// How a texture's memory is arranged. Maps 1:1 to Vulkan image layouts and D3D12 barrier
 /// layouts; legacy D3D12 derives a resource state from it.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Layout {
@@ -1483,7 +1498,8 @@ pub enum Layout {
     /// [`undefined_from`](TextureBarrier::undefined_from) names the layout the texture is really
     /// in, for legacy D3D12.
     Undefined,
-    /// Swapchain image ready for presentation (D3D12: the common layout).
+    /// Swapchain image ready for presentation (Vulkan `PRESENT_SRC_KHR`, D3D12 the common
+    /// layout).
     Present,
     /// Readable by any stage and copies; the layout of a new texture.
     Common,
@@ -1752,7 +1768,7 @@ pub struct ColorAttachment<'a> {
     pub store: StoreOp,
 }
 
-/// Most color attachments a render pass may have (D3D12 and Vulkan's guaranteed minimum).
+/// Most color attachments a render pass may have (Vulkan's and D3D12's guaranteed minimum).
 pub const MAX_COLOR_ATTACHMENTS: usize = 8;
 
 #[derive(Clone, Copy, Debug)]
@@ -1986,8 +2002,8 @@ pub struct SubmitDesc<'a> {
 // --- Indirect commands ---
 
 /// The push-constant word every indirect command writes its `constant` into, so the shaders a
-/// multi-draw runs can tell its draws apart (D3D12 sets it from the argument buffer; Vulkan
-/// backends will map it to the draw index).
+/// multi-draw runs can tell its draws apart (Vulkan device-generated commands and D3D12 command
+/// signatures both set it from the argument buffer).
 pub const INDIRECT_CONSTANT_WORD: u32 = MAX_PUSH_CONSTANTS - 1;
 
 /// Arguments of one indirect draw, as the argument buffer holds them (20 bytes).
@@ -2064,7 +2080,8 @@ pub enum QueryKind {
     /// per second, written by [`CommandList::write_timestamp`](crate::CommandList::write_timestamp)
     /// on graphics and compute lists.
     Timestamp,
-    /// Timestamps written on copy lists (D3D12 keeps them in their own heap type). Requires
+    /// Timestamps written on copy lists (D3D12 keeps them in their own query heap type; Vulkan
+    /// needs a transfer queue with timestamp bits). Requires
     /// [`Features::copy_queue_timestamps`].
     CopyTimestamp,
     /// The number of samples that passed the depth and stencil tests between
@@ -2099,8 +2116,8 @@ impl QueryKind {
     }
 }
 
-/// One [`QueryKind::PipelineStatistics`] result as resolved into a buffer (112 bytes, D3D12's
-/// `D3D12_QUERY_DATA_PIPELINE_STATISTICS1` order).
+/// One [`QueryKind::PipelineStatistics`] result as resolved into a buffer (112 bytes, in this
+/// field order on every backend; it is D3D12's `D3D12_QUERY_DATA_PIPELINE_STATISTICS1`).
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub struct PipelineStatistics {
@@ -2181,7 +2198,9 @@ pub struct MemoryRequirements {
 }
 
 /// Alignment of placed resources' offsets that is always enough for single-sampled resources
-/// (64 KiB; D3D12's default). Multisampled textures may need [`MSAA_PLACEMENT_ALIGNMENT`].
+/// (64 KiB: D3D12's default, and more than Vulkan drivers ask). Multisampled textures may need
+/// [`MSAA_PLACEMENT_ALIGNMENT`]. A resource's own [`MemoryRequirements::alignment`] may be
+/// smaller.
 pub const PLACEMENT_ALIGNMENT: u64 = 64 << 10;
 /// Alignment of placed multisampled textures that is always enough (4 MiB).
 pub const MSAA_PLACEMENT_ALIGNMENT: u64 = 4 << 20;
@@ -2456,7 +2475,7 @@ pub struct AccelerationStructureSizes {
     pub update_scratch_size: u64,
 }
 
-/// One instance record of a top-level build (64 bytes, the layout D3D12 and Vulkan share).
+/// One instance record of a top-level build (64 bytes, the layout Vulkan and D3D12 share).
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct AccelerationStructureInstance {

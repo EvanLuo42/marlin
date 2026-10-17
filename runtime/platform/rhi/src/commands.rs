@@ -20,7 +20,7 @@ use crate::{
     VariableRateShading, Viewport,
 };
 
-/// Most viewports and scissors one call sets (D3D12's and Vulkan's guaranteed minimum).
+/// Most viewports and scissors one call sets (Vulkan's and D3D12's guaranteed minimum).
 pub const MAX_VIEWPORTS: usize = 16;
 
 /// The accesses [`CommandList::memory_barrier`] orders: the ones that need no layout or state
@@ -482,8 +482,9 @@ impl CommandList {
         Backend::set_index_buffer(&mut self.raw, buffer, offset, format);
     }
 
-    /// Shaders see vertex indices `first_vertex..` and instance indices from 0: the instance
-    /// offset is not visible to D3D12 shaders, so pass it in push constants when needed.
+    /// Shaders see vertex indices `first_vertex..` and instance indices from 0 on every backend
+    /// (D3D12 shaders cannot see the instance offset, so none do; 0002 §3): pass it in push
+    /// constants when needed.
     pub fn draw(
         &mut self,
         vertex_count: u32,
@@ -850,8 +851,8 @@ impl CommandList {
         Backend::write_compacted_sizes(&mut self.raw, structures, dst, offset);
     }
 
-    /// Opens a named region for GPU debuggers and profilers (PIX, RenderDoc). Regions nest;
-    /// close each with [`end_event`](Self::end_event) in the same list.
+    /// Opens a named region for GPU debuggers and profilers (RenderDoc, Nsight, PIX). Regions
+    /// nest; close each with [`end_event`](Self::end_event) in the same list.
     pub fn begin_event(&mut self, name: &str) {
         Backend::begin_event(&mut self.raw, name);
     }
@@ -865,9 +866,9 @@ impl CommandList {
         Backend::set_marker(&mut self.raw, name);
     }
 
-    /// The native list (D3D12: `ID3D12GraphicsCommandList*`), borrowed, for libraries that
-    /// record into it (upscalers). Whatever they bind, the next draw or dispatch needs its
-    /// pipeline set again.
+    /// The native list (Vulkan: `VkCommandBuffer`; D3D12: `ID3D12GraphicsCommandList*`),
+    /// borrowed, for libraries that record into it (upscalers). Whatever they bind, the next draw
+    /// or dispatch needs its pipeline set again.
     pub fn as_raw(&self) -> *mut c_void {
         Backend::native(Object::CommandList(&self.raw))
     }

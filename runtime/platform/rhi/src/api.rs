@@ -46,12 +46,13 @@ fn require(feature: bool) -> Result<()> {
     if feature { Ok(()) } else { Err(unsupported()) }
 }
 
-/// Largest texture dimension (D3D12's limit for 2D textures).
+/// Largest texture dimension (D3D12's limit for 2D textures, which desktop Vulkan drivers reach
+/// too).
 const MAX_TEXTURE_SIZE: u32 = 16384;
 const MAX_TEXTURE_LAYERS: u32 = 2048;
 const MAX_TEXTURE_3D_SIZE: u32 = 2048;
 
-/// The API entry point (DXGI factory, `VkInstance`). Enumerates adapters and creates devices.
+/// The API entry point (`VkInstance`, DXGI factory). Enumerates adapters and creates devices.
 pub struct Instance {
     raw: <Backend as Types>::Instance,
 }
@@ -74,7 +75,8 @@ impl Instance {
         (0..).map_while(move |i| Backend::output(&self.raw, adapter, i))
     }
 
-    /// Fails with `Unsupported` if the adapter lacks the baseline (D3D12: feature level 12_0,
+    /// Fails with `Unsupported` if the adapter lacks the baseline (see [`Features`]; Vulkan: 1.4,
+    /// descriptor heaps, mesh shaders, device-generated commands; D3D12: feature level 12_0,
     /// shader model 6.6, resource binding tier 3, mesh shaders).
     pub fn create_device(&self, desc: &DeviceDesc) -> Result<Device> {
         let (raw, queues) = Backend::create_device(&self.raw, desc)?;
@@ -95,7 +97,8 @@ impl Instance {
         })
     }
 
-    /// The native object (D3D12: the `IDXGIFactory4*`), borrowed: valid while `self` lives.
+    /// The native object (Vulkan: the `VkInstance`; D3D12: the `IDXGIFactory4*`), borrowed:
+    /// valid while `self` lives.
     pub fn as_raw(&self) -> *mut c_void {
         Backend::native(Object::Instance(&self.raw))
     }
@@ -139,14 +142,15 @@ impl Device {
     }
 
     /// Loses the device on purpose, to test the recovery path. Every later call reports
-    /// `DeviceLost`, here and (D3D12 shares one device per adapter in a process) in any other
-    /// `Device` of the same adapter.
+    /// `DeviceLost`, here and possibly in any other `Device` of the same adapter in the process
+    /// (always on D3D12, which shares one device per adapter).
     pub fn force_device_lost(&self) {
         Backend::force_device_lost(&self.raw);
     }
 
-    /// Pins the GPU clocks so profiling runs compare (D3D12 needs Windows developer mode). Never
-    /// in shipping builds: it costs performance and power.
+    /// Pins the GPU clocks so profiling runs compare, where the API can (D3D12, with Windows
+    /// developer mode); an error where it cannot. Never in shipping builds: it costs
+    /// performance and power.
     pub fn set_stable_power_state(&self, stable: bool) -> Result<()> {
         Backend::set_stable_power_state(&self.raw, stable)
     }
@@ -158,7 +162,7 @@ impl Device {
     }
 
     /// The dedicated queue of type `ty` (async compute, copies for streaming), or `None` where
-    /// the API has none: then the graphics queue does that work.
+    /// the device has none: then the graphics queue does that work.
     #[inline]
     pub fn dedicated_queue(&self, ty: QueueType) -> Option<&Queue> {
         match ty {
@@ -246,8 +250,9 @@ impl Device {
     /// Errors (and corruption reports) the validation layer has logged so far. 0 without
     /// validation. Tests assert this stays 0.
     ///
-    /// D3D12 returns the same device for every device created on one adapter in a process, so
-    /// such `Device`s share one message queue: a message is counted by whichever drains it first.
+    /// Messages are not always tied to one device: D3D12 returns the same device for every
+    /// device created on one adapter in a process, so such `Device`s share one message queue,
+    /// and a message is counted by whichever drains it first.
     #[inline]
     pub fn validation_errors(&self) -> u64 {
         Backend::validation_errors(&self.raw)
@@ -897,8 +902,9 @@ impl Device {
     /// image, an upscaler's output). The wrapper adds its own reference to it.
     ///
     /// # Safety
-    /// `raw` is a live native texture (D3D12: `ID3D12Resource*`) of this device, in the common
-    /// state, and `desc` describes it exactly.
+    /// `raw` is a live native texture (Vulkan: a `VkImage` bound to memory; D3D12: an
+    /// `ID3D12Resource*`) of this device, in [`Layout::Common`](crate::Layout::Common) (Vulkan
+    /// `GENERAL`, D3D12 the common state), and `desc` describes it exactly.
     pub unsafe fn texture_from_raw(&self, raw: *mut c_void, desc: &TextureDesc) -> Result<Texture> {
         self.validate_texture(desc)?;
         ensure(!raw.is_null())?;
@@ -913,8 +919,9 @@ impl Device {
     /// As [`texture_from_raw`](Self::texture_from_raw), for a buffer.
     ///
     /// # Safety
-    /// `raw` is a live native buffer of this device that `desc` describes exactly; mapped
-    /// memory locations must match its heap.
+    /// `raw` is a live native buffer (Vulkan: a `VkBuffer` bound to memory; D3D12: an
+    /// `ID3D12Resource*`) of this device that `desc` describes exactly; mapped memory locations
+    /// must match its memory.
     pub unsafe fn buffer_from_raw(&self, raw: *mut c_void, desc: &BufferDesc) -> Result<Buffer> {
         self.validate_buffer(desc)?;
         ensure(!raw.is_null())?;
@@ -926,7 +933,8 @@ impl Device {
         })
     }
 
-    /// The native device (D3D12: `ID3D12Device*`), borrowed, for libraries that take one
+    /// The native device (Vulkan: `VkDevice`; D3D12: `ID3D12Device*`), borrowed, for libraries
+    /// that take one
     /// (upscalers, XR runtimes, vendor SDKs).
     pub fn as_raw(&self) -> *mut c_void {
         Backend::native(Object::Device(&self.raw))
@@ -1023,7 +1031,8 @@ fn validate_texture(d: &TextureDesc) -> Result<()> {
     match d.dimension {
         TextureDimension::D2 => ensure(d.depth == 1)?,
         TextureDimension::D3 => {
-            // D3D12's 3D limits; volumes are sampled or written, not rendered to as targets.
+            // D3D12's 3D limits (Vulkan drivers allow as much); volumes are sampled or written,
+            // not rendered to as targets.
             ensure(d.width <= MAX_TEXTURE_3D_SIZE && d.height <= MAX_TEXTURE_3D_SIZE)?;
             ensure((1..=MAX_TEXTURE_3D_SIZE).contains(&d.depth) && d.array_layers == 1)?;
             ensure(!d.format.is_depth() && !d.usage.contains(TextureUsage::RENDER_TARGET))?;
@@ -1243,7 +1252,7 @@ impl Queue {
         unsafe { Backend::bind_sparse(&self.raw, binds) }
     }
 
-    /// The native queue (D3D12: `ID3D12CommandQueue*`), borrowed.
+    /// The native queue (Vulkan: `VkQueue`; D3D12: `ID3D12CommandQueue*`), borrowed.
     pub fn as_raw(&self) -> *mut c_void {
         Backend::native(Object::Queue(&self.raw))
     }
@@ -1254,8 +1263,8 @@ impl Queue {
     }
 }
 
-/// A monotonically increasing 64-bit counter shared by CPU and GPU: D3D12 fence, Vulkan timeline
-/// semaphore, Metal shared event.
+/// A monotonically increasing 64-bit counter shared by CPU and GPU: Vulkan timeline semaphore,
+/// D3D12 fence, Metal shared event.
 pub struct Fence {
     pub(crate) raw: <Backend as Types>::Fence,
 }
@@ -1277,7 +1286,7 @@ impl Fence {
         Backend::signal(&self.raw, value)
     }
 
-    /// The native fence (D3D12: `ID3D12Fence*`), borrowed.
+    /// The native fence (Vulkan: the timeline `VkSemaphore`; D3D12: `ID3D12Fence*`), borrowed.
     pub fn as_raw(&self) -> *mut c_void {
         Backend::native(Object::Fence(&self.raw))
     }
@@ -1372,7 +1381,7 @@ impl Buffer {
         self.kind == ResourceKind::Sparse
     }
 
-    /// The native resource (D3D12: `ID3D12Resource*`), borrowed.
+    /// The native resource (Vulkan: `VkBuffer`; D3D12: `ID3D12Resource*`), borrowed.
     pub fn as_raw(&self) -> *mut c_void {
         Backend::native(Object::Buffer(&self.raw))
     }
@@ -1413,7 +1422,7 @@ impl Texture {
         self.kind == ResourceKind::Sparse
     }
 
-    /// The native resource (D3D12: `ID3D12Resource*`), borrowed.
+    /// The native resource (Vulkan: `VkImage`; D3D12: `ID3D12Resource*`), borrowed.
     pub fn as_raw(&self) -> *mut c_void {
         Backend::native(Object::Texture(&self.raw))
     }
@@ -1487,7 +1496,7 @@ pub struct MeshPipeline {
 macro_rules! named {
     ($($ty:ident => $variant:ident),*) => {$(
         impl $ty {
-            /// Names it for debuggers (PIX, RenderDoc) and crash reports.
+            /// Names it for debuggers (RenderDoc, Nsight, PIX) and crash reports.
             pub fn set_name(&self, name: &str) {
                 Backend::set_name(Object::$variant(&self.raw), name);
             }
@@ -1504,7 +1513,7 @@ named!(
     AccelerationStructure => AccelerationStructure
 );
 
-/// Compiled pipelines kept between runs (D3D12 pipeline library, `VkPipelineCache`), so a
+/// Compiled pipelines kept between runs (`VkPipelineCache`, D3D12 pipeline library), so a
 /// pipeline the driver compiled once loads instead of compiling again: the difference between a
 /// smooth first frame and a stutter per new material.
 ///
@@ -1605,7 +1614,7 @@ impl AccelerationStructure {
 }
 
 /// An OS handle to a buffer, texture or fence another device, API or process can open
-/// (Windows: an NT handle). Closed on drop.
+/// (Windows: an NT handle; Linux: a file descriptor). Closed on drop.
 pub struct SharedHandle {
     raw: <Backend as Types>::SharedHandle,
 }
@@ -1729,13 +1738,13 @@ impl Swapchain {
         &Backend::views(&self.raw)[index as usize]
     }
 
-    /// The native swapchain (D3D12: `IDXGISwapChain3*`), borrowed.
+    /// The native swapchain (Vulkan: `VkSwapchainKHR`; D3D12: `IDXGISwapChain3*`), borrowed.
     pub fn as_raw(&self) -> *mut c_void {
         Backend::native(Object::Swapchain(&self.raw))
     }
 }
 
-/// Memory that command lists record into (D3D12 command allocator, `VkCommandPool`). One list
+/// Memory that command lists record into (`VkCommandPool`, D3D12 command allocator). One list
 /// records from a pool at a time; reset it once the GPU is done with everything recorded.
 pub struct CommandPool {
     pub(crate) raw: <Backend as Types>::CommandPool,

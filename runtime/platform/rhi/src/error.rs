@@ -1,6 +1,6 @@
 pub type Result<T, E = Error> = core::result::Result<T, E>;
 
-/// An RHI failure: a portable [`ErrorKind`] plus the API's raw code (`HRESULT`, `VkResult`, ...).
+/// An RHI failure: a portable [`ErrorKind`] plus the API's raw code (`VkResult`, `HRESULT`, ...).
 /// `Copy` and allocation-free, like `marlin_pal::Error`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, marlin_error::Error)]
 #[error(code = "{:#010x}")]
@@ -39,7 +39,7 @@ pub enum ErrorKind {
     /// is dead; recreate the device and everything made from it.
     #[error("device lost")]
     DeviceLost,
-    /// The OS, driver or GPU lacks something required (API version, feature level, format).
+    /// The OS, driver or GPU lacks something required (API version, extension, feature, format).
     #[error("unsupported")]
     Unsupported,
     #[error("out of memory")]
