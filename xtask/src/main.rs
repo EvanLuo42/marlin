@@ -4,6 +4,7 @@ mod build;
 mod cfg;
 mod check;
 mod platform;
+mod unicode;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -23,6 +24,8 @@ Commands:
                     --target <triple>   default: the platform's first target
                     -- <args>...        passed through to cargo build
   check-layers    Check crate layering and that runtime crates are no_std
+  gen-unicode     Regenerate marlin-text's Unicode tables from the Unicode Character Database
+                    --ucd <dir>         the UCD files (default: $MARLIN_UCD_DIR)
 ";
 
 fn main() -> ExitCode {
@@ -33,6 +36,7 @@ fn main() -> ExitCode {
         Some("gen-cfg") => cfg::gen_cfg(&root),
         Some("build") => build::run(&root, &args[1..]),
         Some("check-layers") => check::layers(&root),
+        Some("gen-unicode") => unicode::gen_unicode(&root, &args[1..]),
         Some("help" | "-h" | "--help") | None => {
             print!("{HELP}");
             Ok(())

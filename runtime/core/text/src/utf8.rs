@@ -1,8 +1,11 @@
 //! UTF-8 and ASCII-case helpers that `core::str` lacks.
 //!
 //! Case-insensitivity here is ASCII only (`A-Z` vs `a-z`), like `str::eq_ignore_ascii_case`:
-//! engine identifiers, paths and config keys are ASCII, and full Unicode case folding needs
-//! tables this layer should not carry.
+//! engine identifiers, paths and config keys are ASCII, and this is the fast path for them. For
+//! user-visible text use the Unicode-aware counterparts in [`unicode`](crate::unicode): full
+//! case folding ([`eq_ignore_case`](crate::unicode::eq_ignore_case),
+//! [`cmp_ignore_case`](crate::unicode::cmp_ignore_case),
+//! [`Caseless`](crate::unicode::Caseless)) and normalization.
 
 use core::cmp::Ordering;
 use core::hash::{Hash, Hasher};
