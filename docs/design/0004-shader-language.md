@@ -25,7 +25,7 @@
 | 参数 | C# 的 `in`、`out`、`ref`，调用处必须写 `out`/`ref`；实现是 copy-in/copy-out | 6 |
 | 函数 | 允许 namespace 顶层函数 | 6 |
 | 递归 | 只允许编译期递归 | 6 |
-| 组织 | 包 + file-scoped `namespace` + `using`；可见性 `public`/`internal`/`private`；包清单是 `ShaderPackage` 资产 | 7 |
+| 组织 | 包 + 必须写的 file-scoped `namespace` + `using`，名字查找照 C#；可见性 `public`/`internal`/`private`，默认值照 C#；包清单是 `ShaderPackage` 资产，由宿主解析 | 7 |
 | 泛型 | C# 写法加值参数 `const int N`；约束用 `where` | 8 |
 | 关联类型 | 接口里写 `type Name : IBound;`，实现者写 `type Name = X;` 或者同名嵌套 struct | 8.2 |
 | Self 类型 | C# 的 CRTP：`interface IArithmetic<TSelf> where TSelf : IArithmetic<TSelf>` | 8.3 |
@@ -255,11 +255,13 @@ internal float3 F0FromSpecular(float s) => ...;
 ```
 
 - **包**是编译单元：一个目录加一份清单，包里的所有文件一起编译，这和 csproj 一样。文件之间不需要 import。
-- 每个文件用 file-scoped `namespace` 声明，用 `using` 引入别的 namespace，还支持 `using static` 和 `using` 别名。
+- 每个文件**必须**用 file-scoped `namespace` 声明，没写就报错；用 `using` 引入别的 namespace，还支持 `using static` 和 `using` 别名。
+- 名字查找照 C#：局部 → 所在类型（含外层类型）的成员 → 本 namespace → 外层 namespace（逐层往外）；每一层先查这一层的成员，再查这一层的 `using`。所以 `namespace Marlin.Post;` 里可以直接用 `Marlin` 里的类型，`Marlin.Math` 可以写成 `Math`。几个 `using` 引入了同名的类型时，用到它才报歧义。
 - 可见性：
   - `public`：其他包可见；
-  - `internal`：同一个包内可见，是默认值；
-  - `private`：只在所在类型内可见。
+  - `internal`：同一个包内可见；
+  - `private`：只在所在类型内可见；
+  - 默认值照 C#：namespace 里的声明（类型、函数、字段）不写就是 `internal`，类型的成员不写就是 `private`；interface 和 enum 的成员总是 `public`。
 - 编译器在名字解析完成后，报告每个入口**实际用到的源文件**，供 cook 键（0003 §4.1）和热重载使用。
 - **标准库导入**：
   - 核心部分在根 namespace `Marlin` 里，每个文件都会隐式导入。核心部分包括标量、向量、矩阵、资源类型、数值接口和常用数学函数（`Dot`、`Lerp`、`Saturate`……）。

@@ -1,0 +1,19 @@
+[package]
+name = "marlin-front-hir-def"
+description = "Shared C#-family front end: packages, namespaces, item trees and name resolution."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+marlin-front-syntax.workspace = true
+marlin-lang-arena.workspace = true
+marlin-lang-diag.workspace = true
+marlin-lang-query.workspace = true
+marlin-lang-span.workspace = true
+
+[dev-dependencies]
+marlin-test-support.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,58 @@
+error[E0402]: a file has only one file-scoped namespace declaration
+ --> Post/post/Bad.mshader:2:11
+  |
+2 | namespace Marlin.Again;
+  |           ^^^^^^^^^^^^ second declaration
+
+error[E0403]: `Marlin.Missing` is not a namespace
+ --> Post/post/Bad.mshader:4:7
+  |
+4 | using Marlin.Missing;
+  |       ^^^^^^^^^^^^^^
+
+error[E0403]: `Marlin.Math` is not a type
+ --> Post/post/Bad.mshader:5:14
+  |
+5 | using static Marlin.Math;
+  |              ^^^^^^^^^^^
+
+error[E0401]: type `Blur` is defined twice
+ --> Post/post/Bad.mshader:7:8
+  |
+7 | struct Blur<X> { }
+  |        ^^^^ redefined here
+ ::: Post/post/Blur.mshader:6:15
+  |
+6 | public struct Blur<T>
+  |               ---- first defined here
+
+error[E0401]: member `X` is defined twice
+ --> Post/post/Bad.mshader:8:27
+  |
+8 | struct Dup { int X; float X; void F() { } void F(int a) { } }
+  |                           ^ redefined here
+  |                  - first defined here
+
+error[E0404]: a property can only be declared inside a type
+ --> Post/post/Bad.mshader:9:14
+  |
+9 | public float Prop { get; }
+  |              ^^^^
+
+error[E0401]: member `Luma` is defined twice
+  --> Post/post/Bad.mshader:10:7
+   |
+10 | float Luma;
+   |       ^^^^ redefined here
+  ::: Post/post/Blur.mshader:11:14
+   |
+11 | public float Luma(float3 c) => Dot(c, c);
+   |              ---- first defined here
+
+error[E0402]: this file has no namespace declaration
+ --> Post/post/NoNamespace.mshader:1:1
+  |
+1 | struct Loose { }
+  | ^
+  |
+  = note: start the file with a file-scoped namespace: `namespace A.B;`

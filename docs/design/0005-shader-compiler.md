@@ -422,7 +422,7 @@ public const ClosureInfo Flatten<M>() where M : IMaterial { ... }
 | 1 | `common`：`span`、`diag`（含文本渲染器）、`arena` | 诊断能渲染成 rustc 风格的文本 |
 | 2 | `front/syntax`：lexer、无损 CST、超集文法的 parser、validation、有类型的 AST 视图；`shader/syntax`：shader 的 dialect | 覆盖 0004 的全部语法；任意输入都不 panic，并且能原样往返 |
 | 3 | `common/query`：红绿增量引擎 | 改一个文件只重算依赖它的 query |
-| 4 | `front/hir_def`：item tree、def map、名字解析、函数体降低成 HIR | 包内跨文件、跨 namespace 的名字都能解析 |
+| 4 | `front/hir_def`：4a 是 item tree、def map、名字解析；4b 是函数体降低成 HIR 和局部作用域 | 包内跨文件、跨 namespace 的名字都能解析 |
 | 5 | `hir_ty`：类型检查与推断、泛型与约束、capability 推断 | 0004 的类型规则都有诊断 |
 | 6 | `ir`：指令集、builder、verifier、文本打印和解析、解释器 | 文本能往返；解释器能跑 compute 语义 |
 | 7 | `mir`、`mono`：降低到 SSA、单态化、CTFE | 泛型入口能单态化，`const` 函数能在编译期求值 |

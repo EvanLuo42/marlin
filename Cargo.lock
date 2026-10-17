@@ -597,6 +597,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "marlin-front-hir-def"
+version = "0.1.0"
+dependencies = [
+ "marlin-front-syntax",
+ "marlin-lang-arena",
+ "marlin-lang-diag",
+ "marlin-lang-query",
+ "marlin-lang-span",
+ "marlin-test-support",
+]
+
+[[package]]
 name = "marlin-front-syntax"
 version = "0.1.0"
 dependencies = [

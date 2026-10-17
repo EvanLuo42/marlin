@@ -73,6 +73,8 @@ marlin = { path = "runtime/marlin" }
 # --- compiler ---
 marlin-lang-span = { path = "compiler/common/span" }
 marlin-lang-diag = { path = "compiler/common/diag" }
+marlin-lang-arena = { path = "compiler/common/arena" }
+marlin-lang-query = { path = "compiler/common/query" }
 marlin-front-syntax = { path = "compiler/front/syntax" }
 # --- editor ---
 marlin-editor-ui-core = { path = "editor/ui_core" }

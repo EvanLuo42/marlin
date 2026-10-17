@@ -464,3 +464,79 @@ impl BinExpr {
         self.0.child_tokens().find(|t| !t.kind().is_trivia())
     }
 }
+
+impl UsingDirective {
+    /// `global using ...`
+    pub fn is_global(&self) -> bool {
+        token(&self.0, GLOBAL_KW).is_some()
+    }
+
+    /// `using static ...`
+    pub fn is_static(&self) -> bool {
+        token(&self.0, STATIC_KW).is_some()
+    }
+
+    /// `using Name = ...`
+    pub fn alias(&self) -> Option<UsingAlias> {
+        child(&self.0)
+    }
+
+    /// The imported namespace or type: the path, or for an alias the path of its target type.
+    pub fn path(&self) -> Option<Path> {
+        child::<Path>(&self.0).or_else(|| match child::<Type>(&self.0)? {
+            Type::PathType(t) => t.path(),
+            _ => None,
+        })
+    }
+}
+
+impl PathType {
+    pub fn path(&self) -> Option<Path> {
+        child(&self.0)
+    }
+}
+
+impl GenericArgList {
+    /// How many arguments are written.
+    pub fn count(&self) -> usize {
+        self.0
+            .children()
+            .filter(|n| matches!(n.kind(), TYPE_ARG | CONST_ARG))
+            .count()
+    }
+}
+
+impl TypeParamList {
+    pub fn params(&self) -> impl Iterator<Item = TypeParam> + '_ {
+        children(&self.0)
+    }
+}
+
+impl EnumDecl {
+    pub fn members(&self) -> impl Iterator<Item = EnumMember> + '_ {
+        child::<EnumMemberList>(&self.0)
+            .into_iter()
+            .flat_map(|list| {
+                list.0
+                    .children()
+                    .filter_map(EnumMember::cast)
+                    .collect::<Vec<_>>()
+            })
+    }
+}
+
+impl LocalDeclStmt {
+    pub fn declarators(&self) -> impl Iterator<Item = VariableDeclarator> + '_ {
+        children(&self.0)
+    }
+}
+
+impl Modifiers {
+    /// The modifier keywords, in source order.
+    pub fn kinds(&self) -> impl Iterator<Item = SyntaxKind> + '_ {
+        self.0
+            .child_tokens()
+            .map(|t| t.kind())
+            .filter(|k| !k.is_trivia())
+    }
+}

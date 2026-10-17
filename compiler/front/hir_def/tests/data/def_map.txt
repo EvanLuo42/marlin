@@ -1,0 +1,44 @@
+== package Marlin
+namespace <root>
+  namespace Marlin
+namespace Marlin
+  namespace Extra
+  namespace Math
+  namespace Wave
+  struct CoreOnly (Internal)
+  struct Func`1 (Public)
+  struct Func`2 (Public)
+  interface IMaterial (Public)
+  struct Light (Public)
+  struct Vector`2 (Public)
+  function Dot (Public)
+namespace Marlin.Extra
+  struct Light (Public)
+namespace Marlin.Math
+  struct Light (Public)
+  function Dot (Public)
+  field Pi (Public)
+namespace Marlin.Wave
+  function Sum (Public)
+  function Sum (Public)
+== package Post
+namespace <root>
+  namespace Game
+  namespace Marlin
+  struct Loose (Internal)
+namespace Game
+  struct UsesLight (Internal)
+namespace Marlin
+  namespace Post
+namespace Marlin.Post
+  namespace Inner
+  struct Blur`1 (Public)
+  struct Blur`1 (Internal)
+  struct Dup (Internal)
+  struct Rock (Internal)
+  function Luma (Public)
+  field Luma (Internal)
+  field Tile (Internal)
+  1 extension block(s)
+namespace Marlin.Post.Inner
+  struct Light (Public)

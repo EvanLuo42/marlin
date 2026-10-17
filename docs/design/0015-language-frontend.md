@@ -116,12 +116,45 @@ pub struct Dialect {
 - 类型路径和 namespace 路径的解析。按类型查成员依赖类型，放在各语言的 `hir_ty` 里；
 - 函数体降低成 HIR：HIR 的表达式和语句也是超集。
 
-语言之间的差异由一个语言描述提供，例如：
-- 每个文件隐式导入的根 namespace（shader 是 `Marlin`，0004 §7.1）；
-- 核心库所在的包；
-- 默认可见性。
+### 3.1 input
 
-接口的具体形状到实现 `hir_def` 时再定（0005 §11 的第 4 步）。
+宿主把这些设进 `Db`（§4）；编译器不读文件，也不解析包清单：
+
+| input | key | value |
+|---|---|---|
+| `LanguageInput` | `()` | `&'static Language`：这个 `Db` 编的是哪种语言 |
+| `PackageInput` | `PackageId` | 包名、文件列表、直接依赖。由宿主解析 `ShaderPackage` 这类清单得到 |
+| `FilePackage` | `FileId` | 文件属于哪个包 |
+| `FileText` | `FileId` | 源文件内容 |
+
+`Language` 是每种语言的描述，定义在语言自己的 crate 里（shader 的在 `compiler/shader/syntax`）：
+- `dialect`：解析用的 `Dialect`（§2.2）；
+- `implicit_usings`：每个文件隐式 `using` 的 namespace（shader 是 `Marlin`，0004 §7.1）；
+- `require_namespace`：文件是否必须有 file-scoped `namespace`（shader 是）。
+
+### 3.2 query 与数据
+
+| query | key | 内容 |
+|---|---|---|
+| `ParseFile` | `FileId` | 语法树和语法错误 |
+| `AstIdMap` | `FileId` | 文件里每个声明和 `using` 的语法位置，按先序编号 |
+| `ItemTreeQuery` | `FileId` | 文件的声明结构：namespace、`using`、各个声明的名字、种类、可见性、泛型参数个数和嵌套成员。**不含函数体，也不含位置**，只用 `AstId` 指回语法树，所以只改函数体或空白时它的值不变，依赖它的 query 都不重算 |
+| `PackageDefMap` | `PackageId` | 包里所有文件合并出的 namespace 树：每个 namespace 里的子 namespace、类型（按名字和泛型参数个数区分，`Func<T>` 和 `Func<T, U>` 是两个类型）、函数（按名字的重载集合）、字段、extension 块；加上重复定义、缺少 `namespace` 声明这类诊断 |
+| `FileImports` | `FileId` | 文件的 `using` 解析结果（namespace、`using static` 的类型、别名）和解析不了的诊断 |
+
+- 声明的 id 是 `ItemId { file, index }`，`index` 是 item tree 里的下标。
+- namespace 用全名（`Marlin.Post`）标识，所有包共享：同名 namespace 里的成员合并，这和 C# 一样。
+- 一个包能看到自己和**依赖的传递闭包**里的包；别的包里只有 `public` 的声明可见。
+
+### 3.3 名字查找
+
+照 C# 的 namespace-or-type-name 规则（0004 §7.1）。`Resolver` 记录查找位置（包、文件、namespace、外层类型链、泛型参数），对一条路径：
+- 第一段按 局部（4b）→ 泛型参数 → 外层类型的成员 → 本 namespace 和外层 namespace（每层先成员、后这一层的 `using`）的顺序找；文件里的 `using` 属于文件的 namespace 这一层，`global using` 和语言的隐式 `using` 属于最外层；
+- 后面的段在前一段的 namespace 或类型里找；
+- 结果是 namespace、类型、函数重载集合、字段，或者"前缀解析到某个类型、剩下的段要等类型检查"（比如泛型参数的关联类型 `M.Params`）；
+- 找不到、不可访问（只找到了看不见的声明）、有歧义，各给一种结果，由调用方报诊断。
+
+按类型查成员（字段、方法、属性）依赖类型，放在各语言的 `hir_ty` 里。
 
 ## 4. query 引擎：`common/query`
 
@@ -167,7 +200,7 @@ let tree = snap.get::<ItemTree>(&file)?;                    // Err(Cancelled)：
 
 ## 5. 待定
 
-- `hir_def` 里语言描述的具体接口。
+- 包依赖的可见范围现在是传递闭包；如果要像 C# 的 `PrivateAssets` 那样限制传递，再加。
 - query 的内存回收（LRU、按 revision 清理不再用到的 memo）：等内存成为问题时再做。
 - VM 语言的 dialect 和它的专有构造：VM 语言设计时定。
 - VM 语言是否需要 `protected`，以及它的默认可见性。

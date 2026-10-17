@@ -75,11 +75,20 @@ impl SyntaxError {
     }
 }
 
-/// The result of parsing one file.
-#[derive(Clone)]
+/// The result of parsing one file. Two parses are equal when their trees and errors are.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Parse {
     green: Arc<GreenNode>,
     errors: Vec<SyntaxError>,
+}
+
+impl std::fmt::Debug for Parse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Parse")
+            .field("len", &self.green.text_len())
+            .field("errors", &self.errors.len())
+            .finish()
+    }
 }
 
 impl Parse {
