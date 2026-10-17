@@ -175,6 +175,7 @@ impl CommandList {
     }
 
     pub(crate) fn end(&mut self) -> Result<()> {
+        super::query::finish(self);
         let s = &self.shared;
         // SAFETY: a recording buffer.
         s.lost

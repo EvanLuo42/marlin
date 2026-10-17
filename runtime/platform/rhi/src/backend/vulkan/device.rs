@@ -541,9 +541,10 @@ fn report_features(
         && on(c.shaderResourceResidency)
         && on(s.residencyStandard2DBlockShape)
         && on(s.residencyNonResidentStrict);
-    let copy_queue_timestamps = families
-        .copy
-        .is_some_and(|f| families.properties[f as usize].timestampValidBits > 0);
+    // Transfer queues write timestamps but cannot copy query results out or reset queries
+    // (vkCmdCopyQueryPoolResults and vkCmdResetQueryPool are graphics and compute commands), so
+    // copy lists could never resolve them.
+    let copy_queue_timestamps = false;
     let subgroup_control = on(chain.v13.subgroupSizeControl);
     Features {
         // SPIR-V has no shader model; the baseline runs what HLSL shader model 6.6 expresses.

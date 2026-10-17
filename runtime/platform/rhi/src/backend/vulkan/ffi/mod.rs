@@ -137,6 +137,7 @@ fn_table! {
         vkCmdInsertDebugUtilsLabelEXT: PFN_vkCmdInsertDebugUtilsLabelEXT,
         // --- swapchain (surfaces) ---
         // --- query (calibrated timestamps) ---
+        vkGetPhysicalDeviceCalibrateableTimeDomainsKHR: PFN_vkGetPhysicalDeviceCalibrateableTimeDomainsKHR,
     }
 }
 
@@ -222,6 +223,15 @@ fn_table! {
         vkDestroyIndirectCommandsLayoutEXT: PFN_vkDestroyIndirectCommandsLayoutEXT,
         vkGetGeneratedCommandsMemoryRequirementsEXT: PFN_vkGetGeneratedCommandsMemoryRequirementsEXT,
         vkCmdExecuteGeneratedCommandsEXT: PFN_vkCmdExecuteGeneratedCommandsEXT,
+        // --- query, ray tracing, diagnostics ---
+        vkCreateQueryPool: PFN_vkCreateQueryPool,
+        vkDestroyQueryPool: PFN_vkDestroyQueryPool,
+        vkResetQueryPool: PFN_vkResetQueryPool,
+        vkCmdResetQueryPool: PFN_vkCmdResetQueryPool,
+        vkCmdBeginQuery: PFN_vkCmdBeginQuery,
+        vkCmdEndQuery: PFN_vkCmdEndQuery,
+        vkCmdWriteTimestamp2: PFN_vkCmdWriteTimestamp2,
+        vkCmdCopyQueryPoolResults: PFN_vkCmdCopyQueryPoolResults,
     }
     optional {
         vkGetDeviceFaultInfoEXT: PFN_vkGetDeviceFaultInfoEXT,
@@ -230,6 +240,19 @@ fn_table! {
         // --- pipeline and draw ---
         vkCmdSetFragmentShadingRateKHR: PFN_vkCmdSetFragmentShadingRateKHR,
         // --- query, ray tracing, diagnostics ---
+        vkCmdBeginConditionalRenderingEXT: PFN_vkCmdBeginConditionalRenderingEXT,
+        vkCmdEndConditionalRenderingEXT: PFN_vkCmdEndConditionalRenderingEXT,
+        vkCmdWriteBufferMarker2AMD: PFN_vkCmdWriteBufferMarker2AMD,
+        vkGetCalibratedTimestampsKHR: PFN_vkGetCalibratedTimestampsKHR,
+        vkCreateAccelerationStructureKHR: PFN_vkCreateAccelerationStructureKHR,
+        vkDestroyAccelerationStructureKHR: PFN_vkDestroyAccelerationStructureKHR,
+        vkGetAccelerationStructureBuildSizesKHR: PFN_vkGetAccelerationStructureBuildSizesKHR,
+        vkGetAccelerationStructureDeviceAddressKHR: PFN_vkGetAccelerationStructureDeviceAddressKHR,
+        vkCmdBuildAccelerationStructuresKHR: PFN_vkCmdBuildAccelerationStructuresKHR,
+        vkCmdCopyAccelerationStructureKHR: PFN_vkCmdCopyAccelerationStructureKHR,
+        vkCmdWriteAccelerationStructuresPropertiesKHR: PFN_vkCmdWriteAccelerationStructuresPropertiesKHR,
+        vkCmdSetCheckpointNV: PFN_vkCmdSetCheckpointNV,
+        vkGetQueueCheckpointData2NV: PFN_vkGetQueueCheckpointData2NV,
         // --- swapchain and sharing ---
     }
 }

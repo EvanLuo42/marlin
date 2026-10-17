@@ -4098,6 +4098,319 @@ impl Default for VkGeneratedCommandsMemoryRequirementsInfoEXT {
     }
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkQueryPoolCreateInfo {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub flags: VkQueryPoolCreateFlags,
+    pub queryType: VkQueryType,
+    pub queryCount: u32,
+    pub pipelineStatistics: VkQueryPipelineStatisticFlags,
+}
+
+impl Default for VkQueryPoolCreateInfo {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 11; // VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkConditionalRenderingBeginInfoEXT {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub buffer: VkBuffer,
+    pub offset: VkDeviceSize,
+    pub flags: VkConditionalRenderingFlagsEXT,
+}
+
+impl Default for VkConditionalRenderingBeginInfoEXT {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000081002; // VK_STRUCTURE_TYPE_CONDITIONAL_RENDERING_BEGIN_INFO_EXT
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkCalibratedTimestampInfoKHR {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub timeDomain: VkTimeDomainKHR,
+}
+
+impl Default for VkCalibratedTimestampInfoKHR {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000184000; // VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_KHR
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkAccelerationStructureCreateInfoKHR {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub createFlags: VkAccelerationStructureCreateFlagsKHR,
+    pub buffer: VkBuffer,
+    pub offset: VkDeviceSize,
+    pub size: VkDeviceSize,
+    pub r#type: VkAccelerationStructureTypeKHR,
+    pub deviceAddress: VkDeviceAddress,
+}
+
+impl Default for VkAccelerationStructureCreateInfoKHR {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000150017; // VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkAccelerationStructureBuildGeometryInfoKHR {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub r#type: VkAccelerationStructureTypeKHR,
+    pub flags: VkBuildAccelerationStructureFlagsKHR,
+    pub mode: VkBuildAccelerationStructureModeKHR,
+    pub srcAccelerationStructure: VkAccelerationStructureKHR,
+    pub dstAccelerationStructure: VkAccelerationStructureKHR,
+    pub geometryCount: u32,
+    pub pGeometries: *const VkAccelerationStructureGeometryKHR,
+    pub ppGeometries: *const *const VkAccelerationStructureGeometryKHR,
+    pub scratchData: VkDeviceOrHostAddressKHR,
+}
+
+impl Default for VkAccelerationStructureBuildGeometryInfoKHR {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000150000; // VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkAccelerationStructureGeometryKHR {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub geometryType: VkGeometryTypeKHR,
+    pub geometry: VkAccelerationStructureGeometryDataKHR,
+    pub flags: VkGeometryFlagsKHR,
+}
+
+impl Default for VkAccelerationStructureGeometryKHR {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000150006; // VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) union VkAccelerationStructureGeometryDataKHR {
+    pub triangles: VkAccelerationStructureGeometryTrianglesDataKHR,
+    pub aabbs: VkAccelerationStructureGeometryAabbsDataKHR,
+    pub instances: VkAccelerationStructureGeometryInstancesDataKHR,
+}
+
+impl Default for VkAccelerationStructureGeometryDataKHR {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        unsafe { core::mem::zeroed() }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) union VkDeviceOrHostAddressConstKHR {
+    pub deviceAddress: VkDeviceAddress,
+    pub hostAddress: *const c_void,
+}
+
+impl Default for VkDeviceOrHostAddressConstKHR {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        unsafe { core::mem::zeroed() }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) union VkDeviceOrHostAddressKHR {
+    pub deviceAddress: VkDeviceAddress,
+    pub hostAddress: *mut c_void,
+}
+
+impl Default for VkDeviceOrHostAddressKHR {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        unsafe { core::mem::zeroed() }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkAccelerationStructureGeometryTrianglesDataKHR {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub vertexFormat: VkFormat,
+    pub vertexData: VkDeviceOrHostAddressConstKHR,
+    pub vertexStride: VkDeviceSize,
+    pub maxVertex: u32,
+    pub indexType: VkIndexType,
+    pub indexData: VkDeviceOrHostAddressConstKHR,
+    pub transformData: VkDeviceOrHostAddressConstKHR,
+}
+
+impl Default for VkAccelerationStructureGeometryTrianglesDataKHR {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000150005; // VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkAccelerationStructureGeometryAabbsDataKHR {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub data: VkDeviceOrHostAddressConstKHR,
+    pub stride: VkDeviceSize,
+}
+
+impl Default for VkAccelerationStructureGeometryAabbsDataKHR {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000150003; // VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_AABBS_DATA_KHR
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkAccelerationStructureGeometryInstancesDataKHR {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub arrayOfPointers: VkBool32,
+    pub data: VkDeviceOrHostAddressConstKHR,
+}
+
+impl Default for VkAccelerationStructureGeometryInstancesDataKHR {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000150004; // VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkAccelerationStructureBuildRangeInfoKHR {
+    pub primitiveCount: u32,
+    pub primitiveOffset: u32,
+    pub firstVertex: u32,
+    pub transformOffset: u32,
+}
+
+impl Default for VkAccelerationStructureBuildRangeInfoKHR {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        unsafe { core::mem::zeroed() }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkAccelerationStructureBuildSizesInfoKHR {
+    pub sType: VkStructureType,
+    pub pNext: *mut c_void,
+    pub accelerationStructureSize: VkDeviceSize,
+    pub updateScratchSize: VkDeviceSize,
+    pub buildScratchSize: VkDeviceSize,
+}
+
+impl Default for VkAccelerationStructureBuildSizesInfoKHR {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000150020; // VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkAccelerationStructureDeviceAddressInfoKHR {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub accelerationStructure: VkAccelerationStructureKHR,
+}
+
+impl Default for VkAccelerationStructureDeviceAddressInfoKHR {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000150002; // VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkCopyAccelerationStructureInfoKHR {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub src: VkAccelerationStructureKHR,
+    pub dst: VkAccelerationStructureKHR,
+    pub mode: VkCopyAccelerationStructureModeKHR,
+}
+
+impl Default for VkCopyAccelerationStructureInfoKHR {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000150010; // VK_STRUCTURE_TYPE_COPY_ACCELERATION_STRUCTURE_INFO_KHR
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkCheckpointData2NV {
+    pub sType: VkStructureType,
+    pub pNext: *mut c_void,
+    pub stage: VkPipelineStageFlags2,
+    pub pCheckpointMarker: *mut c_void,
+}
+
+impl Default for VkCheckpointData2NV {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000314009; // VK_STRUCTURE_TYPE_CHECKPOINT_DATA_2_NV
+        s
+    }
+}
+
 // --- Function pointer types ---
 
 pub(crate) type PFN_vkGetInstanceProcAddr = unsafe extern "system" fn(instance: VkInstance, pName: *const c_char) -> PFN_vkVoidFunction;
@@ -4205,6 +4518,28 @@ pub(crate) type PFN_vkCreateIndirectCommandsLayoutEXT = unsafe extern "system" f
 pub(crate) type PFN_vkDestroyIndirectCommandsLayoutEXT = unsafe extern "system" fn(device: VkDevice, indirectCommandsLayout: VkIndirectCommandsLayoutEXT, pAllocator: *const VkAllocationCallbacks);
 pub(crate) type PFN_vkGetGeneratedCommandsMemoryRequirementsEXT = unsafe extern "system" fn(device: VkDevice, pInfo: *const VkGeneratedCommandsMemoryRequirementsInfoEXT, pMemoryRequirements: *mut VkMemoryRequirements2);
 pub(crate) type PFN_vkCmdExecuteGeneratedCommandsEXT = unsafe extern "system" fn(commandBuffer: VkCommandBuffer, isPreprocessed: VkBool32, pGeneratedCommandsInfo: *const VkGeneratedCommandsInfoEXT);
+pub(crate) type PFN_vkCreateQueryPool = unsafe extern "system" fn(device: VkDevice, pCreateInfo: *const VkQueryPoolCreateInfo, pAllocator: *const VkAllocationCallbacks, pQueryPool: *mut VkQueryPool) -> VkResult;
+pub(crate) type PFN_vkDestroyQueryPool = unsafe extern "system" fn(device: VkDevice, queryPool: VkQueryPool, pAllocator: *const VkAllocationCallbacks);
+pub(crate) type PFN_vkResetQueryPool = unsafe extern "system" fn(device: VkDevice, queryPool: VkQueryPool, firstQuery: u32, queryCount: u32);
+pub(crate) type PFN_vkCmdResetQueryPool = unsafe extern "system" fn(commandBuffer: VkCommandBuffer, queryPool: VkQueryPool, firstQuery: u32, queryCount: u32);
+pub(crate) type PFN_vkCmdBeginQuery = unsafe extern "system" fn(commandBuffer: VkCommandBuffer, queryPool: VkQueryPool, query: u32, flags: VkQueryControlFlags);
+pub(crate) type PFN_vkCmdEndQuery = unsafe extern "system" fn(commandBuffer: VkCommandBuffer, queryPool: VkQueryPool, query: u32);
+pub(crate) type PFN_vkCmdWriteTimestamp2 = unsafe extern "system" fn(commandBuffer: VkCommandBuffer, stage: VkPipelineStageFlags2, queryPool: VkQueryPool, query: u32);
+pub(crate) type PFN_vkCmdCopyQueryPoolResults = unsafe extern "system" fn(commandBuffer: VkCommandBuffer, queryPool: VkQueryPool, firstQuery: u32, queryCount: u32, dstBuffer: VkBuffer, dstOffset: VkDeviceSize, stride: VkDeviceSize, flags: VkQueryResultFlags);
+pub(crate) type PFN_vkCmdBeginConditionalRenderingEXT = unsafe extern "system" fn(commandBuffer: VkCommandBuffer, pConditionalRenderingBegin: *const VkConditionalRenderingBeginInfoEXT);
+pub(crate) type PFN_vkCmdEndConditionalRenderingEXT = unsafe extern "system" fn(commandBuffer: VkCommandBuffer);
+pub(crate) type PFN_vkCmdWriteBufferMarker2AMD = unsafe extern "system" fn(commandBuffer: VkCommandBuffer, stage: VkPipelineStageFlags2, dstBuffer: VkBuffer, dstOffset: VkDeviceSize, marker: u32);
+pub(crate) type PFN_vkGetPhysicalDeviceCalibrateableTimeDomainsKHR = unsafe extern "system" fn(physicalDevice: VkPhysicalDevice, pTimeDomainCount: *mut u32, pTimeDomains: *mut VkTimeDomainKHR) -> VkResult;
+pub(crate) type PFN_vkGetCalibratedTimestampsKHR = unsafe extern "system" fn(device: VkDevice, timestampCount: u32, pTimestampInfos: *const VkCalibratedTimestampInfoKHR, pTimestamps: *mut u64, pMaxDeviation: *mut u64) -> VkResult;
+pub(crate) type PFN_vkCreateAccelerationStructureKHR = unsafe extern "system" fn(device: VkDevice, pCreateInfo: *const VkAccelerationStructureCreateInfoKHR, pAllocator: *const VkAllocationCallbacks, pAccelerationStructure: *mut VkAccelerationStructureKHR) -> VkResult;
+pub(crate) type PFN_vkDestroyAccelerationStructureKHR = unsafe extern "system" fn(device: VkDevice, accelerationStructure: VkAccelerationStructureKHR, pAllocator: *const VkAllocationCallbacks);
+pub(crate) type PFN_vkGetAccelerationStructureBuildSizesKHR = unsafe extern "system" fn(device: VkDevice, buildType: VkAccelerationStructureBuildTypeKHR, pBuildInfo: *const VkAccelerationStructureBuildGeometryInfoKHR, pMaxPrimitiveCounts: *const u32, pSizeInfo: *mut VkAccelerationStructureBuildSizesInfoKHR);
+pub(crate) type PFN_vkGetAccelerationStructureDeviceAddressKHR = unsafe extern "system" fn(device: VkDevice, pInfo: *const VkAccelerationStructureDeviceAddressInfoKHR) -> VkDeviceAddress;
+pub(crate) type PFN_vkCmdBuildAccelerationStructuresKHR = unsafe extern "system" fn(commandBuffer: VkCommandBuffer, infoCount: u32, pInfos: *const VkAccelerationStructureBuildGeometryInfoKHR, ppBuildRangeInfos: *const *const VkAccelerationStructureBuildRangeInfoKHR);
+pub(crate) type PFN_vkCmdCopyAccelerationStructureKHR = unsafe extern "system" fn(commandBuffer: VkCommandBuffer, pInfo: *const VkCopyAccelerationStructureInfoKHR);
+pub(crate) type PFN_vkCmdWriteAccelerationStructuresPropertiesKHR = unsafe extern "system" fn(commandBuffer: VkCommandBuffer, accelerationStructureCount: u32, pAccelerationStructures: *const VkAccelerationStructureKHR, queryType: VkQueryType, queryPool: VkQueryPool, firstQuery: u32);
+pub(crate) type PFN_vkCmdSetCheckpointNV = unsafe extern "system" fn(commandBuffer: VkCommandBuffer, pCheckpointMarker: *const c_void);
+pub(crate) type PFN_vkGetQueueCheckpointData2NV = unsafe extern "system" fn(queue: VkQueue, pCheckpointDataCount: *mut u32, pCheckpointData: *mut VkCheckpointData2NV);
 
 // --- Constants ---
 
@@ -4757,10 +5092,72 @@ pub(crate) const VK_FORMAT_B8G8R8A8_SINT: VkFormat = 49;
 pub(crate) const VK_FORMAT_A2B10G10R10_SINT_PACK32: VkFormat = 69;
 pub(crate) const VK_FORMAT_A2R10G10B10_UINT_PACK32: VkFormat = 62;
 pub(crate) const VK_FORMAT_A2R10G10B10_SINT_PACK32: VkFormat = 63;
+pub(crate) const VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO: VkStructureType = 11;
+pub(crate) const VK_QUERY_TYPE_OCCLUSION: VkQueryType = 0;
+pub(crate) const VK_QUERY_TYPE_PIPELINE_STATISTICS: VkQueryType = 1;
+pub(crate) const VK_QUERY_TYPE_TIMESTAMP: VkQueryType = 2;
+pub(crate) const VK_QUERY_TYPE_MESH_PRIMITIVES_GENERATED_EXT: VkQueryType = 1000328000;
+pub(crate) const VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR: VkQueryType = 1000150000;
+pub(crate) const VK_QUERY_CONTROL_PRECISE_BIT: VkQueryControlFlags = 0x00000001;
+pub(crate) const VK_QUERY_RESULT_64_BIT: VkQueryResultFlags = 0x00000001;
+pub(crate) const VK_QUERY_RESULT_WAIT_BIT: VkQueryResultFlags = 0x00000002;
+pub(crate) const VK_QUERY_PIPELINE_STATISTIC_INPUT_ASSEMBLY_VERTICES_BIT: VkQueryPipelineStatisticFlags = 0x00000001;
+pub(crate) const VK_QUERY_PIPELINE_STATISTIC_INPUT_ASSEMBLY_PRIMITIVES_BIT: VkQueryPipelineStatisticFlags = 0x00000002;
+pub(crate) const VK_QUERY_PIPELINE_STATISTIC_VERTEX_SHADER_INVOCATIONS_BIT: VkQueryPipelineStatisticFlags = 0x00000004;
+pub(crate) const VK_QUERY_PIPELINE_STATISTIC_GEOMETRY_SHADER_INVOCATIONS_BIT: VkQueryPipelineStatisticFlags = 0x00000008;
+pub(crate) const VK_QUERY_PIPELINE_STATISTIC_GEOMETRY_SHADER_PRIMITIVES_BIT: VkQueryPipelineStatisticFlags = 0x00000010;
+pub(crate) const VK_QUERY_PIPELINE_STATISTIC_CLIPPING_INVOCATIONS_BIT: VkQueryPipelineStatisticFlags = 0x00000020;
+pub(crate) const VK_QUERY_PIPELINE_STATISTIC_CLIPPING_PRIMITIVES_BIT: VkQueryPipelineStatisticFlags = 0x00000040;
+pub(crate) const VK_QUERY_PIPELINE_STATISTIC_FRAGMENT_SHADER_INVOCATIONS_BIT: VkQueryPipelineStatisticFlags = 0x00000080;
+pub(crate) const VK_QUERY_PIPELINE_STATISTIC_TESSELLATION_CONTROL_SHADER_PATCHES_BIT: VkQueryPipelineStatisticFlags = 0x00000100;
+pub(crate) const VK_QUERY_PIPELINE_STATISTIC_TESSELLATION_EVALUATION_SHADER_INVOCATIONS_BIT: VkQueryPipelineStatisticFlags = 0x00000200;
+pub(crate) const VK_QUERY_PIPELINE_STATISTIC_COMPUTE_SHADER_INVOCATIONS_BIT: VkQueryPipelineStatisticFlags = 0x00000400;
+pub(crate) const VK_QUERY_PIPELINE_STATISTIC_TASK_SHADER_INVOCATIONS_BIT_EXT: VkQueryPipelineStatisticFlags = 0x00000800;
+pub(crate) const VK_QUERY_PIPELINE_STATISTIC_MESH_SHADER_INVOCATIONS_BIT_EXT: VkQueryPipelineStatisticFlags = 0x00001000;
+pub(crate) const VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT: VkPipelineStageFlags2 = 0x00000001;
+pub(crate) const VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT: VkPipelineStageFlags2 = 0x00002000;
+pub(crate) const VK_STRUCTURE_TYPE_CONDITIONAL_RENDERING_BEGIN_INFO_EXT: VkStructureType = 1000081002;
+pub(crate) const VK_CONDITIONAL_RENDERING_INVERTED_BIT_EXT: VkConditionalRenderingFlagsEXT = 0x00000001;
+pub(crate) const VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_KHR: VkStructureType = 1000184000;
+pub(crate) const VK_TIME_DOMAIN_DEVICE_KHR: VkTimeDomainKHR = 0;
+pub(crate) const VK_TIME_DOMAIN_CLOCK_MONOTONIC_KHR: VkTimeDomainKHR = 1;
+pub(crate) const VK_TIME_DOMAIN_QUERY_PERFORMANCE_COUNTER_KHR: VkTimeDomainKHR = 3;
+pub(crate) const VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR: VkStructureType = 1000150017;
+pub(crate) const VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR: VkStructureType = 1000150000;
+pub(crate) const VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR: VkStructureType = 1000150006;
+pub(crate) const VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR: VkStructureType = 1000150005;
+pub(crate) const VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_AABBS_DATA_KHR: VkStructureType = 1000150003;
+pub(crate) const VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR: VkStructureType = 1000150004;
+pub(crate) const VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR: VkStructureType = 1000150020;
+pub(crate) const VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR: VkStructureType = 1000150002;
+pub(crate) const VK_STRUCTURE_TYPE_COPY_ACCELERATION_STRUCTURE_INFO_KHR: VkStructureType = 1000150010;
+pub(crate) const VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR: VkAccelerationStructureTypeKHR = 0;
+pub(crate) const VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR: VkAccelerationStructureTypeKHR = 1;
+pub(crate) const VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR: VkAccelerationStructureBuildTypeKHR = 1;
+pub(crate) const VK_GEOMETRY_TYPE_TRIANGLES_KHR: VkGeometryTypeKHR = 0;
+pub(crate) const VK_GEOMETRY_TYPE_AABBS_KHR: VkGeometryTypeKHR = 1;
+pub(crate) const VK_GEOMETRY_TYPE_INSTANCES_KHR: VkGeometryTypeKHR = 2;
+pub(crate) const VK_GEOMETRY_OPAQUE_BIT_KHR: VkGeometryFlagsKHR = 0x00000001;
+pub(crate) const VK_GEOMETRY_NO_DUPLICATE_ANY_HIT_INVOCATION_BIT_KHR: VkGeometryFlagsKHR = 0x00000002;
+pub(crate) const VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR: VkBuildAccelerationStructureFlagsKHR = 0x00000001;
+pub(crate) const VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR: VkBuildAccelerationStructureFlagsKHR = 0x00000002;
+pub(crate) const VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR: VkBuildAccelerationStructureFlagsKHR = 0x00000004;
+pub(crate) const VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR: VkBuildAccelerationStructureFlagsKHR = 0x00000008;
+pub(crate) const VK_BUILD_ACCELERATION_STRUCTURE_LOW_MEMORY_BIT_KHR: VkBuildAccelerationStructureFlagsKHR = 0x00000010;
+pub(crate) const VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR: VkBuildAccelerationStructureModeKHR = 0;
+pub(crate) const VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR: VkBuildAccelerationStructureModeKHR = 1;
+pub(crate) const VK_COPY_ACCELERATION_STRUCTURE_MODE_CLONE_KHR: VkCopyAccelerationStructureModeKHR = 0;
+pub(crate) const VK_COPY_ACCELERATION_STRUCTURE_MODE_COMPACT_KHR: VkCopyAccelerationStructureModeKHR = 1;
+pub(crate) const VK_FORMAT_R32G32B32_SFLOAT: VkFormat = 106;
+pub(crate) const VK_INDEX_TYPE_NONE_KHR: VkIndexType = 1000165000;
+pub(crate) const VK_STRUCTURE_TYPE_CHECKPOINT_DATA_2_NV: VkStructureType = 1000314009;
 
 // --- Referenced types ---
 
+pub(crate) type VkAccelerationStructureBuildTypeKHR = i32;
+pub(crate) type VkAccelerationStructureCreateFlagsKHR = u32;
 pub(crate) type VkAccelerationStructureKHR = u64;
+pub(crate) type VkAccelerationStructureTypeKHR = i32;
 pub(crate) type VkAccessFlags2 = u64;
 pub(crate) type VkAttachmentLoadOp = i32;
 pub(crate) type VkAttachmentStoreOp = i32;
@@ -4772,6 +5169,8 @@ pub(crate) type VkBuffer = u64;
 pub(crate) type VkBufferCreateFlags = u32;
 pub(crate) type VkBufferUsageFlags = u32;
 pub(crate) type VkBufferUsageFlags2 = u64;
+pub(crate) type VkBuildAccelerationStructureFlagsKHR = u32;
+pub(crate) type VkBuildAccelerationStructureModeKHR = i32;
 pub(crate) type VkColorComponentFlags = u32;
 pub(crate) type VkCommandBuffer = *mut c_void;
 pub(crate) type VkCommandBufferLevel = i32;
@@ -4781,7 +5180,9 @@ pub(crate) type VkCommandPoolCreateFlags = u32;
 pub(crate) type VkCommandPoolResetFlags = u32;
 pub(crate) type VkCompareOp = i32;
 pub(crate) type VkComponentSwizzle = i32;
+pub(crate) type VkConditionalRenderingFlagsEXT = u32;
 pub(crate) type VkConservativeRasterizationModeEXT = i32;
+pub(crate) type VkCopyAccelerationStructureModeKHR = i32;
 pub(crate) type VkCullModeFlags = u32;
 pub(crate) type VkDebugUtilsMessageSeverityFlagsEXT = u32;
 pub(crate) type VkDebugUtilsMessageTypeFlagsEXT = u32;
@@ -4811,6 +5212,8 @@ pub(crate) type VkFormatFeatureFlags2 = u64;
 pub(crate) type VkFragmentShadingRateCombinerOpKHR = i32;
 pub(crate) type VkFramebuffer = u64;
 pub(crate) type VkFrontFace = i32;
+pub(crate) type VkGeometryFlagsKHR = u32;
+pub(crate) type VkGeometryTypeKHR = i32;
 pub(crate) type VkImage = u64;
 pub(crate) type VkImageAspectFlagBits = i32;
 pub(crate) type VkImageAspectFlags = u32;
@@ -4869,6 +5272,9 @@ pub(crate) type VkPrimitiveTopology = i32;
 pub(crate) type VkQueryControlFlags = u32;
 pub(crate) type VkQueryPipelineStatisticFlags = u32;
 pub(crate) type VkQueryPool = u64;
+pub(crate) type VkQueryPoolCreateFlags = u32;
+pub(crate) type VkQueryResultFlags = u32;
+pub(crate) type VkQueryType = i32;
 pub(crate) type VkQueue = *mut c_void;
 pub(crate) type VkQueueFlags = u32;
 pub(crate) type VkRenderPass = u64;
@@ -4905,4 +5311,5 @@ pub(crate) type VkSurfaceKHR = u64;
 pub(crate) type VkSwapchainKHR = u64;
 pub(crate) type VkTensorARM = u64;
 pub(crate) type VkTensorViewCreateFlagsARM = u64;
+pub(crate) type VkTimeDomainKHR = i32;
 pub(crate) type VkVertexInputRate = i32;
