@@ -15,6 +15,8 @@
 mod alloc_api;
 pub mod arena;
 pub mod budget;
+#[cfg(feature = "mem-debug")]
+pub mod debug;
 mod global;
 mod heap;
 mod layout;
