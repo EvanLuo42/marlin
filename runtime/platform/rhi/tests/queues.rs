@@ -297,3 +297,18 @@ fn debug_markers_on_every_list_type() {
         assert_eq!(device.validation_errors(), 0);
     }
 }
+
+#[test]
+fn lists_still_recording_are_not_submitted() {
+    let device = support::hardware_device();
+    let mut pool = device.create_command_pool().unwrap();
+    let mut list = device.create_command_list(&pool).unwrap();
+    list.begin(&mut pool).unwrap();
+    // SAFETY: refused before anything reaches the GPU.
+    let err = unsafe { device.queue().submit(&[&list], None) }.unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    list.end().unwrap();
+    // SAFETY: the list is empty; the wait below finishes it before it drops.
+    unsafe { device.queue().submit(&[&list], None) }.unwrap();
+    device.queue().wait_idle().unwrap();
+}

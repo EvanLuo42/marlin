@@ -17,12 +17,13 @@ mod swapchain;
 
 use core::ffi::c_void;
 use core::ptr;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::Ordering;
 use core::time::Duration;
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
+use marlin_sync::Mutex;
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows_sys::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
 use windows_sys::core::{BOOL, HRESULT};
@@ -386,15 +387,8 @@ impl crate::contract::Instance for Backend {
 
         let validation = instance
             .validation
-            .then(|| device.cast::<ID3D12InfoQueue>().ok())
-            .flatten()
-            .map(|info_queue| {
-                Arc::new(Validation {
-                    info_queue,
-                    lock: AtomicBool::new(false),
-                    errors: AtomicU64::new(0),
-                })
-            });
+            .then(|| Validation::for_device(&device))
+            .flatten();
 
         let features = features::query_features(&device, model, instance.tearing, desc);
         let cache_identity = cache_identity(&adapter);
@@ -817,7 +811,7 @@ impl crate::contract::Device for Backend {
         inputs: &crate::AccelerationStructureInputs<'_>,
         flags: crate::BuildFlags,
     ) -> crate::AccelerationStructureSizes {
-        raytracing::sizes(device, inputs, flags)
+        raytracing::sizes(&device.device5, inputs, flags, &mut Vec::new())
     }
 
     fn create_acceleration_structure(
@@ -838,10 +832,6 @@ impl crate::contract::Device for Backend {
 
     fn create_sparse_texture(device: &Device, desc: &TextureDesc) -> Result<resource::Texture> {
         resource::create_sparse_texture(device, desc)
-    }
-
-    fn sparse_texture_layout(_: &Device, texture: &crate::Texture) -> crate::SparseTextureLayout {
-        texture.raw.sparse.unwrap_or_default()
     }
 
     fn export(device: &Device, object: Object<'_, Self>) -> Result<Handle> {
@@ -991,6 +981,10 @@ pub(crate) struct QueryPool {
 }
 
 impl crate::contract::Resources for Backend {
+    fn sparse_texture_layout(texture: &resource::Texture) -> crate::SparseTextureLayout {
+        texture.sparse.unwrap_or_default()
+    }
+
     fn buffer_mapped(buffer: &resource::Buffer) -> Option<NonNull<u8>> {
         buffer.mapped
     }
@@ -1018,7 +1012,10 @@ impl crate::contract::Resources for Backend {
 struct Idle {
     queue: Com<ID3D12CommandQueue>,
     fence: Fence,
-    value: AtomicU64,
+    /// The last value signalled. Held across the `Signal` so concurrent waits signal in
+    /// increasing order (a smaller value signalled later would move the fence back and leave
+    /// the larger wait hanging).
+    value: Mutex<u64>,
 }
 
 impl Idle {
@@ -1026,17 +1023,21 @@ impl Idle {
         Ok(Self {
             queue,
             fence: create_fence(device, 0, false)?,
-            value: AtomicU64::new(0),
+            value: Mutex::new(0),
         })
     }
 
     fn wait(&self) -> Result<()> {
-        let value = self.value.fetch_add(1, Ordering::Relaxed) + 1;
-        // SAFETY: valid interfaces.
-        let hr = unsafe {
-            (self.queue.vtbl().Signal)(self.queue.as_raw(), self.fence.fence.as_raw(), value)
+        let value = {
+            let mut last = self.value.lock();
+            *last += 1;
+            // SAFETY: valid interfaces.
+            let hr = unsafe {
+                (self.queue.vtbl().Signal)(self.queue.as_raw(), self.fence.fence.as_raw(), *last)
+            };
+            self.fence.lost.result(hr)?;
+            *last
         };
-        self.fence.lost.result(hr)?;
         Backend::wait(&self.fence, value, None).map(drop)
     }
 }
@@ -1174,8 +1175,9 @@ impl crate::contract::Queue for Backend {
                                     NumTiles: size[0] * size[1] * size[2],
                                     UseBox: 1,
                                     Width: size[0],
-                                    Height: size[1] as u16,
-                                    Depth: size[2] as u16,
+                                    // In range: `api.rs` bounded the box by the mip's tiles.
+                                    Height: u16::try_from(size[1]).map_err(|_| invalid())?,
+                                    Depth: u16::try_from(size[2]).map_err(|_| invalid())?,
                                 },
                             )
                         }

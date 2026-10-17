@@ -508,3 +508,16 @@ pub fn solid_constants(color: [f32; 4], mode: u32, depth: f32, color1: [f32; 4])
     words[5] = depth.to_bits();
     words
 }
+
+/// What `f` panicked with: for misuse checks in tests that skip without a feature, where
+/// `#[should_panic]` cannot tell a skip from a failure. Panics if `f` does not.
+pub fn panic_message(f: impl FnOnce()) -> String {
+    let payload =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).expect_err("expected a panic");
+    match payload.downcast::<String>() {
+        Ok(message) => *message,
+        Err(payload) => payload
+            .downcast_ref::<&str>()
+            .map_or_else(String::new, |s| s.to_string()),
+    }
+}

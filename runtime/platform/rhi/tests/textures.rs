@@ -916,3 +916,66 @@ fn stencil_needs_a_stencil_format() {
         .unwrap_err();
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
 }
+
+#[test]
+#[should_panic(expected = "copy past the end of the buffer")]
+fn copy_rows_do_not_wrap() {
+    let device = support::hardware_device();
+    let desc = TextureDesc::new_2d(4, 4, Format::R32Uint, TextureUsage::COPY_DST);
+    let texture = device.create_texture(&desc).unwrap();
+    let src = upload(device, &[0; 512], BufferUsage::COPY_SRC);
+    run(device, |list| {
+        // The last row ends past u64::MAX, which wraps to a small offset where overflow checks
+        // are off.
+        list.copy_buffer_to_texture(
+            &src,
+            &texture,
+            &BufferTextureCopy::whole_mip(&desc, 0, 0, u64::MAX - 511),
+        );
+    });
+}
+
+#[test]
+#[should_panic(expected = "subresource mips out of range")]
+fn barrier_ranges_stay_in_the_texture() {
+    let device = support::hardware_device();
+    let texture = device
+        .create_texture(&TextureDesc {
+            mip_levels: 2,
+            ..TextureDesc::new_2d(4, 4, Format::R32Uint, TextureUsage::COPY_DST)
+        })
+        .unwrap();
+    run(device, |list| {
+        list.texture_barriers(&[TextureBarrier {
+            range: SubresourceRange {
+                base_mip: 1,
+                mip_count: 2,
+                ..SubresourceRange::ALL
+            },
+            ..TextureBarrier::new(&texture, TextureState::UNDEFINED, TextureState::COPY_DST)
+        }]);
+    });
+}
+
+#[test]
+#[should_panic(expected = "subresource layers out of range")]
+fn barrier_layers_stay_in_the_texture() {
+    let device = support::hardware_device();
+    let texture = device
+        .create_texture(&TextureDesc::new_2d(
+            4,
+            4,
+            Format::R32Uint,
+            TextureUsage::COPY_DST,
+        ))
+        .unwrap();
+    run(device, |list| {
+        list.texture_barriers(&[TextureBarrier {
+            range: SubresourceRange {
+                base_layer: 1,
+                ..SubresourceRange::ALL
+            },
+            ..TextureBarrier::new(&texture, TextureState::UNDEFINED, TextureState::COPY_DST)
+        }]);
+    });
+}

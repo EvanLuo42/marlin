@@ -11,10 +11,11 @@ use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use alloc::string::String;
+use alloc::sync::{Arc, Weak};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use marlin_sync::Once;
+use marlin_sync::{Mutex, Once};
 use windows_sys::core::HRESULT;
 
 use super::com::{self, *};
@@ -101,64 +102,115 @@ pub(super) fn enable_crash_diagnostics() {
 
 /// The debug layer's message queue, drained into the `marlin_diag` log after submits and
 /// presents.
+///
+/// Devices created on one adapter are one D3D12 device with one message queue, so they share
+/// this: one read position and one error count ([`for_device`](Self::for_device)).
 pub(super) struct Validation {
-    pub(super) info_queue: Com<ID3D12InfoQueue>,
-    /// The info queue is not documented as thread-safe.
-    pub(super) lock: AtomicBool,
+    info_queue: Com<ID3D12InfoQueue>,
+    /// Messages `..read` of the stored queue are logged. Held while draining: the info queue is
+    /// not documented as thread-safe, and a drain must not race another one's clear.
+    read: Mutex<u64>,
     pub(super) errors: AtomicU64,
 }
 
+/// Every live [`Validation`], to share one per message queue.
+static VALIDATIONS: Mutex<Vec<Weak<Validation>>> = Mutex::new(Vec::new());
+
+/// Stored messages after which a drain clears the queue. Messages stored between a drain's last
+/// count and its clear are lost, so clearing seldom keeps that rare; until then messages keep
+/// their indices (the count limit is lifted) and drains read only the new ones.
+const CLEAR_AT: u64 = 1 << 16;
+
 impl Validation {
+    /// The validation state of `device`'s message queue, shared with any other live device on
+    /// the same adapter; `None` without the debug layer.
+    pub(super) fn for_device(device: &Com<ID3D12Device>) -> Option<Arc<Self>> {
+        let info_queue = device.cast::<ID3D12InfoQueue>().ok()?;
+        let mut all = VALIDATIONS.lock();
+        all.retain(|v| v.strong_count() > 0);
+        if let Some(shared) = all
+            .iter()
+            .filter_map(Weak::upgrade)
+            .find(|v| v.info_queue.as_raw() == info_queue.as_raw())
+        {
+            return Some(shared);
+        }
+        let q = &info_queue;
+        // SAFETY: valid interface; no limit, so no message is discarded and indices hold.
+        unsafe { (q.vtbl().SetMessageCountLimit)(q.as_raw(), u64::MAX) };
+        let validation = Arc::new(Self {
+            info_queue,
+            read: Mutex::new(0),
+            errors: AtomicU64::new(0),
+        });
+        all.push(Arc::downgrade(&validation));
+        Some(validation)
+    }
+
     pub(super) fn flush(&self) {
-        if self.lock.swap(true, Ordering::Acquire) {
-            return; // Another thread is draining.
-        }
+        let mut read = self.read.lock();
         let q = &self.info_queue;
-        // SAFETY: valid interface.
-        let count = unsafe { (q.vtbl().GetNumStoredMessagesAllowedByRetrievalFilter)(q.as_raw()) };
-        for i in 0..count {
-            let mut len = 0;
-            // SAFETY: a null message pointer queries the size.
-            if unsafe { (q.vtbl().GetMessage)(q.as_raw(), i, ptr::null_mut(), &mut len) } < 0 {
-                continue;
+        // Until no new message arrived while logging.
+        loop {
+            // SAFETY: valid interface.
+            let count =
+                unsafe { (q.vtbl().GetNumStoredMessagesAllowedByRetrievalFilter)(q.as_raw()) };
+            if count <= *read {
+                break;
             }
-            // u64 words keep D3D12_MESSAGE aligned.
-            let mut buf = vec![0u64; len.div_ceil(8)];
-            let message = buf.as_mut_ptr().cast::<D3D12_MESSAGE>();
-            // SAFETY: `buf` holds `len` bytes.
-            if unsafe { (q.vtbl().GetMessage)(q.as_raw(), i, message, &mut len) } < 0 {
-                continue;
+            for i in *read..count {
+                self.log(i);
             }
-            // SAFETY: GetMessage filled the header; the description it points to lives in `buf`
-            // and is NUL-terminated (`DescriptionByteLength` includes the NUL).
-            let (severity, id, text) = unsafe {
-                let m = &*message;
-                let bytes = core::slice::from_raw_parts(
-                    m.pDescription,
-                    m.DescriptionByteLength.saturating_sub(1),
-                );
-                (
-                    m.Severity,
-                    m.ID,
-                    core::str::from_utf8(bytes).unwrap_or("<invalid UTF-8>"),
-                )
-            };
-            match severity {
-                D3D12_MESSAGE_SEVERITY_CORRUPTION | D3D12_MESSAGE_SEVERITY_ERROR => {
-                    self.errors.fetch_add(1, Ordering::Relaxed);
-                    marlin_diag::error!("D3D12 #{id}: {text}");
-                }
-                D3D12_MESSAGE_SEVERITY_WARNING => marlin_diag::warn!("D3D12 #{id}: {text}"),
-                _ => marlin_diag::debug!("D3D12 #{id}: {text}"),
-            }
+            *read = count;
         }
-        // SAFETY: valid interface.
-        unsafe { (q.vtbl().ClearStoredMessages)(q.as_raw()) };
-        self.lock.store(false, Ordering::Release);
+        if *read >= CLEAR_AT {
+            // SAFETY: valid interface.
+            unsafe { (q.vtbl().ClearStoredMessages)(q.as_raw()) };
+            *read = 0;
+        }
+    }
+
+    /// Logs stored message `i`.
+    fn log(&self, i: u64) {
+        let q = &self.info_queue;
+        let mut len = 0;
+        // SAFETY: a null message pointer queries the size.
+        if unsafe { (q.vtbl().GetMessage)(q.as_raw(), i, ptr::null_mut(), &mut len) } < 0 {
+            return;
+        }
+        // u64 words keep D3D12_MESSAGE aligned.
+        let mut buf = vec![0u64; len.div_ceil(8)];
+        let message = buf.as_mut_ptr().cast::<D3D12_MESSAGE>();
+        // SAFETY: `buf` holds `len` bytes.
+        if unsafe { (q.vtbl().GetMessage)(q.as_raw(), i, message, &mut len) } < 0 {
+            return;
+        }
+        // SAFETY: GetMessage filled the header; the description it points to lives in `buf` and
+        // is NUL-terminated (`DescriptionByteLength` includes the NUL).
+        let (severity, id, text) = unsafe {
+            let m = &*message;
+            let bytes = core::slice::from_raw_parts(
+                m.pDescription,
+                m.DescriptionByteLength.saturating_sub(1),
+            );
+            (
+                m.Severity,
+                m.ID,
+                core::str::from_utf8(bytes).unwrap_or("<invalid UTF-8>"),
+            )
+        };
+        match severity {
+            D3D12_MESSAGE_SEVERITY_CORRUPTION | D3D12_MESSAGE_SEVERITY_ERROR => {
+                self.errors.fetch_add(1, Ordering::Relaxed);
+                marlin_diag::error!("D3D12 #{id}: {text}");
+            }
+            D3D12_MESSAGE_SEVERITY_WARNING => marlin_diag::warn!("D3D12 #{id}: {text}"),
+            _ => marlin_diag::debug!("D3D12 #{id}: {text}"),
+        }
     }
 }
 
-pub(super) fn flush(validation: &Option<alloc::sync::Arc<Validation>>) {
+pub(super) fn flush(validation: &Option<Arc<Validation>>) {
     if let Some(v) = validation {
         v.flush();
     }

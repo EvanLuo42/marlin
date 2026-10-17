@@ -63,6 +63,8 @@ pub(crate) struct CommandList {
     /// Present when the device supports enhanced barriers.
     list7: Option<Com<ID3D12GraphicsCommandList7>>,
     device: Com<ID3D12Device>,
+    /// Build sizes, to validate builds against.
+    device5: Com<ID3D12Device5>,
     bindless: Arc<Bindless>,
     ty: QueueType,
     /// The last pipeline bound was a compute pipeline: push constants go to the compute slot.
@@ -100,6 +102,7 @@ impl CommandList {
             list,
             list7,
             device: device.device.clone(),
+            device5: device.device5.clone(),
             bindless: device.bindless.clone(),
             ty: pool.ty,
             compute: pool.ty == QueueType::Compute,
@@ -467,6 +470,14 @@ impl crate::contract::Commands for Backend {
         check(unsafe { (list.list.vtbl().Close)(list.list.as_raw()) })
     }
 
+    fn build_sizes(
+        list: &mut CommandList,
+        inputs: &crate::AccelerationStructureInputs<'_>,
+        flags: crate::BuildFlags,
+    ) -> crate::AccelerationStructureSizes {
+        super::raytracing::sizes(&list.device5, inputs, flags, &mut list.geometries)
+    }
+
     fn texture_barriers(list: &mut CommandList, barriers: &[TextureBarrier<'_>]) {
         if let Some(l7) = &list.list7 {
             let mut flush = enhanced_flush(l7, D3D12_BARRIER_TYPE_TEXTURE);
@@ -595,11 +606,29 @@ impl crate::contract::Commands for Backend {
                 && target_state
             {
                 let l = &list.list;
-                // SAFETY: valid interfaces; null discards the whole resource, which is in a
-                // render target or depth write state.
-                unsafe {
-                    (l.vtbl().DiscardResource)(l.as_raw(), texture.resource.as_raw(), ptr::null())
-                };
+                let resource = texture.resource.as_raw();
+                if b.range == SubresourceRange::ALL {
+                    // SAFETY: valid interfaces; null discards the whole resource, which is in a
+                    // render target or depth write state.
+                    unsafe { (l.vtbl().DiscardResource)(l.as_raw(), resource, ptr::null()) };
+                    continue;
+                }
+                // Only the barrier's subresources are in the target state: one run of mips per
+                // layer and plane.
+                let (mip, mips, layer, layers) = resolve(b.range, texture);
+                for plane in 0..texture.planes {
+                    for slice in layer..layer + layers {
+                        let region = D3D12_DISCARD_REGION {
+                            NumRects: 0,
+                            pRects: ptr::null(),
+                            FirstSubresource: subresource(texture, mip, slice, plane),
+                            NumSubresources: mips,
+                        };
+                        // SAFETY: valid interfaces; the region's subresources exist (checked by
+                        // `commands.rs`) and are in a render target or depth write state.
+                        unsafe { (l.vtbl().DiscardResource)(l.as_raw(), resource, &region) };
+                    }
+                }
             }
         }
     }

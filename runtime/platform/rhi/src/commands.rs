@@ -36,6 +36,35 @@ fn index_size(format: IndexFormat) -> u64 {
     }
 }
 
+/// Mips and layers `range` covers in `desc`, panicking if any lies outside it.
+fn range_in(range: &SubresourceRange, desc: &TextureDesc) -> (u32, u32) {
+    let mips = match range.mip_count {
+        u32::MAX => desc.mip_levels.saturating_sub(range.base_mip),
+        n => n,
+    };
+    let layers = match range.layer_count {
+        u32::MAX => desc.array_layers.saturating_sub(range.base_layer),
+        n => n,
+    };
+    assert!(
+        mips > 0
+            && range
+                .base_mip
+                .checked_add(mips)
+                .is_some_and(|e| e <= desc.mip_levels),
+        "subresource mips out of range"
+    );
+    assert!(
+        layers > 0
+            && range
+                .base_layer
+                .checked_add(layers)
+                .is_some_and(|e| e <= desc.array_layers),
+        "subresource layers out of range"
+    );
+    (mips, layers)
+}
+
 /// `[offset, offset + size)` lies inside `buffer`.
 fn in_buffer(buffer: &Buffer, offset: u64, size: u64) -> bool {
     offset
@@ -68,18 +97,24 @@ impl CommandList {
     /// before. The previous recording must not be pending on the GPU.
     pub fn begin(&mut self, pool: &mut CommandPool) -> Result<()> {
         crate::api::ensure(pool.ty == self.ty)?;
+        self.recording = true;
         Backend::begin(&mut self.raw, &mut pool.raw)
     }
 
-    /// Finishes recording. Reports errors the API detected while recording.
+    /// Finishes recording. Reports errors the API detected while recording; a list that failed
+    /// to end cannot be submitted until recorded again.
     pub fn end(&mut self) -> Result<()> {
-        Backend::end(&mut self.raw)
+        Backend::end(&mut self.raw)?;
+        self.recording = false;
+        Ok(())
     }
 
-    /// Panics if a barrier from [`Layout::Undefined`] names `Undefined` as its
+    /// Panics if a barrier's range lies outside its texture, or a barrier from
+    /// [`Layout::Undefined`] names `Undefined` as its
     /// [`undefined_from`](TextureBarrier::undefined_from).
     pub fn texture_barriers(&mut self, barriers: &[TextureBarrier<'_>]) {
         for b in barriers {
+            range_in(&b.range, &b.texture.desc);
             assert!(
                 b.after.layout != Layout::Undefined,
                 "a barrier cannot move to Undefined"
@@ -297,22 +332,8 @@ impl CommandList {
         self.compute("a storage clear");
         let d = &texture.desc;
         assert!(d.usage.contains(TextureUsage::STORAGE));
-        let mips = match range.mip_count {
-            u32::MAX => d.mip_levels.saturating_sub(range.base_mip),
-            n => n,
-        };
-        let layers = match range.layer_count {
-            u32::MAX => d.array_layers.saturating_sub(range.base_layer),
-            n => n,
-        };
-        assert!(
-            mips == 1 && range.base_mip < d.mip_levels,
-            "storage clears cover one mip"
-        );
-        assert!(
-            layers > 0 && range.base_layer + layers <= d.array_layers,
-            "clear layers out of range"
-        );
+        let (mips, layers) = range_in(range, d);
+        assert!(mips == 1, "storage clears cover one mip");
         let integer = d.format.is_integer();
         assert!(
             integer == !matches!(value, ClearColor::Float(_)),
@@ -534,7 +555,7 @@ impl CommandList {
                 "count buffer without INDIRECT usage"
             );
             assert!(
-                offset.is_multiple_of(4) && offset + 4 <= count.desc.size,
+                offset.is_multiple_of(4) && in_buffer(count, offset, 4),
                 "count out of range"
             );
         }
@@ -660,8 +681,11 @@ impl CommandList {
     /// [`BUILD_SCRATCH`](crate::BufferState::BUILD_SCRATCH), the destination's buffer in
     /// [`ACCELERATION_STRUCTURE_WRITE`](crate::BufferState::ACCELERATION_STRUCTURE_WRITE) and the
     /// bottom-level structures a top-level build instances in
-    /// [`ACCELERATION_STRUCTURE_READ`](crate::BufferState::ACCELERATION_STRUCTURE_READ). Scratch
-    /// memory must hold the build's (or update's) scratch size.
+    /// [`ACCELERATION_STRUCTURE_READ`](crate::BufferState::ACCELERATION_STRUCTURE_READ). Panics
+    /// unless the scratch memory holds the build's (or update's) scratch size and `dst` the
+    /// build's size ([`Device::acceleration_structure_sizes`]).
+    ///
+    /// [`Device::acceleration_structure_sizes`]: crate::Device::acceleration_structure_sizes
     pub fn build_acceleration_structure(&mut self, build: &BuildAccelerationStructure<'_>) {
         self.compute("an acceleration structure build");
         assert!(
@@ -709,13 +733,11 @@ impl CommandList {
                                     && t.vertex_count > 0,
                                 "vertices misaligned"
                             );
-                            let last = (t.vertex_count as u64 - 1) * t.vertex_stride;
+                            let span = (t.vertex_count as u64 - 1)
+                                .checked_mul(t.vertex_stride)
+                                .and_then(|last| last.checked_add(t.vertex_format.size()));
                             assert!(
-                                in_buffer(
-                                    t.vertices,
-                                    t.vertex_offset,
-                                    last + t.vertex_format.size()
-                                ),
+                                span.is_some_and(|s| in_buffer(t.vertices, t.vertex_offset, s)),
                                 "vertices past the end of the buffer"
                             );
                             match t.indices {
@@ -729,7 +751,7 @@ impl CommandList {
                                     );
                                 }
                                 None => assert!(
-                                    t.vertex_count == t.triangle_count * 3,
+                                    t.triangle_count.checked_mul(3) == Some(t.vertex_count),
                                     "unindexed triangles take three vertices each"
                                 ),
                             }
@@ -750,9 +772,11 @@ impl CommandList {
                                     && a.count > 0,
                                 "AABBs misaligned"
                             );
-                            let last = (a.count as u64 - 1) * a.stride;
+                            let span = (a.count as u64 - 1)
+                                .checked_mul(a.stride)
+                                .and_then(|last| last.checked_add(24));
                             assert!(
-                                in_buffer(a.buffer, a.offset, last + 24),
+                                span.is_some_and(|s| in_buffer(a.buffer, a.offset, s)),
                                 "AABBs past the end of the buffer"
                             );
                         }
@@ -772,6 +796,19 @@ impl CommandList {
                 );
             }
         }
+        let sizes = Backend::build_sizes(&mut self.raw, &build.inputs, build.flags);
+        let scratch = match build.update {
+            Some(_) => sizes.update_scratch_size,
+            None => sizes.build_scratch_size,
+        };
+        assert!(
+            in_buffer(build.scratch, build.scratch_offset, scratch),
+            "scratch memory smaller than the build's scratch size"
+        );
+        assert!(
+            build.dst.size() >= sizes.size,
+            "destination smaller than the build's result"
+        );
         Backend::build_acceleration_structure(&mut self.raw, build);
     }
 
@@ -887,6 +924,11 @@ fn check_copy(buffer: &Buffer, texture: &Texture, r: &BufferTextureCopy) {
     assert!(r.bytes_per_row as u64 >= row, "copy rows overlap");
     // Slices follow each other, `height / block` rows apart.
     let rows = (r.height / block) as u64 * r.depth as u64;
-    let end = r.buffer_offset + (rows - 1) * r.bytes_per_row as u64 + row;
-    assert!(end <= buffer.desc.size, "copy past the end of the buffer");
+    let span = (rows - 1)
+        .checked_mul(r.bytes_per_row as u64)
+        .and_then(|n| n.checked_add(row));
+    assert!(
+        span.is_some_and(|s| in_buffer(buffer, r.buffer_offset, s)),
+        "copy past the end of the buffer"
+    );
 }

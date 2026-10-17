@@ -316,3 +316,20 @@ fn indirect_arguments_stay_in_the_buffer() {
         count: None,
     });
 }
+
+#[test]
+#[should_panic(expected = "count out of range")]
+fn indirect_counts_do_not_wrap() {
+    let device = support::hardware_device();
+    let args = buffer(device, 64, BufferUsage::INDIRECT, MemoryLocation::GpuOnly);
+    let mut pool = device.create_command_pool().unwrap();
+    let mut list = device.create_command_list(&pool).unwrap();
+    list.begin(&mut pool).unwrap();
+    // The count's end, offset + 4, wraps to 0 where overflow checks are off.
+    list.dispatch_indirect(&IndirectArgs {
+        buffer: &args,
+        offset: 0,
+        max_count: 1,
+        count: Some((&args, u64::MAX - 3)),
+    });
+}

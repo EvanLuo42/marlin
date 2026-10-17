@@ -139,14 +139,13 @@ pub(super) fn inputs(
 }
 
 pub(super) fn sizes(
-    device: &Device,
+    d: &Com<ID3D12Device5>,
     structure_inputs: &AccelerationStructureInputs<'_>,
     flags: BuildFlags,
+    geometries: &mut Vec<D3D12_RAYTRACING_GEOMETRY_DESC>,
 ) -> AccelerationStructureSizes {
-    let mut geometries = Vec::new();
-    let inputs = inputs(structure_inputs, flags, &mut geometries);
+    let inputs = inputs(structure_inputs, flags, geometries);
     let mut info = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO::default();
-    let d = &device.device5;
     // SAFETY: valid interface; `inputs` points at `geometries`, alive for the call.
     unsafe {
         (d.vtbl().GetRaytracingAccelerationStructurePrebuildInfo)(d.as_raw(), &inputs, &mut info)

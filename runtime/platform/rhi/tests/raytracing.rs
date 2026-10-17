@@ -6,12 +6,12 @@
 mod support;
 
 use marlin_rhi::{
-    ACCELERATION_STRUCTURE_ALIGNMENT, AccelerationStructure, AccelerationStructureCopy,
-    AccelerationStructureGeometry, AccelerationStructureInputs, AccelerationStructureInstance,
-    AccelerationStructureKind, AccelerationStructureTriangles, Access, Buffer, BufferBarrier,
-    BufferDesc, BufferState, BufferUsage, BufferViewDesc, BufferViewKind,
-    BuildAccelerationStructure, BuildFlags, CommandList, Device, GeometryFlags, HeapDesc, HeapKind,
-    IndexFormat, InstanceFlags, MemoryLocation, QueueType, Stage, VertexFormat,
+    ACCELERATION_STRUCTURE_ALIGNMENT, AccelerationStructure, AccelerationStructureAabbs,
+    AccelerationStructureCopy, AccelerationStructureGeometry, AccelerationStructureInputs,
+    AccelerationStructureInstance, AccelerationStructureKind, AccelerationStructureTriangles,
+    Access, Buffer, BufferBarrier, BufferDesc, BufferState, BufferUsage, BufferViewDesc,
+    BufferViewKind, BuildAccelerationStructure, BuildFlags, CommandList, Device, GeometryFlags,
+    HeapDesc, HeapKind, IndexFormat, InstanceFlags, MemoryLocation, QueueType, Stage, VertexFormat,
 };
 use support::{
     buffer, compute_pipeline, copy_out, devices, read_bytes, read_words, readback, run, storage,
@@ -541,4 +541,96 @@ fn placement_and_memory_barriers_are_checked() {
         });
     }));
     assert!(copy_queue.is_err(), "copy queues have no unordered access");
+}
+
+#[test]
+fn builds_check_sizes_and_spans() {
+    let device = support::hardware_device();
+    if !device.features().ray_query {
+        return;
+    }
+    let s = scene(device);
+    let geometries = [triangles(&s.vertices, &s.indices)];
+    let sizes = device
+        .acceleration_structure_sizes(
+            &AccelerationStructureInputs::BottomLevel(&geometries),
+            BLAS_FLAGS,
+        )
+        .unwrap();
+    let build = |inputs, dst: &AccelerationStructure, scratch: &Buffer| {
+        support::panic_message(|| {
+            run(device, |list| {
+                list.build_acceleration_structure(&BuildAccelerationStructure {
+                    dst,
+                    inputs,
+                    flags: BLAS_FLAGS,
+                    update: None,
+                    scratch,
+                    scratch_offset: 0,
+                });
+            });
+        })
+    };
+    let blas = AccelerationStructureInputs::BottomLevel(&geometries);
+
+    let short_scratch = buffer(
+        device,
+        sizes.build_scratch_size - 4,
+        BufferUsage::SHADER_WRITE,
+        MemoryLocation::GpuOnly,
+    );
+    assert_eq!(
+        build(blas, &s.blas, &short_scratch),
+        "scratch memory smaller than the build's scratch size"
+    );
+
+    assert!(sizes.size > ACCELERATION_STRUCTURE_ALIGNMENT, "{sizes:?}");
+    let small = device
+        .create_acceleration_structure(
+            AccelerationStructureKind::BottomLevel,
+            sizes.size - ACCELERATION_STRUCTURE_ALIGNMENT,
+        )
+        .unwrap();
+    assert_eq!(
+        build(blas, &small, &s.scratch),
+        "destination smaller than the build's result"
+    );
+
+    // Spans of (count - 1) * stride past u64::MAX wrap to small ones where overflow checks are
+    // off.
+    let AccelerationStructureGeometry::Triangles(t) = triangles(&s.vertices, &s.indices) else {
+        unreachable!()
+    };
+    let wide = [AccelerationStructureGeometry::Triangles(
+        AccelerationStructureTriangles {
+            vertex_stride: 1 << 63,
+            ..t
+        },
+    )];
+    assert_eq!(
+        build(
+            AccelerationStructureInputs::BottomLevel(&wide),
+            &s.blas,
+            &s.scratch
+        ),
+        "vertices past the end of the buffer"
+    );
+    let boxes = input(device, &[0; 64]);
+    let aabbs = [AccelerationStructureGeometry::Aabbs(
+        AccelerationStructureAabbs {
+            buffer: &boxes,
+            offset: 0,
+            stride: 1 << 63,
+            count: 3,
+            flags: GeometryFlags::OPAQUE,
+        },
+    )];
+    assert_eq!(
+        build(
+            AccelerationStructureInputs::BottomLevel(&aabbs),
+            &s.blas,
+            &s.scratch
+        ),
+        "AABBs past the end of the buffer"
+    );
 }

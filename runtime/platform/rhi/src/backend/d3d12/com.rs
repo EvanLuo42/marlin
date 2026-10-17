@@ -715,7 +715,7 @@ pub(super) struct ID3D12GraphicsCommandList6Vtbl {
         u32,
         *const D3D12_RECT,
     ),
-    pub DiscardResource: unsafe extern "system" fn(This, *mut c_void, *const c_void),
+    pub DiscardResource: unsafe extern "system" fn(This, *mut c_void, *const D3D12_DISCARD_REGION),
     pub BeginQuery: unsafe extern "system" fn(This, *mut c_void, i32, u32),
     pub EndQuery: unsafe extern "system" fn(This, *mut c_void, i32, u32),
     pub ResolveQueryData:
@@ -889,7 +889,7 @@ interface!(
 #[repr(C)]
 pub(super) struct ID3D12InfoQueueVtbl {
     pub base: IUnknownVtbl,
-    _3: usize,
+    pub SetMessageCountLimit: unsafe extern "system" fn(This, u64) -> HRESULT,
     pub ClearStoredMessages: unsafe extern "system" fn(This),
     pub GetMessage: unsafe extern "system" fn(This, u64, *mut D3D12_MESSAGE, *mut usize) -> HRESULT,
     _6_8: [usize; 3],

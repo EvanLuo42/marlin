@@ -150,7 +150,6 @@ impl Device for Backend {
         fn create_acceleration_structure(device: &Never, storage: &Never, offset: u64, kind: AccelerationStructureKind) -> Result<(Never, Never)>;
         fn create_sparse_buffer(device: &Never, desc: &BufferDesc) -> Result<Never>;
         fn create_sparse_texture(device: &Never, desc: &TextureDesc) -> Result<Never>;
-        fn sparse_texture_layout(device: &Never, texture: &Texture) -> SparseTextureLayout;
     }
 
     unsafe fn create_swapchain(
@@ -229,6 +228,10 @@ impl Resources for Backend {
     fn acceleration_structure_address(structure: &Never) -> u64 {
         match *structure {}
     }
+
+    fn sparse_texture_layout(texture: &Never) -> SparseTextureLayout {
+        match *texture {}
+    }
 }
 
 impl Queue for Backend {
@@ -287,6 +290,14 @@ impl Commands for Backend {
     }
 
     fn end(list: &mut Never) -> Result<()> {
+        match *list {}
+    }
+
+    fn build_sizes(
+        list: &mut Never,
+        _: &AccelerationStructureInputs<'_>,
+        _: BuildFlags,
+    ) -> AccelerationStructureSizes {
         match *list {}
     }
 

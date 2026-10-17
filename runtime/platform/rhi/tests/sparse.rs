@@ -199,3 +199,68 @@ fn sparse_and_gpu_upload_need_their_features() {
     ));
     assert!(sparse_depth.is_err());
 }
+
+#[test]
+fn sparse_texture_binds_stay_in_the_texture() {
+    let device = support::hardware_device();
+    if !device.features().sparse_resources {
+        return;
+    }
+    let desc = TextureDesc {
+        mip_levels: 10,
+        ..TextureDesc::new_2d(512, 512, Format::Rgba8Unorm, TextureUsage::SAMPLED)
+    };
+    let texture = device.create_sparse_texture(&desc).unwrap();
+    let layout = device.sparse_texture_layout(&texture);
+    assert_eq!(layout.tile_extent, [128, 128, 1], "{layout:?}");
+    let heap = device
+        .create_heap(&HeapDesc {
+            size: SPARSE_TILE_SIZE,
+            memory: MemoryLocation::GpuOnly,
+            kind: HeapKind::Textures,
+        })
+        .unwrap();
+    let bind_at = |region, first| {
+        support::panic_message(|| {
+            // SAFETY: refused before anything is bound.
+            let _ = unsafe {
+                device.queue().bind_sparse(&[SparseBind::Texture {
+                    texture: &texture,
+                    region,
+                    memory: Some((&heap, first)),
+                }])
+            };
+        })
+    };
+    let bind = |region| bind_at(region, 0);
+    let tiles = |mip, origin, size| SparseTextureRegion::Tiles {
+        mip,
+        layer: 0,
+        origin,
+        size,
+    };
+    // Mip 0 is 4 x 4 tiles.
+    assert_eq!(
+        bind(tiles(0, [3, 0, 0], [2, 1, 1])),
+        "sparse texture tiles out of range"
+    );
+    assert_eq!(
+        bind(tiles(0, [u32::MAX, 0, 0], [1, 1, 1])),
+        "sparse texture tiles out of range"
+    );
+    assert_eq!(
+        bind(tiles(0, [0, 0, 0], [1, 1 << 16, 1])),
+        "sparse texture tiles out of range"
+    );
+    assert_eq!(
+        bind(tiles(layout.standard_mips, [0, 0, 0], [1, 1, 1])),
+        "sparse subresource out of range or packed"
+    );
+    // Packed mips bind all their tiles: none fit after the heap's only tile.
+    if layout.packed_mip_tiles > 0 {
+        assert_eq!(
+            bind_at(SparseTextureRegion::PackedMips { layer: 0 }, 1),
+            "heap tiles out of range"
+        );
+    }
+}

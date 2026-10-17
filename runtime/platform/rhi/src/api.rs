@@ -223,6 +223,7 @@ impl Device {
             ty: pool.ty,
             backend_ty: pool.backend_ty,
             features: self.features(),
+            recording: false,
         })
     }
 
@@ -331,8 +332,18 @@ impl Device {
             },
             n => n,
         };
-        ensure(mip_count > 0 && r.base_mip + mip_count <= t.mip_levels)?;
-        ensure(layer_count > 0 && r.base_layer + layer_count <= t.array_layers)?;
+        ensure(
+            mip_count > 0
+                && r.base_mip
+                    .checked_add(mip_count)
+                    .is_some_and(|e| e <= t.mip_levels),
+        )?;
+        ensure(
+            layer_count > 0
+                && r.base_layer
+                    .checked_add(layer_count)
+                    .is_some_and(|e| e <= t.array_layers),
+        )?;
         ensure(!desc.writable || mip_count == 1)?;
         let volume = t.dimension == TextureDimension::D3;
         let multisampled = t.sample_count > 1;
@@ -809,7 +820,7 @@ impl Device {
     /// How a sparse texture's mips divide into tiles. Panics for other textures.
     pub fn sparse_texture_layout(&self, texture: &Texture) -> SparseTextureLayout {
         assert!(texture.kind == ResourceKind::Sparse, "not a sparse texture");
-        Backend::sparse_texture_layout(&self.raw, texture)
+        Backend::sparse_texture_layout(&texture.raw)
     }
 
     // --- Sharing and native objects ---
@@ -1108,12 +1119,16 @@ impl Queue {
     }
 
     /// Waits on the GPU for `desc.waits`, executes the lists, then signals `desc.signals`.
-    /// `InvalidInput` if a list was recorded for another queue type.
+    /// `InvalidInput` if a list was recorded for another queue type or was not ended.
     ///
     /// # Safety
     /// As [`submit`](Self::submit). A wait that is never signalled hangs the queue.
     pub unsafe fn submit_with(&self, desc: &SubmitDesc<'_>) -> Result<()> {
-        ensure(desc.lists.iter().all(|l| l.backend_ty == self.ty))?;
+        ensure(
+            desc.lists
+                .iter()
+                .all(|l| l.backend_ty == self.ty && !l.recording),
+        )?;
         // SAFETY: forwarded from the caller.
         unsafe { Backend::submit(&self.raw, desc) }
     }
@@ -1166,17 +1181,39 @@ impl Queue {
                 } => {
                     assert!(texture.kind == ResourceKind::Sparse, "not a sparse texture");
                     let d = &texture.desc;
+                    let layout = Backend::sparse_texture_layout(&texture.raw);
                     let tiles = match region {
                         SparseTextureRegion::Tiles {
-                            mip, layer, size, ..
+                            mip,
+                            layer,
+                            origin,
+                            size,
                         } => {
-                            assert!(*mip < d.mip_levels && *layer < d.array_layers);
-                            assert!(size.iter().all(|&s| s > 0), "empty sparse region");
-                            size[0] * size[1] * size[2]
+                            assert!(
+                                *mip < layout.standard_mips && *layer < d.array_layers,
+                                "sparse subresource out of range or packed"
+                            );
+                            // The mip's extent in tiles.
+                            let (w, h) = d.mip_size(*mip);
+                            let extent = [w, h, d.mip_depth(*mip)];
+                            assert!(
+                                (0..3).all(|i| size[i] > 0
+                                    && origin[i].checked_add(size[i]).is_some_and(|e| {
+                                        e <= extent[i].div_ceil(layout.tile_extent[i])
+                                    })),
+                                "sparse texture tiles out of range"
+                            );
+                            size[0]
+                                .checked_mul(size[1])
+                                .and_then(|n| n.checked_mul(size[2]))
+                                .expect("sparse texture tiles out of range")
                         }
                         SparseTextureRegion::PackedMips { layer } => {
-                            assert!(*layer < d.array_layers);
-                            0
+                            assert!(
+                                *layer < d.array_layers && layout.packed_mip_tiles > 0,
+                                "no packed mips in this layer"
+                            );
+                            layout.packed_mip_tiles
                         }
                     };
                     (memory.map(|(h, t)| (h, t, tiles)), {
@@ -1617,7 +1654,9 @@ impl Swapchain {
     }
 
     /// Recreates the images at a new size (after a window resize). Waits for the GPU first, so
-    /// command lists that used the old images must not be resubmitted.
+    /// command lists that used the old images must not be resubmitted. On failure the swapchain
+    /// keeps its old images, or has none ([`image_count`](Self::image_count) 0) until a resize
+    /// succeeds.
     pub fn resize(&mut self, width: u32, height: u32) -> Result<()> {
         Backend::resize(&mut self.raw, width, height)
     }
@@ -1740,6 +1779,8 @@ pub struct CommandList {
     pub(crate) ty: QueueType,
     pub(crate) backend_ty: QueueType,
     pub(crate) features: Features,
+    /// Begun and not yet successfully ended: not submittable.
+    pub(crate) recording: bool,
 }
 
 macro_rules! opaque_debug {

@@ -358,3 +358,29 @@ fn cube_arrays_sample_each_cube() {
         assert_eq!(device.validation_errors(), 0);
     }
 }
+
+#[test]
+fn view_ranges_do_not_wrap() {
+    let device = support::hardware_device();
+    let texture = device
+        .create_texture(&TextureDesc {
+            mip_levels: 3,
+            ..TextureDesc::new_2d(4, 4, Format::Rgba8Unorm, TextureUsage::SAMPLED)
+        })
+        .unwrap();
+    // 2 + (u32::MAX - 1) mips wraps to 0 where overflow checks are off.
+    let error = device
+        .create_texture_view(
+            &texture,
+            &TextureViewDesc {
+                range: SubresourceRange {
+                    base_mip: 2,
+                    mip_count: u32::MAX - 1,
+                    ..SubresourceRange::ALL
+                },
+                ..TextureViewDesc::SAMPLED
+            },
+        )
+        .unwrap_err();
+    assert_eq!(error.kind(), marlin_rhi::ErrorKind::InvalidInput);
+}

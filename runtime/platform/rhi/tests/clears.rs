@@ -227,3 +227,28 @@ fn discards_from_the_named_layout() {
         assert_eq!(device.validation_errors(), 0);
     }
 }
+
+#[test]
+#[should_panic(expected = "subresource layers out of range")]
+fn storage_clear_layers_do_not_wrap() {
+    let device = support::hardware_device();
+    let texture = device
+        .create_texture(&TextureDesc {
+            array_layers: 4,
+            ..TextureDesc::new_2d(4, 4, Format::R32Uint, TextureUsage::STORAGE)
+        })
+        .unwrap();
+    run(device, |list| {
+        // 2 + (u32::MAX - 1) wraps to 0 where overflow checks are off.
+        list.clear_storage_texture(
+            &texture,
+            &SubresourceRange {
+                base_mip: 0,
+                mip_count: 1,
+                base_layer: 2,
+                layer_count: u32::MAX - 1,
+            },
+            ClearColor::Uint([0; 4]),
+        );
+    });
+}

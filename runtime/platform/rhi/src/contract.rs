@@ -209,7 +209,6 @@ pub(crate) trait Device: Types {
 
     fn create_sparse_buffer(device: &Self::Device, desc: &BufferDesc) -> Result<Self::Buffer>;
     fn create_sparse_texture(device: &Self::Device, desc: &TextureDesc) -> Result<Self::Texture>;
-    fn sparse_texture_layout(device: &Self::Device, texture: &Texture) -> SparseTextureLayout;
 
     /// A handle another device or process can open: buffers, textures and fences.
     fn export(device: &Self::Device, object: Object<'_, Self>) -> Result<Self::SharedHandle>;
@@ -270,6 +269,8 @@ pub(crate) trait Resources: Types {
     fn acceleration_structure_index(structure: &Self::AccelerationStructure) -> u32;
     /// What instance records name the structure by.
     fn acceleration_structure_address(structure: &Self::AccelerationStructure) -> u64;
+    /// How a sparse texture divides into tiles, known since its creation.
+    fn sparse_texture_layout(texture: &Self::Texture) -> SparseTextureLayout;
 }
 
 pub(crate) trait Queue: Types {
@@ -418,6 +419,12 @@ pub(crate) trait Commands: Types {
         list: &mut Self::CommandList,
         predicate: Option<(&Buffer, u64, PredicateSkip)>,
     );
+    /// As [`crate::Device::acceleration_structure_sizes`], for validating a build.
+    fn build_sizes(
+        list: &mut Self::CommandList,
+        inputs: &AccelerationStructureInputs<'_>,
+        flags: BuildFlags,
+    ) -> AccelerationStructureSizes;
     fn build_acceleration_structure(
         list: &mut Self::CommandList,
         build: &BuildAccelerationStructure<'_>,

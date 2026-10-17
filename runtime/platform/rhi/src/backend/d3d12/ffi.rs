@@ -409,6 +409,14 @@ pub(super) struct D3D12_RECT {
 }
 
 #[repr(C)]
+pub(super) struct D3D12_DISCARD_REGION {
+    pub NumRects: u32,
+    pub pRects: *const D3D12_RECT,
+    pub FirstSubresource: u32,
+    pub NumSubresources: u32,
+}
+
+#[repr(C)]
 pub(super) struct D3D12_INDEX_BUFFER_VIEW {
     pub BufferLocation: u64,
     pub SizeInBytes: u32,

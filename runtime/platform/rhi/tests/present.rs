@@ -3,16 +3,18 @@
 //! `cargo test -p marlin-rhi --test present -- --ignored`.
 #![cfg(marlin_platform = "windows")]
 
+mod support;
+
 use std::time::Duration;
 
 use marlin_app::{App, Surface, WindowDesc};
 use marlin_rhi::{
-    AdapterPreference, ColorAttachment, ColorSpace, DeviceDesc, ErrorKind, Format, FramesInFlight,
-    HdrMetadata, Instance, InstanceDesc, LoadOp, RenderPassDesc, StoreOp, SurfaceHandle,
-    SwapchainDesc, TextureBarrier, TextureState,
+    ColorAttachment, ColorSpace, Device, ErrorKind, Format, FramesInFlight, HdrMetadata, LoadOp,
+    RenderPassDesc, StoreOp, SurfaceHandle, SwapchainDesc, TextureBarrier, TextureState,
 };
+use support::devices;
 
-fn clear_and_present(disable_enhanced_barriers: bool) {
+fn clear_and_present(device: &Device) {
     let app = App::new().unwrap();
     let window = app
         .create_window(&WindowDesc {
@@ -27,17 +29,6 @@ fn clear_and_present(disable_enhanced_barriers: bool) {
         unreachable!("Win32 window")
     };
 
-    let instance = Instance::new(&InstanceDesc {
-        validation: true,
-        ..InstanceDesc::default()
-    })
-    .unwrap();
-    let device = instance
-        .create_device(&DeviceDesc {
-            adapter: AdapterPreference::HighPerformance,
-            disable_enhanced_barriers,
-        })
-        .unwrap();
     let size = window.size();
     // SAFETY: the window outlives the swapchain (dropped first, below).
     let mut swapchain = unsafe {
@@ -52,7 +43,7 @@ fn clear_and_present(disable_enhanced_barriers: bool) {
     }
     .unwrap();
     assert_eq!(swapchain.image_count(), 3);
-    let mut frames = FramesInFlight::new(&device, 2).unwrap();
+    let mut frames = FramesInFlight::new(device, 2).unwrap();
 
     for frame in 0..8 {
         if frame == 4 {
@@ -137,11 +128,11 @@ fn clear_and_present(disable_enhanced_barriers: bool) {
 #[test]
 #[ignore = "needs a desktop session"]
 fn enhanced_barriers() {
-    clear_and_present(false);
+    clear_and_present(&devices()[0]);
 }
 
 #[test]
 #[ignore = "needs a desktop session"]
 fn legacy_barriers() {
-    clear_and_present(true);
+    clear_and_present(&devices()[1]);
 }

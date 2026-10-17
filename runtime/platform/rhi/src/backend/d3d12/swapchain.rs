@@ -34,6 +34,9 @@ pub(crate) struct Swapchain {
     height: u32,
     present_mode: PresentMode,
     tearing: bool,
+    /// Images the swapchain has, whether or not `textures` wraps them (it is empty after a
+    /// failed resize).
+    image_count: u32,
     textures: Vec<Texture>,
     views: Vec<RenderTargetView>,
     idle: Idle,
@@ -161,13 +164,14 @@ impl Swapchain {
             height: desc.height,
             present_mode: desc.present_mode,
             tearing,
+            image_count: desc.image_count,
             textures: Vec::with_capacity(desc.image_count as usize),
             views: Vec::with_capacity(desc.image_count as usize),
             idle: Idle::new(device, queue.queue.clone())?,
             validation: device.validation.clone(),
             lost: device.lost.clone(),
         };
-        swapchain.create_views(desc.image_count)?;
+        swapchain.create_views()?;
         if desc.color_space != ColorSpace::Srgb {
             if !<Backend as crate::contract::Swapchain>::supports_color_space(
                 &swapchain,
@@ -187,7 +191,21 @@ impl Swapchain {
         self.swapchain.as_raw()
     }
 
-    fn create_views(&mut self, count: u32) -> Result<()> {
+    /// Wraps every image and creates its view; on failure leaves none, so the swapchain is
+    /// either whole or image-less (and `resize` tries again).
+    fn create_views(&mut self) -> Result<()> {
+        self.textures.clear();
+        self.views.clear();
+        let result = self.wrap_images();
+        if result.is_err() {
+            self.textures.clear();
+            self.views.clear();
+        }
+        result
+    }
+
+    fn wrap_images(&mut self) -> Result<()> {
+        let count = self.image_count;
         let heap = &self.rtv_heap;
         let mut start = D3D12_CPU_DESCRIPTOR_HANDLE::default();
         // SAFETY: valid interface; the struct is returned through `start`.
@@ -284,12 +302,12 @@ impl crate::contract::Swapchain for Backend {
         if width == 0 || height == 0 {
             return Err(Error::from_kind(ErrorKind::InvalidInput));
         }
-        if (width, height) == (swapchain.width, swapchain.height) {
+        let whole = swapchain.textures.len() == swapchain.image_count as usize;
+        if (width, height) == (swapchain.width, swapchain.height) && whole {
             return Ok(());
         }
         swapchain.idle.wait()?;
         // ResizeBuffers fails while any reference to the old buffers remains.
-        let count = swapchain.textures.len() as u32;
         swapchain.textures.clear();
         swapchain.views.clear();
         let s = &swapchain.swapchain;
@@ -298,17 +316,22 @@ impl crate::contract::Swapchain for Backend {
         let hr = unsafe {
             (s.vtbl().ResizeBuffers)(
                 s.as_raw(),
-                count,
+                swapchain.image_count,
                 width,
                 height,
                 DXGI_FORMAT_UNKNOWN,
                 swapchain.flags,
             )
         };
-        swapchain.lost.result(hr)?;
+        if let Err(e) = swapchain.lost.result(hr) {
+            // A failed ResizeBuffers leaves the old buffers: wrap them again so the swapchain
+            // keeps presenting at its old size (or stays image-less until a resize succeeds).
+            let _ = swapchain.create_views();
+            return Err(e);
+        }
         swapchain.width = width;
         swapchain.height = height;
-        swapchain.create_views(count)
+        swapchain.create_views()
     }
 
     fn set_present_mode(swapchain: &mut Swapchain, mode: PresentMode) {
