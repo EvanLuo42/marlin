@@ -45,7 +45,10 @@ fn shader() -> ShaderModule<'static> {
         rhi::ShaderFormat::SpirV => include_bytes!("../data/shaders/texel_load.cs.spv"),
         format => panic!("no texel_load placeholder compiled to {format:?}"),
     };
-    ShaderModule { code, entry: "main" }
+    ShaderModule {
+        code,
+        entry: "main",
+    }
 }
 
 fn rhi_format(format: Format) -> rhi::Format {

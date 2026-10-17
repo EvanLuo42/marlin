@@ -67,7 +67,7 @@ fn subresources_are_tightly_packed() {
             assert_eq!(
                 (s.mip, s.layer),
                 (i as u32 % 7, i as u32 / 7),
-                "D3D12 subresource order"
+                "layer by layer, each layer's mips in order"
             );
             assert_eq!(s.offset, offset);
             assert_eq!(

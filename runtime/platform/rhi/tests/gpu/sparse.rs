@@ -1,5 +1,5 @@
 //! Sparse buffers and textures bound tile by tile, and CPU-written device-local memory. Hardware
-//! adapter, enhanced and legacy barriers, validation on; skipped where the device lacks them.
+//! adapter, each barrier path, validation on; skipped where the device lacks them.
 
 use marlin_gpu_test_support as support;
 

@@ -7,12 +7,12 @@ use std::time::Duration;
 
 use marlin_rhi::{
     BufferBarrier, BufferDesc, BufferState, BufferUsage, FenceWait, Format, FormatFeatures,
-    HeapDesc, HeapKind, MarkerPoint, MemoryLocation, Pageable, QueueType, ResidencyPriority,
-    TextureDesc, TextureUsage,
+    GRAPHICS_API, GraphicsApi, HeapDesc, HeapKind, MarkerPoint, MemoryLocation, Pageable,
+    QueueType, ResidencyPriority, TextureDesc, TextureUsage,
 };
 use support::{
     buffer, compute_pipeline, copy_out, devices, hardware_device, read_words, readback, run,
-    run_on, storage,
+    run_on, skip, storage,
 };
 
 #[test]
@@ -210,13 +210,15 @@ fn pipeline_cache_round_trips() {
             shader: support::shader("fill", support::Stage::Compute),
             cache,
         };
+        let empty = cache.serialize().unwrap().len();
         device.create_compute_pipeline(&desc(Some(&cache))).unwrap();
         // The second creation finds the first in the cache.
         device.create_compute_pipeline(&desc(Some(&cache))).unwrap();
         let bytes = cache.serialize().unwrap();
         assert!(
-            bytes.len() > 48 + 24,
-            "the cache holds the compiled pipeline"
+            bytes.len() > empty,
+            "the cache holds the compiled pipeline: {} bytes, {empty} empty",
+            bytes.len()
         );
         let reloaded = device.create_pipeline_cache(&bytes).unwrap();
         let pipeline = device
@@ -274,13 +276,33 @@ fn format_support_reports_capabilities() {
             .features
             .contains(FormatFeatures::RENDER_TARGET)
     );
-    // D3D12 has no ASTC or ETC2.
+    // Formats not every device has: one it lacks reports no support and cannot be made, one it
+    // samples can.
+    for format in [Format::Astc4x4Unorm, Format::Etc2Rgb8Unorm] {
+        let support = device.format_support(format);
+        let result =
+            device.create_texture(&TextureDesc::new_2d(8, 8, format, TextureUsage::SAMPLED));
+        if support == Default::default() {
+            assert_eq!(
+                result.unwrap_err().kind(),
+                marlin_rhi::ErrorKind::Unsupported,
+                "{format:?}"
+            );
+        } else if support.features.contains(FormatFeatures::SAMPLED) {
+            result.unwrap();
+        }
+    }
+    assert_eq!(device.validation_errors(), 0);
+}
+
+#[test]
+fn d3d12_has_no_astc_or_etc2() {
+    if GRAPHICS_API != GraphicsApi::D3D12 {
+        skip!("D3D12 only: other APIs' devices may have them");
+    }
+    let device = hardware_device();
     for format in [Format::Astc4x4Unorm, Format::Etc2Rgb8Unorm] {
         assert_eq!(device.format_support(format), Default::default());
-        let error = device
-            .create_texture(&TextureDesc::new_2d(8, 8, format, TextureUsage::SAMPLED))
-            .unwrap_err();
-        assert_eq!(error.kind(), marlin_rhi::ErrorKind::Unsupported);
     }
 }
 
@@ -341,7 +363,8 @@ fn new_formats_create_and_copy() {
 #[test]
 fn stable_power_state_needs_developer_mode() {
     let device = hardware_device();
-    // Without Windows developer mode the runtime refuses; either way the device stays usable.
+    // It may be refused (D3D12 without Windows developer mode, APIs without the call); either way
+    // the device stays usable.
     let _ = device.set_stable_power_state(true);
     let _ = device.set_stable_power_state(false);
     assert!(device.status().is_ok());

@@ -8,9 +8,12 @@ fn display_adds_the_api_code_in_hex() {
         Error::from_kind(ErrorKind::NotFound).to_string(),
         "not found"
     );
-    // DXGI_ERROR_DEVICE_REMOVED: negative as an i32, shown as the unsigned HRESULT.
+    // Negative codes show as their unsigned bits: an HRESULT (DXGI_ERROR_DEVICE_REMOVED) and a
+    // VkResult (VK_ERROR_DEVICE_LOST = -4).
     let removed = Error::new(ErrorKind::DeviceLost, 0x887A_0005_u32 as i32);
     assert_eq!(removed.to_string(), "device lost (0x887a0005)");
+    let lost = Error::new(ErrorKind::DeviceLost, -4);
+    assert_eq!(lost.to_string(), "device lost (0xfffffffc)");
     assert_eq!(
         Error::new(ErrorKind::Other, 1).to_string(),
         "other error (0x00000001)"

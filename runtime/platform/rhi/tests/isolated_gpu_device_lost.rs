@@ -1,6 +1,6 @@
-//! Losing the device and recovering from it. Its own test binary with a single test: D3D12 shares
-//! one device per adapter in a process, so a forced loss would take down any test running
-//! beside it.
+//! Losing the device and recovering from it. Its own test binary with a single test: a forced
+//! loss can take down every device on the adapter in the process (D3D12 shares one device per
+//! adapter; Vulkan drivers may reset them all), and with them any test running beside it.
 #![cfg(marlin_platform = "windows")]
 
 use marlin_gpu_test_support as support;

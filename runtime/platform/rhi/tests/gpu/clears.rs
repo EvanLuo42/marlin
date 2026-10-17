@@ -1,5 +1,5 @@
 //! Buffer fills, storage texture clears and discards from a real layout, on the hardware
-//! adapter through enhanced and legacy barriers, with validation on.
+//! adapter through each barrier path, with validation on.
 
 use marlin_gpu_test_support as support;
 

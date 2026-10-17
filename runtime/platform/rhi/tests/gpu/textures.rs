@@ -1,4 +1,4 @@
-//! Textures on the hardware adapter, through both barrier paths: volume textures, the integer,
+//! Textures on the hardware adapter, through each barrier path: volume textures, the integer,
 //! 16-bit and BC6H signed formats, texture-to-texture copies, and depth-stencil with stencil
 //! testing.
 

@@ -1,6 +1,6 @@
-//! Queues on the hardware adapter, through both barrier paths: dedicated compute and copy
-//! queues, GPU-side waits across queues and on the CPU's signals, typed command lists,
-//! timestamps on every queue, and debug markers.
+//! Queues on the hardware adapter, through each barrier path: dedicated compute and copy queues
+//! and the graphics queue standing in for missing ones, GPU-side waits across queues and on the
+//! CPU's signals, typed command lists, timestamps on every queue, and debug markers.
 
 use marlin_gpu_test_support as support;
 
@@ -8,11 +8,11 @@ use std::time::Duration;
 
 use marlin_rhi::{
     BufferBarrier, BufferState, BufferUsage, BufferViewDesc, BufferViewKind, CommandList,
-    ComputePipelineDesc, Device, ErrorKind, MemoryLocation, QueryKind, QueryPoolDesc, QueueType,
-    SubmitDesc,
+    ComputePipelineDesc, Device, ErrorKind, GRAPHICS_API, GraphicsApi, MemoryLocation, QueryKind,
+    QueryPoolDesc, QueueType, SubmitDesc,
 };
 use support::{
-    Stage, buffer, devices, read_words, readback, run_on, shader, upload, words_to_bytes,
+    Stage, buffer, devices, read_words, readback, run_on, shader, skip, upload, words_to_bytes,
 };
 
 /// A recorded list of type `ty`, with its pool.
@@ -29,8 +29,32 @@ fn record(
     (pool, list)
 }
 
+/// Each queue type runs on its dedicated queue where the device has one, else on the graphics
+/// queue; pools and lists keep the type they were made for either way.
+#[test]
+fn queue_types_fall_back_to_the_graphics_queue() {
+    let device = support::hardware_device();
+    for ty in [QueueType::Graphics, QueueType::Compute, QueueType::Copy] {
+        let expected = match device.dedicated_queue(ty) {
+            Some(queue) => {
+                assert_eq!(queue.queue_type(), ty);
+                ty
+            }
+            None => {
+                assert_ne!(ty, QueueType::Graphics, "there is always a graphics queue");
+                QueueType::Graphics
+            }
+        };
+        assert_eq!(device.queue_for(ty).queue_type(), expected, "{ty:?}");
+        assert_eq!(device.create_command_pool_for(ty).unwrap().queue_type(), ty);
+    }
+}
+
 #[test]
 fn d3d12_has_dedicated_compute_and_copy_queues() {
+    if GRAPHICS_API != GraphicsApi::D3D12 {
+        skip!("D3D12 only: other APIs may lack dedicated compute or copy queues");
+    }
     let device = support::hardware_device();
     for ty in [QueueType::Graphics, QueueType::Compute, QueueType::Copy] {
         let queue = device.dedicated_queue(ty).unwrap();
@@ -43,6 +67,12 @@ fn d3d12_has_dedicated_compute_and_copy_queues() {
 #[test]
 fn queues_wait_for_each_other_on_the_gpu() {
     for device in devices() {
+        // On one queue the graphics list, submitted first, would wait for work behind it.
+        if device.dedicated_queue(QueueType::Compute).is_none()
+            || device.dedicated_queue(QueueType::Copy).is_none()
+        {
+            skip!("the device lacks a dedicated compute or copy queue");
+        }
         const COUNT: u32 = 128;
         let data: Vec<u32> = (0..COUNT).map(|i| i * 7 + 1).collect();
         let staging = upload(device, &words_to_bytes(&data), BufferUsage::default());
@@ -147,10 +177,13 @@ fn queues_wait_for_each_other_on_the_gpu() {
 #[test]
 fn lists_run_only_on_their_queue_type() {
     let device = support::hardware_device();
-    let (_pool, list) = record(device, QueueType::Compute, |_| {});
-    // SAFETY: rejected before anything is submitted.
-    let err = unsafe { device.queue().submit(&[&list], None) }.unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    // Without a dedicated compute queue, compute lists record for the graphics queue.
+    if device.dedicated_queue(QueueType::Compute).is_some() {
+        let (_pool, list) = record(device, QueueType::Compute, |_| {});
+        // SAFETY: rejected before anything is submitted.
+        let err = unsafe { device.queue().submit(&[&list], None) }.unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    }
     // A pool of another type cannot back the list.
     let mut graphics_pool = device.create_command_pool().unwrap();
     let mut compute_list = device
@@ -286,7 +319,9 @@ fn debug_markers_on_every_list_type() {
         for ty in [QueueType::Graphics, QueueType::Compute, QueueType::Copy] {
             run_on(device, ty, |list| {
                 list.begin_event("Frame");
-                list.begin_event("Nested pass with a long name that PIX shows in its timeline");
+                list.begin_event(
+                    "Nested pass with a long name that debuggers show in their timeline",
+                );
                 list.set_marker("halfway");
                 list.end_event();
                 list.set_marker("ünïcödé ✓");

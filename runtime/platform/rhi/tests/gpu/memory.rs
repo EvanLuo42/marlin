@@ -1,17 +1,17 @@
-//! Heaps and placed resources on the hardware adapter, through both barrier paths: memory
+//! Heaps and placed resources on the hardware adapter, through each barrier path: memory
 //! requirements, placement rules, and resources aliasing one another's memory.
 
 use marlin_gpu_test_support as support;
 
 use marlin_rhi::{
     BufferBarrier, BufferDesc, BufferState, BufferTextureCopy, BufferUsage, ClearValue,
-    DepthAttachment, DepthStencilViewDesc, Device, ErrorKind, Format, Heap, HeapDesc, HeapKind,
-    INDIRECT_CONSTANT_WORD, LoadOp, MemoryLocation, PLACEMENT_ALIGNMENT, RenderPassDesc, StoreOp,
-    TextureBarrier, TextureDesc, TextureState, TextureUsage,
+    DepthAttachment, DepthStencilViewDesc, Device, ErrorKind, Format, GRAPHICS_API, GraphicsApi,
+    Heap, HeapDesc, HeapKind, INDIRECT_CONSTANT_WORD, LoadOp, MemoryLocation, PLACEMENT_ALIGNMENT,
+    RenderPassDesc, StoreOp, TextureBarrier, TextureDesc, TextureState, TextureUsage,
 };
 use support::{
     COLUMNS, ColumnTarget, buffer, columns_pipeline, devices, read_bytes, read_words, readback,
-    run, upload, words_to_bytes,
+    run, skip, upload, words_to_bytes,
 };
 
 fn heap(device: &Device, size: u64, memory: MemoryLocation, kind: HeapKind) -> Heap {
@@ -28,6 +28,16 @@ fn buffer_desc(size: u64, usage: BufferUsage, memory: MemoryLocation) -> BufferD
     }
 }
 
+/// Requirements of a small sampled texture, a render target and a large texture.
+fn texture_requirements(device: &Device) -> [marlin_rhi::MemoryRequirements; 3] {
+    [
+        TextureDesc::new_2d(64, 64, Format::Rgba8Unorm, TextureUsage::SAMPLED),
+        ColumnTarget::desc(),
+        TextureDesc::new_2d(2048, 2048, Format::Bc7Unorm, TextureUsage::SAMPLED),
+    ]
+    .map(|desc| device.texture_requirements(&desc).unwrap())
+}
+
 #[test]
 fn memory_requirements() {
     let device = support::hardware_device();
@@ -36,32 +46,15 @@ fn memory_requirements() {
         BufferUsage::SHADER_READ,
         MemoryLocation::GpuOnly,
     ));
-    assert_eq!(b.alignment, PLACEMENT_ALIGNMENT);
     assert!(b.size >= 100);
-
-    // Small sampled textures may sit at 4 KiB; render targets take 64 KiB.
-    let small = device
-        .texture_requirements(&TextureDesc::new_2d(
-            64,
-            64,
-            Format::Rgba8Unorm,
-            TextureUsage::SAMPLED,
-        ))
-        .unwrap();
-    assert_eq!(small.alignment, 4096);
+    let [small, target, large] = texture_requirements(device);
     assert!(small.size >= 64 * 64 * 4);
-    let target = device.texture_requirements(&ColumnTarget::desc()).unwrap();
-    assert_eq!(target.alignment, PLACEMENT_ALIGNMENT);
-    let large = device
-        .texture_requirements(&TextureDesc::new_2d(
-            2048,
-            2048,
-            Format::Bc7Unorm,
-            TextureUsage::SAMPLED,
-        ))
-        .unwrap();
-    assert_eq!(large.alignment, PLACEMENT_ALIGNMENT);
     assert!(large.size >= 2048 * 2048);
+    // PLACEMENT_ALIGNMENT is always enough for single-sampled resources.
+    for r in [b, small, target, large] {
+        assert!(r.alignment.is_power_of_two(), "{r:?}");
+        assert!(r.alignment <= PLACEMENT_ALIGNMENT, "{r:?}");
+    }
     // Invalid descriptions are rejected, not queried.
     let err = device
         .texture_requirements(&TextureDesc::new_2d(
@@ -76,6 +69,25 @@ fn memory_requirements() {
 }
 
 #[test]
+fn d3d12_alignments_are_64k_or_4k_for_small_textures() {
+    if GRAPHICS_API != GraphicsApi::D3D12 {
+        skip!("D3D12 only: other APIs report the driver's alignments");
+    }
+    let device = support::hardware_device();
+    let b = device.buffer_requirements(&buffer_desc(
+        100,
+        BufferUsage::SHADER_READ,
+        MemoryLocation::GpuOnly,
+    ));
+    assert_eq!(b.alignment, PLACEMENT_ALIGNMENT);
+    // Small sampled textures may sit at 4 KiB; render targets take 64 KiB.
+    let [small, target, large] = texture_requirements(device);
+    assert_eq!(small.alignment, 4096);
+    assert_eq!(target.alignment, PLACEMENT_ALIGNMENT);
+    assert_eq!(large.alignment, PLACEMENT_ALIGNMENT);
+}
+
+#[test]
 fn placement_rules() {
     let device = support::hardware_device();
     let buffers = heap(device, 1 << 20, MemoryLocation::GpuOnly, HeapKind::Buffers);
@@ -85,7 +97,14 @@ fn placement_rules() {
         |r: marlin_rhi::Result<_>| assert_eq!(r.unwrap_err().kind(), ErrorKind::InvalidInput);
 
     // Offsets are aligned and resources fit.
-    invalid(device.create_placed_buffer(&buffers, 4096, &gpu).map(drop));
+    let alignment = device.buffer_requirements(&gpu).alignment;
+    if alignment > 1 {
+        invalid(
+            device
+                .create_placed_buffer(&buffers, alignment / 2, &gpu)
+                .map(drop),
+        );
+    }
     invalid(
         device
             .create_placed_buffer(&buffers, 1 << 20, &gpu)
@@ -107,8 +126,9 @@ fn placement_rules() {
             .create_placed_texture(&textures, 0, &ColumnTarget::desc())
             .map(drop),
     );
+    let sampled_alignment = device.texture_requirements(&sampled).unwrap().alignment;
     device
-        .create_placed_texture(&textures, 4096, &sampled)
+        .create_placed_texture(&textures, sampled_alignment, &sampled)
         .unwrap();
     let upload_desc = buffer_desc(256, BufferUsage::COPY_SRC, MemoryLocation::Upload);
     invalid(

@@ -7,9 +7,10 @@ use marlin_gpu_test_support as support;
 use std::time::Duration;
 
 use marlin_rhi::{
-    AdapterKind, AdapterPreference, DeviceDesc, ErrorKind, FramesInFlight, Instance, InstanceDesc,
+    AdapterKind, AdapterPreference, DeviceDesc, ErrorKind, FramesInFlight, GRAPHICS_API,
+    GraphicsApi, Instance, InstanceDesc,
 };
-use support::hardware_device;
+use support::{hardware_device, skip};
 
 #[test]
 fn enumerates_adapters() {
@@ -17,7 +18,7 @@ fn enumerates_adapters() {
     let adapters: Vec<_> = instance.adapters().collect();
     assert!(
         !adapters.is_empty(),
-        "DXGI always lists the Basic Render Driver"
+        "GPU tests run on a machine with a GPU"
     );
     for (i, adapter) in adapters.iter().enumerate() {
         assert_eq!(adapter.index, i as u32);
@@ -36,11 +37,22 @@ fn enumerates_adapters() {
 }
 
 #[test]
+fn d3d12_lists_the_basic_render_driver() {
+    if GRAPHICS_API != GraphicsApi::D3D12 {
+        skip!("D3D12 only: DXGI always lists its software adapter");
+    }
+    let instance = Instance::new(&InstanceDesc::default()).unwrap();
+    assert!(
+        instance.adapters().any(|a| a.kind == AdapterKind::Software),
+        "DXGI always lists the Basic Render Driver"
+    );
+}
+
+#[test]
 fn creates_hardware_device() {
     let device = hardware_device();
     let info = device.adapter_info();
     assert_eq!(info.kind, AdapterKind::Hardware, "{}", info.name());
-    assert!(device.features().shader_model >= (6, 6));
     assert_eq!(device.validation_errors(), 0);
 }
 

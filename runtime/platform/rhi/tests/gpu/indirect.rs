@@ -1,4 +1,4 @@
-//! Indirect draws and dispatches on the hardware adapter, through both barrier paths: arguments
+//! Indirect draws and dispatches on the hardware adapter, through each barrier path: arguments
 //! (and counts) written to GPU buffers, each record's constant landing in push-constant word
 //! `INDIRECT_CONSTANT_WORD`.
 

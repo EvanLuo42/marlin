@@ -4,18 +4,36 @@ use marlin_gpu_test_support as support;
 
 use marlin_rhi::{
     BufferDesc, BufferUsage, BufferViewDesc, BufferViewKind, ClearValue, ColorTargetState,
-    ComputePipelineDesc, DepthState, DepthStencilViewDesc, ErrorKind, Format, GraphicsPipelineDesc,
-    MemoryLocation, PrimitiveTopology, RasterState, RenderTargetViewDesc, SamplerDesc,
-    ShaderModule, TextureDesc, TextureUsage, TextureViewDesc, TextureViewDimension,
-    UNIFORM_ALIGNMENT,
+    ComputePipelineDesc, DepthState, DepthStencilViewDesc, ErrorKind, Format, GRAPHICS_API,
+    GraphicsApi, GraphicsPipelineDesc, MemoryLocation, PrimitiveTopology, RasterState,
+    RenderTargetViewDesc, SHADER_FORMAT, SamplerDesc, ShaderFormat, ShaderModule, TextureDesc,
+    TextureUsage, TextureViewDesc, TextureViewDimension, UNIFORM_ALIGNMENT,
 };
-use support::{Stage, hardware_device, shader};
+use support::{Stage, hardware_device, shader, skip};
 
 #[test]
 fn baseline_features() {
-    let device = hardware_device();
-    let features = device.features();
+    let features = hardware_device().features();
+    // Every backend refuses devices without mesh shaders.
+    assert!(features.mesh_shader, "{features:?}");
+}
+
+#[test]
+fn d3d12_baseline_is_shader_model_6_6() {
+    if GRAPHICS_API != GraphicsApi::D3D12 {
+        skip!("D3D12 only: shader models are D3D12's");
+    }
+    let features = hardware_device().features();
     assert!(features.shader_model >= (6, 6), "{features:?}");
+}
+
+#[test]
+fn vulkan_barriers_are_always_enhanced() {
+    if GRAPHICS_API != GraphicsApi::Vulkan {
+        skip!("Vulkan only: synchronization2 is part of its baseline");
+    }
+    let features = hardware_device().features();
+    assert!(features.enhanced_barriers, "{features:?}");
 }
 
 #[test]
@@ -267,12 +285,25 @@ fn pipelines() {
             cache: None,
         })
         .unwrap();
-    // Not DXIL (a SPIR-V magic number).
-    let spirv = [0x03, 0x02, 0x23, 0x07, 0, 0, 0, 0];
+    assert_eq!(device.validation_errors(), 0);
+}
+
+/// Bytecode in another format than the backend's is refused, not passed to the driver.
+#[test]
+fn shaders_in_another_format_are_rejected() {
+    let device = hardware_device();
+    // The start of the format the backend does not take.
+    let other: &[u8] = match SHADER_FORMAT {
+        // A SPIR-V magic number.
+        ShaderFormat::Dxil => &[0x03, 0x02, 0x23, 0x07, 0, 0, 0, 0],
+        // A DXBC container header.
+        ShaderFormat::SpirV => &[b'D', b'X', b'B', b'C', 0, 0, 0, 0],
+        format => skip!("no foreign bytecode for {format:?}"),
+    };
     let error = device
         .create_compute_pipeline(&ComputePipelineDesc {
             shader: ShaderModule {
-                code: &spirv,
+                code: other,
                 entry: "main",
             },
             cache: None,

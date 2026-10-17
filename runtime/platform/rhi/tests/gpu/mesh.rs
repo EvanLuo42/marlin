@@ -1,4 +1,4 @@
-//! Mesh shading on the hardware adapter, through both barrier paths: mesh pipelines with and
+//! Mesh shading on the hardware adapter, through each barrier path: mesh pipelines with and
 //! without an amplification stage, direct and indirect (counted) mesh dispatches.
 
 use marlin_gpu_test_support as support;

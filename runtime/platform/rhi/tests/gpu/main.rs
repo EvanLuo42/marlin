@@ -1,7 +1,7 @@
 //! marlin-rhi's GPU tests (gpu tier, docs/design/0014-testing.md §5): real work on the hardware
-//! adapter with validation on, through both barrier paths, all on the one shared device pair from
-//! `marlin_gpu_test_support::devices`. Never create a `Device` here: tests that need their own
-//! device or process are the `isolated_gpu_*` binaries.
+//! adapter with validation on, through each barrier path the backend has, on the shared devices
+//! from `marlin_gpu_test_support::devices` (one per path). Never create a `Device` here: tests
+//! that need their own device or process are the `isolated_gpu_*` binaries.
 //! Run alone with `cargo test -p marlin-rhi --test gpu`.
 #![cfg(marlin_platform = "windows")]
 

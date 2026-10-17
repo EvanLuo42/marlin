@@ -1,6 +1,6 @@
-//! End-to-end GPU work on the hardware adapter, with validation on, through both barrier paths: a compute
-//! dispatch writing through the bindless table, and indexed draws with vertex pulling, a uniform
-//! buffer, a sampled texture and reverse-Z depth testing, read back to the CPU.
+//! End-to-end GPU work on the hardware adapter, with validation on, through each barrier path: a
+//! compute dispatch writing through the bindless table, and indexed draws with vertex pulling, a
+//! uniform buffer, a sampled texture and reverse-Z depth testing, read back to the CPU.
 
 use marlin_gpu_test_support as support;
 

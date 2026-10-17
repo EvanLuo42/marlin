@@ -1,6 +1,6 @@
 //! Acceleration structures and inline ray queries: builds, refits, compaction, and rays cast
-//! from a compute shader through the bindless table. Hardware adapter, enhanced and legacy
-//! barriers, validation on; skipped without ray query support.
+//! from a compute shader through the bindless table. Hardware adapter, each barrier
+//! path, validation on; skipped without ray query support.
 
 use marlin_gpu_test_support as support;
 

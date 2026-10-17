@@ -1,5 +1,5 @@
 //! Occlusion and pipeline statistics queries, and predication from their results. Hardware
-//! adapter, enhanced and legacy barriers, validation on.
+//! adapter, each barrier path, validation on.
 
 use marlin_gpu_test_support as support;
 

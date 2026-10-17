@@ -1,5 +1,5 @@
 //! Views and samplers beyond the basics: min/max sampler reduction, stencil views, cube arrays
-//! and 16-bit depth, read by compute shaders. Hardware adapter, enhanced and legacy barriers,
+//! and 16-bit depth, read by compute shaders. Hardware adapter, each barrier path,
 //! validation on.
 
 use marlin_gpu_test_support as support;

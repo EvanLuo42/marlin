@@ -1,7 +1,7 @@
 //! Rasterization and output-merger features: multisampling and resolves, alpha to coverage,
 //! blend constants, dual-source blending, conservative rasterization, depth bounds,
-//! variable-rate shading, viewport arrays and primitive restart. Hardware adapter, enhanced and
-//! legacy barriers, validation on. Optional features are skipped where the device lacks them.
+//! variable-rate shading, viewport arrays and primitive restart. Hardware adapter, each barrier
+//! path, validation on. Optional features are skipped where the device lacks them.
 
 use marlin_gpu_test_support as support;
 
