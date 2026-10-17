@@ -350,7 +350,7 @@ tools/
 ├── cook_core/       cook 流水线：依赖图、增量缓存（DDC）、平台目标、打包成资源包
 ├── cook_texture/    BCn/ASTC 压缩；主机 swizzle 通过 #[path] 引入 platforms/<p>/cook/
 ├── cook_mesh/       网格优化、LOD、meshlet
-├── cook_shader/     shader 编译（Slang/DXC → DXIL/SPIR-V/MSL/主机格式）、permutation
+├── cook_shader/     shader 编译（Marlin shader → DXIL/SPIR-V/MSL/主机格式）、permutation
 ├── cook_audio/
 ├── cook_level/      关卡/世界数据 → 流式 cell
 ├── cook_script/     调用 vm_compiler，产出字节码模块

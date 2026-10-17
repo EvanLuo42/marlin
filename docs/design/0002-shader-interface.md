@@ -2,7 +2,7 @@
 
 状态：草案 · 2026-10-16
 
-这份文档写的是 RHI 对编译好的 shader 有哪些要求。Marlin 用自研 shader 语言：语法类似 Slang，用 Rust 写，编译器是纯库，直接输出 DXIL 和 SPIR-V。这里的约定就是那个编译器要对准的目标。RHI 不编译源码，只接受字节码（`marlin_rhi::ShaderModule { code, entry }`）。
+这份文档写的是 RHI 对编译好的 shader 有哪些要求。Marlin 用自研 shader 语言（语言设计另定），编译器用 Rust 写，是纯库，直接输出 DXIL 和 SPIR-V。这里的约定就是那个编译器要对准的目标。RHI 不编译源码，只接受字节码（`marlin_rhi::ShaderModule { code, entry }`）。
 
 ## 1. 字节码
 

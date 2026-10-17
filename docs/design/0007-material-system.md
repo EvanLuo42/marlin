@@ -17,7 +17,7 @@
 | PT/ReSTIR | 所有 Slab 和特殊 BSDF 都实现 `eval`、`sample`、`pdf`，所以能 lower 的材质会**自动**参与全部光照路径 |
 | 不可 lower 的材质 | Toon BSDF 只消费引擎给的光照样本，同时**必须**提供 fallback slab，供光线命中时使用 |
 | 执行 | visbuffer 按材质分桶，每个材质一个 resolve compute；光线命中点走 wavefront，复用同一套 resolve 代码 |
-| 资产 | 材质类型 = shader 源里实现 `IMaterial` 的 struct，加一个 `Material` .masset；实例 = `MaterialInstance` .masset，通过链接继承父材质或父实例，只写覆盖的值 |
+| 资产 | 材质类型 = shader 源里实现材质接口的类型，加一个 `Material` .masset；实例 = `MaterialInstance` .masset，通过链接继承父材质或父实例，只写覆盖的值 |
 | Permutation | 只编译实际被用到的组合；运行时从不编译；开发期由 cookd 按需编译并热重载 |
 | 几何阶段 | 支持 `opacity_mask`（alpha test）和 `deform`（WPO）；位移以后再做 |
 | 第一版配套 | MPC、Material Layers、Dynamic Material Instance、非 Surface 域（Decal、PostProcess、LightFunction、Volume、UI） |
@@ -26,20 +26,20 @@
 
 | UE | Marlin | 说明 |
 |---|---|---|
-| Material（节点图 + 属性） | `IMaterial` struct（`.mshader` 源）+ `Material` .masset（属性） | §3 |
-| Material Function | shader 语言里的函数、泛型函数和模块（`import`） | 不需要专门的资产类型 |
+| Material（节点图 + 属性） | 实现材质接口的 shader 类型（`.mshader` 源）+ `Material` .masset（属性） | §3 |
+| Material Function | shader 语言里的函数、泛型函数和模块 | 不需要专门的资产类型 |
 | Custom 节点 | 不需要，本来就是代码 | — |
 | Material Instance Constant | `MaterialInstance` .masset，带 `Parent` 链接 | §8.1 |
 | Dynamic Material Instance | 运行时由 VM 创建的 `DynamicMaterialInstance` | §8.3 |
-| Static Switch / Static Component Mask | struct 里标 `[Static]` 的字段，或者泛型参数 | 改变 permutation |
-| Material Parameter Collection | `ParameterCollection` .masset + shader 端 `ParameterCollection<T>` | §8.4 |
-| Material Layers / Layer Blend | 泛型 layer 参数：`IMaterialLayer` + `ILayerBlend` | §8.5 |
-| Quality Switch / Feature Level Switch | `ctx.tier`（编译期常量） | 只有被引用时才会产生 permutation |
-| Ray Tracing / Path Tracing Quality Switch | `ctx.path ∈ { Raster, RayTracing, PathTracing }`（编译期常量） | Toon 等材质用它在光追里给出简化版本 |
+| Static Switch / Static Component Mask | 静态参数（标为静态的字段），或者泛型参数 | 改变 permutation |
+| Material Parameter Collection | `ParameterCollection` .masset + shader 端的集合引用 | §8.4 |
+| Material Layers / Layer Blend | 泛型 layer 参数：layer 接口 + layer 混合接口 | §8.5 |
+| Quality Switch / Feature Level Switch | 上下文里的档位 `tier`（编译期常量） | 只有被引用时才会产生 permutation |
+| Ray Tracing / Path Tracing Quality Switch | 上下文里的路径 `path` ∈ { Raster, RayTracing, PathTracing }（编译期常量） | Toon 等材质用它在光追里给出简化版本 |
 | Material Domain | `Domain { Surface, DeferredDecal, PostProcess, LightFunction, Volume, UI }` | §6 |
 | Blend Mode | `Opaque, Masked, Translucent, Additive, Modulate, AlphaComposite, AlphaHoldout` | Opaque 和 Masked 走 visbuffer |
 | Usage 标记（Used with Skeletal Mesh…） | `Usage = [StaticMesh, SkinnedMesh, Terrain, ParticleSprite, ParticleRibbon, ParticleMesh, …]` | 决定几何形态（§7.2） |
-| Substrate 节点 | shader 库 `marlin.substrate` 的类型与函数 | §4 |
+| Substrate 节点 | Substrate shader 库的类型与函数 | §4 |
 | Material Attributes 输出 | `SurfaceOutput`（Substrate 树 + 可选的 opacity 和 refraction） | §3 |
 | World Position Offset | `deform()` | §6.1 |
 | Pixel Depth Offset | 暂不支持（与 visbuffer 冲突） | — |
@@ -47,65 +47,39 @@
 
 ## 2. 对 Marlin shader 语言的要求
 
-材质系统依赖编译器提供以下能力。编译器另有设计文档，这里只列需求：
+材质系统依赖编译器提供以下能力。语言和编译器另有设计，这里只列需求，不规定语法：
 
-1. **接口、泛型、关联类型**：类似 Slang 的 `interface`、`<T: IFoo>`、`associatedtype`，并且全部在编译期单态化。材质系统**不需要**动态分发。
-2. **模块与 import**，以及可见性控制。shader 库（`marlin.material`、`marlin.substrate`、`marlin.lighting`……）以模块形式提供。
-3. **属性（attribute）**：`[Param(…)]`、`[Static]`、`[Material(…)]` 等，编译器把它们原样放进反射信息。
+1. **接口、泛型、关联类型**，并且全部在编译期单态化。材质系统**不需要**动态分发。
+2. **模块**，以及可见性控制。shader 库（material、substrate、lighting……）以模块形式提供。
+3. **属性（attribute）**：标记参数（分组、范围等 UI 元数据）、静态参数、材质声明等，编译器把它们原样放进反射信息。
 4. **反射输出**：
    - 参数布局：名字、类型、偏移、默认值、UI 元数据；
    - 静态参数；
    - 实现了哪些可选方法（`deform`、`opacity_mask`、`fallback`）；
    - Substrate 树的拓扑，也就是展平后的 closure 数量和特性位（§4.4）；
-   - 每个入口用到的引擎特性，比如是否引用了 `ctx.tier`，用来推导 permutation 维度。
+   - 每个入口用到的引擎特性，比如是否引用了档位 `tier`，用来推导 permutation 维度。
 5. **前向自动微分**：用于在 compute resolve 中算出任意表达式的屏幕空间导数。
    - visbuffer resolve 是 compute 着色，没有硬件 quad 导数；光线命中点也没有。
-   - 编译器要把 `ctx.ddx(e)`、`ctx.ddy(e)` 以及纹理采样隐含的导数，从 UV 和位置的解析导数（raster 路径），或者 ray cone（RT 路径）出发，用前向模式传播。相当于 UE Nanite 材质的 analytic derivatives，或 Slang 的 `fwd_diff`。
+   - 材质代码对任意表达式求的屏幕空间导数（ddx、ddy），以及纹理采样隐含的导数，编译器要从 UV 和位置的解析导数（raster 路径），或者 ray cone（RT 路径）出发，用前向模式传播。相当于 UE Nanite 材质的 analytic derivatives。
 6. **一份源码生成多个入口**：编译器负责把同一个材质类型套进不同的引擎模板，生成各个入口（§6）：
    - 光栅 bin 的 mesh 和 pixel shader；
    - resolve 的像素版和命中版；
    - forward；
    - decal；
    - 以及其他域的入口。
-7. **自动插入 `NonUniformResourceIndex`**：材质参数里的纹理下标在一个 wave 内可能不一致（同一个 bin 里混着多个实例）。
+7. **自动标记非一致（non-uniform）资源下标**：材质参数里的纹理下标在一个 wave 内可能不一致（同一个 bin 里混着多个实例）。
 8. **为参数块生成 Rust 类型**（build.rs 用）：引擎 shader 的参数结构和材质参数块的布局都由编译器给出（0005 §2.2）。
 9. **确定性**：同样的输入得到逐字节相同的输出（0003 §4.1 的 cook 键要求）。
 
-## 3. 材质源长什么样
+## 3. 材质的组成
 
-```text
-// materials/rock.mshader
-import marlin.material;
-import marlin.substrate;
+一个材质类型是 shader 源（`.mshader`）里实现材质接口的类型。它的写法取决于 shader 语言的设计，这里只描述它包含什么：
 
-struct Rock : IMaterial
-{
-    [Param(group = "Base")]   Texture2D<float4> albedo;
-    [Param(group = "Base")]   float3 tint = float3(1, 1, 1);
-    [Param(group = "Surface"), Range(0, 2)] float roughness_scale = 1.0;
-    [Param(group = "Surface")] Texture2D<float4> normal_map;
-    [Static]                  bool use_moss = false;
-    [Param(group = "Moss")]   Texture2D<float4> moss_albedo;
-    [Param(group = "Moss")]   float moss_height = 0.6;
+- **参数**：类型的字段。每个参数带分组、范围、默认值等元数据，通过反射交给编辑器和 cook。
+- **静态参数**：标为静态的字段。它的值在编译期确定，依赖它的分支是编译期分支，所以改变它会改变 permutation。
+- **`surface`**：必需方法。输入 `SurfaceContext`，返回 `SurfaceOutput`，也就是 Substrate 树（§4）加上可选的 opacity 和 refraction。
 
-    SurfaceOutput surface(SurfaceContext ctx)
-    {
-        float4 a = ctx.sample(albedo, ctx.uv(0));
-        float3 n = ctx.tangent_to_world(unpack_normal(ctx.sample(normal_map, ctx.uv(0))));
-
-        Slab rock = Slab.from_metal_rough(a.rgb * tint, /*metallic*/ 0, a.a * roughness_scale);
-        rock.normal = n;
-
-        if (use_moss) {                                 // [Static] → 编译期分支
-            Slab moss = Slab.from_metal_rough(ctx.sample(moss_albedo, ctx.uv(0)).rgb, 0, 0.9);
-            moss.fuzz_amount = 0.5;
-            float w = saturate((n.y - moss_height) * 8);
-            return SurfaceOutput(horizontal_mix(rock, moss, w));
-        }
-        return SurfaceOutput(rock);
-    }
-}
-```
+下面的例子中，`Rock` 是 `materials/rock.mshader` 里的材质类型，有 albedo、roughness scale 等参数和一个静态参数 use moss：
 
 ```text
 // materials/rock.masset
@@ -131,15 +105,15 @@ MaterialInstance
 
 - shader 字段名用 snake_case，`.masset` 里用 PascalCase，按 0003 §1.2 的规则自动互转。
 - 可选方法：
-  - `float opacity_mask(MaskContext)`：Masked 混合模式需要；
-  - `float3 deform(DeformContext)`：WPO，返回世界空间偏移；
-  - `Slab fallback(SurfaceContext)`：Toon 必需，其他材质不需要；
-  - `float opacity(SurfaceContext)`：Translucent 需要。
+  - `opacity_mask`：输入 `MaskContext`，返回标量不透明度；Masked 混合模式需要；
+  - `deform`：输入 `DeformContext`，返回世界空间偏移（WPO）；
+  - `fallback`：输入 `SurfaceContext`，返回一个 slab；Toon 必需，其他材质不需要；
+  - `opacity`：输入 `SurfaceContext`，返回标量不透明度；Translucent 需要。
 - `SurfaceContext` 提供：
   - UV 0–3、顶点色、世界位置和相机相对位置；
   - 几何法线和插值法线、TBN；
   - 实例自定义数据、时间；
-  - `ctx.path`、`ctx.tier`；
+  - 路径 `path`、档位 `tier`；
   - 采样函数：自动选择 LOD 和导数，并自动写入流送反馈（0006 §8.1）。
 
 ## 4. Substrate 数据模型
@@ -159,7 +133,7 @@ MaterialInstance
 | 闪点（glint） | `glint_density`、`glint_uv` | 后续 |
 | 镜面轮廓 | `specular_profile`（LUT 下标） | 后续 |
 
-- 便捷构造函数：`Slab.from_metal_rough(base_color, metallic, roughness, specular = 0.5)`，按 UE 的经典约定换算出 `f0` 和 `diffuse_albedo`。
+- 便捷构造：从 base color、metallic、roughness 和 specular（默认 0.5）构造 slab，按 UE 的经典约定换算出 `f0` 和 `diffuse_albedo`。
 - **BSDF 实现**：
   - 漫反射：带粗糙度的能量守恒漫反射（如 EON），也可以选 Lambert；
   - 镜面：GGX，包括多次散射补偿和各向异性；
@@ -189,9 +163,9 @@ MaterialInstance
 | `horizontal_mix(a, b, t)` | 在面积上按比例混合两个材质 |
 | `add(a, b)` | 两者的能量直接相加，例如自发光叠加 |
 | `weight(a, w)` | 缩放覆盖度 |
-| `select(a, b, cond)` | `cond` 是 `[Static]` 时在编译期选择；是运行时值时等价于 `horizontal_mix(a, b, cond ? 1 : 0)` |
+| `select(a, b, cond)` | `cond` 是静态参数时在编译期选择；是运行时值时等价于权重按 `cond` 取 1 或 0 的 `horizontal_mix` |
 
-**树的拓扑必须在编译期确定**，也就是只能依赖 `[Static]` 参数和泛型参数。树里各个节点的参数可以是运行时值。这样每个 permutation 的 closure 数量都是固定的，cook 期就能检查预算。
+**树的拓扑必须在编译期确定**，也就是只能依赖静态参数和泛型参数。树里各个节点的参数可以是运行时值。这样每个 permutation 的 closure 数量都是固定的，cook 期就能检查预算。
 
 ### 4.4 展平
 
@@ -244,19 +218,16 @@ R3 的验收项：同一场景分别用"全部单 slab 的 Substrate"和"Default
 
 ### 5.1 BSDF 接口（shader 库）
 
-```text
-interface IBsdf
-{
-    float3 eval(float3 wi, float3 wo);                  // 不含 cos，调用方乘
-    BsdfSample sample(float3 wo, float3 u);             // { wi, weight = f·cos/pdf, pdf, lobe }
-    float  pdf(float3 wi, float3 wo);
-    float3 albedo(float3 wo);                           // 方向反照率估计（降噪解调、RIS 目标函数）
-    LobeMask lobes();
-}
-```
+| 方法 | 输入 | 输出 |
+|---|---|---|
+| `eval` | 入射方向 wi、出射方向 wo | BSDF 值（RGB），不含 cos，由调用方乘 |
+| `sample` | 出射方向 wo、三维随机数 u | 采样结果：wi、权重 f·cos/pdf、pdf、波瓣 |
+| `pdf` | wi、wo | 采样 wi 的概率密度 |
+| `albedo` | wo | 方向反照率估计（RGB），用于降噪解调和 RIS 目标函数 |
+| `lobes` | — | 包含哪些波瓣 |
 
 - `SubstrateBsdf`（§4.4 的加权和）、`SingleLayerWaterBsdf` 等都实现这个接口。
-- 光照代码只认 `IBsdf`，从来不知道具体是哪个材质。光栅直接光、ReSTIR DI 的目标函数和最终着色、ReSTIR GI 的采样、PT、探针更新时的命中点，用的都是同一个接口。
+- 光照代码只认 BSDF 接口，从来不知道具体是哪个材质。光栅直接光、ReSTIR DI 的目标函数和最终着色、ReSTIR GI 的采样、PT、探针更新时的命中点，用的都是同一个接口。
 - **能量守恒测试**：每个 BSDF 都在 shader 测试里跑 white furnace 测试（0004 §6）。
 
 ### 5.2 光栅路径
@@ -267,28 +238,20 @@ interface IBsdf
 ### 5.3 RT 与 PT 路径
 
 - 光线命中后先经过 wavefront resolve，得到同样编码的 `HitSurface`，解码出 `SubstrateBsdf`，再做 `sample`、`eval`、`pdf`。
-- `ctx.path` 让材质在光追里换一种实现（相当于 UE 的 RayTracing/PathTracing Quality Switch）。比如复杂的视差效果在 RT 里就可以退化掉。
+- 路径 `path` 让材质在光追里换一种实现（相当于 UE 的 RayTracing/PathTracing Quality Switch）。比如复杂的视差效果在 RT 里就可以退化掉。
 
 ### 5.4 不可 lower 的材质：Toon
 
-Toon 是一个特殊 BSDF，不实现 `IBsdf`，而是实现 `ICustomLighting`：
+Toon 是一个特殊 BSDF，不实现 BSDF 接口，而是实现自定义光照接口。这个接口只有一个方法 `shade`：输入自定义光照上下文，返回出射辐亮度（RGB）。上下文包括：
 
-```text
-interface ICustomLighting
-{
-    float3 shade(CustomLightingContext ctx);   // ctx: 位置、法线、视线、材质参数
-}
-struct CustomLightingContext
-{
-    LightSampleIter lights;   // 直接光样本：{ dir, radiance, visibility }
-    float3 irradiance_sh[…];  // 间接光：探针（低/中）或 SHaRC 查询（高）的辐照度
-    float  ao;
-}
-```
+- 位置、法线、视线和材质参数；
+- 直接光样本，每个样本是 { 方向, 辐亮度, 可见性 }；
+- 间接光：探针（低、中档）或 SHaRC 查询（高档）给出的 SH 辐照度；
+- AO。
 
 - **直接光样本**：低档和中档来自 clustered 光源列表加 VSM；高档来自 ReSTIR DI 最终选中的样本（每像素 1 到 k 个，已经带可见性）。Toon 的 `shade` 自己决定怎么做阶梯化、边缘光等卡通效果。
 - **间接光**：Toon **不**接收 ReSTIR GI 和 PT 的间接光，只接收探针或 SHaRC 的辐照度。所以它在各档之间的观感是稳定的。
-- **fallback**：Toon 材质**必须**实现 `Slab fallback(ctx)`。如果没写，编译器会根据 Toon 的基础色自动生成一个 Lambert slab，并给出提示。次级光线命中 Toon 表面时，用 fallback 来计算它反射和透射的光。
+- **fallback**：Toon 材质**必须**实现 `fallback`。如果没写，编译器会根据 Toon 的基础色自动生成一个 Lambert slab，并给出提示。次级光线命中 Toon 表面时，用 fallback 来计算它反射和透射的光。
 - **tile 分类**：Toon 像素属于 Special 类，由一个专门的 kernel 处理，这个 kernel 调用该材质的 `shade`。因为它是材质自己的代码，Special 类 tile 内部还要按材质再分一次桶。
 
 ## 6. 执行：每个域和每种入口
@@ -338,7 +301,7 @@ struct CustomLightingContext
 ### 6.4 Forward（半透明）
 
 - pixel shader 调用 `surface()` 得到 Substrate 树。展平时用 forward 预算：中档 2 个、高档 4 个 closure。
-- 然后调用 `marlin.lighting.forward` 库，输入是 clustered 光源、VSM、探针或 SHaRC、雾。
+- 然后调用 lighting 库的前向光照，输入是 clustered 光源、VSM、探针或 SHaRC、雾。
 - 混合模式由固定功能 blend state 实现。
 
 ### 6.5 Decal
@@ -354,11 +317,11 @@ struct CustomLightingContext
 permutation 的键由以下几部分组成：
 
 - 材质类型
-- `[Static]` 参数的值
+- 静态参数的值
 - 泛型参数，包括 layer 类型
 - 入口种类
 - 几何形态
-- 档位变体（只有材质引用了 `ctx.tier`，或者入口模板本身随档位变化时才算）
+- 档位变体（只有材质引用了档位 `tier`，或者入口模板本身随档位变化时才算）
 - 调试变体（只在 Development 构建里有）
 
 ### 7.2 几何形态
@@ -406,8 +369,8 @@ permutation 的键由以下几部分组成：
 
 - 参数块布局来自反射：
   - 标量和向量按 16 字节对齐打包；
-  - `Texture*` 存 u32 bindless 下标；
-  - `SamplerState` 存 u32 采样器表下标（cook 期去重）；
+  - 纹理存 u32 bindless 下标；
+  - 采样器存 u32 采样器表下标（cook 期去重）；
   - MPC 引用存 u32 下标。
 - 运行时有一个大的 `material_params` ByteAddressBuffer。每个材质实例在里面占一个槽，GPU Scene 的 `material_instances` 表记录 `{ type/bin, param_offset, flags }`。
 - 纹理下标加载时还没有确定：cooked 参数块里存的是 import 下标，加载时等纹理句柄解析完，再改写成 bindless 下标（0003 §4.3 的 import 修正）。流送期间 bindless 下标保持不变（0006 §8.1）。
@@ -421,27 +384,18 @@ permutation 的键由以下几部分组成：
 ### 8.4 Material Parameter Collection
 
 - `ParameterCollection`（.masset）声明一组标量和向量参数的名字与默认值。
-- shader 侧这样声明：`struct Weather { float wetness; float4 wind; }`，材质字段写 `ParameterCollection<Weather> weather;`。`Material` .masset 用 `Collections = { Weather = <env/weather:Weather #…> }` 把它绑定到具体的集合资产。cook 时会校验集合资产的布局和 shader 结构体一致。
+- shader 侧用一个结构体描述集合的布局（例如 Weather：标量 wetness、四维向量 wind），材质里用一个字段引用这个集合。`Material` .masset 用 `Collections = { Weather = <env/weather:Weather #…> }` 把它绑定到具体的集合资产。cook 时会校验集合资产的布局和 shader 结构体一致。
 - 运行时每个集合是一个持久的 uniform buffer，它的 bindless 下标在加载时写进参数块。VM 调用 `collection.set("wetness", v)` 产生补丁，下一帧生效。
 - 每个材质建议最多引用 4 个集合（UE 的限制是 2 个）。超出时报警，但不是硬限制。
 
 ### 8.5 Material Layers
 
-用泛型来表达：
+用泛型来表达，涉及两个接口：
 
-```text
-interface IMaterialLayer { Slab layer(SurfaceContext ctx); }
-interface ILayerBlend    { float weight(SurfaceContext ctx, int index); }
+- **layer 接口**：输入 `SurfaceContext`，返回一个 slab；
+- **layer 混合接口**：输入 `SurfaceContext` 和层号，返回该层的权重。
 
-struct Layered<L0: IMaterialLayer, L1: IMaterialLayer, L2: IMaterialLayer, B: ILayerBlend> : IMaterial
-{
-    [Param] L0 base; [Param] L1 layer1; [Param] L2 layer2; [Param] B blend;
-    SurfaceOutput surface(SurfaceContext ctx) {
-        let s = horizontal_mix(base.layer(ctx), layer1.layer(ctx), blend.weight(ctx, 1));
-        return SurfaceOutput(horizontal_mix(s, layer2.layer(ctx), blend.weight(ctx, 2)));
-    }
-}
-```
+分层材质是一个泛型材质类型，它的类型参数是每一层的 layer 类型和一个混合类型，每一层和混合器都是它的参数。`surface` 从底层开始，用混合器给出的权重依次 `horizontal_mix` 上面各层。
 
 - 实例通过泛型实参选择每一层的类型，这个选择是静态的，会产生 permutation；各层的参数则是普通的实例参数。`.masset` 的写法是 `Layers = { Layer1 = MossLayer { Height = 0.6 } }`。
 - 地形材质就是这样一个分层材质（0009 §4.4）。
@@ -486,6 +440,6 @@ struct Layered<L0: IMaterialLayer, L1: IMaterialLayer, L2: IMaterialLayer, B: IL
 ## 12. 待定问题
 
 1. Toon 这类 Special 类材质在高档能拿到 ReSTIR DI 的几个样本（1 个还是 k 个），会影响画面稳定性。需要美术评估。
-2. `ctx.ddx` 的自动微分范围：对循环和动态分支怎么处理，要和编译器设计一起确定。
+2. 屏幕空间导数的自动微分范围：对循环和动态分支怎么处理，要和编译器设计一起确定。
 3. 地形这类层数很多的分层材质，在中档预算下的简化质量。如果不够，就让地形强制走 RVT 合成（0009 §4.4），绕开 resolve 预算。
 4. 是否支持"材质内编译期动态分发"，例如一个材质 bin 内按实例切换算法。目前不支持，都通过 permutation 处理。

@@ -14,7 +14,7 @@
 | 地形 | 参考 UE Mesh Terrain：真 3D 网格，由非破坏式修改器栈生成，cook 成流式 cell 网格，走普通的 visbuffer 管线。材质用分层材质，结果合成进 RVT |
 | 植被 | 普通 GPU Scene 实例加层级实例剔除。草由 GPU 每帧按 view 程序化生成。RT 中的 alpha 用 OMM 或通用 alpha 测试 |
 | 后处理 | DOF → TSR → 运动模糊 → 曝光和 bloom → tonemap（自研，HDR 与 SDR 共用一条曲线）→ 调色 LUT → 输出编码 |
-| GPU 粒子 | 模块写在文本 shader 里（`IParticleModule`），emitter 是 .masset，编译器把模块融合成 kernel。不透明的网格粒子进 visbuffer |
+| GPU 粒子 | 模块写在文本 shader 里（实现粒子模块接口），emitter 是 .masset，编译器把模块融合成 kernel。不透明的网格粒子进 visbuffer |
 
 ## 1. 大气（天空）
 
@@ -209,12 +209,12 @@ HDR 场景颜色（线性 Rec.2020，渲染分辨率）
 
 ### 7.1 创作模型
 
-- **模块**：写在 Marlin shader 里，是实现了 `IParticleModule` 的类型。模块可以提供以下阶段中的一个或多个：
-  - `spawn(ref Particle p, SpawnContext ctx)`
-  - `update(ref Particle p, UpdateContext ctx)`
-  - `render_attributes(...)`
-  
-  模块的参数和材质参数一样，通过 `[Param]` 反射出来。
+- **模块**：写在 Marlin shader 里，是实现了粒子模块接口的类型。模块可以提供以下阶段中的一个或多个：
+  - `spawn`：输入 `SpawnContext`，修改当前粒子；
+  - `update`：输入 `UpdateContext`，修改当前粒子；
+  - `render_attributes`：给渲染提供属性。
+
+  模块的参数和材质参数一样，通过反射交给编辑器和 cook（0007 §3）。
 - **粒子属性**由各模块声明它们读写的属性，例如 `position`、`velocity`、`age`、`color`、`size`，以及自定义属性。编译器汇总所有模块用到的属性，得到 SoA 布局，没有用到的属性不占空间。
 - **emitter**（.masset）由以下几部分组成：
   - 模块列表（有顺序），以及每个模块的参数覆盖；
