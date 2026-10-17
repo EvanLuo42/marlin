@@ -56,6 +56,18 @@ pub enum ErrorKind {
     /// A read ended before the requested bytes arrived.
     #[error("unexpected end of file")]
     UnexpectedEof,
+    /// Data from the OS was malformed, e.g. a path that is not valid Unicode.
+    #[error("invalid data")]
+    InvalidData,
+    /// The operation was cancelled before it finished.
+    #[error("cancelled")]
+    Cancelled,
+    #[error("directory not empty")]
+    DirectoryNotEmpty,
+    #[error("not a directory")]
+    NotADirectory,
+    #[error("is a directory")]
+    IsADirectory,
     #[error("unsupported")]
     Unsupported,
     #[error("other error")]

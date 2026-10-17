@@ -12,9 +12,17 @@ pub(crate) fn from_win32(code: WIN32_ERROR) -> Error {
         ERROR_ACCESS_DENIED | ERROR_PRIVILEGE_NOT_HELD | ERROR_NOT_ALL_ASSIGNED => {
             ErrorKind::PermissionDenied
         }
-        ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND => ErrorKind::NotFound,
+        ERROR_FILE_NOT_FOUND
+        | ERROR_PATH_NOT_FOUND
+        | ERROR_MOD_NOT_FOUND
+        | ERROR_PROC_NOT_FOUND
+        | ERROR_ENVVAR_NOT_FOUND => ErrorKind::NotFound,
         ERROR_ALREADY_EXISTS | ERROR_FILE_EXISTS => ErrorKind::AlreadyExists,
         ERROR_TIMEOUT => ErrorKind::TimedOut,
+        ERROR_OPERATION_ABORTED => ErrorKind::Cancelled,
+        ERROR_DIR_NOT_EMPTY => ErrorKind::DirectoryNotEmpty,
+        ERROR_DIRECTORY => ErrorKind::NotADirectory,
+        ERROR_NO_UNICODE_TRANSLATION => ErrorKind::InvalidData,
         ERROR_NOT_SUPPORTED | ERROR_CALL_NOT_IMPLEMENTED => ErrorKind::Unsupported,
         _ => ErrorKind::Other,
     };

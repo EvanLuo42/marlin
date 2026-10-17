@@ -4,7 +4,7 @@
 mod debug;
 mod fiber;
 pub(super) mod file;
-mod process;
+pub(super) mod process;
 mod thread;
 mod time;
 mod tls;
@@ -39,6 +39,11 @@ pub(super) fn from_errno(code: c_int) -> Error {
         libc::ETIMEDOUT => ErrorKind::TimedOut,
         libc::EINTR => ErrorKind::Interrupted,
         libc::ENOSYS | libc::ENOTSUP => ErrorKind::Unsupported,
+        libc::ECANCELED => ErrorKind::Cancelled,
+        libc::ENOTEMPTY => ErrorKind::DirectoryNotEmpty,
+        libc::ENOTDIR => ErrorKind::NotADirectory,
+        libc::EISDIR => ErrorKind::IsADirectory,
+        libc::EILSEQ => ErrorKind::InvalidData,
         _ => ErrorKind::Other,
     };
     Error::new(kind, code)

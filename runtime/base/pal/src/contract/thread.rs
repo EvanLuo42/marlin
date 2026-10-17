@@ -22,6 +22,8 @@ pub(crate) unsafe trait Thread {
     fn current_id() -> u64;
     /// Best effort; truncated to the platform limit (15 bytes on Linux).
     fn set_current_name(name: &str);
+    /// The calling thread's name as UTF-8, written like `crate::process` strings; 0 if unnamed.
+    fn current_name(out: &mut [u8]) -> Result<usize>;
     fn sleep(duration: Duration);
     fn yield_now();
     /// Logical CPUs this process may run on.

@@ -67,6 +67,14 @@ pub fn set_current_name(name: &str) {
     Backend::set_current_name(name)
 }
 
+/// Writes the calling thread's name (empty if it has none) and returns its full length; `out`
+/// holds all of it when that length is at most `out.len()`. Names set by other means than
+/// [`set_current_name`] that are not valid Unicode give `InvalidData`.
+#[inline]
+pub fn current_name(out: &mut [u8]) -> Result<usize> {
+    Backend::current_name(out)
+}
+
 /// Sleeps for at least `duration`, with the finest resolution the platform offers (100 ns timers
 /// on Windows 10 1803+). A zero duration may yield.
 #[inline]

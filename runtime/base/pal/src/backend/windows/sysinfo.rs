@@ -1,18 +1,26 @@
 use core::ptr::{self, NonNull};
 
 use windows_sys::Win32::Foundation::ERROR_INSUFFICIENT_BUFFER;
-use windows_sys::Win32::System::SystemInformation::{
-    GROUP_AFFINITY, GetLogicalProcessorInformationEx, RelationProcessorCore,
-    SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX,
+use windows_sys::Win32::System::ProcessStatus::{
+    K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS_EX,
 };
+use windows_sys::Win32::System::SystemInformation::{
+    GROUP_AFFINITY, GetLogicalProcessorInformationEx, GlobalMemoryStatusEx, MEMORYSTATUSEX,
+    RelationProcessorCore, SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX,
+};
+use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
 use super::Backend;
-use super::error::last_error;
+use super::error::{check, last_error};
 use crate::contract::{SysInfo, VMem};
-use crate::sysinfo::LogicalCpu;
+use crate::sysinfo::{LogicalCpu, MemoryInfo};
 use crate::{Protection, Result};
 
 impl SysInfo for Backend {
+    fn memory() -> Result<MemoryInfo> {
+        memory()
+    }
+
     fn cpu_topology(out: &mut [LogicalCpu]) -> Result<usize> {
         // The result is variable length and the PAL cannot use the heap, so size it, then read it
         // into scratch pages. Retry if CPUs are hot-added in between.
@@ -120,4 +128,34 @@ impl Drop for Scratch {
         // SAFETY: `base`/`size` are exactly our reservation, and nothing borrows it any more.
         unsafe { Backend::release(self.base, self.size) }.ok();
     }
+}
+
+fn memory() -> Result<MemoryInfo> {
+    let mut status = MEMORYSTATUSEX {
+        dwLength: size_of::<MEMORYSTATUSEX>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: `status` is a valid MEMORYSTATUSEX with its length set.
+    check(unsafe { GlobalMemoryStatusEx(&mut status) })?;
+
+    let mut counters = PROCESS_MEMORY_COUNTERS_EX {
+        cb: size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: GetCurrentProcess returns a pseudo-handle; the EX struct starts with the plain one
+    // and `cb` tells the call which it is.
+    check(unsafe {
+        K32GetProcessMemoryInfo(GetCurrentProcess(), (&raw mut counters).cast(), counters.cb)
+    })?;
+
+    Ok(MemoryInfo {
+        total_physical: status.ullTotalPhys,
+        available_physical: status.ullAvailPhys,
+        // "Page file" here is the commit limit and charge, not the page file itself.
+        commit_limit: Some(status.ullTotalPageFile),
+        committed: Some(status.ullTotalPageFile - status.ullAvailPageFile),
+        process_resident: counters.WorkingSetSize as u64,
+        process_peak_resident: counters.PeakWorkingSetSize as u64,
+        process_private: counters.PrivateUsage as u64,
+    })
 }

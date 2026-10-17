@@ -3,10 +3,12 @@
 
 mod file;
 mod futex;
+mod process;
 mod sysinfo;
 mod thread;
 
 pub(crate) use super::unix::Backend;
+pub(super) use process::{argv, current_exe};
 pub(super) use thread::{current_affinity, set_current_affinity, set_current_priority};
 
 /// Reads `TracerPid` from `/proc/self/status`.

@@ -1,6 +1,4 @@
-//! System information: CPU topology.
-//!
-//! Memory totals and process commit will join this module.
+//! System information: CPU topology and memory.
 
 use crate::Result;
 use crate::backend::imp::Backend;
@@ -50,4 +48,31 @@ pub fn cpu_topology(out: &mut [LogicalCpu]) -> Result<usize> {
     let filled = count.min(out.len());
     out[..filled].sort_unstable_by_key(|cpu| cpu.id);
     Ok(count)
+}
+
+/// System and process memory, in bytes. A snapshot: every field may change at any moment.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub struct MemoryInfo {
+    /// Physical memory installed and usable by the OS.
+    pub total_physical: u64,
+    /// Physical memory available to new allocations without paging: Windows `ullAvailPhys`, Linux
+    /// `MemAvailable`, macOS free + inactive + speculative pages.
+    pub available_physical: u64,
+    /// The system commit limit (physical memory plus page file or swap) and the memory committed
+    /// against it, where the OS has the notion (Windows, Linux). `None` on macOS.
+    pub commit_limit: Option<u64>,
+    pub committed: Option<u64>,
+    /// This process's resident set (working set) and its peak.
+    pub process_resident: u64,
+    pub process_peak_resident: u64,
+    /// Memory charged to this process alone: Windows private bytes (commit charge), Linux
+    /// anonymous resident plus swapped memory, macOS physical footprint (what Xcode and the OS
+    /// memory limits count).
+    pub process_private: u64,
+}
+
+/// The system's and this process's memory. See [`MemoryInfo`] for what each platform reports.
+#[inline]
+pub fn memory() -> Result<MemoryInfo> {
+    Backend::memory()
 }

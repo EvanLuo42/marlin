@@ -110,6 +110,16 @@ unsafe impl Thread for Backend {
         };
     }
 
+    fn current_name(out: &mut [u8]) -> Result<usize> {
+        let mut buf = [0u8; 64];
+        // SAFETY: `buf` is valid for its length; pthread_self is always valid.
+        check_code(unsafe {
+            libc::pthread_getname_np(libc::pthread_self(), buf.as_mut_ptr().cast(), buf.len())
+        })?;
+        let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+        super::process::copy_utf8(&buf[..len], out)
+    }
+
     fn sleep(duration: Duration) {
         // SAFETY: `timespec` is plain data; all-zero is valid.
         let mut ts: libc::timespec = unsafe { mem::zeroed() };

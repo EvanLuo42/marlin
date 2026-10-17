@@ -1,16 +1,20 @@
-//! CPU topology from sysfs.
+//! CPU topology from sysfs, memory from procfs.
 
 use core::ffi::CStr;
 
 use super::Backend;
 use crate::backend::unix::last_error;
 use crate::contract::SysInfo;
-use crate::sysinfo::LogicalCpu;
+use crate::sysinfo::{LogicalCpu, MemoryInfo};
 use crate::{CpuSet, Result};
 
 const CPU_DIR: &[u8] = b"/sys/devices/system/cpu/cpu";
 
 impl SysInfo for Backend {
+    fn memory() -> Result<MemoryInfo> {
+        memory()
+    }
+
     fn cpu_topology(out: &mut [LogicalCpu]) -> Result<usize> {
         let mut buf = [0u8; 4096];
         let online = read(c"/sys/devices/system/cpu/online", &mut buf)
@@ -159,5 +163,41 @@ fn parse_u32(s: &[u8]) -> Option<u32> {
         b.is_ascii_digit()
             .then(|| n.checked_mul(10)?.checked_add(u32::from(b - b'0')))
             .flatten()
+    })
+}
+
+fn memory() -> Result<MemoryInfo> {
+    let mut buf = [0u8; 8192];
+    let meminfo = read(c"/proc/meminfo", &mut buf).ok_or_else(last_error)?;
+    let kib = |key: &[u8]| field_kib(meminfo, key);
+    let total_physical = kib(b"MemTotal:").unwrap_or(0);
+    let available_physical = kib(b"MemAvailable:").unwrap_or(0);
+    let commit_limit = kib(b"CommitLimit:");
+    let committed = kib(b"Committed_AS:");
+
+    let status = read(c"/proc/self/status", &mut buf).ok_or_else(last_error)?;
+    let kib = |key: &[u8]| field_kib(status, key).unwrap_or(0);
+    Ok(MemoryInfo {
+        total_physical,
+        available_physical,
+        commit_limit,
+        committed,
+        process_resident: kib(b"VmRSS:"),
+        process_peak_resident: kib(b"VmHWM:"),
+        process_private: kib(b"RssAnon:") + kib(b"VmSwap:"),
+    })
+}
+
+/// The value of a `Key:   123 kB` line of a /proc file, in bytes.
+fn field_kib(text: &[u8], key: &[u8]) -> Option<u64> {
+    text.split(|&b| b == b'\n').find_map(|line| {
+        let value = line.strip_prefix(key)?.trim_ascii();
+        let digits = value.strip_suffix(b"kB").unwrap_or(value).trim_ascii();
+        let n = digits.iter().try_fold(0u64, |n, &b| {
+            b.is_ascii_digit()
+                .then(|| n.checked_mul(10)?.checked_add(u64::from(b - b'0')))
+                .flatten()
+        })?;
+        n.checked_mul(1024)
     })
 }

@@ -2,19 +2,21 @@ use core::ffi::c_void;
 use core::ptr::{self, NonNull};
 use core::time::Duration;
 
-use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, LocalFree, WAIT_OBJECT_0};
 use windows_sys::Win32::System::SystemInformation::GROUP_AFFINITY;
 use windows_sys::Win32::System::Threading::{
     ALL_PROCESSOR_GROUPS, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, CreateThread,
     CreateWaitableTimerExW, GetActiveProcessorCount, GetCurrentThread, GetCurrentThreadId,
-    GetThreadGroupAffinity, INFINITE, STACK_SIZE_PARAM_IS_A_RESERVATION, SetThreadDescription,
-    SetThreadGroupAffinity, SetThreadPriority, SetWaitableTimer, Sleep, SwitchToThread,
-    THREAD_PRIORITY_ABOVE_NORMAL, THREAD_PRIORITY_BELOW_NORMAL, THREAD_PRIORITY_LOWEST,
-    THREAD_PRIORITY_NORMAL, THREAD_PRIORITY_TIME_CRITICAL, TIMER_ALL_ACCESS, WaitForSingleObject,
+    GetThreadDescription, GetThreadGroupAffinity, INFINITE, STACK_SIZE_PARAM_IS_A_RESERVATION,
+    SetThreadDescription, SetThreadGroupAffinity, SetThreadPriority, SetWaitableTimer, Sleep,
+    SwitchToThread, THREAD_PRIORITY_ABOVE_NORMAL, THREAD_PRIORITY_BELOW_NORMAL,
+    THREAD_PRIORITY_LOWEST, THREAD_PRIORITY_NORMAL, THREAD_PRIORITY_TIME_CRITICAL,
+    TIMER_ALL_ACCESS, WaitForSingleObject,
 };
+use windows_sys::core::PWSTR;
 
 use super::error::{check, last_error};
-use super::{Backend, for_each_wide_chunk};
+use super::{Backend, for_each_wide_chunk, utf16_to_utf8};
 use crate::contract::Thread;
 use crate::thread::ThreadStart;
 use crate::{CpuSet, Error, ErrorKind, Result, ThreadPriority};
@@ -94,6 +96,26 @@ unsafe impl Thread for Backend {
                 first = false;
             }
         });
+    }
+
+    fn current_name(out: &mut [u8]) -> Result<usize> {
+        let mut name: PWSTR = ptr::null_mut();
+        // SAFETY: GetCurrentThread returns a pseudo-handle; `name` is a valid out pointer.
+        let hr = unsafe { GetThreadDescription(GetCurrentThread(), &mut name) };
+        if hr < 0 {
+            return Err(Error::new(ErrorKind::Other, hr));
+        }
+        // SAFETY: on success `name` is a NUL-terminated string allocated with LocalAlloc, which
+        // we free once copied.
+        unsafe {
+            let mut len = 0;
+            while *name.add(len) != 0 {
+                len += 1;
+            }
+            let result = utf16_to_utf8(core::slice::from_raw_parts(name, len), out);
+            LocalFree(name.cast());
+            result
+        }
     }
 
     fn sleep(duration: Duration) {
