@@ -7,6 +7,7 @@ use std::sync::mpsc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+use marlin_math::Rng;
 use marlin_net::{
     Completed, IoBuffer, ListenOptions, NetQueue, SocketAddr, SocketId, SocketOptions,
 };
@@ -19,15 +20,9 @@ pub fn any_port() -> SocketAddr {
 
 /// Deterministic, position-dependent bytes, so misplaced data is caught.
 pub fn pattern(len: usize, seed: u32) -> Vec<u8> {
-    let mut x = 0x9E37_79B9u32 ^ seed.wrapping_mul(0x85EB_CA6B);
-    (0..len)
-        .map(|_| {
-            x ^= x << 13;
-            x ^= x >> 17;
-            x ^= x << 5;
-            x as u8
-        })
-        .collect()
+    let mut bytes = vec![0; len];
+    Rng::new(seed.into()).fill_bytes(&mut bytes);
+    bytes
 }
 
 pub fn buffer_from(data: &[u8]) -> IoBuffer {

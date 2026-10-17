@@ -2,7 +2,7 @@
 //! read back; the same through a live cook service; and an edit hot-reloading into the picture.
 #![cfg(marlin_platform = "windows")]
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
@@ -17,6 +17,7 @@ use marlin_framework::{
 };
 use marlin_render::{Renderer, RendererDesc};
 use marlin_rhi::{AdapterPreference, Device, DeviceDesc, Instance, InstanceDesc};
+use marlin_test_support::{TempDir, wait_until};
 
 const LEVEL: &str = "01992d00-0000-7000-8000-000000000001";
 const WIDTH: u32 = 160;
@@ -40,9 +41,8 @@ fn copy_dir(from: &Path, to: &Path) {
 }
 
 /// A copy of the sample, so tests can edit it.
-fn sample(name: &str) -> PathBuf {
-    let root = std::env::temp_dir().join(format!("marlin-e2e-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+fn sample(name: &str) -> TempDir {
+    let root = TempDir::new(&format!("e2e-{name}"));
     let sample = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../samples/basic");
     copy_dir(&sample, &root);
     root
@@ -258,7 +258,6 @@ fn the_sample_cooks_packages_and_renders_the_same_from_cookd() {
         "cookd and the package render the same"
     );
     drop(cookd);
-    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]
@@ -276,11 +275,12 @@ fn editing_the_level_changes_the_picture_live() {
     let mut viewer = Viewer::new();
     let mut engine = Engine::new(&boot.vfs).unwrap();
     engine.load_level(boot.level);
-    let start = Instant::now();
-    while !engine.is_ready() {
-        assert!(start.elapsed() < Duration::from_secs(60), "never loaded");
-        viewer.frame(&mut engine);
-    }
+    wait_until(Duration::from_secs(60), "the level to load", || {
+        engine.is_ready() || {
+            viewer.frame(&mut engine);
+            false
+        }
+    });
     viewer.frame(&mut engine);
     let before = viewer.frame(&mut engine);
     check_sample(&before);
@@ -311,5 +311,4 @@ fn editing_the_level_changes_the_picture_live() {
     // Only the level reloaded; its meshes stayed on the GPU.
     assert_eq!(viewer.render.mesh_count(), 3);
     drop(cookd);
-    let _ = std::fs::remove_dir_all(root);
 }

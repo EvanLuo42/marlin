@@ -1,8 +1,9 @@
 //! `marlin-cook cook` on a small project: cook, cache, fail.
 
-use std::fs;
 use std::io::Cursor;
 use std::process::Command;
+
+use marlin_test_support::TempDir;
 
 fn run(args: &[&str]) -> (bool, String) {
     let out = Command::new(env!("CARGO_BIN_EXE_marlin-cook"))
@@ -16,20 +17,17 @@ fn run(args: &[&str]) -> (bool, String) {
 
 #[test]
 fn cooks_then_hits_the_cache_then_reports_failures() {
-    let root = std::env::temp_dir().join(format!("marlin-cook-cli-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&root);
-    fs::create_dir_all(root.join("tex")).unwrap();
+    let root = TempDir::new("cook-cli");
     let image = image::RgbaImage::from_fn(64, 64, |x, y| {
         image::Rgba([x as u8 * 4, y as u8 * 4, 0, 255])
     });
     let mut png = Cursor::new(Vec::new());
     image.write_to(&mut png, image::ImageFormat::Png).unwrap();
-    fs::write(root.join("tex/ramp.png"), png.into_inner()).unwrap();
-    fs::write(
-        root.join("tex/ramp.masset"),
+    root.write("tex/ramp.png", png.into_inner());
+    root.write(
+        "tex/ramp.masset",
         "!Version 1\nTexture { !Uuid = \"01990000-0000-7000-8000-000000000001\" !Name = \"Ramp\" Source = `source:tex/ramp.png` }\n",
-    )
-    .unwrap();
+    );
     let r = root.to_str().unwrap();
 
     let (ok, text) = run(&["cook", r]);
@@ -54,11 +52,10 @@ fn cooks_then_hits_the_cache_then_reports_failures() {
     let (ok, text) = run(&["package", r, "--bulk-codec", "brotli"]);
     assert!(!ok && text.contains("usage"), "{text}");
 
-    fs::write(
-        root.join("tex/broken.masset"),
+    root.write(
+        "tex/broken.masset",
         "!Version 1\nTexture { !Uuid = \"01990000-0000-7000-8000-000000000002\" !Name = \"Broken\" Source = `source:tex/missing.png` }\n",
-    )
-    .unwrap();
+    );
     let (ok, text) = run(&["cook", r]);
     assert!(!ok, "{text}");
     assert!(
@@ -69,5 +66,4 @@ fn cooks_then_hits_the_cache_then_reports_failures() {
 
     let (ok, text) = run(&["cook", r, "--platform"]);
     assert!(!ok && text.contains("usage"), "{text}");
-    let _ = fs::remove_dir_all(&root);
 }

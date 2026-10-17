@@ -1,6 +1,7 @@
 //! Rotation quantization and clip sampling.
 
 use marlin_anim::asset::{decode_rotation, encode_rotation, nlerp};
+use marlin_math::Rng;
 
 fn normalize(q: [f32; 4]) -> [f32; 4] {
     let l = q.iter().map(|c| c * c).sum::<f32>().sqrt();
@@ -9,13 +10,8 @@ fn normalize(q: [f32; 4]) -> [f32; 4] {
 
 #[test]
 fn rotations_quantize_to_48_bits_within_hundredths_of_a_degree() {
-    let mut state = 11u64;
-    let mut next = || {
-        state = state
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        (state >> 40) as f32 / (1u64 << 24) as f32 * 2.0 - 1.0
-    };
+    let mut rng = Rng::new(11);
+    let mut next = || rng.range_f32(-1.0, 1.0);
     let mut worst = 0.0f64;
     for _ in 0..50_000 {
         let q = normalize([next(), next(), next(), next()]);

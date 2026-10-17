@@ -4,8 +4,9 @@ mod common;
 
 use std::collections::HashSet;
 
-use common::{Rng, grid, sphere};
+use common::{grid, sphere};
 use marlin_cook_mesh::{meshlet, optimize, simplify, tangent};
+use marlin_math::Rng;
 
 fn attributes(normals: &[[f32; 3]], uvs: &[[f32; 2]]) -> Vec<f32> {
     normals
@@ -251,7 +252,7 @@ fn meshlets_cover_every_triangle_within_limits() {
         let axis = [0, 1, 2].map(|i| bounds.cone[i] as f32 / 127.0);
         let cutoff = bounds.cone[3] as f32 / 127.0;
         for _ in 0..32 {
-            let camera = [0, 1, 2].map(|_| (rng.unit() - 0.5) * 8.0);
+            let camera = [0, 1, 2].map(|_| (rng.f32() - 0.5) * 8.0);
             let d: [f32; 3] = std::array::from_fn(|i| bounds.center[i] - camera[i]);
             let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
             let culled =

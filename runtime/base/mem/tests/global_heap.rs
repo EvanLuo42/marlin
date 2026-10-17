@@ -8,37 +8,23 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Instant;
 
+use marlin_math::Rng;
 use marlin_mem::{MarlinHeap, collect_abandoned, stats};
 
 #[global_allocator]
 static HEAP: MarlinHeap = MarlinHeap::new();
 
-struct Rng(u64);
-
-impl Rng {
-    fn next(&mut self) -> u64 {
-        self.0 ^= self.0 << 13;
-        self.0 ^= self.0 >> 7;
-        self.0 ^= self.0 << 17;
-        self.0
+/// Mostly small, sometimes medium, rarely huge: roughly a game's mix.
+fn alloc_size(rng: &mut Rng) -> usize {
+    match rng.below(100) {
+        0..70 => 1 + rng.below(256),
+        70..97 => 1 + rng.below(64 << 10),
+        _ => 1 + rng.below(4 << 20),
     }
+}
 
-    fn below(&mut self, n: usize) -> usize {
-        (self.next() % n as u64) as usize
-    }
-
-    /// Mostly small, sometimes medium, rarely huge: roughly a game's mix.
-    fn size(&mut self) -> usize {
-        match self.below(100) {
-            0..70 => 1 + self.below(256),
-            70..97 => 1 + self.below(64 << 10),
-            _ => 1 + self.below(4 << 20),
-        }
-    }
-
-    fn align(&mut self) -> usize {
-        [1, 2, 4, 8, 8, 8, 16, 16, 32, 64, 128, 4096][self.below(12)]
-    }
+fn alloc_align(rng: &mut Rng) -> usize {
+    [1, 2, 4, 8, 8, 8, 16, 16, 32, 64, 128, 4096][rng.below(12)]
 }
 
 /// A raw allocation carrying a recognizable pattern.
@@ -109,17 +95,17 @@ impl Drop for Alloc {
 }
 
 fn churn(seed: u64, ops: usize, max_live: usize) {
-    let mut rng = Rng(seed);
+    let mut rng = Rng::new(seed);
     let mut live: Vec<Alloc> = Vec::new();
     for _ in 0..ops {
         match rng.below(10) {
             0..5 if live.len() < max_live => {
-                let (size, align) = (rng.size(), rng.align());
-                live.push(Alloc::new(size, align, rng.next() as u8));
+                let (size, align) = (alloc_size(&mut rng), alloc_align(&mut rng));
+                live.push(Alloc::new(size, align, rng.next_u64() as u8));
             }
             0..7 if !live.is_empty() => {
                 let i = rng.below(live.len());
-                let size = rng.size();
+                let size = alloc_size(&mut rng);
                 live[i].realloc(size);
             }
             _ if !live.is_empty() => {
@@ -168,10 +154,16 @@ fn frees_from_other_threads() {
         .map(|t| {
             let tx = tx.clone();
             thread::spawn(move || {
-                let mut rng = Rng(0x1234_5678 + t);
+                let mut rng = Rng::new(0x1234_5678 + t);
                 for _ in 0..200 {
                     let batch = (0..100)
-                        .map(|_| Alloc::new(rng.size().min(8192), rng.align(), rng.next() as u8))
+                        .map(|_| {
+                            Alloc::new(
+                                alloc_size(&mut rng).min(8192),
+                                alloc_align(&mut rng),
+                                rng.next_u64() as u8,
+                            )
+                        })
                         .collect();
                     tx.send(batch).unwrap();
                 }
@@ -192,9 +184,9 @@ fn segments_of_exited_threads_are_reused() {
     for round in 0..4u64 {
         // The thread exits with its blocks still alive, so its segments are abandoned.
         let survivors = thread::spawn(move || {
-            let mut rng = Rng(0xABCD + round);
+            let mut rng = Rng::new(0xABCD + round);
             (0..20_000)
-                .map(|_| Alloc::new(1 + rng.below(2048), 8, rng.next() as u8))
+                .map(|_| Alloc::new(1 + rng.below(2048), 8, rng.next_u64() as u8))
                 .collect::<Vec<_>>()
         })
         .join()

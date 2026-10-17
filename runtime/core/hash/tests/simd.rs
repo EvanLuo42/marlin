@@ -5,18 +5,12 @@ use std::time::Instant;
 
 use marlin_hash::stable::scalar;
 use marlin_hash::{xxh3_64_ascii_lowercase, xxh3_64_with_seed, xxh3_128_with_seed};
+use marlin_math::Rng;
 
 /// Deterministic bytes, mixed-case ASCII and high bytes included so the lowercase variant matters.
 fn data(n: usize, seed: u64) -> Vec<u8> {
-    let mut x = seed | 1;
-    (0..n)
-        .map(|_| {
-            x ^= x << 13;
-            x ^= x >> 7;
-            x ^= x << 17;
-            (x >> 24) as u8
-        })
-        .collect()
+    let mut rng = Rng::new(seed);
+    (0..n).map(|_| (rng.next_u64() >> 24) as u8).collect()
 }
 
 #[test]

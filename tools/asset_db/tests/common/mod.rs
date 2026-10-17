@@ -3,42 +3,28 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::time::{Duration, SystemTime};
 
 use marlin_asset_db::Options;
+use marlin_test_support::TempDir;
 
 pub struct Project {
-    pub root: PathBuf,
+    pub root: TempDir,
 }
-
-static NEXT: AtomicU32 = AtomicU32::new(0);
 
 impl Project {
     pub fn new(name: &str) -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "marlin-asset-db-{name}-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        Self { root }
+        Self {
+            root: TempDir::new(&format!("asset-db-{name}")),
+        }
     }
 
     pub fn path(&self, rel: &str) -> PathBuf {
         self.root.join(rel)
     }
 
+    /// Writes `contents`, dated after every earlier write so updates always see it.
     pub fn write(&self, rel: &str, contents: &str) {
-        let path = self.path(rel);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(&path, contents).unwrap();
-        // Modification times can be coarse; push each write forward so updates always see it.
-        let file = fs::OpenOptions::new().write(true).open(&path).unwrap();
-        let bump = NEXT.fetch_add(1, Ordering::Relaxed) as u64;
-        file.set_modified(SystemTime::now() + Duration::from_secs(bump + 1))
-            .unwrap();
+        self.root.write_newer(rel, contents);
     }
 
     pub fn remove(&self, rel: &str) {
@@ -62,12 +48,6 @@ impl Project {
             journal: false,
             ..Options::default()
         }
-    }
-}
-
-impl Drop for Project {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.root);
     }
 }
 

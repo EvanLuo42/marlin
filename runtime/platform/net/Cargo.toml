@@ -19,5 +19,8 @@ windows-sys = { workspace = true, features = [
     "Win32_System_WindowsProgramming",
 ] }
 
+[dev-dependencies]
+marlin-math.workspace = true
+
 [lints]
 workspace = true

@@ -23,5 +23,8 @@ windows-sys = { workspace = true, features = [
     "Win32_System_Ioctl",
 ] }
 
+[dev-dependencies]
+marlin-test-support.workspace = true
+
 [lints]
 workspace = true

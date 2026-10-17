@@ -1,8 +1,10 @@
-//! Shared test helpers: a drop tracker and a deterministic RNG.
+//! Shared test helpers: a drop tracker, and the workspace's deterministic RNG.
 #![allow(dead_code)]
 
 use std::cell::RefCell;
 use std::fmt;
+
+pub use marlin_math::Rng;
 
 /// Hands out [`Tracked`] values and records which are alive: dropping one twice panics at once,
 /// and [`Tracker::assert_all_dropped`] catches leaks.
@@ -78,25 +80,5 @@ impl PartialEq for Tracked<'_> {
 impl fmt::Debug for Tracked<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "T{}", self.value)
-    }
-}
-
-/// xorshift64*: deterministic, so failures reproduce.
-pub struct Rng(u64);
-
-impl Rng {
-    pub fn new(seed: u64) -> Self {
-        Self(seed | 1)
-    }
-
-    pub fn next(&mut self) -> u64 {
-        self.0 ^= self.0 >> 12;
-        self.0 ^= self.0 << 25;
-        self.0 ^= self.0 >> 27;
-        self.0.wrapping_mul(0x2545_f491_4f6c_dd1d)
-    }
-
-    pub fn below(&mut self, n: usize) -> usize {
-        (self.next() % n as u64) as usize
     }
 }

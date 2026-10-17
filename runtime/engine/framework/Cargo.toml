@@ -26,6 +26,7 @@ marlin-sync.workspace = true
 marlin-time.workspace = true
 
 [dev-dependencies]
+marlin-test-support.workspace = true
 # The end-to-end test cooks, packages and serves the sample with the real tools.
 marlin-asset-db.workspace = true
 marlin-cook-core.workspace = true

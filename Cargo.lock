@@ -271,6 +271,7 @@ dependencies = [
  "marlin-hash",
  "marlin-io",
  "marlin-jobs",
+ "marlin-math",
  "marlin-net",
  "marlin-reflect",
  "marlin-serial",
@@ -285,6 +286,7 @@ dependencies = [
  "marlin-error",
  "marlin-hash",
  "marlin-masset",
+ "marlin-test-support",
  "marlin-vcs",
  "memmap2",
  "windows-sys",
@@ -325,6 +327,7 @@ version = "0.1.0"
 dependencies = [
  "hashbrown",
  "marlin-hash",
+ "marlin-math",
 ]
 
 [[package]]
@@ -343,8 +346,10 @@ dependencies = [
  "marlin-io",
  "marlin-jobs",
  "marlin-masset",
+ "marlin-math",
  "marlin-reflect",
  "marlin-serial",
+ "marlin-test-support",
 ]
 
 [[package]]
@@ -360,9 +365,11 @@ dependencies = [
  "marlin-asset",
  "marlin-asset-db",
  "marlin-cook-core",
+ "marlin-math",
  "marlin-reflect",
  "marlin-render",
  "marlin-serial",
+ "marlin-test-support",
 ]
 
 [[package]]
@@ -377,10 +384,12 @@ dependencies = [
  "marlin-asset",
  "marlin-asset-db",
  "marlin-cook-core",
+ "marlin-math",
  "marlin-reflect",
  "marlin-render",
  "marlin-rhi",
  "marlin-serial",
+ "marlin-test-support",
 ]
 
 [[package]]
@@ -395,6 +404,7 @@ dependencies = [
  "marlin-reflect",
  "marlin-serial",
  "marlin-store",
+ "marlin-test-support",
 ]
 
 [[package]]
@@ -416,6 +426,7 @@ dependencies = [
  "marlin-masset",
  "marlin-render",
  "marlin-store",
+ "marlin-test-support",
  "marlin-vcs",
 ]
 
@@ -448,6 +459,7 @@ version = "0.1.0"
 dependencies = [
  "marlin-containers",
  "marlin-jobs",
+ "marlin-math",
  "marlin-reflect",
  "marlin-std",
 ]
@@ -534,6 +546,7 @@ dependencies = [
  "marlin-rhi",
  "marlin-serial",
  "marlin-sync",
+ "marlin-test-support",
  "marlin-time",
 ]
 
@@ -551,6 +564,9 @@ dependencies = [
 [[package]]
 name = "marlin-hash"
 version = "0.1.0"
+dependencies = [
+ "marlin-math",
+]
 
 [[package]]
 name = "marlin-input"
@@ -565,7 +581,9 @@ dependencies = [
 name = "marlin-io"
 version = "0.1.0"
 dependencies = [
+ "marlin-math",
  "marlin-pal",
+ "marlin-test-support",
 ]
 
 [[package]]
@@ -581,6 +599,7 @@ version = "0.1.0"
 dependencies = [
  "marlin-asset",
  "marlin-error",
+ "marlin-math",
  "marlin-reflect",
 ]
 
@@ -592,6 +611,7 @@ version = "0.1.0"
 name = "marlin-mem"
 version = "0.1.0"
 dependencies = [
+ "marlin-math",
  "marlin-pal",
 ]
 
@@ -605,6 +625,7 @@ version = "0.1.0"
 dependencies = [
  "marlin-error",
  "marlin-io",
+ "marlin-math",
  "marlin-pal",
  "windows-sys",
 ]
@@ -636,6 +657,7 @@ dependencies = [
 name = "marlin-reflect"
 version = "0.1.0"
 dependencies = [
+ "marlin-hash",
  "marlin-reflect-derive",
  "marlin-std",
 ]
@@ -644,6 +666,7 @@ dependencies = [
 name = "marlin-reflect-derive"
 version = "0.1.0"
 dependencies = [
+ "marlin-hash",
  "proc-macro2",
  "quote",
  "syn 3.0.9",
@@ -673,6 +696,7 @@ dependencies = [
  "marlin-app",
  "marlin-diag",
  "marlin-error",
+ "marlin-pal",
  "marlin-sync",
  "windows-sys",
 ]
@@ -690,6 +714,7 @@ dependencies = [
 name = "marlin-serial"
 version = "0.1.0"
 dependencies = [
+ "marlin-math",
  "marlin-reflect",
 ]
 
@@ -724,6 +749,7 @@ dependencies = [
  "marlin-error",
  "marlin-hash",
  "marlin-net",
+ "marlin-test-support",
 ]
 
 [[package]]
@@ -732,6 +758,10 @@ version = "0.1.0"
 dependencies = [
  "marlin-pal",
 ]
+
+[[package]]
+name = "marlin-test-support"
+version = "0.1.0"
 
 [[package]]
 name = "marlin-text"
@@ -765,6 +795,7 @@ name = "marlin-vcs"
 version = "0.1.0"
 dependencies = [
  "marlin-error",
+ "marlin-test-support",
  "serde_json",
 ]
 

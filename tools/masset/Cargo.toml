@@ -10,5 +10,8 @@ marlin-asset.workspace = true
 marlin-error.workspace = true
 marlin-reflect.workspace = true
 
+[dev-dependencies]
+marlin-math.workspace = true
+
 [lints]
 workspace = true

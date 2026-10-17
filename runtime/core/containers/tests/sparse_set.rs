@@ -51,7 +51,7 @@ fn matches_model_under_random_operations() {
     for step in 0..20_000u64 {
         // Small key space so inserts and removes collide often; a few far-away keys.
         let key = if rng.below(50) == 0 {
-            rng.next() as u32 % 5_000_000
+            rng.next_u64() as u32 % 5_000_000
         } else {
             rng.below(500) as u32
         };

@@ -1,10 +1,5 @@
 //! Cooking a project: keys, caching, unit layout, errors and the manifest.
 
-use std::fs;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::time::{Duration, SystemTime};
-
 use marlin_asset::cooked::{BULK_ALIGN, BulkKind, Encoding, UnitView, unit_id};
 use marlin_asset::{Link, SourceFile, Uuid};
 use marlin_asset_db::{AssetDb, Options};
@@ -13,6 +8,7 @@ use marlin_cook_core::{
     cook_all, publish_manifest,
 };
 use marlin_reflect::{Reflect, type_info};
+use marlin_test_support::TempDir;
 
 #[derive(Clone, PartialEq, Debug, Default, Reflect)]
 struct Thing {
@@ -85,35 +81,19 @@ fn cookers() -> Cookers {
     c
 }
 
-static NEXT: AtomicU32 = AtomicU32::new(0);
-
 struct Project {
-    root: PathBuf,
+    root: TempDir,
 }
 
 impl Project {
     fn new(name: &str) -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "marlin-cook-{name}-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        Self { root }
+        Self {
+            root: TempDir::new(&format!("cook-{name}")),
+        }
     }
 
     fn write(&self, rel: &str, text: &str) {
-        let path = self.root.join(rel);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(&path, text).unwrap();
-        let bump = NEXT.fetch_add(1, Ordering::Relaxed) as u64 + 1;
-        fs::OpenOptions::new()
-            .write(true)
-            .open(&path)
-            .unwrap()
-            .set_modified(SystemTime::now() + Duration::from_secs(bump))
-            .unwrap();
+        self.root.write_newer(rel, text);
     }
 
     fn db(&self) -> AssetDb {
@@ -129,12 +109,6 @@ impl Project {
 
     fn ddc(&self, name: &str) -> LocalDdc {
         LocalDdc::open(self.root.join(".marlin").join(name)).unwrap()
-    }
-}
-
-impl Drop for Project {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.root);
     }
 }
 

@@ -1,8 +1,6 @@
 //! The texture cooker through the cook pipeline: sources in, checked cooked textures out.
 
-use std::fs;
 use std::io::Cursor;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use image::{ImageFormat, Rgb32FImage, Rgba32FImage, RgbaImage};
@@ -13,32 +11,27 @@ use marlin_cook_texture::{Format, MIP_TAIL_BYTES, TextureCooker, decode, metrics
 use marlin_reflect::type_info;
 use marlin_render::asset::texture::{PixelFormat, Texture, TextureView};
 use marlin_serial::cooked::CookedBuffer;
+use marlin_test_support::TempDir;
 
 /// A cooked unit: its asset path, bytes (page-aligned) and warnings.
 type CookedUnit = (String, CookedBuffer, Vec<String>);
 
+/// Hands out distinct object ids.
 static NEXT: AtomicU32 = AtomicU32::new(0);
 
 struct Project {
-    root: PathBuf,
+    root: TempDir,
 }
 
 impl Project {
     fn new(name: &str) -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "marlin-cook-texture-{name}-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        Self { root }
+        Self {
+            root: TempDir::new(&format!("cook-texture-{name}")),
+        }
     }
 
     fn write(&self, rel: &str, bytes: &[u8]) {
-        let path = self.root.join(rel);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, bytes).unwrap();
+        self.root.write(rel, bytes);
     }
 
     /// One `Texture` object in `<name>.masset` with the given extra attributes.
@@ -82,12 +75,6 @@ impl Project {
                 )
             })
             .collect())
-    }
-}
-
-impl Drop for Project {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.root);
     }
 }
 

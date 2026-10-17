@@ -11,5 +11,8 @@ marlin-jobs.workspace = true
 marlin-reflect.workspace = true
 marlin-std.workspace = true
 
+[dev-dependencies]
+marlin-math.workspace = true
+
 [lints]
 workspace = true

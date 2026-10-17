@@ -1,5 +1,6 @@
 //! Deterministic test data. The interop fixtures were generated from these exact functions, so
-//! they must not change.
+//! they must not change. That is also why this keeps its own frozen xorshift64 instead of the
+//! engine's `marlin_math::Rng`.
 #![allow(dead_code)]
 
 pub struct Rng(u64);

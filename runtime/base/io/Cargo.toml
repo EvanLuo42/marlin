@@ -8,5 +8,9 @@ publish.workspace = true
 [dependencies]
 marlin-pal.workspace = true
 
+[dev-dependencies]
+marlin-math.workspace = true
+marlin-test-support.workspace = true
+
 [lints]
 workspace = true

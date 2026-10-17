@@ -1,12 +1,10 @@
 //! A game's asset server loading from a running cookd, and reloading what changes.
 
-use std::fs;
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use marlin_asset::cooked::{BulkKind, Encoding};
 use marlin_asset::{
@@ -17,6 +15,7 @@ use marlin_asset_db::{AssetDb, Options};
 use marlin_cook_core::{CookContext, Cooked, Cooker, Cookers, LocalDdc, SourceObject};
 use marlin_cookd::{Cookd, CookdOptions, bind};
 use marlin_reflect::{Reflect, type_info};
+use marlin_test_support::{TempDir, wait_until};
 
 #[derive(Clone, PartialEq, Debug, Default, Reflect)]
 struct Thing {
@@ -73,8 +72,6 @@ fn loaders() -> Loaders {
     l
 }
 
-static NEXT: AtomicU32 = AtomicU32::new(0);
-
 const A: u128 = 0x0199_0000_0000_7000_8000_0000_0000_000a;
 const B: u128 = 0x0199_0000_0000_7000_8000_0000_0000_000b;
 const PIC: u128 = 0x0199_0000_0000_7000_8000_0000_0000_00aa;
@@ -82,12 +79,6 @@ const BROKEN: u128 = 0x0199_0000_0000_7000_8000_0000_0000_00bb;
 
 fn id(n: u128) -> Uuid {
     Uuid::from_u128(n)
-}
-
-fn write(root: &Path, rel: &str, bytes: &[u8]) {
-    let path = root.join(rel);
-    fs::create_dir_all(path.parent().unwrap()).unwrap();
-    fs::write(path, bytes).unwrap();
 }
 
 fn thing_a(value: u32) -> String {
@@ -100,7 +91,7 @@ fn thing_a(value: u32) -> String {
 
 /// A cookd on a free port over a fresh project, stopped on drop.
 struct Running {
-    root: PathBuf,
+    root: TempDir,
     addr: SocketAddr,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
@@ -108,15 +99,9 @@ struct Running {
 
 impl Running {
     fn start(name: &str) -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "marlin-cookd-{name}-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        let _ = fs::remove_dir_all(&root);
-        write(&root, "a.masset", thing_a(1).as_bytes());
-        write(
-            &root,
+        let root = TempDir::new(&format!("cookd-{name}"));
+        root.write("a.masset", thing_a(1).as_bytes());
+        root.write(
             "b.masset",
             format!(
                 "!Version 1\nThing {{ !Uuid = \"{}\" !Name = \"B\" Value = 2 }}\n",
@@ -124,8 +109,7 @@ impl Running {
             )
             .as_bytes(),
         );
-        write(
-            &root,
+        root.write(
             "img.masset",
             format!(
                 "!Version 1\nImage {{ !Uuid = \"{}\" !Name = \"Pic\" Source = `source:pic.bin` }}\n",
@@ -134,8 +118,7 @@ impl Running {
             .as_bytes(),
         );
         // Its own unit: a unit fails as a whole.
-        write(
-            &root,
+        root.write(
             "broken.masset",
             format!(
                 "!Version 1\nImage {{ !Uuid = \"{}\" !Name = \"Broken\" Source = `source:gone.bin` }}\n",
@@ -143,11 +126,11 @@ impl Running {
             )
             .as_bytes(),
         );
-        write(&root, "pic.bin", b"first pixels");
+        root.write("pic.bin", b"first pixels");
 
         let stop = Arc::new(AtomicBool::new(false));
         let (tx, rx) = std::sync::mpsc::channel();
-        let (r, s) = (root.clone(), stop.clone());
+        let (r, s) = (root.to_path_buf(), stop.clone());
         let thread = std::thread::spawn(move || {
             let (db, _) = AssetDb::open(&r, Options::default()).unwrap();
             let mut cookers = Cookers::new();
@@ -185,7 +168,6 @@ impl Drop for Running {
         if let Some(t) = self.thread.take() {
             t.join().unwrap();
         }
-        let _ = fs::remove_dir_all(&self.root);
     }
 }
 
@@ -196,15 +178,12 @@ fn until(
     what: &str,
     mut done: impl FnMut(&mut AssetServer) -> bool,
 ) {
-    let start = Instant::now();
-    while !done(assets) {
-        assert!(
-            start.elapsed() < Duration::from_secs(20),
-            "timed out waiting for {what}"
-        );
-        assets.update_blocking(vfs, None);
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    wait_until(Duration::from_secs(20), what, || {
+        done(assets) || {
+            assets.update_blocking(vfs, None);
+            false
+        }
+    });
 }
 
 #[test]
@@ -223,7 +202,7 @@ fn loads_from_cookd_and_reloads_on_change() {
     assert_eq!(assets.version(&a), 0);
 
     // The text changes: A reloads in place, the same handle.
-    write(&cookd.root, "a.masset", thing_a(5).as_bytes());
+    cookd.root.write("a.masset", thing_a(5).as_bytes());
     until(&mut assets, &vfs, "A to reload", |s| {
         s.get(&a).is_some_and(|t| t.value == 5)
     });
@@ -237,21 +216,23 @@ fn loads_from_cookd_and_reloads_on_change() {
     assert_eq!(assets.version(&pic), 0);
 
     // A source file changes: the image reloads.
-    write(&cookd.root, "pic.bin", b"second pixels");
+    cookd.root.write("pic.bin", b"second pixels");
     until(&mut assets, &vfs, "the image to reload", |s| {
         s.get(&pic).is_some_and(|p| p.0 == b"second pixels")
     });
     assert_eq!(assets.version(&pic), 1);
 
     // A broken edit: the reload fails and the last good version stays.
-    write(&cookd.root, "a.masset", b"!Version 1\nThing { !Uuid = ");
+    cookd
+        .root
+        .write("a.masset", b"!Version 1\nThing { !Uuid = ");
     until(&mut assets, &vfs, "the failed reload", |s| {
         !s.take_reload_errors().is_empty()
     });
     assert_eq!(assets.get(&a).unwrap().value, 5);
     assert_eq!(assets.state(&a), LoadState::Loaded);
     // Fixed again.
-    write(&cookd.root, "a.masset", thing_a(7).as_bytes());
+    cookd.root.write("a.masset", thing_a(7).as_bytes());
     until(&mut assets, &vfs, "the fix", |s| {
         s.get(&a).is_some_and(|t| t.value == 7)
     });
@@ -277,7 +258,7 @@ fn failures_come_back_as_states() {
     );
 
     // Adding the source fixes the unit, and the held handle loads.
-    write(&cookd.root, "gone.bin", b"here now");
+    cookd.root.write("gone.bin", b"here now");
     until(&mut assets, &vfs, "the fixed unit", |s| {
         s.get(&broken).is_some()
     });

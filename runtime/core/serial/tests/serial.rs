@@ -1,3 +1,4 @@
+use marlin_math::Rng;
 use marlin_reflect::{Mut, Reflect, Registry, TypeId, TypeInfo, TypeKind, TypeName, name_hash};
 use marlin_serial::{
     Error, MAGIC, ReadOptions, VERSION, from_bytes, read_header, read_into, read_into_with,
@@ -454,13 +455,8 @@ fn corrupted_input_never_panics() {
         }
     }
     // Pseudo-random multi-byte corruption.
-    let mut seed = 0x2545_f491_4f6c_dd1du64;
-    let mut next = || {
-        seed ^= seed << 13;
-        seed ^= seed >> 7;
-        seed ^= seed << 17;
-        seed
-    };
+    let mut rng = Rng::new(0x2545_f491_4f6c_dd1d);
+    let mut next = || rng.next_u64();
     for _ in 0..20_000 {
         let mut corrupt = bytes.clone();
         for _ in 0..1 + next() % 4 {

@@ -5,6 +5,7 @@ use marlin_asset::cooked::{
     BulkEntry, BulkKind, Encoding, ImportEntry, ObjectEntry, UnitError, UnitHeader, UnitView,
     unit_id, write,
 };
+use marlin_math::Rng;
 
 /// Two objects (the second with a bulk blob), one import.
 fn unit() -> Vec<u8> {
@@ -119,11 +120,9 @@ fn damage_is_an_error_never_a_panic() {
             }
         });
     }
-    let mut state = 0x9e37_79b9_7f4a_7c15u64;
+    let mut rng = Rng::new(0x9e37_79b9_7f4a_7c15);
     for _ in 0..20_000 {
-        state ^= state << 13;
-        state ^= state >> 7;
-        state ^= state << 17;
+        let state = rng.next_u64();
         let mut bad = bytes.clone();
         let at = (state % 512) as usize;
         bad[at] ^= (state >> 32) as u8 | 1;

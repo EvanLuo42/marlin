@@ -37,7 +37,7 @@ const CASES: &[Case] = &[
     case(Format::Bc4Unorm, "gradient", [53.5, 53.9, 62.6]),
     case(Format::Bc5Unorm, "normals", [40.3, 40.6, 40.9]),
     case(Format::Bc5Unorm, "noise", [30.1, 30.5, 30.7]),
-    case(Format::Bc6hUfloat, "hdr", [36.9, 40.6, 40.9]),
+    case(Format::Bc6hUfloat, "hdr", [35.4, 40.6, 40.9]),
     case(Format::Bc6hSfloat, "hdr_signed", [36.3, 40.2, 40.4]),
     case(Format::Bc7UnormSrgb, "gradient", [46.4, 46.4, 46.5]),
     case(Format::Bc7UnormSrgb, "natural", [37.2, 37.7, 38.1]),

@@ -3,25 +3,14 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
 use marlin_cook_core::Ddc;
 use marlin_net::TcpStream;
 use marlin_store::{Connection, Refs, RemoteDdc, Server, Store, StoreClient, protocol};
-
-static NEXT: AtomicU32 = AtomicU32::new(0);
-
-fn dir(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!(
-        "marlin-store-{name}-{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
-    let _ = std::fs::remove_dir_all(&d);
-    d
-}
+use marlin_test_support::TempDir;
 
 /// A store serving on a free local port until dropped.
 struct Running {
@@ -62,7 +51,8 @@ impl Drop for Running {
 
 #[test]
 fn requests_and_responses() {
-    let root = dir("basic");
+    let tmp = TempDir::new("store-basic");
+    let root = tmp.join("store");
     let server = Running::start(root.clone());
     let mut c = StoreClient::connect(server.addr).unwrap();
     assert_eq!(c.get(1).unwrap(), None);
@@ -94,12 +84,12 @@ fn requests_and_responses() {
     assert_eq!((entries, refs), (503, 0));
     assert!(bytes > 5_000_000);
     drop(server);
-    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]
 fn refs_compare_and_swap_and_persist() {
-    let root = dir("refs");
+    let tmp = TempDir::new("store-refs");
+    let root = tmp.join("store");
     {
         let server = Running::start(root.clone());
         let mut c = StoreClient::connect(server.addr).unwrap();
@@ -129,12 +119,12 @@ fn refs_compare_and_swap_and_persist() {
     assert_eq!(c.ref_get("main").unwrap(), Some(11));
     assert_eq!(c.get(42).unwrap().unwrap(), b"kept");
     drop(server);
-    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]
 fn many_clients_at_once() {
-    let root = dir("concurrent");
+    let tmp = TempDir::new("store-concurrent");
+    let root = tmp.join("store");
     let server = Running::start(root.clone());
     let addr = server.addr;
     std::thread::scope(|s| {
@@ -159,12 +149,12 @@ fn many_clients_at_once() {
     let mut c = StoreClient::connect(addr).unwrap();
     assert_eq!(c.stats().unwrap().0, 1600);
     drop(server);
-    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]
 fn a_damaged_frame_closes_only_its_connection() {
-    let root = dir("damaged");
+    let tmp = TempDir::new("store-damaged");
+    let root = tmp.join("store");
     let server = Running::start(root.clone());
     let mut good = StoreClient::connect(server.addr).unwrap();
     good.put(1, b"fine").unwrap();
@@ -193,12 +183,12 @@ fn a_damaged_frame_closes_only_its_connection() {
 
     assert_eq!(good.get(1).unwrap().unwrap(), b"fine");
     drop(server);
-    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]
 fn remote_ddc_is_a_ddc() {
-    let root = dir("remote");
+    let tmp = TempDir::new("store-remote");
+    let root = tmp.join("store");
     let server = Running::start(root.clone());
     let ddc = RemoteDdc::connect(server.addr).unwrap();
     assert!(!ddc.contains(5));
@@ -213,5 +203,4 @@ fn remote_ddc_is_a_ddc() {
     drop(server);
     assert!(ddc2.get(5).is_err(), "no server: an error, not a hang");
     assert!(!ddc2.contains(5));
-    let _ = std::fs::remove_dir_all(root);
 }

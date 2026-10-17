@@ -1,39 +1,16 @@
 //! Vectors, quaternions, matrices and transforms, including the engine's conventions.
 
-use marlin_math::scalar::{FRAC_PI_2, PI};
+use marlin_math::scalar::FRAC_PI_2;
 use marlin_math::*;
 
 const EPS: f32 = 1e-5;
 
-struct Rng(u64);
-
-impl Rng {
-    fn f32(&mut self, lo: f32, hi: f32) -> f32 {
-        self.0 ^= self.0 << 13;
-        self.0 ^= self.0 >> 7;
-        self.0 ^= self.0 << 17;
-        lo + (hi - lo) * ((self.0 >> 40) as f32 / (1u64 << 24) as f32)
-    }
-
-    fn vec3(&mut self) -> Vec3 {
-        Vec3::new(
-            self.f32(-10.0, 10.0),
-            self.f32(-10.0, 10.0),
-            self.f32(-10.0, 10.0),
-        )
-    }
-
-    fn unit(&mut self) -> Vec3 {
-        loop {
-            if let Some(v) = self.vec3().try_normalize() {
-                return v;
-            }
-        }
-    }
-
-    fn quat(&mut self) -> Quat {
-        Quat::from_axis_angle(self.unit(), self.f32(-PI, PI))
-    }
+fn vec3(rng: &mut Rng) -> Vec3 {
+    Vec3::new(
+        rng.range_f32(-10.0, 10.0),
+        rng.range_f32(-10.0, 10.0),
+        rng.range_f32(-10.0, 10.0),
+    )
 }
 
 #[test]
@@ -78,9 +55,9 @@ fn vector_ops() {
     );
     assert!((Vec3::X.angle_between(Vec3::Y) - FRAC_PI_2).abs() < EPS);
 
-    let mut rng = Rng(42);
+    let mut rng = Rng::new(42);
     for _ in 0..1000 {
-        let n = rng.unit();
+        let n = rng.unit_vec3();
         let o = n.any_orthonormal_vector();
         assert!(o.is_normalized() && n.dot(o).abs() < EPS);
     }
@@ -100,9 +77,9 @@ fn vector_ops() {
 
 #[test]
 fn quaternion_algebra() {
-    let mut rng = Rng(7);
+    let mut rng = Rng::new(7);
     for _ in 0..1000 {
-        let (a, b, v) = (rng.quat(), rng.quat(), rng.vec3());
+        let (a, b, v) = (rng.rotation(), rng.rotation(), vec3(&mut rng));
         // Composition matches applying in sequence, and the matrix form agrees.
         assert!(((a * b) * v).abs_diff_eq(a * (b * v), 1e-3));
         assert!((Mat3::from_quat(a) * v).abs_diff_eq(a * v, 1e-3));
@@ -113,7 +90,7 @@ fn quaternion_algebra() {
         let (axis, angle) = a.to_axis_angle();
         assert!(Quat::from_axis_angle(axis, angle).rotation_eq(a, 1e-4));
 
-        let (from, to) = (rng.unit(), rng.unit());
+        let (from, to) = (rng.unit_vec3(), rng.unit_vec3());
         assert!((Quat::from_rotation_arc(from, to) * from).abs_diff_eq(to, 1e-4));
     }
     // Opposite vectors take the fallback path.
@@ -124,9 +101,13 @@ fn quaternion_algebra() {
 
 #[test]
 fn euler_yxz_round_trip() {
-    let mut rng = Rng(11);
+    let mut rng = Rng::new(11);
     for _ in 0..1000 {
-        let (yaw, pitch, roll) = (rng.f32(-3.0, 3.0), rng.f32(-1.5, 1.5), rng.f32(-3.0, 3.0));
+        let (yaw, pitch, roll) = (
+            rng.range_f32(-3.0, 3.0),
+            rng.range_f32(-1.5, 1.5),
+            rng.range_f32(-3.0, 3.0),
+        );
         let q = Quat::from_euler_yxz(yaw, pitch, roll);
         let (y2, p2, r2) = q.to_euler_yxz();
         assert!(Quat::from_euler_yxz(y2, p2, r2).rotation_eq(q, 1e-4));
@@ -170,9 +151,9 @@ fn det_f64(m: &[f64], n: usize) -> f64 {
 
 #[test]
 fn matrix_inverse_and_determinant() {
-    let mut rng = Rng(3);
+    let mut rng = Rng::new(3);
     for _ in 0..1000 {
-        let m = Mat4::from_cols_array(&core::array::from_fn(|_| rng.f32(-5.0, 5.0)));
+        let m = Mat4::from_cols_array(&core::array::from_fn(|_| rng.range_f32(-5.0, 5.0)));
         if m.determinant().abs() < 1e-2 {
             continue;
         }
@@ -202,10 +183,14 @@ fn matrix_inverse_and_determinant() {
 
 #[test]
 fn trs_compose_and_decompose() {
-    let mut rng = Rng(5);
+    let mut rng = Rng::new(5);
     for _ in 0..1000 {
-        let s = Vec3::new(rng.f32(0.1, 4.0), rng.f32(0.1, 4.0), rng.f32(0.1, 4.0));
-        let (r, t, p) = (rng.quat(), rng.vec3(), rng.vec3());
+        let s = Vec3::new(
+            rng.range_f32(0.1, 4.0),
+            rng.range_f32(0.1, 4.0),
+            rng.range_f32(0.1, 4.0),
+        );
+        let (r, t, p) = (rng.rotation(), vec3(&mut rng), vec3(&mut rng));
         let m = Mat4::from_scale_rotation_translation(s, r, t);
         // Scale first, then rotate, then translate.
         assert!(m.transform_point3(p).abs_diff_eq(r * (p * s) + t, 1e-3));
@@ -221,7 +206,7 @@ fn trs_compose_and_decompose() {
         };
         assert!(tr.to_matrix().transform_point3(p).abs_diff_eq(tr * p, 1e-3));
         assert!((tr.inverse() * (tr * p)).abs_diff_eq(p, 1e-3));
-        let child = Transform::from_translation(rng.vec3());
+        let child = Transform::from_translation(vec3(&mut rng));
         assert!(((tr * child) * p).abs_diff_eq(tr * (child * p), 1e-3));
     }
 }

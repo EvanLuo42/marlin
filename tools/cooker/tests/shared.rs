@@ -2,7 +2,7 @@
 
 use std::io::Cursor;
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -11,6 +11,7 @@ use marlin_asset_db::{AssetDb, Options};
 use marlin_cook_core::{CookOptions, cook_all};
 use marlin_cooker::{engine_cookers, open_ddc};
 use marlin_store::{Server, Store};
+use marlin_test_support::TempDir;
 
 fn project(root: &Path) {
     let _ = std::fs::remove_dir_all(root);
@@ -59,7 +60,7 @@ fn cook(root: &Path, store: SocketAddr) -> (usize, usize, Vec<u128>) {
 
 #[test]
 fn the_second_machine_cooks_nothing() {
-    let base: PathBuf = std::env::temp_dir().join(format!("marlin-shared-{}", std::process::id()));
+    let base = TempDir::new("shared");
     let (one, two, store_dir) = (base.join("one"), base.join("two"), base.join("store"));
     project(&one);
     project(&two);
@@ -93,5 +94,4 @@ fn the_second_machine_cooks_nothing() {
 
     stop.store(true, Ordering::Relaxed);
     server.join().unwrap();
-    let _ = std::fs::remove_dir_all(base);
 }

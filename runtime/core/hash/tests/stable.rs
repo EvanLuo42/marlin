@@ -4,8 +4,10 @@ use marlin_hash::stable::fnv1a_64_extend;
 use marlin_hash::{
     fnv1a_32, fnv1a_64, xxh3_64, xxh3_64_with_seed, xxh3_128, xxh3_128_with_seed, xxh32, xxh64,
 };
+use marlin_math::Rng;
 
-/// xorshift64 bytes; the reference values below were produced from this exact buffer.
+/// xorshift64 bytes; the reference values below were produced from this exact buffer, so this
+/// keeps its own frozen generator instead of the engine's `marlin_math::Rng`.
 fn data(n: usize) -> Vec<u8> {
     let mut x: u64 = 0x9e37_79b9_7f4a_7c15;
     (0..n)
@@ -119,14 +121,9 @@ fn fnv_extend_is_concatenation() {
 fn ascii_lowercase_variant_equals_hashing_the_lowered_bytes() {
     // Every length through every code path, with upper, lower, digits and non-ASCII bytes.
     let alphabet = b"AZaz09_@[`{\x7f\x80\xc3\xa9QWERTYuiop";
-    let mut x: u64 = 1;
+    let mut rng = Rng::new(1);
     let bytes: Vec<u8> = (0..1500)
-        .map(|_| {
-            x = x
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
-            alphabet[(x >> 33) as usize % alphabet.len()]
-        })
+        .map(|_| alphabet[rng.below(alphabet.len())])
         .collect();
     for len in 0..=bytes.len() {
         let s = &bytes[..len];

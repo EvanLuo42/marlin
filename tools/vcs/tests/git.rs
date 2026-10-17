@@ -1,70 +1,37 @@
 //! The Git backend against real throwaway repositories.
 
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::path::Path;
 
+use marlin_test_support::{TempDir, git_init, git_output};
 use marlin_vcs::{Change, ChangeKind, Error, VcsKind, open};
 
-static NEXT: AtomicU32 = AtomicU32::new(0);
-
 struct Repo {
-    root: PathBuf,
+    root: TempDir,
 }
 
 impl Repo {
     fn new() -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "marlin-vcs-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        let repo = Self { root };
-        repo.git(&["init", "-q", "-b", "main"]);
-        // Local settings only: tests must not depend on the user's global configuration.
-        repo.git(&["config", "user.name", "Marlin Test"]);
-        repo.git(&["config", "user.email", "test@example.invalid"]);
-        repo.git(&["config", "commit.gpgsign", "false"]);
-        repo.git(&["config", "core.autocrlf", "false"]);
-        repo
+        let root = TempDir::new("vcs");
+        git_init(&root);
+        Self { root }
     }
 
     fn git(&self, args: &[&str]) -> std::process::Output {
-        Command::new("git")
-            .arg("-C")
-            .arg(&self.root)
-            .args(args)
-            .output()
-            .unwrap()
+        git_output(&self.root, args)
     }
 
     fn ok(&self, args: &[&str]) {
-        let out = self.git(args);
-        assert!(
-            out.status.success(),
-            "git {args:?}: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
+        marlin_test_support::git(&self.root, args);
     }
 
     fn write(&self, rel: &str, text: &str) {
-        let path = self.root.join(rel);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, text).unwrap();
+        self.root.write(rel, text);
     }
 
     fn commit(&self, message: &str) {
         self.ok(&["add", "-A"]);
         self.ok(&["commit", "-q", "-m", message]);
-    }
-}
-
-impl Drop for Repo {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.root);
     }
 }
 
@@ -260,9 +227,7 @@ fn outside_any_repository() {
         return;
     }
     assert!(matches!(open(dir), Err(Error::NotFound(_))));
-    let p4 = std::env::temp_dir().join(format!("marlin-vcs-p4-{}", std::process::id()));
-    fs::create_dir_all(&p4).unwrap();
-    fs::write(p4.join(".p4config"), "P4PORT=ssl:perforce:1666\n").unwrap();
+    let p4 = TempDir::new("vcs-p4");
+    p4.write(".p4config", "P4PORT=ssl:perforce:1666\n");
     assert!(matches!(open(&p4), Err(Error::Unsupported(_))));
-    fs::remove_dir_all(&p4).unwrap();
 }

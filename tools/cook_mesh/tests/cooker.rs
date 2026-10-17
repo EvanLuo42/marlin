@@ -3,8 +3,6 @@
 mod common;
 
 use std::fs;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, Ordering};
 
 use common::{Container, Gltf, sphere};
 use marlin_anim::asset::{AnimationClip, AnimationView, JointPose, Skeleton, SkeletonView};
@@ -16,32 +14,24 @@ use marlin_reflect::type_info;
 use marlin_render::asset::Mesh;
 use marlin_render::asset::mesh::{MeshFlags, MeshView, dequantize_position, read_attributes};
 use marlin_serial::cooked::CookedBuffer;
+use marlin_test_support::TempDir;
 
 /// A cooked unit: its asset path, bytes (page-aligned) and warnings.
 type CookedUnit = (String, CookedBuffer, Vec<String>);
 
-static NEXT: AtomicU32 = AtomicU32::new(0);
-
 struct Project {
-    root: PathBuf,
+    root: TempDir,
 }
 
 impl Project {
     fn new(name: &str) -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "marlin-cook-mesh-{name}-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        Self { root }
+        Self {
+            root: TempDir::new(&format!("cook-mesh-{name}")),
+        }
     }
 
     fn write(&self, rel: &str, bytes: &[u8]) {
-        let path = self.root.join(rel);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, bytes).unwrap();
+        self.root.write(rel, bytes);
     }
 
     fn cook(&self) -> Result<Vec<CookedUnit>, Vec<String>> {
@@ -74,12 +64,6 @@ impl Project {
                 )
             })
             .collect())
-    }
-}
-
-impl Drop for Project {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.root);
     }
 }
 

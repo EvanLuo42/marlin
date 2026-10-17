@@ -17,6 +17,7 @@ marlin-cooker.workspace = true
 marlin-store.workspace = true
 
 [dev-dependencies]
+marlin-test-support.workspace = true
 marlin-io.workspace = true
 marlin-reflect.workspace = true
 marlin-serial.workspace = true

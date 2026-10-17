@@ -1,6 +1,7 @@
 //! Frames cut out of a byte stream, however it arrives and whatever is damaged.
 
 use marlin_asset::wire::{FrameReader, MAX_PAYLOAD, Reader, WireError, Writer, encode, frame};
+use marlin_math::Rng;
 
 #[test]
 fn frames_arrive_in_any_pieces() {
@@ -45,11 +46,9 @@ fn damage_is_an_error_never_a_panic() {
     bad[8..12].copy_from_slice(&(MAX_PAYLOAD + 1).to_le_bytes());
     assert_eq!(read_one(&bad), Err(WireError::TooLarge(MAX_PAYLOAD + 1)));
 
-    let mut state = 0x2545_f491_4f6c_dd1du64;
+    let mut rng = Rng::new(0x2545_f491_4f6c_dd1d);
     for _ in 0..20_000 {
-        state ^= state << 13;
-        state ^= state >> 7;
-        state ^= state << 17;
+        let state = rng.next_u64();
         let mut bad = good.clone();
         bad[(state % good.len() as u64) as usize] ^= (state >> 40) as u8 | 1;
         let _ = read_one(&bad);

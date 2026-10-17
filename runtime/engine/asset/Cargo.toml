@@ -17,5 +17,8 @@ marlin-reflect.workspace = true
 marlin-serial.workspace = true
 marlin-sync.workspace = true
 
+[dev-dependencies]
+marlin-math.workspace = true
+
 [lints]
 workspace = true

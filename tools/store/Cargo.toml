@@ -17,6 +17,7 @@ marlin-hash.workspace = true
 marlin-net.workspace = true
 
 [dev-dependencies]
+marlin-test-support.workspace = true
 marlin-asset.workspace = true
 
 [lints]

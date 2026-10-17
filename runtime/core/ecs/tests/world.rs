@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use marlin_ecs::{Entity, World};
+use marlin_math::Rng;
 use marlin_reflect::Reflect;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -183,13 +184,8 @@ type Expected = (Option<Pos>, Option<Vel>, Option<Name>);
 fn random_operations_match_a_model() {
     let mut world = World::new();
     let mut model: HashMap<Entity, Expected> = HashMap::new();
-    let mut rng = 0x2545_F491_4F6C_DD1Du64;
-    let mut next = |n: u64| {
-        rng ^= rng << 13;
-        rng ^= rng >> 7;
-        rng ^= rng << 17;
-        rng % n
-    };
+    let mut rng = Rng::new(0x2545_F491_4F6C_DD1D);
+    let mut next = |n: u64| rng.next_u64() % n;
     for step in 0..20_000 {
         let alive: Vec<Entity> = model.keys().copied().collect();
         let pick = |r: u64| alive[(r as usize) % alive.len()];

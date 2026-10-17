@@ -2,25 +2,14 @@
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::sync::atomic::{AtomicU32, Ordering};
 
 use marlin_cook_core::{Ddc, LocalDdc};
-
-static NEXT: AtomicU32 = AtomicU32::new(0);
-
-fn dir(name: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "marlin-ddc-{name}-{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
-    let _ = fs::remove_dir_all(&dir);
-    dir
-}
+use marlin_test_support::TempDir;
 
 #[test]
 fn stores_and_reopens() {
-    let d = dir("reopen");
+    let tmp = TempDir::new("ddc-reopen");
+    let d = tmp.join("ddc");
     {
         let ddc = LocalDdc::open(&d).unwrap();
         assert!(ddc.get(1).unwrap().is_none());
@@ -34,12 +23,12 @@ fn stores_and_reopens() {
     assert_eq!(ddc.len(), 2);
     assert_eq!(ddc.get(2).unwrap().unwrap().len(), 100_000);
     assert!(ddc.contains(1));
-    fs::remove_dir_all(&d).unwrap();
 }
 
 #[test]
 fn a_torn_tail_is_dropped_on_open() {
-    let d = dir("torn");
+    let tmp = TempDir::new("ddc-torn");
+    let d = tmp.join("ddc");
     {
         let ddc = LocalDdc::open(&d).unwrap();
         ddc.put(1, b"whole").unwrap();
@@ -61,12 +50,12 @@ fn a_torn_tail_is_dropped_on_open() {
     drop(ddc);
     let ddc = LocalDdc::open(&d).unwrap();
     assert_eq!(ddc.get(3).unwrap().unwrap(), b"after");
-    fs::remove_dir_all(&d).unwrap();
 }
 
 #[test]
 fn damaged_data_is_a_miss() {
-    let d = dir("damaged");
+    let tmp = TempDir::new("ddc-damaged");
+    let d = tmp.join("ddc");
     {
         let ddc = LocalDdc::open(&d).unwrap();
         ddc.put(9, b"precious data").unwrap();
@@ -82,12 +71,12 @@ fn damaged_data_is_a_miss() {
         !ddc.contains(9),
         "and the entry is forgotten, so it gets cooked again"
     );
-    fs::remove_dir_all(&d).unwrap();
 }
 
 #[test]
 fn concurrent_puts() {
-    let d = dir("concurrent");
+    let tmp = TempDir::new("ddc-concurrent");
+    let d = tmp.join("ddc");
     let ddc = LocalDdc::open(&d).unwrap();
     std::thread::scope(|s| {
         for t in 0..8u128 {
@@ -113,5 +102,4 @@ fn concurrent_puts() {
     }
     drop(ddc);
     assert_eq!(LocalDdc::open(&d).unwrap().len(), 1600);
-    fs::remove_dir_all(&d).unwrap();
 }

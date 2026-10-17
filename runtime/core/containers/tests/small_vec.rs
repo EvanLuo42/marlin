@@ -48,14 +48,14 @@ fn matches_vec_under_random_operations() {
         for step in 0..5_000 {
             match rng.below(9) {
                 0..=2 => {
-                    let x = rng.next();
+                    let x = rng.next_u64();
                     v.push(x);
                     model.push(x);
                 }
                 3 => assert_eq!(v.pop(), model.pop()),
                 4 => {
                     let i = rng.below(model.len() + 1);
-                    let x = rng.next();
+                    let x = rng.next_u64();
                     v.insert(i, x);
                     model.insert(i, x);
                 }
@@ -73,7 +73,7 @@ fn matches_vec_under_random_operations() {
                     model.truncate(n);
                 }
                 8 => {
-                    let m = rng.next() % 3;
+                    let m = rng.next_u64() % 3;
                     v.retain(|x| x % 3 != m);
                     model.retain(|x| x % 3 != m);
                     if step % 7 == 0 {

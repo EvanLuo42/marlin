@@ -18,6 +18,8 @@
 
 mod common;
 
+use std::sync::OnceLock;
+
 use common::Rng;
 use marlin_cook_texture::{
     self as ct, EncodeOptions, EncodedTexture, Format, Image, Interpolation, MipOptions, Quality,
@@ -59,14 +61,23 @@ fn rhi_format(format: Format) -> rhi::Format {
     }
 }
 
-fn device() -> Device {
-    Instance::new(&InstanceDesc { validation: true, ..InstanceDesc::default() })
+/// The hardware adapter with validation on, shared by every test in this binary and never
+/// dropped: tearing down `Device`s while other threads use the same adapter can deadlock the
+/// NVIDIA driver (see the RHI tests' `support::devices`).
+fn device() -> &'static Device {
+    static DEVICE: OnceLock<Device> = OnceLock::new();
+    DEVICE.get_or_init(|| {
+        Instance::new(&InstanceDesc {
+            validation: true,
+            ..InstanceDesc::default()
+        })
         .unwrap()
         .create_device(&DeviceDesc {
             adapter: AdapterPreference::HighPerformance,
             ..DeviceDesc::default()
         })
         .unwrap()
+    })
 }
 
 /// Every subresource of `texture` as the GPU reads it through a view of the linear format.
@@ -343,7 +354,7 @@ fn conformance(format: Format, sources: [Image; 2], modes: &[(u32, Image, Encode
             .map(|image| ct::generate_mips(image, &mip_options))
             .collect::<Vec<_>>();
         let texture = ct::encode_texture(&layers, format, &EncodeOptions::with_quality(quality));
-        check(&device, &texture, &mut report, &format!("mips {quality:?}"));
+        check(device, &texture, &mut report, &format!("mips {quality:?}"));
     }
 
     if !modes.is_empty() {
@@ -358,12 +369,14 @@ fn conformance(format: Format, sources: [Image; 2], modes: &[(u32, Image, Encode
                 .count();
             assert!(used > 0, "{format:?}: no block uses forced mode {mode}");
         }
-        check(&device, &texture, &mut report, "forced modes");
+        check(device, &texture, &mut report, "forced modes");
     }
 
     let mut rng = Rng::new(format as u64 + 1);
-    let random = from_blocks(format, 128, 64, rng.bytes(format.surface_size(128, 64)));
-    check(&device, &random, &mut report, "random blocks");
+    let mut blocks = vec![0; format.surface_size(128, 64)];
+    rng.fill_bytes(&mut blocks);
+    let random = from_blocks(format, 128, 64, blocks);
+    check(device, &random, &mut report, "random blocks");
 
     println!(
         "{format:?}: {} texels, {} mismatches; spec-exact decoder within {:.2} / 255 of the GPU",

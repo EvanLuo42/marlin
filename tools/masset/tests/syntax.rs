@@ -4,6 +4,7 @@ use marlin_asset::Uuid;
 use marlin_masset::{
     Document, FileRef, LinkRef, Node, NodeKind, case, inline, parse, parse_value, write,
 };
+use marlin_math::Rng;
 
 const PROBE: &str = r#"!Version 1
 
@@ -309,13 +310,8 @@ fn deep_nesting_is_an_error_not_a_crash() {
 #[test]
 fn garbage_never_panics() {
     // Deterministic xorshift so failures reproduce.
-    let mut state = 0x2545_f491_4f6c_dd1du64;
-    let mut next = move || {
-        state ^= state << 13;
-        state ^= state >> 7;
-        state ^= state << 17;
-        state
-    };
+    let mut rng = Rng::new(0x2545_f491_4f6c_dd1d);
+    let mut next = || rng.next_u64();
     let base = PROBE.as_bytes();
     for _ in 0..20_000 {
         let mut bytes = base.to_vec();

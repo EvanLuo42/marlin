@@ -3,30 +3,7 @@
 
 use marlin_cook_texture::{ColorSpace, Image, Usage};
 
-/// xorshift64*: deterministic noise without a dependency.
-pub struct Rng(u64);
-
-impl Rng {
-    pub fn new(seed: u64) -> Self {
-        Self(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1)
-    }
-
-    pub fn next_u64(&mut self) -> u64 {
-        self.0 ^= self.0 >> 12;
-        self.0 ^= self.0 << 25;
-        self.0 ^= self.0 >> 27;
-        self.0.wrapping_mul(0x2545_f491_4f6c_dd1d)
-    }
-
-    /// Uniform in [0, 1).
-    pub fn unit(&mut self) -> f32 {
-        (self.next_u64() >> 40) as f32 / (1u64 << 24) as f32
-    }
-
-    pub fn bytes(&mut self, len: usize) -> Vec<u8> {
-        (0..len).map(|_| self.next_u64() as u8).collect()
-    }
-}
+pub use marlin_math::Rng;
 
 fn u8_image(
     w: u32,
@@ -65,7 +42,7 @@ pub fn noise(w: u32, h: u32, seed: u64) -> Image {
 pub fn natural(w: u32, h: u32, seed: u64) -> Image {
     let mut rng = Rng::new(seed);
     let n: Vec<[f32; 3]> = (0..w * h)
-        .map(|_| core::array::from_fn(|_| rng.unit() - 0.5))
+        .map(|_| core::array::from_fn(|_| rng.f32() - 0.5))
         .collect();
     let texels = (0..h)
         .flat_map(|y| (0..w).map(move |x| (x, y)))
@@ -141,7 +118,7 @@ pub fn normal_map(w: u32, h: u32) -> Image {
 /// One channel (a height or roughness mask): waves, hard steps and grain.
 pub fn single_channel(w: u32, h: u32, seed: u64) -> Image {
     let mut rng = Rng::new(seed);
-    let grain: Vec<f32> = (0..w * h).map(|_| rng.unit() - 0.5).collect();
+    let grain: Vec<f32> = (0..w * h).map(|_| rng.f32() - 0.5).collect();
     let texels = (0..h)
         .flat_map(|y| (0..w).map(move |x| (x, y)))
         .map(|(x, y)| {
@@ -171,8 +148,8 @@ pub fn hdr(w: u32, h: u32, seed: u64) -> Image {
                 0.5 + 0.5 * (7.0 * u + 3.0 * v).cos(),
                 0.7 + 0.3 * (11.0 * v).cos(),
             ];
-            let spot = if rng.unit() < 0.01 { 50.0 } else { 1.0 };
-            let n = 1.0 + 0.05 * (rng.unit() - 0.5);
+            let spot = if rng.f32() < 0.01 { 50.0 } else { 1.0 };
+            let n = 1.0 + 0.05 * (rng.f32() - 0.5);
             [
                 exposure * tint[0] * spot * n,
                 exposure * tint[1] * spot * n,

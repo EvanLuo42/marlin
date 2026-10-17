@@ -12,5 +12,8 @@ mem-debug = []
 [dependencies]
 marlin-pal.workspace = true
 
+[dev-dependencies]
+marlin-math.workspace = true
+
 [lints]
 workspace = true

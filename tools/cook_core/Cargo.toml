@@ -16,6 +16,8 @@ marlin-reflect.workspace = true
 marlin-serial.workspace = true
 
 [dev-dependencies]
+marlin-math.workspace = true
+marlin-test-support.workspace = true
 # The package tests load through the runtime's IO queue and job system.
 marlin-io.workspace = true
 marlin-jobs.workspace = true

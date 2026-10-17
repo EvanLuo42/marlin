@@ -9,6 +9,7 @@ publish.workspace = true
 image.workspace = true
 marlin-asset.workspace = true
 marlin-cook-core.workspace = true
+marlin-math.workspace = true
 marlin-reflect.workspace = true
 marlin-render.workspace = true
 marlin-serial.workspace = true
@@ -21,6 +22,7 @@ xbox = []
 switch2 = []
 
 [dev-dependencies]
+marlin-test-support.workspace = true
 # The GPU conformance test uploads encoded textures, and the layout tests check the RHI's rules.
 marlin-rhi.workspace = true
 marlin-asset-db.workspace = true

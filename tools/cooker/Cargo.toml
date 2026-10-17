@@ -30,6 +30,7 @@ marlin-store.workspace = true
 marlin-vcs.workspace = true
 
 [dev-dependencies]
+marlin-test-support.workspace = true
 # Writes the test project's source image.
 image.workspace = true
 

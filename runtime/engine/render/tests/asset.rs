@@ -1,5 +1,6 @@
 //! The cooked mesh and texture encodings.
 
+use marlin_math::Rng;
 use marlin_render::asset::mesh::{
     basis, decode_tangent_frame, dequantize_position, encode_tangent_frame, f16_to_f32, f32_to_f16,
     position_scale, quantize_position,
@@ -26,13 +27,8 @@ fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
 
 #[test]
 fn basis_is_orthonormal() {
-    let mut state = 1u64;
-    let mut next = || {
-        state = state
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        (state >> 40) as f32 / (1u64 << 24) as f32 * 2.0 - 1.0
-    };
+    let mut rng = Rng::new(1);
+    let mut next = || rng.range_f32(-1.0, 1.0);
     for _ in 0..10_000 {
         let n = normalize([next(), next(), next()]);
         let (a, b) = basis(n);
@@ -46,13 +42,8 @@ fn basis_is_orthonormal() {
 
 #[test]
 fn tangent_frames_round_trip_within_a_fraction_of_a_degree() {
-    let mut state = 7u64;
-    let mut next = || {
-        state = state
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        (state >> 40) as f32 / (1u64 << 24) as f32 * 2.0 - 1.0
-    };
+    let mut rng = Rng::new(7);
+    let mut next = || rng.range_f32(-1.0, 1.0);
     let mut worst_normal = 1.0f32;
     let mut worst_tangent = 1.0f32;
     for i in 0..20_000 {

@@ -1,8 +1,6 @@
 //! Packages end to end: cook, pack, mount, load through the IO queue.
 
 use std::fs;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, Ordering};
 
 use marlin_asset::cooked::{BulkKind, Encoding, UnitView, unit_id};
 use marlin_asset::package::PackageError;
@@ -18,7 +16,9 @@ use marlin_cook_core::{
 };
 use marlin_io::IoQueue;
 use marlin_jobs::{Config, JobSystem};
+use marlin_math::Rng;
 use marlin_reflect::{Reflect, type_info};
+use marlin_test_support::TempDir;
 
 #[derive(Clone, PartialEq, Debug, Default, Reflect)]
 struct Thing {
@@ -95,34 +95,19 @@ fn loaders() -> Loaders {
     l
 }
 
-static NEXT: AtomicU32 = AtomicU32::new(0);
-
 struct Project {
-    root: PathBuf,
+    root: TempDir,
 }
 
 impl Project {
     fn new(name: &str) -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "marlin-package-{name}-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        Self { root }
+        Self {
+            root: TempDir::new(&format!("package-{name}")),
+        }
     }
 
     fn write(&self, rel: &str, bytes: &[u8]) {
-        let path = self.root.join(rel);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, bytes).unwrap();
-    }
-}
-
-impl Drop for Project {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.root);
+        self.root.write(rel, bytes);
     }
 }
 
@@ -140,15 +125,9 @@ fn pattern() -> Vec<u8> {
 
 /// 300 KiB of noise (stored, not compressed).
 fn noise() -> Vec<u8> {
-    let mut x = 0x9e37_79b9_7f4a_7c15u64;
-    (0..300 << 10)
-        .map(|_| {
-            x ^= x << 13;
-            x ^= x >> 7;
-            x ^= x << 17;
-            x as u8
-        })
-        .collect()
+    let mut bytes = vec![0; 300 << 10];
+    Rng::new(1).fill_bytes(&mut bytes);
+    bytes
 }
 
 /// a: A (1) → B; b: B (2); img: Picture (pattern) and Noise.
