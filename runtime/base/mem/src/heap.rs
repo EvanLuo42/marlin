@@ -8,21 +8,31 @@
 //! cache, the rest wait in a global list until another heap needing a segment *reclaims* them.
 //! Threads that allocate before their heap exists or after it is gone use a global heap under a
 //! lock.
+//!
+//! # Purging
+//!
+//! A page whose blocks have all been freed is *retired*: it goes back to its segment, unused but
+//! still committed, and joins its heap's retired queue. Pages retired longer than the
+//! [purge delay](set_purge_delay) ago are decommitted the next time the owning thread retires a
+//! page or needs a new one, so memory freed in a burst returns to the OS shortly after, while a
+//! page freed and needed again within the delay costs no system call. [`purge`] does it at once.
 
 use core::cell::Cell;
 use core::ffi::c_void;
 use core::ptr::{self, null_mut};
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use core::time::Duration;
 
 use marlin_pal::tls::Key;
-use marlin_pal::{Protection, vmem};
+use marlin_pal::{Protection, time, vmem};
 
 use crate::layout::{BIN_COUNT, MEDIUM_MAX, SMALL_MAX, bin, bin_size};
 use crate::list::intrusive_list;
 use crate::lock::Locked;
 use crate::segment::{
-    Block, Kind, Page, Segment, block_start, huge_alloc, huge_grow, page_collect, page_extend,
-    page_init, page_of, page_pop, segment_alloc, segment_of, segment_release, usable_size,
+    Block, Kind, Page, Segment, block_start, huge_alloc, huge_grow, page_collect, page_decommit,
+    page_extend, page_init, page_of, page_pop, segment_alloc, segment_of, segment_release,
+    set_next, usable_size,
 };
 
 intrusive_list!(PageQueue<Page> via next, prev);
@@ -40,6 +50,8 @@ pub(crate) struct Heap {
     /// Small and medium segments with unused pages.
     free_segments: [SegmentQueue; 2],
     owned: SegmentList,
+    /// Unused, committed pages of owned segments, oldest first.
+    retired: PageQueue,
     pool_next: *mut Heap,
 }
 
@@ -319,9 +331,20 @@ unsafe fn new_page(heap: *mut Heap, bin: usize) -> *mut Page {
             (*seg).in_free_queue = true;
         }
 
+        // A retired page saves committing one.
+        let unused = |i: &usize| !(*seg).pages[*i].in_use;
         let index = (0..(*seg).page_count)
-            .find(|&i| !(*seg).pages[i].in_use)
+            .find(|i| unused(i) && (*seg).pages[*i].retired)
+            .or_else(|| (0..(*seg).page_count).find(unused))
             .expect("segment in the free queue has no unused page");
+        let page = &raw mut (*seg).pages[index];
+        if (*page).retired {
+            (*page).retired = false;
+            (*heap).retired.remove(page);
+        }
+        if !(*heap).retired.first.is_null() {
+            purge_expired(heap, time::ticks());
+        }
         let page = page_init(seg, index, bin);
         if page.is_null() {
             return null_mut();
@@ -371,7 +394,7 @@ pub(crate) unsafe fn free(p: *mut u8) {
 unsafe fn free_local(heap: *mut Heap, page: *mut Page, block: *mut Block) {
     // SAFETY: owner-side page fields belong to the calling thread.
     unsafe {
-        (*block).next = (*page).local_free;
+        set_next(page, block, (*page).local_free);
         (*page).local_free = block;
         debug_assert!((*page).used > 0, "double free");
         (*page).used -= 1;
@@ -407,7 +430,7 @@ unsafe fn free_foreign(seg: *mut Segment, page: *mut Page, block: *mut Block) {
         let thread_free = &(*page).thread_free;
         let mut head = thread_free.load(Ordering::Relaxed);
         loop {
-            (*block).next = head;
+            set_next(page, block, head);
             match thread_free.compare_exchange_weak(
                 head,
                 block,
@@ -445,14 +468,177 @@ unsafe fn retire_page(heap: *mut Heap, page: *mut Page) {
             if (*seg).in_free_queue {
                 (*segments).remove(seg);
             }
+            forget_retired(heap, seg);
             (*heap).owned.remove(seg);
             (*seg).heap.store(null_mut(), Ordering::Relaxed);
             segment_release(seg);
-        } else if !(*seg).in_free_queue {
-            (*segments).push_front(seg);
-            (*seg).in_free_queue = true;
+        } else {
+            if !(*seg).in_free_queue {
+                (*segments).push_front(seg);
+                (*seg).in_free_queue = true;
+            }
+            let now = time::ticks();
+            (*page).retired = true;
+            (*page).retired_at = now;
+            (*heap).retired.push_back(page);
+            purge_expired(heap, now);
         }
     }
+}
+
+/// Takes the retired pages of `seg`, which is about to be released, off the retired queue.
+///
+/// # Safety
+/// The calling thread owns `heap`, which owns `seg`.
+unsafe fn forget_retired(heap: *mut Heap, seg: *mut Segment) {
+    // SAFETY: the segment's pages are owned by the calling thread.
+    unsafe {
+        for i in 0..(*seg).page_count {
+            let page = &raw mut (*seg).pages[i];
+            if (*page).retired {
+                (*page).retired = false;
+                (*heap).retired.remove(page);
+            }
+        }
+    }
+}
+
+/// Decommits the unused pages of `seg` still holding memory, when no heap's retired queue holds
+/// them: `seg` is being abandoned, or was until now.
+///
+/// # Safety
+/// The calling thread has exclusive use of `seg`, and no retired queue holds its pages.
+unsafe fn decommit_unused(seg: *mut Segment) {
+    // SAFETY: as above.
+    unsafe {
+        for i in 0..(*seg).page_count {
+            let page = &raw mut (*seg).pages[i];
+            (*page).retired = false;
+            if !(*page).in_use && (*page).committed {
+                page_decommit(seg, i);
+            }
+        }
+    }
+}
+
+// --- Purge ---
+
+/// The delay in ticks, or one of the two values below.
+static PURGE_DELAY: AtomicU64 = AtomicU64::new(DELAY_DEFAULT);
+const DELAY_NEVER: u64 = u64::MAX;
+/// [`DEFAULT_PURGE_DELAY`], not yet converted to ticks.
+const DELAY_DEFAULT: u64 = u64::MAX - 1;
+
+/// How long a retired page keeps its memory by default.
+pub const DEFAULT_PURGE_DELAY: Duration = Duration::from_millis(100);
+
+fn to_ticks(delay: Duration) -> u64 {
+    let ticks = delay.as_nanos() * time::ticks_per_second() as u128 / 1_000_000_000;
+    ticks.min(DELAY_DEFAULT as u128 - 1) as u64
+}
+
+fn purge_delay_ticks() -> u64 {
+    match PURGE_DELAY.load(Ordering::Relaxed) {
+        DELAY_DEFAULT => {
+            let ticks = to_ticks(DEFAULT_PURGE_DELAY);
+            let _ = PURGE_DELAY.compare_exchange(
+                DELAY_DEFAULT,
+                ticks,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            );
+            ticks
+        }
+        delay => delay,
+    }
+}
+
+/// Sets how long the memory of a page whose blocks were all freed stays committed, waiting to be
+/// reused, before it is returned to the OS: [`DEFAULT_PURGE_DELAY`] unless changed. `Some(ZERO)`
+/// decommits pages as soon as they empty; `None` never purges on its own, leaving it to
+/// [`purge`].
+///
+/// Expired pages are purged by the thread that owns them, the next time it empties a page or
+/// needs a new one; a thread that stops allocating keeps its pages until then.
+pub fn set_purge_delay(delay: Option<Duration>) {
+    PURGE_DELAY.store(delay.map_or(DELAY_NEVER, to_ticks), Ordering::Relaxed);
+}
+
+/// The current [purge delay](set_purge_delay), rounded to clock ticks.
+pub fn purge_delay() -> Option<Duration> {
+    match purge_delay_ticks() {
+        DELAY_NEVER => None,
+        ticks => {
+            let nanos = ticks as u128 * 1_000_000_000 / time::ticks_per_second() as u128;
+            Some(Duration::from_nanos(nanos as u64))
+        }
+    }
+}
+
+/// Decommits the pages retired at least the purge delay before `now`.
+///
+/// # Safety
+/// The calling thread owns `heap`.
+unsafe fn purge_expired(heap: *mut Heap, now: u64) {
+    let delay = purge_delay_ticks();
+    if delay == DELAY_NEVER {
+        return;
+    }
+    // SAFETY: the heap and its retired pages are owned by the calling thread.
+    unsafe {
+        loop {
+            let page = (*heap).retired.first;
+            if page.is_null() || now.wrapping_sub((*page).retired_at) < delay {
+                break;
+            }
+            purge_page(heap, page);
+        }
+    }
+}
+
+/// # Safety
+/// The calling thread owns `heap`, and `page` is in its retired queue.
+unsafe fn purge_page(heap: *mut Heap, page: *mut Page) {
+    // SAFETY: the page is unused and owned by the calling thread.
+    unsafe {
+        (*heap).retired.remove(page);
+        (*page).retired = false;
+        let seg = segment_of(page);
+        let index = (page.addr() - (&raw const (*seg).pages).addr()) / size_of::<Page>();
+        page_decommit(seg, index);
+    }
+}
+
+/// # Safety
+/// The calling thread owns `heap`.
+unsafe fn purge_all(heap: *mut Heap) {
+    // SAFETY: as above.
+    unsafe {
+        while !(*heap).retired.first.is_null() {
+            purge_page(heap, (*heap).retired.first);
+        }
+    }
+}
+
+/// Returns memory to the OS now: decommits the pages the calling thread's heap has retired, and
+/// releases the cached empty segments.
+///
+/// Other threads' retired pages are purged by those threads (see [`set_purge_delay`]); abandoned
+/// segments by [`collect_abandoned`].
+pub fn purge() {
+    let state = thread_heap();
+    // SAFETY: a thread heap is only used by its thread; the global heap under its lock.
+    unsafe {
+        if state > EXITED {
+            purge_all(state as *mut Heap);
+        }
+        GLOBAL_HEAP.with(|heap| {
+            if !heap.is_null() {
+                purge_all(*heap);
+            }
+        });
+    }
+    crate::segment::release_cache();
 }
 
 // --- Thread lifecycle ---
@@ -523,6 +709,8 @@ unsafe fn abandon(heap: *mut Heap) {
             if (*seg).used_pages == 0 {
                 segment_release(seg);
             } else {
+                // Nobody would purge them while abandoned.
+                decommit_unused(seg);
                 ABANDONED.with(|list| list.push_front(seg));
                 ABANDONED_COUNT.fetch_add(1, Ordering::Relaxed);
             }
@@ -574,9 +762,12 @@ unsafe fn reclaim_abandoned(heap: *mut Heap, kind: Kind) -> bool {
             (*heap).owned.remove(seg);
             (*seg).heap.store(null_mut(), Ordering::Relaxed);
             segment_release(seg);
-        } else if (*seg).used_pages < (*seg).page_count {
-            (*heap).free_segments[kind as usize].push_front(seg);
-            (*seg).in_free_queue = true;
+        } else {
+            decommit_unused(seg);
+            if (*seg).used_pages < (*seg).page_count {
+                (*heap).free_segments[kind as usize].push_front(seg);
+                (*seg).in_free_queue = true;
+            }
         }
         true
     }
@@ -608,6 +799,7 @@ pub fn collect_abandoned() {
                 ABANDONED_COUNT.fetch_sub(1, Ordering::Relaxed);
                 segment_release(seg);
             } else {
+                decommit_unused(seg);
                 ABANDONED.with(|abandoned| abandoned.push_front(seg));
             }
             seg = next;
@@ -672,6 +864,7 @@ fn pool_alloc() -> *mut Heap {
             }
             (&raw mut (*heap).free_segments).write([const { SegmentQueue::new() }; 2]);
             (&raw mut (*heap).owned).write(SegmentList::new());
+            (&raw mut (*heap).retired).write(PageQueue::new());
             (&raw mut (*heap).pool_next).write(null_mut());
         }
         heap
@@ -695,7 +888,10 @@ unsafe fn pool_free(heap: *mut Heap) {
 pub struct HeapStats {
     /// Address space reserved for segments, including cached ones.
     pub reserved_bytes: usize,
-    /// Empty segments kept for reuse.
+    /// Memory committed in segments: headers, pages in use, retired pages not yet purged, and
+    /// huge allocations. On Linux, overcommit means some of it may not be backed yet.
+    pub committed_bytes: usize,
+    /// Empty segments kept for reuse (only their headers are committed).
     pub cached_segments: usize,
     /// Segments of exited threads still holding live blocks, waiting to be reclaimed.
     pub abandoned_segments: usize,
@@ -704,6 +900,7 @@ pub struct HeapStats {
 pub fn stats() -> HeapStats {
     HeapStats {
         reserved_bytes: crate::segment::RESERVED_BYTES.load(Ordering::Relaxed),
+        committed_bytes: crate::segment::COMMITTED_BYTES.load(Ordering::Relaxed),
         cached_segments: crate::segment::cached_segments(),
         abandoned_segments: ABANDONED_COUNT.load(Ordering::Relaxed),
     }

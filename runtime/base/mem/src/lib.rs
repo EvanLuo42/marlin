@@ -14,4 +14,7 @@ mod segment;
 
 pub use arena::{Arena, FrameArenas};
 pub use global::MarlinHeap;
-pub use heap::{HeapStats, collect_abandoned, good_size, stats};
+pub use heap::{
+    DEFAULT_PURGE_DELAY, HeapStats, collect_abandoned, good_size, purge, purge_delay,
+    set_purge_delay, stats,
+};
