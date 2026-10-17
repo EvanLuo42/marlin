@@ -1,14 +1,39 @@
-//! Startup sequence, entry-point macros and panic reporting.
+//! Startup sequence, entry-point macros, panic reporting and the process API.
 //!
 //! Library crates never define global items (`#[global_allocator]`, `#[panic_handler]`, the entry
 //! symbol); only binaries in `apps/` do. That is what lets the std editor and the no_std game link
 //! the same runtime. The game gets its items from [`game_entry!`]; std binaries call
 //! [`hosted::init`].
+//!
+//! [`start`] (and [`hosted::init`]) run the startup sequence: CPU feature check, the log clock,
+//! the crash handler where the platform has one ([`crash`]), and on POSIX one warm-up stack
+//! capture, so the first capture in a crash does not have to load the unwinder. Jobs and every
+//! subsystem above L0 start in `marlin-framework`.
+//!
+//! A no_std game built for Windows with `#![windows_subsystem = "windows"]` gets no console and
+//! still enters through the C `main` that [`game_entry!`] defines (rustc points the linker's entry
+//! at it), so no `WinMain` is needed.
 #![cfg_attr(not(test), no_std)]
 
+extern crate alloc;
+
 pub mod cpu;
+pub mod crash;
 pub mod hosted;
 pub mod panic;
+pub mod process;
+
+pub use process::args;
+
+/// Capability extensions of the PAL that belong to the process; each module exists only where
+/// the platform manifest lists the capability.
+pub mod ext {
+    /// Loading shared libraries at run time (desktop only).
+    #[cfg(marlin_ext = "dylib")]
+    pub mod dylib {
+        pub use marlin_pal::ext::dylib::{Dylib, Library};
+    }
+}
 
 #[doc(hidden)]
 pub mod __private {
@@ -26,17 +51,32 @@ unsafe extern "C" {}
 #[link(name = "c")]
 unsafe extern "C" {}
 
+/// The steps both entry paths share. Fails if the CPU lacks an instruction set the build needs.
+fn startup() -> Result<(), cpu::MissingFeatures> {
+    cpu::check()?;
+    marlin_diag::init();
+    crash::install_default();
+    // glibc loads libgcc_s for the first backtrace; do it now rather than inside a crash.
+    #[cfg(unix)]
+    {
+        let mut frame = [0usize; 1];
+        marlin_pal::debug::capture_stack(0, &mut frame);
+    }
+    Ok(())
+}
+
 /// Runs the engine startup sequence, then `main`. Returns the process exit code: 1, without
 /// running `main`, if the CPU lacks an instruction set the build requires.
 pub fn start(main: fn() -> i32) -> i32 {
-    if let Err(missing) = cpu::check() {
+    if let Err(missing) = startup() {
         use core::fmt::Write;
         let mut out = marlin_pal::debug::OutputBuffer::new();
         let _ = writeln!(out, "marlin: {missing}");
         return 1;
     }
-    // Startup order once the subsystems exist: pal → heap → diag → jobs.
-    main()
+    let code = main();
+    marlin_diag::flush();
+    code
 }
 
 /// Defines the global allocator, panic handler and C `main` symbol of a no_std game binary.
@@ -58,41 +98,13 @@ macro_rules! game_entry {
             $crate::panic::report(info)
         }
 
+        /// Arguments are read from the OS by `marlin_rt::process`, not from `argv`.
         #[unsafe(export_name = "main")]
         extern "C" fn __marlin_main(
-            argc: ::core::ffi::c_int,
-            argv: *const *const ::core::ffi::c_char,
+            _argc: ::core::ffi::c_int,
+            _argv: *const *const ::core::ffi::c_char,
         ) -> ::core::ffi::c_int {
-            // SAFETY: the C runtime passes `argc` valid strings that live as long as the process.
-            unsafe { $crate::set_args(argc, argv) };
             $crate::start($main)
         }
     };
-}
-
-static ARGC: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
-static ARGV: core::sync::atomic::AtomicPtr<*const core::ffi::c_char> =
-    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
-
-/// Records the process arguments for [`args`]. Called by [`game_entry!`].
-///
-/// # Safety
-/// `argv` points to `argc` NUL-terminated strings that stay valid and unchanged for the rest of
-/// the process.
-#[doc(hidden)]
-pub unsafe fn set_args(argc: core::ffi::c_int, argv: *const *const core::ffi::c_char) {
-    ARGV.store(argv.cast_mut(), core::sync::atomic::Ordering::Release);
-    ARGC.store(argc.max(0) as usize, core::sync::atomic::Ordering::Release);
-}
-
-/// The process arguments after the program name, as the C runtime passed them; ones that are
-/// not UTF-8 are left out. Empty in binaries that did not start through [`game_entry!`].
-pub fn args() -> impl Iterator<Item = &'static str> {
-    let argc = ARGC.load(core::sync::atomic::Ordering::Acquire);
-    let argv = ARGV.load(core::sync::atomic::Ordering::Acquire);
-    (1..argc).filter_map(move |i| {
-        // SAFETY: `set_args`' contract: `argc` valid, immortal strings.
-        let s = unsafe { core::ffi::CStr::from_ptr(*argv.add(i)) };
-        s.to_str().ok()
-    })
 }

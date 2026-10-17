@@ -18,4 +18,9 @@ fn main() {
         eprintln!("marlin-editor: {missing}");
         std::process::exit(1);
     }
+    // Panics go through marlin_diag (with a backtrace and a crash dump) instead of std's printer.
+    std::panic::set_hook(Box::new(|info| {
+        let message = info.payload_as_str().unwrap_or("Box<dyn Any>");
+        marlin_rt::hosted::report_panic(&message, info.location());
+    }));
 }

@@ -1,6 +1,6 @@
 [package]
 name = "marlin-rt"
-description = "Startup sequence, entry-point macros and panic reporting."
+description = "Startup sequence, entry-point macros, panic and crash reporting, and the process API."
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
