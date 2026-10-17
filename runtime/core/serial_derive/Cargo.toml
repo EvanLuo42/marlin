@@ -1,0 +1,21 @@
+[package]
+name = "marlin-serial-derive"
+description = "#[derive(Pod)] for marlin-serial cooked layouts."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2.workspace = true
+quote.workspace = true
+syn.workspace = true
+
+[dev-dependencies]
+# The compile-fail doc tests use the derive the way users do, through marlin-serial.
+marlin-serial.workspace = true
+
+[lints]
+workspace = true

@@ -690,9 +690,12 @@ dependencies = [
 name = "marlin-reflect"
 version = "0.1.0"
 dependencies = [
+ "marlin-containers",
  "marlin-hash",
+ "marlin-math",
  "marlin-reflect-derive",
  "marlin-std",
+ "marlin-text",
 ]
 
 [[package]]
@@ -700,6 +703,7 @@ name = "marlin-reflect-derive"
 version = "0.1.0"
 dependencies = [
  "marlin-hash",
+ "marlin-reflect",
  "proc-macro2",
  "quote",
  "syn 3.0.9",
@@ -747,8 +751,23 @@ dependencies = [
 name = "marlin-serial"
 version = "0.1.0"
 dependencies = [
+ "marlin-containers",
+ "marlin-hash",
  "marlin-math",
  "marlin-reflect",
+ "marlin-serial-derive",
+ "marlin-std",
+ "marlin-text",
+]
+
+[[package]]
+name = "marlin-serial-derive"
+version = "0.1.0"
+dependencies = [
+ "marlin-serial",
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
 ]
 
 [[package]]

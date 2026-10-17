@@ -11,22 +11,129 @@
 //! | type      | `default`              | default-construct with `Default::default()`, not field-wise  |
 //! | type      | `clone`                | clone with `Clone::clone`, not field-wise                    |
 //! | type      | `crate = "path"`       | path to `marlin_reflect` when it is re-exported              |
+//! | type      | `version = 3`          | data version, for serializers that migrate older data        |
+//! | type      | `impl_trait(A, B)`     | type data casting the value to `dyn A` / `dyn B`             |
+//! | type      | `data(expr)`           | any `'static + Send + Sync` value as static type data        |
 //! | variant   | `default`              | variant used by field-wise default construction (else first) |
 //! | variant   | `rename`, `hidden`, `tooltip`                                                          |||
 //! | field     | `rename = "n"`         | reflected (and serialized) name                              |
 //! | field     | `range = 0.0..=1.0`    | editor range; bounds may be omitted (`..10`, `0..`)          |
 //! | field     | `hidden`, `read_only`, `tooltip = "..."`                    | editor hints           |
+//! | field     | `units = "m"`, `step = 0.1`                                 | numeric widget hints   |
+//! | field     | `widget = Slider`      | `Slider`, `Drag`, `Color`, `HdrColor`, `Angle`, `Multiline`, `Asset`, `Path`, or a string for a custom widget |
 //! | field     | `transient`            | reflected but never serialized                               |
 //! | field     | `skip`                 | not reflected; built with `Default`, copied with `Clone`     |
+//! | all       | `display_name = "..."` | editor label (types, variants, fields)                       |
+//! | type, field | `category = "..."`   | editor group                                                 |
+//! | type, field | `meta(key = "value", ...)` | free-form string pairs                               |
+//! | all       | `doc = "..."`          | overrides the doc comment, which is captured otherwise       |
+//!
+//! `///` comments on types, variants and fields are captured as their `doc` attribute: one line
+//! per line, with the single leading space of `/// text` removed.
+//!
+//! # Generics
+//!
+//! Type parameters get a `T: Reflect` bound and are part of the type name (`Pair<u8, bool>`), as
+//! are const parameters (`Grid<4>`). Reflection only describes `'static` values, so a type with
+//! lifetime parameters gets `Reflect` for its `'static` instantiation only: `View<'a>` implements
+//! it as `View<'static>`, with every `'a` in field types and bounds read as `'static`. A field
+//! like `Cow<'a, str>` therefore works, while `&'a str` fails (`&'static str` is not `Reflect`).
+//!
+//! ```
+//! use std::borrow::Cow;
+//! use marlin_reflect::{Reflect, type_info};
+//!
+//! #[derive(Reflect)]
+//! struct Label<'a, const N: usize> {
+//!     text: Cow<'a, str>,
+//!     sizes: [u8; N],
+//! }
+//!
+//! let name = type_info::<Label<'static, 4>>().name.to_string();
+//! assert!(name.ends_with("Label<4>"));
+//! ```
+//!
+//! # Errors
+//!
+//! Unsupported input is rejected at compile time with a message naming the problem. These are
+//! the cases (each snippet must fail to compile):
+//!
+//! Unions, whose active field is unknown:
+//! ```compile_fail
+//! #[derive(marlin_reflect::Reflect)]
+//! union Bits { f: f32, u: u32 }
+//! ```
+//! Packed types, whose fields cannot be borrowed:
+//! ```compile_fail
+//! #[derive(marlin_reflect::Reflect)]
+//! #[repr(C, packed)]
+//! struct Packed { a: u8, b: u32 }
+//! ```
+//! Enums without variants:
+//! ```compile_fail
+//! #[derive(marlin_reflect::Reflect)]
+//! enum Never {}
+//! ```
+//! Two fields with the same reflected name:
+//! ```compile_fail
+//! #[derive(marlin_reflect::Reflect)]
+//! struct Twice { a: u8, #[reflect(rename = "a")] b: u8 }
+//! ```
+//! Unknown keys, and keys used in the wrong place:
+//! ```compile_fail
+//! #[derive(marlin_reflect::Reflect)]
+//! struct Typo { #[reflect(hiden)] a: u8 }
+//! ```
+//! ```compile_fail
+//! #[derive(marlin_reflect::Reflect)]
+//! #[reflect(units = "m")]
+//! struct OnType { a: f32 }
+//! ```
+//! An empty range, an unknown widget, a step that is not positive:
+//! ```compile_fail
+//! #[derive(marlin_reflect::Reflect)]
+//! struct Empty { #[reflect(range = 1..1)] a: u8 }
+//! ```
+//! ```compile_fail
+//! #[derive(marlin_reflect::Reflect)]
+//! struct Knob { #[reflect(widget = Knob)] a: f32 }
+//! ```
+//! ```compile_fail
+//! #[derive(marlin_reflect::Reflect)]
+//! struct Step { #[reflect(step = 0)] a: f32 }
+//! ```
+//! Attributes on a `skip` field, which is not reflected:
+//! ```compile_fail
+//! #[derive(marlin_reflect::Reflect)]
+//! struct Skipped { #[reflect(skip, rename = "b")] a: u8 }
+//! ```
+//! Two default variants:
+//! ```compile_fail
+//! #[derive(marlin_reflect::Reflect)]
+//! enum Two { #[reflect(default)] A, #[reflect(default)] B }
+//! ```
+//! A borrowed field, which is not `'static` even in the `'static` instantiation's terms:
+//! ```compile_fail
+//! #[derive(marlin_reflect::Reflect)]
+//! struct Borrowed<'a> { text: &'a str }
+//! ```
+//! A field type that is not `Reflect`:
+//! ```compile_fail
+//! struct Plain;
+//! #[derive(marlin_reflect::Reflect)]
+//! struct Holder { plain: Plain }
+//! ```
 
 use proc_macro::TokenStream;
-use proc_macro2::{Span, TokenStream as TokenStream2};
+use proc_macro2::{Span, TokenStream as TokenStream2, TokenTree};
 use quote::{format_ident, quote};
 use syn::parse::ParseStream;
+use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::{
-    Attribute, Data, DataEnum, DataStruct, DeriveInput, Error, Fields, Ident, LitFloat, LitInt,
-    LitStr, Member, Path, Result, Token, Type, parse_quote,
+    Attribute, Data, DataEnum, DataStruct, DeriveInput, Error, Expr, ExprLit, Fields, GenericParam,
+    Ident, Lit, LitFloat, LitInt, LitStr, Member, Meta, Path, Result, Token, WherePredicate,
+    parse_quote,
 };
 
 #[proc_macro_derive(Reflect, attributes(reflect))]
@@ -47,8 +154,27 @@ enum Site {
 impl Site {
     fn keys(self) -> &'static [&'static str] {
         match self {
-            Site::Type => &["name", "default", "clone", "crate"],
-            Site::Variant => &["rename", "hidden", "tooltip", "default"],
+            Site::Type => &[
+                "name",
+                "default",
+                "clone",
+                "crate",
+                "display_name",
+                "category",
+                "doc",
+                "meta",
+                "version",
+                "impl_trait",
+                "data",
+            ],
+            Site::Variant => &[
+                "rename",
+                "hidden",
+                "tooltip",
+                "default",
+                "display_name",
+                "doc",
+            ],
             Site::Field => &[
                 "rename",
                 "range",
@@ -57,6 +183,13 @@ impl Site {
                 "tooltip",
                 "transient",
                 "skip",
+                "display_name",
+                "category",
+                "doc",
+                "units",
+                "step",
+                "widget",
+                "meta",
             ],
         }
     }
@@ -68,6 +201,22 @@ impl Site {
             Site::Field => "field",
         }
     }
+}
+
+const WIDGETS: &[&str] = &[
+    "Slider",
+    "Drag",
+    "Color",
+    "HdrColor",
+    "Angle",
+    "Multiline",
+    "Asset",
+    "Path",
+];
+
+enum WidgetAttr {
+    Named(Ident),
+    Custom(LitStr),
 }
 
 #[derive(Default)]
@@ -83,6 +232,17 @@ struct Attrs {
     transient: bool,
     skip: bool,
     range: Option<RangeAttr>,
+    display_name: Option<LitStr>,
+    category: Option<LitStr>,
+    /// Explicit `doc = "..."`, else the captured doc comment.
+    doc: Option<String>,
+    units: Option<LitStr>,
+    step: Option<f64>,
+    widget: Option<WidgetAttr>,
+    meta: Vec<(String, LitStr)>,
+    version: Option<u32>,
+    impl_traits: Vec<Path>,
+    data: Vec<TokenStream2>,
 }
 
 struct RangeAttr {
@@ -91,8 +251,34 @@ struct RangeAttr {
     max_inclusive: bool,
 }
 
+/// The text of `///` comments (`#[doc = "..."]` attributes), one line per attribute with the
+/// leading space removed; `None` if there are none or all are blank.
+fn doc_comment(attrs: &[Attribute]) -> Option<String> {
+    let mut lines = Vec::new();
+    for attr in attrs.iter().filter(|a| a.path().is_ident("doc")) {
+        if let Meta::NameValue(nv) = &attr.meta
+            && let Expr::Lit(ExprLit {
+                lit: Lit::Str(s), ..
+            }) = &nv.value
+        {
+            let line = s.value();
+            for line in line.split('\n') {
+                lines.push(line.strip_prefix(' ').unwrap_or(line).trim_end().to_owned());
+            }
+        }
+    }
+    while lines.last().is_some_and(String::is_empty) {
+        lines.pop();
+    }
+    let start = lines.iter().position(|l| !l.is_empty())?;
+    Some(lines[start..].join("\n"))
+}
+
 fn parse_attrs(attrs: &[Attribute], site: Site) -> Result<Attrs> {
-    let mut out = Attrs::default();
+    let mut out = Attrs {
+        doc: doc_comment(attrs),
+        ..Attrs::default()
+    };
     for attr in attrs.iter().filter(|a| a.path().is_ident("reflect")) {
         attr.parse_nested_meta(|meta| {
             let key = meta
@@ -122,12 +308,74 @@ fn parse_attrs(attrs: &[Attribute], site: Site) -> Result<Attrs> {
                 "transient" => out.transient = true,
                 "skip" => out.skip = true,
                 "range" => out.range = Some(parse_range(meta.value()?)?),
+                "display_name" => out.display_name = Some(meta.value()?.parse()?),
+                "category" => out.category = Some(meta.value()?.parse()?),
+                "doc" => out.doc = Some(meta.value()?.parse::<LitStr>()?.value()),
+                "units" => out.units = Some(meta.value()?.parse()?),
+                "step" => {
+                    let input = meta.value()?;
+                    let span = input.span();
+                    match parse_bound(input)? {
+                        Some(step) if step > 0.0 => out.step = Some(step),
+                        _ => return Err(Error::new(span, "`step` must be a positive number")),
+                    }
+                }
+                "widget" => out.widget = Some(parse_widget(meta.value()?)?),
+                "meta" => meta.parse_nested_meta(|pair| {
+                    let key = pair
+                        .path
+                        .get_ident()
+                        .ok_or_else(|| pair.error("expected `key = \"value\"`"))?
+                        .to_string();
+                    let value: LitStr = pair.value()?.parse()?;
+                    out.meta.push((key, value));
+                    Ok(())
+                })?,
+                "version" => out.version = Some(meta.value()?.parse::<LitInt>()?.base10_parse()?),
+                "impl_trait" => {
+                    let content;
+                    syn::parenthesized!(content in meta.input);
+                    let paths = Punctuated::<Path, Token![,]>::parse_terminated(&content)?;
+                    out.impl_traits.extend(paths);
+                }
+                "data" => {
+                    let content;
+                    syn::parenthesized!(content in meta.input);
+                    let tokens: TokenStream2 = content.parse()?;
+                    if tokens.is_empty() {
+                        return Err(meta.error("expected `data(expression)`"));
+                    }
+                    out.data.push(tokens);
+                }
                 _ => unreachable!(),
             }
             Ok(())
         })?;
     }
     Ok(out)
+}
+
+fn parse_widget(input: ParseStream) -> Result<WidgetAttr> {
+    if input.peek(LitStr) {
+        return Ok(WidgetAttr::Custom(input.parse()?));
+    }
+    let ident: Ident = input.parse().map_err(|e| {
+        Error::new(
+            e.span(),
+            "expected a widget such as `Slider`, or a string naming a custom widget",
+        )
+    })?;
+    if !WIDGETS.contains(&ident.to_string().as_str()) {
+        return Err(Error::new(
+            ident.span(),
+            format_args!(
+                "unknown widget `{ident}`; expected one of: {}, or a string such as \
+                 `widget = \"knob\"` for a custom widget",
+                WIDGETS.join(", ")
+            ),
+        ));
+    }
+    Ok(WidgetAttr::Named(ident))
 }
 
 fn parse_range(input: ParseStream) -> Result<RangeAttr> {
@@ -181,16 +429,49 @@ fn name_hash(name: &str) -> u32 {
     (h ^ (h >> 32)) as u32
 }
 
+/// Replaces every lifetime in `lifetimes` with `'static`, so a type with lifetime parameters is
+/// described as its `'static` instantiation.
+fn staticize(tokens: TokenStream2, lifetimes: &[String]) -> TokenStream2 {
+    if lifetimes.is_empty() {
+        return tokens;
+    }
+    let mut out = TokenStream2::new();
+    let mut iter = tokens.into_iter().peekable();
+    while let Some(tree) = iter.next() {
+        match tree {
+            TokenTree::Punct(p) if p.as_char() == '\'' => {
+                if let Some(TokenTree::Ident(name)) = iter.peek()
+                    && lifetimes.contains(&name.to_string())
+                {
+                    iter.next();
+                    out.extend(quote!('static));
+                } else {
+                    out.extend([TokenTree::Punct(p)]);
+                }
+            }
+            TokenTree::Group(g) => {
+                let mut group =
+                    proc_macro2::Group::new(g.delimiter(), staticize(g.stream(), lifetimes));
+                group.set_span(g.span());
+                out.extend([TokenTree::Group(group)]);
+            }
+            other => out.extend([other]),
+        }
+    }
+    out
+}
+
 struct FieldDef {
     member: Member,
     binding: Ident,
-    ty: Type,
+    /// The field type with lifetimes made `'static`.
+    ty: TokenStream2,
     name: String,
     span: Span,
     attrs: Attrs,
 }
 
-fn collect_fields(fields: &Fields) -> Result<Vec<FieldDef>> {
+fn collect_fields(fields: &Fields, lifetimes: &[String]) -> Result<Vec<FieldDef>> {
     fields
         .iter()
         .enumerate()
@@ -205,16 +486,29 @@ fn collect_fields(fields: &Fields) -> Result<Vec<FieldDef>> {
                 (None, Some(ident)) => ident.to_string(),
                 (None, None) => i.to_string(),
             };
-            if attrs.skip && (attrs.rename.is_some() || attrs.range.is_some()) {
+            let reflect_only = attrs.rename.is_some()
+                || attrs.range.is_some()
+                || attrs.display_name.is_some()
+                || attrs.category.is_some()
+                || attrs.units.is_some()
+                || attrs.step.is_some()
+                || attrs.widget.is_some()
+                || !attrs.meta.is_empty()
+                || attrs.hidden
+                || attrs.read_only
+                || attrs.transient
+                || attrs.tooltip.is_some();
+            if attrs.skip && reflect_only {
                 return Err(Error::new(
                     f.span(),
                     "a `skip` field is not reflected; other reflect attributes have no effect",
                 ));
             }
+            let ty = &f.ty;
             Ok(FieldDef {
                 member,
                 binding: format_ident!("__f{}", i),
-                ty: f.ty.clone(),
+                ty: staticize(quote!(#ty), lifetimes),
                 name,
                 span: f.span(),
                 attrs,
@@ -241,22 +535,6 @@ fn check_names<'a>(items: impl Iterator<Item = (&'a str, Span)>, what: &str) -> 
             return Err(Error::new(span, msg));
         }
         seen.push((name, hash));
-    }
-    Ok(())
-}
-
-fn check_generics(input: &DeriveInput) -> Result<()> {
-    if let Some(lt) = input.generics.lifetimes().next() {
-        return Err(Error::new(
-            lt.span(),
-            "Reflect requires 'static types; lifetime parameters are not supported",
-        ));
-    }
-    if let Some(c) = input.generics.const_params().next() {
-        return Err(Error::new(
-            c.span(),
-            "Reflect does not support const generic parameters",
-        ));
     }
     Ok(())
 }
@@ -291,6 +569,13 @@ fn opt_str(lit: &Option<LitStr>) -> TokenStream2 {
     }
 }
 
+fn opt_string(text: &Option<String>) -> TokenStream2 {
+    match text {
+        Some(text) => quote!(::core::option::Option::Some(#text)),
+        None => quote!(::core::option::Option::None),
+    }
+}
+
 fn f64_tokens(value: Option<f64>, infinity: TokenStream2) -> TokenStream2 {
     match value {
         Some(v) => {
@@ -299,6 +584,11 @@ fn f64_tokens(value: Option<f64>, infinity: TokenStream2) -> TokenStream2 {
         }
         None => infinity,
     }
+}
+
+fn meta_tokens(meta: &[(String, LitStr)]) -> TokenStream2 {
+    let pairs = meta.iter().map(|(k, v)| quote!((#k, #v)));
+    quote!(&[#(#pairs),*])
 }
 
 fn field_info(krate: &Path, field: &FieldDef, in_struct: bool) -> TokenStream2 {
@@ -330,6 +620,27 @@ fn field_info(krate: &Path, field: &FieldDef, in_struct: bool) -> TokenStream2 {
         }
         None => quote!(::core::option::Option::None),
     };
+    let display_name = opt_str(&a.display_name);
+    let category = opt_str(&a.category);
+    let doc = opt_string(&a.doc);
+    let units = opt_str(&a.units);
+    let step = match a.step {
+        Some(step) => {
+            let lit = proc_macro2::Literal::f64_suffixed(step);
+            quote!(::core::option::Option::Some(#lit))
+        }
+        None => quote!(::core::option::Option::None),
+    };
+    let widget = match &a.widget {
+        Some(WidgetAttr::Named(ident)) => {
+            quote!(::core::option::Option::Some(#krate::Widget::#ident))
+        }
+        Some(WidgetAttr::Custom(name)) => {
+            quote!(::core::option::Option::Some(#krate::Widget::Custom(#name)))
+        }
+        None => quote!(::core::option::Option::None),
+    };
+    let meta = meta_tokens(&a.meta);
     quote! {
         #krate::FieldInfo {
             name: #name,
@@ -343,6 +654,13 @@ fn field_info(krate: &Path, field: &FieldDef, in_struct: bool) -> TokenStream2 {
                 transient: #transient,
                 tooltip: #tooltip,
                 range: #range,
+                display_name: #display_name,
+                category: #category,
+                doc: #doc,
+                units: #units,
+                step: #step,
+                widget: #widget,
+                meta: #meta,
             },
         }
     }
@@ -395,9 +713,89 @@ fn bind_all(fields: &[FieldDef]) -> TokenStream2 {
     quote!({ #(#binds),* })
 }
 
+/// `ConstArg` constructor for a const parameter of type `ty`.
+fn const_arg(krate: &Path, ident: &Ident, ty: &syn::Type) -> TokenStream2 {
+    let ty = quote!(#ty).to_string();
+    match ty.as_str() {
+        "bool" => quote!(#krate::ConstArg::Bool(#ident)),
+        "char" => quote!(#krate::ConstArg::Char(#ident)),
+        "i8" | "i16" | "i32" | "i64" | "i128" | "isize" => {
+            quote!(#krate::ConstArg::Int(#ident as i128))
+        }
+        _ => quote!(#krate::ConstArg::Uint(#ident as u128)),
+    }
+}
+
+/// The pieces of the impl header: generics without lifetimes (made `'static` throughout), the
+/// type with `'static` for each lifetime, and the where clause with `T: Reflect` per type
+/// parameter.
+struct ImplHeader {
+    impl_generics: TokenStream2,
+    ty_generics: TokenStream2,
+    where_clause: TokenStream2,
+    /// Generic arguments of the type name: type and const parameters in declaration order.
+    name_args: Vec<TokenStream2>,
+    lifetimes: Vec<String>,
+}
+
+fn impl_header(krate: &Path, input: &DeriveInput) -> ImplHeader {
+    let lifetimes: Vec<String> = input
+        .generics
+        .lifetimes()
+        .map(|l| l.lifetime.ident.to_string())
+        .collect();
+    let mut generics = input.generics.clone();
+    generics.params = generics
+        .params
+        .into_iter()
+        .filter(|p| !matches!(p, GenericParam::Lifetime(_)))
+        .collect();
+    let where_clause = generics.make_where_clause();
+    where_clause
+        .predicates
+        .retain(|p| !matches!(p, WherePredicate::Lifetime(_)));
+    for param in input.generics.type_params() {
+        let ident = &param.ident;
+        where_clause
+            .predicates
+            .push(parse_quote!(#ident: #krate::Reflect));
+    }
+    let (impl_generics, _, where_clause) = generics.split_for_impl();
+
+    let mut args = Vec::new();
+    let mut name_args = Vec::new();
+    for param in &input.generics.params {
+        match param {
+            GenericParam::Lifetime(_) => args.push(quote!('static)),
+            GenericParam::Type(t) => {
+                let ident = &t.ident;
+                args.push(quote!(#ident));
+                name_args.push(quote!(&<#ident as #krate::Reflect>::TYPE_NAME));
+            }
+            GenericParam::Const(c) => {
+                let ident = &c.ident;
+                args.push(quote!(#ident));
+                let arg = const_arg(krate, ident, &c.ty);
+                name_args.push(quote!(&#krate::TypeName::Const(#arg)));
+            }
+        }
+    }
+    let ty_generics = if args.is_empty() {
+        TokenStream2::new()
+    } else {
+        quote!(<#(#args),*>)
+    };
+    ImplHeader {
+        impl_generics: staticize(quote!(#impl_generics), &lifetimes),
+        ty_generics,
+        where_clause: staticize(quote!(#where_clause), &lifetimes),
+        name_args,
+        lifetimes,
+    }
+}
+
 fn expand(input: &DeriveInput) -> Result<TokenStream2> {
     let attrs = parse_attrs(&input.attrs, Site::Type)?;
-    check_generics(input)?;
     check_repr(input)?;
     let krate = attrs
         .krate
@@ -405,19 +803,14 @@ fn expand(input: &DeriveInput) -> Result<TokenStream2> {
         .unwrap_or_else(|| parse_quote!(::marlin_reflect));
 
     let ident = &input.ident;
-    let type_params: Vec<Ident> = input
-        .generics
-        .type_params()
-        .map(|p| p.ident.clone())
-        .collect();
-    let mut generics = input.generics.clone();
-    let where_clause = generics.make_where_clause();
-    for param in &type_params {
-        where_clause
-            .predicates
-            .push(parse_quote!(#param: #krate::Reflect));
-    }
-    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+    let header = impl_header(&krate, input);
+    let ImplHeader {
+        impl_generics,
+        ty_generics,
+        where_clause,
+        name_args,
+        lifetimes,
+    } = &header;
 
     let path = match &attrs.name {
         Some(name) => quote!(#name),
@@ -429,17 +822,19 @@ fn expand(input: &DeriveInput) -> Result<TokenStream2> {
     let type_name = quote! {
         #krate::TypeName::Path {
             path: #path,
-            args: &[#(&<#type_params as #krate::Reflect>::TYPE_NAME),*],
+            args: &[#(#name_args),*],
         }
     };
 
     let (kind, default_body, clone_body, extra) = match &input.data {
-        Data::Struct(data) => expand_struct(&krate, &attrs, data)?,
-        Data::Enum(data) => expand_enum(&krate, &attrs, input, data)?,
+        Data::Struct(data) => expand_struct(&krate, &attrs, data, lifetimes)?,
+        Data::Enum(data) => expand_enum(&krate, &attrs, input, data, lifetimes)?,
         Data::Union(data) => {
             return Err(Error::new(
                 data.union_token.span,
-                "Reflect cannot be derived for unions: the active field is not known",
+                "Reflect cannot be derived for unions: which field is active is not known; wrap \
+                 the union in an enum or a struct with an explicit tag, or implement `Reflect` \
+                 by hand as an opaque type",
             ));
         }
     };
@@ -453,13 +848,43 @@ fn expand(input: &DeriveInput) -> Result<TokenStream2> {
         }
     });
 
+    let type_attrs = {
+        let display_name = opt_str(&attrs.display_name);
+        let category = opt_str(&attrs.category);
+        let doc = opt_string(&attrs.doc);
+        let meta = meta_tokens(&attrs.meta);
+        let version = attrs.version.unwrap_or(0);
+        quote! {
+            #krate::TypeAttrs {
+                display_name: #display_name,
+                category: #category,
+                doc: #doc,
+                meta: #meta,
+                version: #version,
+            }
+        }
+    };
+    let casts = attrs.impl_traits.iter().map(|path| {
+        quote! {
+            &#krate::ReflectTrait::<dyn #path>::new(
+                |value| ::core::option::Option::Some(value.downcast::<Self>()?),
+                |value| ::core::option::Option::Some(value.downcast::<Self>()?),
+            )
+        }
+    });
+    let data = attrs.data.iter().map(|tokens| quote!(&(#tokens)));
+
     Ok(quote! {
         // SAFETY: the layout data comes from `size_of`, `align_of` and `offset_of!` on this very
         // type, and the field types are the declared ones.
         #[automatically_derived]
         unsafe impl #impl_generics #krate::Reflect for #ident #ty_generics #where_clause {
             const TYPE_NAME: #krate::TypeName = #type_name;
-            const TYPE_INFO: #krate::TypeInfo = #krate::TypeInfo::new::<Self>(#kind);
+            const TYPE_INFO: #krate::TypeInfo = #krate::TypeInfo {
+                attrs: #type_attrs,
+                data: &[#(#casts,)* #(#data,)*],
+                ..#krate::TypeInfo::new::<Self>(#kind)
+            };
 
             fn reflect_default() -> ::core::option::Option<Self> {
                 #default_body
@@ -480,8 +905,13 @@ type Expansion = (
     Option<TokenStream2>,
 );
 
-fn expand_struct(krate: &Path, attrs: &Attrs, data: &DataStruct) -> Result<Expansion> {
-    let fields = collect_fields(&data.fields)?;
+fn expand_struct(
+    krate: &Path,
+    attrs: &Attrs,
+    data: &DataStruct,
+    lifetimes: &[String],
+) -> Result<Expansion> {
+    let fields = collect_fields(&data.fields, lifetimes)?;
     let reflected: Vec<&FieldDef> = fields.iter().filter(|f| !f.attrs.skip).collect();
     check_names(reflected.iter().map(|f| (f.name.as_str(), f.span)), "field")?;
 
@@ -522,6 +952,7 @@ fn expand_enum(
     attrs: &Attrs,
     input: &DeriveInput,
     data: &DataEnum,
+    lifetimes: &[String],
 ) -> Result<Expansion> {
     if data.variants.is_empty() {
         return Err(Error::new(
@@ -541,7 +972,7 @@ fn expand_enum(
     let mut variants = Vec::new();
     for v in &data.variants {
         let attrs = parse_attrs(&v.attrs, Site::Variant)?;
-        let fields = collect_fields(&v.fields)?;
+        let fields = collect_fields(&v.fields, lifetimes)?;
         check_names(
             fields
                 .iter()
@@ -604,6 +1035,8 @@ fn expand_enum(
             .map(|f| field_info(krate, f, false));
         let hidden = v.attrs.hidden;
         let tooltip = opt_str(&v.attrs.tooltip);
+        let display_name = opt_str(&v.attrs.display_name);
+        let doc = opt_string(&v.attrs.doc);
         quote! {
             #krate::VariantInfo {
                 name: #name,
@@ -614,6 +1047,8 @@ fn expand_enum(
                 fields: &[#(#fields),*],
                 hidden: #hidden,
                 tooltip: #tooltip,
+                display_name: #display_name,
+                doc: #doc,
             }
         }
     });

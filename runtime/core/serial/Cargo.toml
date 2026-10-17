@@ -6,10 +6,15 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+marlin-hash.workspace = true
 marlin-reflect.workspace = true
+marlin-serial-derive.workspace = true
+marlin-std.workspace = true
 
 [dev-dependencies]
+marlin-containers.workspace = true
 marlin-math.workspace = true
+marlin-text.workspace = true
 
 [lints]
 workspace = true

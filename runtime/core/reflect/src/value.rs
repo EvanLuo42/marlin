@@ -114,6 +114,19 @@ impl Value {
         }
     }
 
+    /// Hands the value's storage to `f`, then frees it without dropping the value.
+    ///
+    /// # Safety
+    /// `f` must move the value out of the storage (read it and take ownership), so that it is
+    /// neither leaked nor dropped twice.
+    pub(crate) unsafe fn consume<R>(self, f: impl FnOnce(*mut u8) -> R) -> R {
+        let this = ManuallyDrop::new(self);
+        let result = f(this.ptr.as_ptr());
+        // SAFETY: `f` moved the value out, so the storage holds no live value.
+        unsafe { deallocate(this.ptr, this.info) };
+        result
+    }
+
     /// Moves the value to `dst` and frees the storage.
     ///
     /// # Safety

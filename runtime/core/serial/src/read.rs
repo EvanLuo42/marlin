@@ -2,13 +2,16 @@
 //! before anything is allocated, so corrupt input fails with an error instead of reading out of
 //! bounds or exhausting memory.
 
-use marlin_reflect::{Mut, Primitive, Reflect, TypeKind};
+use alloc::vec::Vec;
 
-use crate::Error;
+use marlin_reflect::{Mut, Primitive, Reflect, TypeKind, Value};
+
+use crate::migrate::{self, Migrate, OldFields};
 use crate::wire::{
-    self, ARRAY, BOOL, CHAR, ENUM, F32, F64, I8, I16, I32, I64, I128, Input, LIST, OPTION, STRING,
-    STRUCT, Sig, U8, U16, U32, U64, U128,
+    self, ARRAY, BOOL, CHAR, CUSTOM, ENUM, F32, F64, I8, I16, I32, I64, I128, Input, LIST, MAP,
+    OPTION, SET, STRING, STRUCT, Sig, TUPLE, U8, U16, U32, U64, U128,
 };
+use crate::{Error, custom};
 
 enum Scalar {
     Bool(bool),
@@ -110,16 +113,20 @@ fn store(dst: &mut Mut<'_>, p: Primitive, scalar: Scalar) -> Result<bool, Error>
     }
 }
 
+#[derive(Clone, Copy)]
 pub(crate) struct Reader {
     pub(crate) max_depth: u32,
 }
 
+/// Fields of the data that no field of the target took, kept for a migration.
+type Unmatched<'a> = Vec<(u32, &'a [u8])>;
+
 impl Reader {
     /// Reads a value written with `sig` into `dst`, which must be [`wire::compatible`] with it.
     /// `depth` is the remaining nesting budget.
-    pub(crate) fn decode(
+    pub(crate) fn decode<'a>(
         &self,
-        input: &mut Input<'_>,
+        input: &mut Input<'a>,
         mut dst: Mut<'_>,
         sig: Sig<'_>,
         depth: u32,
@@ -128,20 +135,30 @@ impl Reader {
             return Err(Error::TooDeep);
         };
         let info = dst.info();
-        // The order of these arms must match `wire::compatible`.
-        match (&info.kind, sig.kind()) {
+        // The order of these checks must match `wire::compatible`.
+        match &info.kind {
+            TypeKind::Pointer(_) => {
+                // A shared `Rc`/`Arc` is unshared (cloned) first, like `Rc::make_mut`.
+                let inner = dst.pointee_make_mut().ok_or(Error::Incompatible)?;
+                return self.decode(input, inner, sig, depth);
+            }
+            TypeKind::Opaque => return self.decode_opaque(input, dst, sig, depth),
+            _ => {}
+        }
+        let (version, plain) = sig.unversioned();
+        match (&info.kind, plain.kind()) {
             (TypeKind::Option(_), OPTION) => match input.u8()? {
                 0 => {
                     dst.set_none();
                 }
-                1 => self.decode_some(input, dst, sig.element(), depth)?,
+                1 => self.decode_some(input, dst, plain.element(), depth)?,
                 _ => return Err(Error::InvalidTag),
             },
             (TypeKind::Option(_), _) => self.decode_some(input, dst, sig, depth)?,
             (_, OPTION) => match input.u8()? {
                 // A field that stopped being optional keeps its default when it was `None`.
                 0 => {}
-                1 => self.decode(input, dst, sig.element(), depth)?,
+                1 => self.decode(input, dst, plain.element(), depth)?,
                 _ => return Err(Error::InvalidTag),
             },
             (TypeKind::Primitive(p), kind) => {
@@ -156,24 +173,29 @@ impl Reader {
                 let s = core::str::from_utf8(bytes).map_err(|_| Error::InvalidUtf8)?;
                 dst.set_str(s);
             }
-            (TypeKind::Struct(_), STRUCT) => self.decode_fields(input, dst, depth)?,
+            (TypeKind::Struct(_) | TypeKind::Tuple(_), STRUCT | TUPLE)
+            | (TypeKind::Enum(_), ENUM)
+                if migrate::migration(info, version).is_some() =>
+            {
+                self.decode_migrated(input, dst, version, depth)?;
+            }
+            (TypeKind::Struct(_) | TypeKind::Tuple(_), STRUCT | TUPLE) => {
+                self.decode_fields(input, dst, depth, None)?;
+            }
             (TypeKind::Enum(_), ENUM) => {
                 let hash = input.u32()?;
                 match info.variants().iter().position(|v| v.name_hash == hash) {
                     // A removed or renamed variant: skip its data and leave the value as it was.
                     None => input.skip_fields()?,
                     Some(index) => {
-                        let current = dst.as_ref().variant().map(|(i, _)| i);
-                        if current != Some(index) && !dst.set_variant(index) {
-                            return Err(Error::NoDefault);
-                        }
-                        self.decode_fields(input, dst, depth)?;
+                        select_variant(&mut dst, index)?;
+                        self.decode_fields(input, dst, depth, None)?;
                     }
                 }
             }
-            (TypeKind::List(_), LIST | ARRAY) => {
-                let element = sig.element();
-                let count = self.count(input, sig)?;
+            (TypeKind::List(_), LIST | ARRAY | SET) => {
+                let element = plain.element();
+                let count = self.count(input, plain)?;
                 // Rebuild from defaults so stale items never leak into the result.
                 if !(dst.resize(0) && dst.resize(count)) {
                     return Err(Error::NoDefault);
@@ -183,10 +205,10 @@ impl Reader {
                     self.decode(input, item, element, depth)?;
                 }
             }
-            (TypeKind::Array(a), LIST | ARRAY) => {
-                let element = sig.element();
+            (TypeKind::Array(a), LIST | ARRAY | SET) => {
+                let element = plain.element();
                 // Extra elements are dropped; missing ones keep their current value.
-                for i in 0..self.count(input, sig)? {
+                for i in 0..self.count(input, plain)? {
                     if i < a.len {
                         let item = dst.reborrow().index(i).ok_or(Error::Incompatible)?;
                         self.decode(input, item, element, depth)?;
@@ -195,18 +217,140 @@ impl Reader {
                     }
                 }
             }
+            (TypeKind::Set(_), LIST | ARRAY | SET) => self.decode_set(input, dst, plain, depth)?,
+            (TypeKind::Map(_), MAP) => self.decode_map(input, dst, plain, depth)?,
             _ => return Err(Error::Incompatible),
         }
         Ok(())
     }
 
+    // The helpers below are kept out of `decode`, which recurses once per nesting level: their
+    // locals would otherwise grow every level's stack frame.
+
+    #[inline(never)]
+    fn decode_set(
+        &self,
+        input: &mut Input<'_>,
+        mut dst: Mut<'_>,
+        sig: Sig<'_>,
+        depth: u32,
+    ) -> Result<(), Error> {
+        let TypeKind::Set(s) = &dst.info().kind else {
+            return Err(Error::Incompatible);
+        };
+        let element_info = (s.element)();
+        let element = sig.element();
+        let count = self.count(input, sig)?;
+        dst.clear();
+        for _ in 0..count {
+            let mut item = Value::default_of(element_info).ok_or(Error::NoDefault)?;
+            self.decode(input, item.as_mut(), element, depth)?;
+            dst.set_insert(item).map_err(|_| Error::Incompatible)?;
+        }
+        Ok(())
+    }
+
+    #[inline(never)]
+    fn decode_map(
+        &self,
+        input: &mut Input<'_>,
+        mut dst: Mut<'_>,
+        sig: Sig<'_>,
+        depth: u32,
+    ) -> Result<(), Error> {
+        let TypeKind::Map(m) = &dst.info().kind else {
+            return Err(Error::Incompatible);
+        };
+        let (key_info, value_info) = ((m.key)(), (m.value)());
+        let count = input.u32()? as usize;
+        input.check_count(count, sig.entry_min_size())?;
+        dst.clear();
+        for _ in 0..count {
+            let mut key = Value::default_of(key_info).ok_or(Error::NoDefault)?;
+            self.decode(input, key.as_mut(), sig.element(), depth)?;
+            let mut value = Value::default_of(value_info).ok_or(Error::NoDefault)?;
+            self.decode(input, value.as_mut(), sig.map_value(), depth)?;
+            dst.map_insert(key, value)
+                .map_err(|_| Error::Incompatible)?;
+        }
+        Ok(())
+    }
+
+    /// A struct, tuple or enum of an older data version: fields as usual, collecting the
+    /// unmatched ones, then the migration steps.
+    #[inline(never)]
+    fn decode_migrated(
+        &self,
+        input: &mut Input<'_>,
+        mut dst: Mut<'_>,
+        version: u32,
+        depth: u32,
+    ) -> Result<(), Error> {
+        let info = dst.info();
+        let migrate: &Migrate = migrate::migration(info, version).ok_or(Error::Incompatible)?;
+        let mut fields = Vec::new();
+        let mut variant = None;
+        if let TypeKind::Enum(_) = info.kind {
+            let hash = input.u32()?;
+            match info.variants().iter().position(|v| v.name_hash == hash) {
+                // A removed or renamed variant: the value keeps its variant, and the migration
+                // gets the old variant's fields.
+                None => {
+                    fields = raw_fields(input)?;
+                    variant = Some(hash);
+                }
+                Some(index) => {
+                    select_variant(&mut dst, index)?;
+                    self.decode_fields(input, dst.reborrow(), depth, Some(&mut fields))?;
+                }
+            }
+        } else {
+            self.decode_fields(input, dst.reborrow(), depth, Some(&mut fields))?;
+        }
+        let to = info.attrs.version;
+        let old = OldFields::new(fields, variant, *self, depth);
+        for from in version..to {
+            (migrate.migrate)(from, dst.reborrow(), &old)?;
+        }
+        Ok(())
+    }
+
+    /// An opaque value, through its custom serializer or its proxy.
+    #[inline(never)]
+    fn decode_opaque(
+        &self,
+        input: &mut Input<'_>,
+        dst: Mut<'_>,
+        sig: Sig<'_>,
+        depth: u32,
+    ) -> Result<(), Error> {
+        let info = dst.info();
+        if sig.kind() == CUSTOM {
+            let fns = custom::serial_fns(info).ok_or(Error::Incompatible)?;
+            let len = input.u32()? as usize;
+            return (fns.read)(dst, input.take(len)?);
+        }
+        let proxy = custom::proxy(info).ok_or(Error::Incompatible)?;
+        // Start from the current value, so a struct proxy keeps fields the data lacks.
+        let mut value = match proxy.to_proxy(dst.as_ref()) {
+            Some(value) => value,
+            None => Value::default_of((proxy.proxy)()).ok_or(Error::NoDefault)?,
+        };
+        self.decode(input, value.as_mut(), sig, depth)?;
+        if proxy.from_proxy(dst, value.as_ref()) {
+            Ok(())
+        } else {
+            Err(Error::Incompatible)
+        }
+    }
+
     fn count(&self, input: &mut Input<'_>, sig: Sig<'_>) -> Result<usize, Error> {
         let element = sig.element();
-        if sig.kind() == LIST {
+        if sig.kind() != ARRAY {
             return input.count(element);
         }
         let len = sig.array_len() as usize;
-        input.check_count(len, element)?;
+        input.check_count(len, element.min_size())?;
         Ok(len)
     }
 
@@ -224,13 +368,15 @@ impl Reader {
         self.decode(input, inner, sig, depth)
     }
 
-    /// Fields of a struct or of the active variant, matched by name hash. Unknown and transient
-    /// fields are skipped; fields missing from the input keep their value.
-    fn decode_fields(
+    /// Fields of a struct, tuple or the active variant, matched by name hash. Unknown and
+    /// transient fields are skipped (and collected in `unmatched`, if given, along with fields
+    /// whose type changed beyond conversion); fields missing from the input keep their value.
+    fn decode_fields<'a>(
         &self,
-        input: &mut Input<'_>,
+        input: &mut Input<'a>,
         mut dst: Mut<'_>,
         depth: u32,
+        mut unmatched: Option<&mut Unmatched<'a>>,
     ) -> Result<(), Error> {
         let count = input.u32()? as usize;
         if count.saturating_mul(8) > input.remaining() {
@@ -239,18 +385,25 @@ impl Reader {
         for _ in 0..count {
             let hash = input.u32()?;
             let len = input.u32()? as usize;
-            let mut body = Input::new(input.take(len)?);
+            let bytes = input.take(len)?;
+            let mut body = Input::new(bytes);
             let fields = dst.as_ref().fields_info();
             let Some(index) = fields
                 .iter()
                 .position(|f| f.name_hash == hash && !f.attrs.transient)
             else {
+                if let Some(unmatched) = unmatched.as_deref_mut() {
+                    unmatched.push((hash, bytes));
+                }
                 continue;
             };
             let sig = body.sig(self.max_depth)?;
             let (_, mut field) = dst.reborrow().field_at(index).ok_or(Error::Incompatible)?;
             // A field whose type changed beyond conversion keeps its value.
             if !wire::compatible(field.info(), sig) {
+                if let Some(unmatched) = unmatched.as_deref_mut() {
+                    unmatched.push((hash, bytes));
+                }
                 continue;
             }
             match self.decode(&mut body, field.reborrow(), sig, depth) {
@@ -267,4 +420,28 @@ impl Reader {
         }
         Ok(())
     }
+}
+
+/// Switches an enum to variant `index` unless it is already active.
+fn select_variant(dst: &mut Mut<'_>, index: usize) -> Result<(), Error> {
+    let current = dst.as_ref().variant().map(|(i, _)| i);
+    if current != Some(index) && !dst.set_variant(index) {
+        return Err(Error::NoDefault);
+    }
+    Ok(())
+}
+
+/// The fields of a struct body, unparsed: `(name hash, body)` each.
+fn raw_fields<'a>(input: &mut Input<'a>) -> Result<Unmatched<'a>, Error> {
+    let count = input.u32()? as usize;
+    if count.saturating_mul(8) > input.remaining() {
+        return Err(Error::Truncated);
+    }
+    let mut fields = Vec::with_capacity(count);
+    for _ in 0..count {
+        let hash = input.u32()?;
+        let len = input.u32()? as usize;
+        fields.push((hash, input.take(len)?));
+    }
+    Ok(fields)
 }

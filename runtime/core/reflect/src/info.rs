@@ -8,13 +8,20 @@
 //! The operations are `unsafe fn` pointers over untyped bytes; [`Ref`](crate::Ref),
 //! [`Mut`](crate::Mut) and [`Value`](crate::Value) wrap them in a safe API.
 
-use core::any::TypeId as RustTypeId;
+use alloc::vec::Vec;
+use core::any::{Any, TypeId as RustTypeId};
 use core::fmt;
 use core::mem::{align_of, size_of};
 use core::ptr;
 
 use crate::id::{TypeId, TypeName};
-use crate::traits::{Reflect, ReflectEnum, ReflectList, ReflectString};
+use crate::traits::{
+    Reflect, ReflectEnum, ReflectList, ReflectMap, ReflectPointer, ReflectSet, ReflectString,
+};
+
+/// One item of a type's static type data: any `'static` value, found again by its Rust type with
+/// [`TypeInfo::data`]. See [`crate::ReflectTrait`] and [`crate::ReflectProxy`].
+pub type TypeData = &'static (dyn Any + Send + Sync);
 
 /// Description of a reflected type.
 pub struct TypeInfo {
@@ -24,10 +31,18 @@ pub struct TypeInfo {
     pub align: usize,
     pub kind: TypeKind,
     pub ops: TypeOps,
+    /// Type-level hints from `#[reflect(...)]` and doc comments.
+    pub attrs: TypeAttrs,
+    /// Static type data, such as trait casts from `#[reflect(impl_trait(...))]` and values from
+    /// `#[reflect(data(...))]`. More can be attached at run time through the
+    /// [`registry`](crate::registry).
+    pub data: &'static [TypeData],
 }
 
 impl TypeInfo {
-    /// The description of `T` with the given kind; the rest comes from `T` itself.
+    /// The description of `T` with the given kind; the rest comes from `T` itself. No attributes
+    /// and no type data: set those with struct update syntax,
+    /// `TypeInfo { data: &[...], ..TypeInfo::new::<Self>(kind) }`.
     pub const fn new<T: Reflect>(kind: TypeKind) -> Self {
         Self {
             name: const { &T::TYPE_NAME },
@@ -36,7 +51,18 @@ impl TypeInfo {
             align: align_of::<T>(),
             kind,
             ops: TypeOps::of::<T>(),
+            attrs: TypeAttrs::NONE,
+            data: &[],
         }
+    }
+
+    /// The static type data of type `D`, if the type declares one. The registry's
+    /// [`data`](crate::Registry::data) also sees data attached at run time.
+    pub fn data<D: Any>(&self) -> Option<&'static D> {
+        self.data.iter().find_map(|d| {
+            let d: &'static (dyn Any + Send + Sync) = *d;
+            d.downcast_ref::<D>()
+        })
     }
 
     /// Whether this describes `T`. Compares the Rust type, not the stable id, so two types that
@@ -50,15 +76,16 @@ impl TypeInfo {
         (self.ops.rust_id)() == (other.ops.rust_id)()
     }
 
-    /// The fields of a struct; empty for other kinds.
+    /// The fields of a struct or tuple; empty for other kinds.
     pub fn fields(&self) -> &'static [FieldInfo] {
         match &self.kind {
             TypeKind::Struct(s) => s.fields,
+            TypeKind::Tuple(t) => t.fields,
             _ => &[],
         }
     }
 
-    /// A struct field by reflected name.
+    /// A struct (or tuple) field by reflected name.
     pub fn field(&self, name: &str) -> Option<&'static FieldInfo> {
         self.fields().iter().find(|f| f.name == name)
     }
@@ -79,6 +106,7 @@ impl fmt::Debug for TypeInfo {
             .field("id", &format_args!("{}", self.id))
             .field("size", &self.size)
             .field("align", &self.align)
+            .field("attrs", &self.attrs)
             .finish_non_exhaustive()
     }
 }
@@ -148,7 +176,17 @@ pub enum TypeKind {
     /// Resizable sequence such as `Vec<T>`.
     List(ListInfo),
     Option(OptionInfo),
-    /// Named and sized, but with no visible structure (handles, OS objects).
+    /// A tuple `(A, B, ...)`, with fields named `"0"`, `"1"`, ... at their offsets.
+    Tuple(TupleInfo),
+    /// Key-value map such as `HashMap<K, V>` or `BTreeMap<K, V>`.
+    Map(MapInfo),
+    /// Set such as `HashSet<T>` or `BTreeSet<T>`.
+    Set(SetInfo),
+    /// An owning pointer to one value: `Box<T>`, `Rc<T>`, `Arc<T>`.
+    Pointer(PointerInfo),
+    /// Named and sized, but with no visible structure (handles, OS objects). It may still carry a
+    /// [`ReflectProxy`](crate::ReflectProxy) through which it converts to and from a reflected
+    /// type by value.
     Opaque,
 }
 
@@ -221,6 +259,25 @@ pub struct FieldInfo {
     pub attrs: FieldAttrs,
 }
 
+impl FieldInfo {
+    /// A field with no attributes, for hand-written descriptions: `name` is also the Rust name.
+    pub const fn new(name: &'static str, offset: usize, ty: fn() -> &'static TypeInfo) -> Self {
+        Self {
+            name,
+            ident: name,
+            name_hash: crate::id::name_hash(name),
+            offset,
+            ty,
+            attrs: FieldAttrs::NONE,
+        }
+    }
+
+    /// The name to show in an editor: `display_name` if given, else the reflected name.
+    pub fn label(&self) -> &'static str {
+        self.attrs.display_name.unwrap_or(self.name)
+    }
+}
+
 impl fmt::Debug for FieldInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FieldInfo")
@@ -232,8 +289,8 @@ impl fmt::Debug for FieldInfo {
     }
 }
 
-/// Editor and serialization hints from `#[reflect(...)]`. Reflection itself does not enforce them:
-/// `Mut` can still write a `read_only` field or a value outside `range`.
+/// Editor and serialization hints from `#[reflect(...)]` and doc comments. Reflection itself does
+/// not enforce them: `Mut` can still write a `read_only` field or a value outside `range`.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FieldAttrs {
     pub hidden: bool,
@@ -242,6 +299,21 @@ pub struct FieldAttrs {
     pub transient: bool,
     pub tooltip: Option<&'static str>,
     pub range: Option<RangeAttr>,
+    /// Label for the editor instead of the field name.
+    pub display_name: Option<&'static str>,
+    /// Group in a property grid, such as `"Lighting"`.
+    pub category: Option<&'static str>,
+    /// The field's `///` comment (one line per line, the leading space removed), or an explicit
+    /// `#[reflect(doc = "...")]`.
+    pub doc: Option<&'static str>,
+    /// Unit of the value, such as `"m"`, `"deg"` or `"s"`.
+    pub units: Option<&'static str>,
+    /// Increment of a numeric widget.
+    pub step: Option<f64>,
+    /// Which editor widget to use, when the type alone does not say.
+    pub widget: Option<Widget>,
+    /// Free-form `#[reflect(meta(key = "value"))]` pairs, in declaration order.
+    pub meta: &'static [(&'static str, &'static str)],
 }
 
 impl FieldAttrs {
@@ -251,7 +323,78 @@ impl FieldAttrs {
         transient: false,
         tooltip: None,
         range: None,
+        display_name: None,
+        category: None,
+        doc: None,
+        units: None,
+        step: None,
+        widget: None,
+        meta: &[],
     };
+
+    /// The value of custom attribute `key`.
+    pub fn meta_value(&self, key: &str) -> Option<&'static str> {
+        meta_value(self.meta, key)
+    }
+}
+
+fn meta_value(meta: &'static [(&'static str, &'static str)], key: &str) -> Option<&'static str> {
+    meta.iter().find(|(k, _)| *k == key).map(|(_, v)| *v)
+}
+
+/// Type-level hints from `#[reflect(...)]` and doc comments.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TypeAttrs {
+    /// Name for the editor instead of the type name.
+    pub display_name: Option<&'static str>,
+    /// Group in type pickers, such as `"Rendering/Lights"`.
+    pub category: Option<&'static str>,
+    /// The type's `///` comment, or an explicit `#[reflect(doc = "...")]`.
+    pub doc: Option<&'static str>,
+    /// Free-form `#[reflect(meta(key = "value"))]` pairs.
+    pub meta: &'static [(&'static str, &'static str)],
+    /// Data version from `#[reflect(version = N)]`, for serializers that migrate old data. 0 means
+    /// unversioned.
+    pub version: u32,
+}
+
+impl TypeAttrs {
+    pub const NONE: Self = Self {
+        display_name: None,
+        category: None,
+        doc: None,
+        meta: &[],
+        version: 0,
+    };
+
+    /// The value of custom attribute `key`.
+    pub fn meta_value(&self, key: &str) -> Option<&'static str> {
+        meta_value(self.meta, key)
+    }
+}
+
+/// Editor widget hint from `#[reflect(widget = ...)]`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[non_exhaustive]
+pub enum Widget {
+    /// A slider over the field's `range`.
+    Slider,
+    /// A number dragged with the mouse.
+    Drag,
+    /// A color picker (an `[f32; 3]`/`[f32; 4]` or color type in linear sRGB).
+    Color,
+    /// A color picker allowing values above 1.
+    HdrColor,
+    /// An angle stored in radians, edited in degrees.
+    Angle,
+    /// A multi-line text box.
+    Multiline,
+    /// An asset picker.
+    Asset,
+    /// A file path picker.
+    Path,
+    /// A widget the editor registers under this name (`widget = "knob"`).
+    Custom(&'static str),
 }
 
 /// `#[reflect(range = min..max)]` or `min..=max`. A missing bound is infinite; `min` is always
@@ -343,6 +486,10 @@ pub struct VariantInfo {
     pub fields: &'static [FieldInfo],
     pub hidden: bool,
     pub tooltip: Option<&'static str>,
+    /// Label for the editor instead of the variant name.
+    pub display_name: Option<&'static str>,
+    /// The variant's `///` comment, or an explicit `#[reflect(doc = "...")]`.
+    pub doc: Option<&'static str>,
 }
 
 #[derive(Clone, Copy)]
@@ -519,4 +666,254 @@ unsafe fn string_as_str_op<S: ReflectString>(ptr: *const u8) -> *const str {
 unsafe fn string_set_op<S: ReflectString>(ptr: *mut u8, value: &str) {
     // SAFETY: the caller passes a live `S` it may mutate.
     unsafe { &mut *ptr.cast::<S>() }.set_str(value);
+}
+
+/// Fields `"0"`, `"1"`, ... of a tuple, with real offsets.
+#[derive(Clone, Copy, Debug)]
+pub struct TupleInfo {
+    pub fields: &'static [FieldInfo],
+}
+
+#[derive(Clone, Copy)]
+pub struct MapInfo {
+    pub key: fn() -> &'static TypeInfo,
+    pub value: fn() -> &'static TypeInfo,
+    /// Iteration order depends only on the keys (sorted maps), so equal maps iterate alike. Hash
+    /// maps iterate in an order that depends on their history.
+    pub ordered: bool,
+    pub len: unsafe fn(ptr: *const u8) -> usize,
+    /// Appends a `(key, value)` pointer pair per entry to `out`, in iteration order.
+    pub entries: unsafe fn(ptr: *const u8, out: &mut Vec<(*const u8, *const u8)>),
+    /// Same as `entries`, with writable values. Keys are never writable.
+    pub entries_mut: unsafe fn(ptr: *mut u8, out: &mut Vec<(*const u8, *mut u8)>),
+    /// The value for the key at `key` (a live value of the key type), or null.
+    pub get: unsafe fn(ptr: *const u8, key: *const u8) -> *const u8,
+    pub get_mut: unsafe fn(ptr: *mut u8, key: *const u8) -> *mut u8,
+    /// Moves a key and a value out of `key` and `value` (which hold no live value afterwards)
+    /// into the map, replacing the value of an equal key.
+    pub insert: unsafe fn(ptr: *mut u8, key: *mut u8, value: *mut u8),
+    /// Removes the entry for the key at `key`; false if there was none.
+    pub remove: unsafe fn(ptr: *mut u8, key: *const u8) -> bool,
+    pub clear: unsafe fn(ptr: *mut u8),
+}
+
+impl MapInfo {
+    pub const fn of<M: ReflectMap>() -> Self {
+        Self {
+            key: crate::type_info::<M::Key>,
+            value: crate::type_info::<M::Value>,
+            ordered: M::ORDERED,
+            len: map_len_op::<M>,
+            entries: map_entries_op::<M>,
+            entries_mut: map_entries_mut_op::<M>,
+            get: map_get_op::<M>,
+            get_mut: map_get_mut_op::<M>,
+            insert: map_insert_op::<M>,
+            remove: map_remove_op::<M>,
+            clear: map_clear_op::<M>,
+        }
+    }
+}
+
+impl fmt::Debug for MapInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MapInfo")
+            .field("key", &format_args!("{}", (self.key)().name))
+            .field("value", &format_args!("{}", (self.value)().name))
+            .field("ordered", &self.ordered)
+            .finish_non_exhaustive()
+    }
+}
+
+unsafe fn map_len_op<M: ReflectMap>(ptr: *const u8) -> usize {
+    // SAFETY: the caller passes a live `M`.
+    unsafe { &*ptr.cast::<M>() }.len()
+}
+
+unsafe fn map_entries_op<M: ReflectMap>(ptr: *const u8, out: &mut Vec<(*const u8, *const u8)>) {
+    // SAFETY: the caller passes a live `M`.
+    let map = unsafe { &*ptr.cast::<M>() };
+    out.reserve(map.len());
+    map.for_each(&mut |k, v| out.push((ptr::from_ref(k).cast(), ptr::from_ref(v).cast())));
+}
+
+unsafe fn map_entries_mut_op<M: ReflectMap>(ptr: *mut u8, out: &mut Vec<(*const u8, *mut u8)>) {
+    // SAFETY: the caller passes a live `M` it may mutate.
+    let map = unsafe { &mut *ptr.cast::<M>() };
+    out.reserve(map.len());
+    map.for_each_mut(&mut |k, v| out.push((ptr::from_ref(k).cast(), ptr::from_mut(v).cast())));
+}
+
+unsafe fn map_get_op<M: ReflectMap>(ptr: *const u8, key: *const u8) -> *const u8 {
+    // SAFETY: the caller passes a live `M` and a live key.
+    let (map, key) = unsafe { (&*ptr.cast::<M>(), &*key.cast::<M::Key>()) };
+    map.get(key)
+        .map_or(ptr::null(), |v| ptr::from_ref(v).cast())
+}
+
+unsafe fn map_get_mut_op<M: ReflectMap>(ptr: *mut u8, key: *const u8) -> *mut u8 {
+    // SAFETY: the caller passes a live `M` it may mutate and a live key outside it.
+    let (map, key) = unsafe { (&mut *ptr.cast::<M>(), &*key.cast::<M::Key>()) };
+    map.get_mut(key)
+        .map_or(ptr::null_mut(), |v| ptr::from_mut(v).cast())
+}
+
+unsafe fn map_insert_op<M: ReflectMap>(ptr: *mut u8, key: *mut u8, value: *mut u8) {
+    // SAFETY: the caller passes a live `M` it may mutate, and a key and a value it gives up.
+    unsafe {
+        let (key, value) = (key.cast::<M::Key>().read(), value.cast::<M::Value>().read());
+        (*ptr.cast::<M>()).insert(key, value);
+    }
+}
+
+unsafe fn map_remove_op<M: ReflectMap>(ptr: *mut u8, key: *const u8) -> bool {
+    // SAFETY: the caller passes a live `M` it may mutate and a live key outside it.
+    let (map, key) = unsafe { (&mut *ptr.cast::<M>(), &*key.cast::<M::Key>()) };
+    map.remove(key)
+}
+
+unsafe fn map_clear_op<M: ReflectMap>(ptr: *mut u8) {
+    // SAFETY: the caller passes a live `M` it may mutate.
+    unsafe { &mut *ptr.cast::<M>() }.clear();
+}
+
+#[derive(Clone, Copy)]
+pub struct SetInfo {
+    pub element: fn() -> &'static TypeInfo,
+    /// See [`MapInfo::ordered`].
+    pub ordered: bool,
+    pub len: unsafe fn(ptr: *const u8) -> usize,
+    /// Appends a pointer per element to `out`, in iteration order. Elements are never writable.
+    pub elements: unsafe fn(ptr: *const u8, out: &mut Vec<*const u8>),
+    /// Whether the set holds a value equal to the one at `element`.
+    pub contains: unsafe fn(ptr: *const u8, element: *const u8) -> bool,
+    /// Moves the value out of `element` (which holds no live value afterwards) into the set;
+    /// false if an equal value was already there (the new one is dropped).
+    pub insert: unsafe fn(ptr: *mut u8, element: *mut u8) -> bool,
+    /// Removes the value equal to the one at `element`; false if there was none.
+    pub remove: unsafe fn(ptr: *mut u8, element: *const u8) -> bool,
+    pub clear: unsafe fn(ptr: *mut u8),
+}
+
+impl SetInfo {
+    pub const fn of<S: ReflectSet>() -> Self {
+        Self {
+            element: crate::type_info::<S::Item>,
+            ordered: S::ORDERED,
+            len: set_len_op::<S>,
+            elements: set_elements_op::<S>,
+            contains: set_contains_op::<S>,
+            insert: set_insert_op::<S>,
+            remove: set_remove_op::<S>,
+            clear: set_clear_op::<S>,
+        }
+    }
+}
+
+impl fmt::Debug for SetInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SetInfo")
+            .field("element", &format_args!("{}", (self.element)().name))
+            .field("ordered", &self.ordered)
+            .finish_non_exhaustive()
+    }
+}
+
+unsafe fn set_len_op<S: ReflectSet>(ptr: *const u8) -> usize {
+    // SAFETY: the caller passes a live `S`.
+    unsafe { &*ptr.cast::<S>() }.len()
+}
+
+unsafe fn set_elements_op<S: ReflectSet>(ptr: *const u8, out: &mut Vec<*const u8>) {
+    // SAFETY: the caller passes a live `S`.
+    let set = unsafe { &*ptr.cast::<S>() };
+    out.reserve(set.len());
+    set.for_each(&mut |e| out.push(ptr::from_ref(e).cast()));
+}
+
+unsafe fn set_contains_op<S: ReflectSet>(ptr: *const u8, element: *const u8) -> bool {
+    // SAFETY: the caller passes a live `S` and a live element.
+    let (set, element) = unsafe { (&*ptr.cast::<S>(), &*element.cast::<S::Item>()) };
+    set.contains(element)
+}
+
+unsafe fn set_insert_op<S: ReflectSet>(ptr: *mut u8, element: *mut u8) -> bool {
+    // SAFETY: the caller passes a live `S` it may mutate and an element it gives up.
+    unsafe {
+        let element = element.cast::<S::Item>().read();
+        (*ptr.cast::<S>()).insert(element)
+    }
+}
+
+unsafe fn set_remove_op<S: ReflectSet>(ptr: *mut u8, element: *const u8) -> bool {
+    // SAFETY: the caller passes a live `S` it may mutate and a live element outside it.
+    let (set, element) = unsafe { (&mut *ptr.cast::<S>(), &*element.cast::<S::Item>()) };
+    set.remove(element)
+}
+
+unsafe fn set_clear_op<S: ReflectSet>(ptr: *mut u8) {
+    // SAFETY: the caller passes a live `S` it may mutate.
+    unsafe { &mut *ptr.cast::<S>() }.clear();
+}
+
+/// Which owning pointer a [`PointerInfo`] describes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PointerKind {
+    Box,
+    /// Shared: writable only while unique (no other `Rc` or `Weak` to the value).
+    Rc,
+    /// Shared: writable only while unique (no other `Arc` or `Weak` to the value).
+    Arc,
+}
+
+#[derive(Clone, Copy)]
+pub struct PointerInfo {
+    pub pointee: fn() -> &'static TypeInfo,
+    pub kind: PointerKind,
+    pub get: unsafe fn(ptr: *const u8) -> *const u8,
+    /// The pointee for writing, or null when it is shared.
+    pub get_mut: unsafe fn(ptr: *mut u8) -> *mut u8,
+    /// The pointee for writing, first replacing a shared pointee with an unshared clone of it
+    /// (like `Rc::make_mut`); null if it is shared and cannot be cloned.
+    pub make_mut: unsafe fn(ptr: *mut u8) -> *mut u8,
+}
+
+impl PointerInfo {
+    pub const fn of<P: ReflectPointer>() -> Self {
+        Self {
+            pointee: crate::type_info::<P::Pointee>,
+            kind: P::KIND,
+            get: pointer_get_op::<P>,
+            get_mut: pointer_get_mut_op::<P>,
+            make_mut: pointer_make_mut_op::<P>,
+        }
+    }
+}
+
+impl fmt::Debug for PointerInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PointerInfo")
+            .field("pointee", &format_args!("{}", (self.pointee)().name))
+            .field("kind", &self.kind)
+            .finish_non_exhaustive()
+    }
+}
+
+unsafe fn pointer_get_op<P: ReflectPointer>(ptr: *const u8) -> *const u8 {
+    // SAFETY: the caller passes a live `P`.
+    ptr::from_ref(unsafe { &*ptr.cast::<P>() }.pointee()).cast()
+}
+
+unsafe fn pointer_get_mut_op<P: ReflectPointer>(ptr: *mut u8) -> *mut u8 {
+    // SAFETY: the caller passes a live `P` it may mutate.
+    unsafe { &mut *ptr.cast::<P>() }
+        .pointee_mut()
+        .map_or(ptr::null_mut(), |v| ptr::from_mut(v).cast())
+}
+
+unsafe fn pointer_make_mut_op<P: ReflectPointer>(ptr: *mut u8) -> *mut u8 {
+    // SAFETY: the caller passes a live `P` it may mutate.
+    unsafe { &mut *ptr.cast::<P>() }
+        .make_mut()
+        .map_or(ptr::null_mut(), |v| ptr::from_mut(v).cast())
 }

@@ -34,7 +34,7 @@ pub struct Schema {
 pub(crate) fn path_of(info: &TypeInfo) -> &'static str {
     match info.name {
         TypeName::Path { path, .. } => path,
-        TypeName::Array { .. } => "",
+        TypeName::Array { .. } | TypeName::Tuple(_) | TypeName::Const(_) => "",
     }
 }
 
@@ -139,9 +139,13 @@ impl Schema {
                         pending.extend(v.fields.iter().map(|f| (f.ty)()));
                     }
                 }
+                TypeKind::Tuple(t) => pending.extend(t.fields.iter().map(|f| (f.ty)())),
                 TypeKind::Array(a) => pending.push((a.element)()),
                 TypeKind::List(l) => pending.push((l.element)()),
                 TypeKind::Option(o) => pending.push((o.some)()),
+                TypeKind::Map(m) => pending.extend([(m.key)(), (m.value)()]),
+                TypeKind::Set(s) => pending.push((s.element)()),
+                TypeKind::Pointer(p) => pending.push((p.pointee)()),
                 TypeKind::Primitive(_) | TypeKind::String(_) | TypeKind::Opaque => {}
             }
         }

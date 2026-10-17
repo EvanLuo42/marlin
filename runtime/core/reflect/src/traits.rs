@@ -1,12 +1,18 @@
 //! The reflection traits and their implementations for core and alloc types.
 
+use alloc::borrow::Cow;
+use alloc::boxed::Box;
+use alloc::collections::{BTreeMap, BTreeSet, VecDeque};
+use alloc::rc::Rc;
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::marker::PhantomData;
 
 use crate::id::TypeName;
 use crate::info::{
-    ArrayInfo, ListInfo, OptionInfo, Primitive, StringInfo, StructInfo, StructStyle, TypeInfo,
-    TypeKind,
+    ArrayInfo, FieldInfo, ListInfo, MapInfo, OptionInfo, PointerInfo, PointerKind, Primitive,
+    SetInfo, StringInfo, StructInfo, StructStyle, TupleInfo, TypeInfo, TypeKind,
 };
 
 /// A type with a static description.
@@ -74,6 +80,63 @@ pub trait ReflectList: Reflect {
 pub trait ReflectString: Reflect {
     fn as_str(&self) -> &str;
     fn set_str(&mut self, value: &str);
+}
+
+/// Typed access used to build [`MapInfo`](crate::MapInfo).
+pub trait ReflectMap: Reflect {
+    type Key: Reflect;
+    type Value: Reflect;
+    /// Whether iteration order depends only on the keys (sorted maps).
+    const ORDERED: bool;
+
+    fn len(&self) -> usize;
+
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    fn get(&self, key: &Self::Key) -> Option<&Self::Value>;
+    fn get_mut(&mut self, key: &Self::Key) -> Option<&mut Self::Value>;
+    /// Inserts, or replaces the value of an equal key.
+    fn insert(&mut self, key: Self::Key, value: Self::Value);
+    /// Removes the entry of `key`; false if there was none.
+    fn remove(&mut self, key: &Self::Key) -> bool;
+    fn clear(&mut self);
+    fn for_each(&self, f: &mut dyn FnMut(&Self::Key, &Self::Value));
+    fn for_each_mut(&mut self, f: &mut dyn FnMut(&Self::Key, &mut Self::Value));
+}
+
+/// Typed access used to build [`SetInfo`](crate::SetInfo).
+pub trait ReflectSet: Reflect {
+    type Item: Reflect;
+    /// Whether iteration order depends only on the elements (sorted sets).
+    const ORDERED: bool;
+
+    fn len(&self) -> usize;
+
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    fn contains(&self, item: &Self::Item) -> bool;
+    /// False (dropping `item`) if an equal item was already present.
+    fn insert(&mut self, item: Self::Item) -> bool;
+    fn remove(&mut self, item: &Self::Item) -> bool;
+    fn clear(&mut self);
+    fn for_each(&self, f: &mut dyn FnMut(&Self::Item));
+}
+
+/// Typed access used to build [`PointerInfo`](crate::PointerInfo).
+pub trait ReflectPointer: Reflect {
+    type Pointee: Reflect;
+    const KIND: PointerKind;
+
+    fn pointee(&self) -> &Self::Pointee;
+    /// `None` while the pointee is shared.
+    fn pointee_mut(&mut self) -> Option<&mut Self::Pointee>;
+    /// Unshares the pointee first by cloning it (`Reflect::reflect_clone`) into a new
+    /// allocation; `None` if it is shared and cannot be cloned.
+    fn make_mut(&mut self) -> Option<&mut Self::Pointee>;
 }
 
 macro_rules! primitives {
@@ -264,4 +327,360 @@ fn try_array<T, const N: usize>(mut f: impl FnMut(usize) -> Option<T>) -> Option
         items.push(f(i)?);
     }
     items.try_into().ok()
+}
+
+/// Pushes `count` default items through `push`, which returns false when the container is full.
+/// False if an item had no default or did not fit; the caller then truncates back.
+pub(crate) fn grow_with_defaults<T: Reflect>(
+    count: usize,
+    mut push: impl FnMut(T) -> bool,
+) -> bool {
+    for _ in 0..count {
+        let Some(item) = T::reflect_default() else {
+            return false;
+        };
+        if !push(item) {
+            return false;
+        }
+    }
+    true
+}
+
+// SAFETY: list operations built from `Self`.
+unsafe impl<T: Reflect> Reflect for VecDeque<T> {
+    const TYPE_NAME: TypeName = TypeName::Path {
+        path: "VecDeque",
+        args: &[&T::TYPE_NAME],
+    };
+    const TYPE_INFO: TypeInfo = TypeInfo::new::<Self>(TypeKind::List(ListInfo::of::<Self>()));
+
+    fn reflect_default() -> Option<Self> {
+        Some(VecDeque::new())
+    }
+
+    fn reflect_clone(&self) -> Option<Self> {
+        self.iter().map(T::reflect_clone).collect()
+    }
+}
+
+impl<T: Reflect> ReflectList for VecDeque<T> {
+    type Item = T;
+
+    fn len(&self) -> usize {
+        self.len()
+    }
+
+    fn get(&self, index: usize) -> Option<&T> {
+        VecDeque::get(self, index)
+    }
+
+    fn get_mut(&mut self, index: usize) -> Option<&mut T> {
+        VecDeque::get_mut(self, index)
+    }
+
+    fn resize(&mut self, len: usize) -> bool {
+        let old = self.len();
+        if len <= old {
+            self.truncate(len);
+            return true;
+        }
+        self.reserve(len - old);
+        let ok = grow_with_defaults(len - old, |item| {
+            self.push_back(item);
+            true
+        });
+        if !ok {
+            self.truncate(old);
+        }
+        ok
+    }
+
+    fn insert_default(&mut self, index: usize) -> bool {
+        if index > self.len() {
+            return false;
+        }
+        match T::reflect_default() {
+            Some(item) => {
+                self.insert(index, item);
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn remove(&mut self, index: usize) -> bool {
+        self.remove(index).is_some()
+    }
+}
+
+macro_rules! tuples {
+    ($(($($T:ident $i:tt),+))*) => {$(
+        // SAFETY: each field at its `offset_of!` offset with its own type.
+        unsafe impl<$($T: Reflect),+> Reflect for ($($T,)+) {
+            const TYPE_NAME: TypeName = TypeName::Tuple(&[$(&$T::TYPE_NAME),+]);
+            const TYPE_INFO: TypeInfo = TypeInfo::new::<Self>(TypeKind::Tuple(TupleInfo {
+                fields: &[$(FieldInfo::new(
+                    stringify!($i),
+                    core::mem::offset_of!(Self, $i),
+                    type_info::<$T>,
+                )),+],
+            }));
+
+            fn reflect_default() -> Option<Self> {
+                Some(($($T::reflect_default()?,)+))
+            }
+
+            fn reflect_clone(&self) -> Option<Self> {
+                Some(($(self.$i.reflect_clone()?,)+))
+            }
+        }
+    )*};
+}
+
+tuples! {
+    (A 0)
+    (A 0, B 1)
+    (A 0, B 1, C 2)
+    (A 0, B 1, C 2, D 3)
+    (A 0, B 1, C 2, D 3, E 4)
+    (A 0, B 1, C 2, D 3, E 4, F 5)
+    (A 0, B 1, C 2, D 3, E 4, F 5, G 6)
+    (A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7)
+    (A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8)
+    (A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8, J 9)
+    (A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8, J 9, K 10)
+    (A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8, J 9, K 10, L 11)
+}
+
+// SAFETY: pointer operations built from `Self`.
+unsafe impl<T: Reflect> Reflect for Box<T> {
+    const TYPE_NAME: TypeName = TypeName::Path {
+        path: "Box",
+        args: &[&T::TYPE_NAME],
+    };
+    const TYPE_INFO: TypeInfo = TypeInfo::new::<Self>(TypeKind::Pointer(PointerInfo::of::<Self>()));
+
+    fn reflect_default() -> Option<Self> {
+        Some(Box::new(T::reflect_default()?))
+    }
+
+    fn reflect_clone(&self) -> Option<Self> {
+        Some(Box::new((**self).reflect_clone()?))
+    }
+}
+
+impl<T: Reflect> ReflectPointer for Box<T> {
+    type Pointee = T;
+    const KIND: PointerKind = PointerKind::Box;
+
+    fn pointee(&self) -> &T {
+        self
+    }
+
+    fn pointee_mut(&mut self) -> Option<&mut T> {
+        Some(self)
+    }
+
+    fn make_mut(&mut self) -> Option<&mut T> {
+        Some(self)
+    }
+}
+
+macro_rules! shared_pointer {
+    ($($ptr:ident => $kind:ident),*) => {$(
+        // SAFETY: pointer operations built from `Self`.
+        unsafe impl<T: Reflect> Reflect for $ptr<T> {
+            const TYPE_NAME: TypeName = TypeName::Path {
+                path: stringify!($ptr),
+                args: &[&T::TYPE_NAME],
+            };
+            const TYPE_INFO: TypeInfo =
+                TypeInfo::new::<Self>(TypeKind::Pointer(PointerInfo::of::<Self>()));
+
+            fn reflect_default() -> Option<Self> {
+                Some($ptr::new(T::reflect_default()?))
+            }
+
+            /// Shares the pointee, as `Clone` does.
+            fn reflect_clone(&self) -> Option<Self> {
+                Some($ptr::clone(self))
+            }
+        }
+
+        impl<T: Reflect> ReflectPointer for $ptr<T> {
+            type Pointee = T;
+            const KIND: PointerKind = PointerKind::$kind;
+
+            fn pointee(&self) -> &T {
+                self
+            }
+
+            fn pointee_mut(&mut self) -> Option<&mut T> {
+                $ptr::get_mut(self)
+            }
+
+            fn make_mut(&mut self) -> Option<&mut T> {
+                if $ptr::get_mut(self).is_none() {
+                    let copy = (**self).reflect_clone()?;
+                    *self = $ptr::new(copy);
+                }
+                $ptr::get_mut(self)
+            }
+        }
+    )*};
+}
+
+shared_pointer!(Rc => Rc, Arc => Arc);
+
+// SAFETY: string operations built from `Self`.
+unsafe impl Reflect for Cow<'static, str> {
+    const TYPE_NAME: TypeName = TypeName::simple("Cow<str>");
+    const TYPE_INFO: TypeInfo = TypeInfo::new::<Self>(TypeKind::String(StringInfo::of::<Self>()));
+
+    fn reflect_default() -> Option<Self> {
+        Some(Cow::Borrowed(""))
+    }
+
+    fn reflect_clone(&self) -> Option<Self> {
+        Some(self.clone())
+    }
+}
+
+impl ReflectString for Cow<'static, str> {
+    fn as_str(&self) -> &str {
+        self
+    }
+
+    fn set_str(&mut self, value: &str) {
+        match self {
+            Cow::Owned(s) => {
+                s.clear();
+                s.push_str(value);
+            }
+            Cow::Borrowed(_) => *self = Cow::Owned(value.into()),
+        }
+    }
+}
+
+// SAFETY: a field-less unit struct.
+unsafe impl<T: Reflect> Reflect for PhantomData<T> {
+    const TYPE_NAME: TypeName = TypeName::Path {
+        path: "PhantomData",
+        args: &[&T::TYPE_NAME],
+    };
+    const TYPE_INFO: TypeInfo = TypeInfo::new::<Self>(TypeKind::Struct(StructInfo {
+        style: StructStyle::Unit,
+        fields: &[],
+    }));
+
+    fn reflect_default() -> Option<Self> {
+        Some(PhantomData)
+    }
+
+    fn reflect_clone(&self) -> Option<Self> {
+        Some(PhantomData)
+    }
+}
+
+// SAFETY: map operations built from `Self`.
+unsafe impl<K: Reflect + Ord, V: Reflect> Reflect for BTreeMap<K, V> {
+    const TYPE_NAME: TypeName = TypeName::Path {
+        path: "BTreeMap",
+        args: &[&K::TYPE_NAME, &V::TYPE_NAME],
+    };
+    const TYPE_INFO: TypeInfo = TypeInfo::new::<Self>(TypeKind::Map(MapInfo::of::<Self>()));
+
+    fn reflect_default() -> Option<Self> {
+        Some(BTreeMap::new())
+    }
+
+    fn reflect_clone(&self) -> Option<Self> {
+        self.iter()
+            .map(|(k, v)| Some((k.reflect_clone()?, v.reflect_clone()?)))
+            .collect()
+    }
+}
+
+impl<K: Reflect + Ord, V: Reflect> ReflectMap for BTreeMap<K, V> {
+    type Key = K;
+    type Value = V;
+    const ORDERED: bool = true;
+
+    fn len(&self) -> usize {
+        self.len()
+    }
+
+    fn get(&self, key: &K) -> Option<&V> {
+        BTreeMap::get(self, key)
+    }
+
+    fn get_mut(&mut self, key: &K) -> Option<&mut V> {
+        BTreeMap::get_mut(self, key)
+    }
+
+    fn insert(&mut self, key: K, value: V) {
+        BTreeMap::insert(self, key, value);
+    }
+
+    fn remove(&mut self, key: &K) -> bool {
+        BTreeMap::remove(self, key).is_some()
+    }
+
+    fn clear(&mut self) {
+        BTreeMap::clear(self);
+    }
+
+    fn for_each(&self, f: &mut dyn FnMut(&K, &V)) {
+        self.iter().for_each(|(k, v)| f(k, v));
+    }
+
+    fn for_each_mut(&mut self, f: &mut dyn FnMut(&K, &mut V)) {
+        self.iter_mut().for_each(|(k, v)| f(k, v));
+    }
+}
+
+// SAFETY: set operations built from `Self`.
+unsafe impl<T: Reflect + Ord> Reflect for BTreeSet<T> {
+    const TYPE_NAME: TypeName = TypeName::Path {
+        path: "BTreeSet",
+        args: &[&T::TYPE_NAME],
+    };
+    const TYPE_INFO: TypeInfo = TypeInfo::new::<Self>(TypeKind::Set(SetInfo::of::<Self>()));
+
+    fn reflect_default() -> Option<Self> {
+        Some(BTreeSet::new())
+    }
+
+    fn reflect_clone(&self) -> Option<Self> {
+        self.iter().map(T::reflect_clone).collect()
+    }
+}
+
+impl<T: Reflect + Ord> ReflectSet for BTreeSet<T> {
+    type Item = T;
+    const ORDERED: bool = true;
+
+    fn len(&self) -> usize {
+        self.len()
+    }
+
+    fn contains(&self, item: &T) -> bool {
+        BTreeSet::contains(self, item)
+    }
+
+    fn insert(&mut self, item: T) -> bool {
+        BTreeSet::insert(self, item)
+    }
+
+    fn remove(&mut self, item: &T) -> bool {
+        BTreeSet::remove(self, item)
+    }
+
+    fn clear(&mut self) {
+        BTreeSet::clear(self);
+    }
+
+    fn for_each(&self, f: &mut dyn FnMut(&T)) {
+        self.iter().for_each(f);
+    }
 }

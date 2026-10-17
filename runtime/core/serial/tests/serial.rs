@@ -170,7 +170,7 @@ fn exact_encoding() {
     let bytes = to_bytes(&Small { x: 0x1234 }).unwrap();
     let mut expected = Vec::new();
     expected.extend_from_slice(b"MRLS");
-    expected.extend_from_slice(&[1, 0, 0, 0]);
+    expected.extend_from_slice(&[2, 0, 0, 0]); // version 2, no flags
     expected.extend_from_slice(&TypeId::of_name("serial::Small").0.to_le_bytes());
     expected.push(0x11); // struct
     expected.extend_from_slice(&1u32.to_le_bytes()); // one field
@@ -487,8 +487,12 @@ fn specific_corruptions() {
     assert_eq!(from_bytes::<Small>(b"MR"), Err(Error::BadMagic));
 
     let mut bad = good.clone();
-    bad[4] = 2;
-    assert_eq!(from_bytes::<Small>(&bad), Err(Error::UnsupportedVersion(2)));
+    bad[4] = 3;
+    assert_eq!(from_bytes::<Small>(&bad), Err(Error::UnsupportedVersion(3)));
+    // Version 1 data (the same encoding for these kinds) is still read.
+    let mut old = good.clone();
+    old[4] = 1;
+    assert_eq!(from_bytes::<Small>(&old), Ok(Small { x: 1 }));
 
     let mut bad = good.clone();
     bad.push(0);

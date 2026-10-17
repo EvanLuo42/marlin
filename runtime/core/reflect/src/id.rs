@@ -46,17 +46,37 @@ impl fmt::Display for TypeId {
 /// Structured name of a type. Generic types keep their arguments as separate names so the full
 /// name never has to be concatenated at compile time.
 ///
-/// Prints as `path`, `path<A, B>` or `[T; N]`.
+/// Prints as `path`, `path<A, B>`, `[T; N]`, `(A, B)` (`(A,)` for one element) or, for a const
+/// generic argument, its value (the `16` of `InlineString<16>`).
 #[derive(Clone, Copy, Debug)]
 pub enum TypeName {
     Path {
         path: &'static str,
+        /// Generic arguments, types and const values, in declaration order. Lifetimes are not
+        /// part of names: reflected types are always `'static`.
         args: &'static [&'static TypeName],
     },
     Array {
         element: &'static TypeName,
         len: usize,
     },
+    /// A tuple of at least one element. The unit type is `Path { path: "()" }`.
+    Tuple(&'static [&'static TypeName]),
+    /// The value of a const generic argument.
+    Const(ConstArg),
+}
+
+/// Value of a const generic argument, as it appears in a [`TypeName`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ConstArg {
+    /// Signed integers, printed in decimal.
+    Int(i128),
+    /// Unsigned integers, printed in decimal.
+    Uint(u128),
+    /// Printed as `true` / `false`.
+    Bool(bool),
+    /// Printed quoted: `'x'`.
+    Char(char),
 }
 
 impl TypeName {
@@ -72,29 +92,60 @@ impl TypeName {
                 let mut state = fnv1a_64_extend(state, path.as_bytes());
                 if !args.is_empty() {
                     state = fnv1a_64_extend(state, b"<");
-                    let mut i = 0;
-                    while i < args.len() {
-                        if i > 0 {
-                            state = fnv1a_64_extend(state, b", ");
-                        }
-                        state = args[i].hash(state);
-                        i += 1;
-                    }
+                    state = hash_list(state, args);
                     state = fnv1a_64_extend(state, b">");
                 }
                 state
             }
             Self::Array { element, len } => {
                 let state = element.hash(fnv1a_64_extend(state, b"["));
-                let state = hash_decimal(fnv1a_64_extend(state, b"; "), len);
+                let state = hash_decimal(fnv1a_64_extend(state, b"; "), len as u128);
                 fnv1a_64_extend(state, b"]")
+            }
+            Self::Tuple(elements) => {
+                let mut state = hash_list(fnv1a_64_extend(state, b"("), elements);
+                if elements.len() == 1 {
+                    state = fnv1a_64_extend(state, b",");
+                }
+                fnv1a_64_extend(state, b")")
+            }
+            Self::Const(ConstArg::Int(v)) => {
+                let state = if v < 0 {
+                    fnv1a_64_extend(state, b"-")
+                } else {
+                    state
+                };
+                hash_decimal(state, v.unsigned_abs())
+            }
+            Self::Const(ConstArg::Uint(v)) => hash_decimal(state, v),
+            Self::Const(ConstArg::Bool(true)) => fnv1a_64_extend(state, b"true"),
+            Self::Const(ConstArg::Bool(false)) => fnv1a_64_extend(state, b"false"),
+            Self::Const(ConstArg::Char(c)) => {
+                let mut utf8 = [0u8; 4];
+                let len = c.encode_utf8(&mut utf8).len();
+                let state = fnv1a_64_extend(state, b"'");
+                let state = fnv1a_64_extend(state, utf8.split_at(len).0);
+                fnv1a_64_extend(state, b"'")
             }
         }
     }
 }
 
-const fn hash_decimal(state: u64, mut n: usize) -> u64 {
-    let mut digits = [0u8; 20];
+/// `a, b, c`.
+const fn hash_list(mut state: u64, names: &[&TypeName]) -> u64 {
+    let mut i = 0;
+    while i < names.len() {
+        if i > 0 {
+            state = fnv1a_64_extend(state, b", ");
+        }
+        state = names[i].hash(state);
+        i += 1;
+    }
+    state
+}
+
+const fn hash_decimal(state: u64, mut n: u128) -> u64 {
+    let mut digits = [0u8; 39];
     let mut start = digits.len();
     loop {
         start -= 1;
@@ -107,6 +158,16 @@ const fn hash_decimal(state: u64, mut n: usize) -> u64 {
     fnv1a_64_extend(state, digits.split_at(start).1)
 }
 
+fn fmt_list(f: &mut fmt::Formatter<'_>, names: &[&TypeName]) -> fmt::Result {
+    for (i, name) in names.iter().enumerate() {
+        if i > 0 {
+            f.write_str(", ")?;
+        }
+        fmt::Display::fmt(name, f)?;
+    }
+    Ok(())
+}
+
 impl fmt::Display for TypeName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
@@ -114,17 +175,24 @@ impl fmt::Display for TypeName {
                 f.write_str(path)?;
                 if !args.is_empty() {
                     f.write_str("<")?;
-                    for (i, arg) in args.iter().enumerate() {
-                        if i > 0 {
-                            f.write_str(", ")?;
-                        }
-                        fmt::Display::fmt(arg, f)?;
-                    }
+                    fmt_list(f, args)?;
                     f.write_str(">")?;
                 }
                 Ok(())
             }
             Self::Array { element, len } => write!(f, "[{element}; {len}]"),
+            Self::Tuple(elements) => {
+                f.write_str("(")?;
+                fmt_list(f, elements)?;
+                if elements.len() == 1 {
+                    f.write_str(",")?;
+                }
+                f.write_str(")")
+            }
+            Self::Const(ConstArg::Int(v)) => write!(f, "{v}"),
+            Self::Const(ConstArg::Uint(v)) => write!(f, "{v}"),
+            Self::Const(ConstArg::Bool(v)) => write!(f, "{v}"),
+            Self::Const(ConstArg::Char(c)) => write!(f, "'{c}'"),
         }
     }
 }

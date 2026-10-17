@@ -1,8 +1,11 @@
 //! Type-erased borrows: navigate and modify values knowing only their [`TypeInfo`].
 
+use alloc::vec::Vec;
+use core::any::Any;
 use core::fmt;
 use core::marker::PhantomData;
 
+use crate::data::ReflectTrait;
 use crate::info::{FieldInfo, TypeInfo, TypeKind, VariantInfo};
 use crate::traits::{Reflect, type_info};
 use crate::value::Value;
@@ -56,6 +59,8 @@ pub enum PathErrorKind {
     NoneOption,
     /// The value at the path is not of the requested type.
     TypeMismatch,
+    /// A mutable path goes through an `Rc`/`Arc` whose pointee is shared.
+    SharedPointer,
 }
 
 impl fmt::Display for PathError {
@@ -67,6 +72,7 @@ impl fmt::Display for PathError {
             PathErrorKind::IndexOutOfBounds => "index out of bounds",
             PathErrorKind::NoneOption => "option is None",
             PathErrorKind::TypeMismatch => "type mismatch",
+            PathErrorKind::SharedPointer => "shared pointer cannot be written through",
         };
         write!(f, "{what} at byte {} of the path", self.position)
     }
@@ -84,8 +90,8 @@ unsafe fn field_raw(
     mutable: bool,
 ) -> Option<(*mut u8, &'static FieldInfo)> {
     match &info.kind {
-        TypeKind::Struct(s) => {
-            let field = s.fields.get(index)?;
+        TypeKind::Struct(_) | TypeKind::Tuple(_) => {
+            let field = info.fields().get(index)?;
             // SAFETY: `TYPE_INFO` gives in-bounds offsets of fields of this type.
             Some((unsafe { ptr.add(field.offset) }, field))
         }
@@ -111,6 +117,7 @@ unsafe fn field_raw(
 unsafe fn active_fields(ptr: *const u8, info: &TypeInfo) -> &'static [FieldInfo] {
     match &info.kind {
         TypeKind::Struct(s) => s.fields,
+        TypeKind::Tuple(t) => t.fields,
         TypeKind::Enum(e) => {
             // SAFETY: the caller's guarantee.
             let index = unsafe { (e.variant_index)(ptr) };
@@ -155,7 +162,7 @@ unsafe fn index_raw(
     }
 }
 
-/// Steps into `Some`, so paths see through options.
+/// Steps into `Some` and through pointers, so paths see through options, boxes and `Rc`s.
 ///
 /// # Safety
 /// As for [`field_raw`].
@@ -164,20 +171,37 @@ unsafe fn some_raw(
     mut info: &'static TypeInfo,
     mutable: bool,
 ) -> Result<(*mut u8, &'static TypeInfo), PathErrorKind> {
-    while let TypeKind::Option(o) = &info.kind {
-        ptr = if mutable {
-            // SAFETY: the caller's guarantee.
-            unsafe { (o.get_mut)(ptr) }
-        } else {
-            // SAFETY: the caller's guarantee.
-            unsafe { (o.get)(ptr) }.cast_mut()
-        };
-        if ptr.is_null() {
-            return Err(PathErrorKind::NoneOption);
+    loop {
+        match &info.kind {
+            TypeKind::Option(o) => {
+                ptr = if mutable {
+                    // SAFETY: the caller's guarantee.
+                    unsafe { (o.get_mut)(ptr) }
+                } else {
+                    // SAFETY: the caller's guarantee.
+                    unsafe { (o.get)(ptr) }.cast_mut()
+                };
+                if ptr.is_null() {
+                    return Err(PathErrorKind::NoneOption);
+                }
+                info = (o.some)();
+            }
+            TypeKind::Pointer(p) => {
+                ptr = if mutable {
+                    // SAFETY: the caller's guarantee.
+                    unsafe { (p.get_mut)(ptr) }
+                } else {
+                    // SAFETY: the caller's guarantee.
+                    unsafe { (p.get)(ptr) }.cast_mut()
+                };
+                if ptr.is_null() {
+                    return Err(PathErrorKind::SharedPointer);
+                }
+                info = (p.pointee)();
+            }
+            _ => return Ok((ptr, info)),
         }
-        info = (o.some)();
     }
-    Ok((ptr, info))
 }
 
 enum Segment<'p> {
@@ -341,12 +365,16 @@ impl<'a> Ref<'a> {
         Some((index, e.variants.get(index)?))
     }
 
-    /// Element count of an array or list.
+    /// Element count of an array, list, map or set.
     pub fn len(&self) -> Option<usize> {
         match &self.info.kind {
             TypeKind::Array(a) => Some(a.len),
             // SAFETY: the invariant of `self`.
             TypeKind::List(l) => Some(unsafe { (l.len)(self.ptr) }),
+            // SAFETY: the invariant of `self`.
+            TypeKind::Map(m) => Some(unsafe { (m.len)(self.ptr) }),
+            // SAFETY: the invariant of `self`.
+            TypeKind::Set(s) => Some(unsafe { (s.len)(self.ptr) }),
             _ => None,
         }
     }
@@ -395,6 +423,86 @@ impl<'a> Ref<'a> {
     /// Clones the value, if its type supports it.
     pub fn to_value(self) -> Option<Value> {
         Value::clone_of(self)
+    }
+
+    /// The pointee of a `Box`, `Rc` or `Arc`.
+    pub fn pointee(self) -> Option<Ref<'a>> {
+        let TypeKind::Pointer(p) = &self.info.kind else {
+            return None;
+        };
+        // SAFETY: the invariant of `self`; the pointee lives as long as the borrow of the pointer.
+        Some(unsafe { Ref::from_raw((p.get)(self.ptr), (p.pointee)()) })
+    }
+
+    /// The `(key, value)` entries of a map, in its iteration order (sorted for ordered maps).
+    pub fn map_entries(self) -> Option<Vec<(Ref<'a>, Ref<'a>)>> {
+        let TypeKind::Map(m) = &self.info.kind else {
+            return None;
+        };
+        let mut raw = Vec::new();
+        // SAFETY: the invariant of `self`.
+        unsafe { (m.entries)(self.ptr, &mut raw) };
+        let (key, value) = ((m.key)(), (m.value)());
+        let entries = raw.into_iter().map(|(k, v)| {
+            // SAFETY: an entry of a map borrowed for `'a`.
+            unsafe { (Ref::from_raw(k, key), Ref::from_raw(v, value)) }
+        });
+        Some(entries.collect())
+    }
+
+    /// The value of `key` in a map. `None` if this is not a map, `key` is not of its key type, or
+    /// the key is absent.
+    pub fn map_get(self, key: Ref<'_>) -> Option<Ref<'a>> {
+        let TypeKind::Map(m) = &self.info.kind else {
+            return None;
+        };
+        if !key.info.same_type((m.key)()) {
+            return None;
+        }
+        // SAFETY: the invariant of `self`; `key` is a live key.
+        let ptr = unsafe { (m.get)(self.ptr, key.ptr) };
+        // SAFETY: a value of a map borrowed for `'a`.
+        (!ptr.is_null()).then(|| unsafe { Ref::from_raw(ptr, (m.value)()) })
+    }
+
+    /// The elements of a set, in its iteration order (sorted for ordered sets).
+    pub fn set_elements(self) -> Option<Vec<Ref<'a>>> {
+        let TypeKind::Set(s) = &self.info.kind else {
+            return None;
+        };
+        let mut raw = Vec::new();
+        // SAFETY: the invariant of `self`.
+        unsafe { (s.elements)(self.ptr, &mut raw) };
+        let element = (s.element)();
+        let elements = raw.into_iter().map(|e| {
+            // SAFETY: an element of a set borrowed for `'a`.
+            unsafe { Ref::from_raw(e, element) }
+        });
+        Some(elements.collect())
+    }
+
+    /// Whether a set contains `element`; `None` if this is not a set of `element`'s type.
+    pub fn set_contains(self, element: Ref<'_>) -> Option<bool> {
+        let TypeKind::Set(s) = &self.info.kind else {
+            return None;
+        };
+        if !element.info.same_type((s.element)()) {
+            return None;
+        }
+        // SAFETY: the invariant of `self`; `element` is a live element.
+        Some(unsafe { (s.contains)(self.ptr, element.ptr) })
+    }
+
+    /// Type data of type `D` for this value's type, static or registered (see
+    /// [`find_data`](crate::find_data)).
+    pub fn data<D: Any>(&self) -> Option<&'static D> {
+        crate::registry::find_data::<D>(self.info)
+    }
+
+    /// The value as the trait object `D` (`dyn Trait`), through the type's
+    /// [`ReflectTrait<D>`] data: `value.cast::<dyn Visible>()`.
+    pub fn cast<D: ?Sized + 'static>(self) -> Option<&'a D> {
+        self.data::<ReflectTrait<D>>()?.get(self)
     }
 }
 
@@ -597,6 +705,143 @@ impl<'a> Mut<'a> {
         };
         // SAFETY: the invariant of `self`.
         unsafe { (o.set_some_default)(self.ptr) }
+    }
+
+    /// The pointee of a `Box`, `Rc` or `Arc`: `None` if this is not a pointer, `Some(None)` if
+    /// the pointee is shared (another `Rc`/`Arc` or `Weak` points to it).
+    pub fn pointee(self) -> Option<Option<Mut<'a>>> {
+        let TypeKind::Pointer(p) = &self.info.kind else {
+            return None;
+        };
+        // SAFETY: the invariant of `self`.
+        let ptr = unsafe { (p.get_mut)(self.ptr) };
+        // SAFETY: the pointee of a value exclusively borrowed for `'a`; `self` is consumed.
+        Some((!ptr.is_null()).then(|| unsafe { Mut::from_raw(ptr, (p.pointee)()) }))
+    }
+
+    /// The pointee of a `Box`, `Rc` or `Arc`, first replacing a shared pointee with a clone of
+    /// it, like `Rc::make_mut`. `None` if this is not a pointer, or the pointee is shared and
+    /// cannot be cloned.
+    pub fn pointee_make_mut(self) -> Option<Mut<'a>> {
+        let TypeKind::Pointer(p) = &self.info.kind else {
+            return None;
+        };
+        // SAFETY: the invariant of `self`.
+        let ptr = unsafe { (p.make_mut)(self.ptr) };
+        // SAFETY: the pointee of a value exclusively borrowed for `'a`; `self` is consumed.
+        (!ptr.is_null()).then(|| unsafe { Mut::from_raw(ptr, (p.pointee)()) })
+    }
+
+    /// See [`Ref::map_get`].
+    pub fn map_get_mut(self, key: Ref<'_>) -> Option<Mut<'a>> {
+        let TypeKind::Map(m) = &self.info.kind else {
+            return None;
+        };
+        if !key.info.same_type((m.key)()) {
+            return None;
+        }
+        // SAFETY: the invariant of `self`; `key` is a live key, and not part of the map since the
+        // map is exclusively borrowed.
+        let ptr = unsafe { (m.get_mut)(self.ptr, key.ptr) };
+        // SAFETY: a value of a map exclusively borrowed for `'a`; `self` is consumed.
+        (!ptr.is_null()).then(|| unsafe { Mut::from_raw(ptr, (m.value)()) })
+    }
+
+    /// The entries of a map with writable values. Keys stay read-only: changing one would break
+    /// the map.
+    pub fn map_entries_mut(self) -> Option<Vec<(Ref<'a>, Mut<'a>)>> {
+        let TypeKind::Map(m) = &self.info.kind else {
+            return None;
+        };
+        let mut raw = Vec::new();
+        // SAFETY: the invariant of `self`.
+        unsafe { (m.entries_mut)(self.ptr, &mut raw) };
+        let (key, value) = ((m.key)(), (m.value)());
+        let entries = raw.into_iter().map(|(k, v)| {
+            // SAFETY: disjoint parts of a map exclusively borrowed for `'a`; `self` is consumed,
+            // and no operation that could move the entries can run while they are borrowed.
+            unsafe { (Ref::from_raw(k, key), Mut::from_raw(v, value)) }
+        });
+        Some(entries.collect())
+    }
+
+    /// Inserts into a map, replacing the value of an equal key. Gives both values back if this is
+    /// not a map of their types.
+    pub fn map_insert(&mut self, key: Value, value: Value) -> Result<(), (Value, Value)> {
+        let TypeKind::Map(m) = &self.info.kind else {
+            return Err((key, value));
+        };
+        if !key.info().same_type((m.key)()) || !value.info().same_type((m.value)()) {
+            return Err((key, value));
+        }
+        let map = self.ptr;
+        // SAFETY: the invariant of `self`; both values are of the map's types, and `insert`
+        // moves them out of their storage, as `consume` requires.
+        unsafe { key.consume(|k| value.consume(|v| (m.insert)(map, k, v))) };
+        Ok(())
+    }
+
+    /// Removes `key` from a map. False if this is not a map of `key`'s type or the key is absent.
+    pub fn map_remove(&mut self, key: Ref<'_>) -> bool {
+        let TypeKind::Map(m) = &self.info.kind else {
+            return false;
+        };
+        if !key.info.same_type((m.key)()) {
+            return false;
+        }
+        // SAFETY: the invariant of `self`; `key` is a live key outside the map.
+        unsafe { (m.remove)(self.ptr, key.ptr) }
+    }
+
+    /// Inserts into a set: `Ok(false)` if an equal element was already present (`element` is
+    /// dropped). Gives `element` back if this is not a set of its type.
+    pub fn set_insert(&mut self, element: Value) -> Result<bool, Value> {
+        let TypeKind::Set(s) = &self.info.kind else {
+            return Err(element);
+        };
+        if !element.info().same_type((s.element)()) {
+            return Err(element);
+        }
+        let set = self.ptr;
+        // SAFETY: the invariant of `self`; the element is of the set's type, and `insert` moves
+        // it out of its storage, as `consume` requires.
+        Ok(unsafe { element.consume(|e| (s.insert)(set, e)) })
+    }
+
+    /// Removes `element` from a set. False if this is not a set of its type or it is absent.
+    pub fn set_remove(&mut self, element: Ref<'_>) -> bool {
+        let TypeKind::Set(s) = &self.info.kind else {
+            return false;
+        };
+        if !element.info.same_type((s.element)()) {
+            return false;
+        }
+        // SAFETY: the invariant of `self`; `element` is a live element outside the set.
+        unsafe { (s.remove)(self.ptr, element.ptr) }
+    }
+
+    /// Empties a list, map or set. False for other kinds.
+    pub fn clear(&mut self) -> bool {
+        match &self.info.kind {
+            // SAFETY: the invariant of `self`.
+            TypeKind::List(l) => unsafe { (l.resize)(self.ptr, 0) },
+            TypeKind::Map(m) => {
+                // SAFETY: the invariant of `self`.
+                unsafe { (m.clear)(self.ptr) };
+                true
+            }
+            TypeKind::Set(s) => {
+                // SAFETY: the invariant of `self`.
+                unsafe { (s.clear)(self.ptr) };
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// See [`Ref::cast`].
+    pub fn cast<D: ?Sized + 'static>(self) -> Option<&'a mut D> {
+        crate::registry::find_data::<ReflectTrait<D>>(self.info)?.get_mut(self)
     }
 }
 

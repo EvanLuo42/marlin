@@ -14,5 +14,9 @@ proc-macro2.workspace = true
 quote.workspace = true
 syn.workspace = true
 
+[dev-dependencies]
+# The tests and the compile-fail doc tests use the derive the way users do, through marlin-reflect.
+marlin-reflect.workspace = true
+
 [lints]
 workspace = true

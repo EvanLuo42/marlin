@@ -88,6 +88,8 @@ pub enum WriteError {
     UnknownType(String),
     #[error("`{0}` has no visible structure and cannot be written")]
     Opaque(String),
+    #[error("`{0}` is a map or set, which text does not support yet")]
+    Collection(String),
 }
 
 struct Reader<'a> {
@@ -296,6 +298,27 @@ impl Reader<'_> {
                     }
                 }
             },
+            TypeKind::Tuple(t) => match &node.kind {
+                NodeKind::Tuple(items) if items.len() == t.fields.len() => {
+                    self.read_items(m, items);
+                }
+                _ => self.mismatch(node, format_args!("a tuple of {}", t.fields.len())),
+            },
+            // Pointers are transparent; a shared `Rc` is unshared first.
+            TypeKind::Pointer(_) => match m.pointee_make_mut() {
+                Some(inner) => self.read(inner, node),
+                None => self.diagnostics.push(Diagnostic::error(
+                    node.span,
+                    format!("`{}` is shared and cannot be cloned", info.name),
+                )),
+            },
+            TypeKind::Map(_) | TypeKind::Set(_) => self.diagnostics.push(Diagnostic::error(
+                node.span,
+                format!(
+                    "`{}` is a map or set, which text does not support yet",
+                    info.name
+                ),
+            )),
             TypeKind::Opaque => self.diagnostics.push(Diagnostic::error(
                 node.span,
                 format!("`{}` cannot be read from text", info.name),
@@ -558,6 +581,14 @@ impl Writer<'_> {
                     return self.node(inner, inner_default.as_ref().map(Value::as_ref));
                 }
             },
+            TypeKind::Tuple(_) => NodeKind::Tuple(self.items(r, default)?),
+            TypeKind::Pointer(_) => match r.pointee() {
+                Some(inner) => return self.node(inner, default.and_then(Ref::pointee)),
+                None => return Err(WriteError::Opaque(info.name.to_string())),
+            },
+            TypeKind::Map(_) | TypeKind::Set(_) => {
+                return Err(WriteError::Collection(info.name.to_string()));
+            }
             TypeKind::Opaque => return Err(WriteError::Opaque(info.name.to_string())),
         };
         Ok(Node::new(kind))

@@ -152,6 +152,20 @@ pub fn fingerprint(info: &'static TypeInfo) -> u64 {
             TypeKind::List(l) => walk((l.element)(), seen, out),
             TypeKind::Option(o) => walk((o.some)(), seen, out),
             TypeKind::Opaque => out.push(2),
+            TypeKind::Tuple(t) => {
+                out.push(3);
+                field_list(t.fields, seen, out);
+            }
+            TypeKind::Map(m) => {
+                out.push(4);
+                walk((m.key)(), seen, out);
+                walk((m.value)(), seen, out);
+            }
+            TypeKind::Set(s) => {
+                out.push(5);
+                walk((s.element)(), seen, out);
+            }
+            TypeKind::Pointer(p) => walk((p.pointee)(), seen, out),
         }
     }
     let mut out = Vec::new();

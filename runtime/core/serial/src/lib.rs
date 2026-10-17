@@ -3,48 +3,67 @@
 //! Two independent tools:
 //!
 //! - **Reflection-driven serialization** ([`to_bytes`], [`from_bytes`], [`read_into`],
-//!   [`read_value`]) for any [`Reflect`] type: save games, editor assets, anything whose types
-//!   evolve between writing and reading.
-//! - **Cooked layouts** ([`cooked`]): `#[repr(C)]` data with relative pointers, written once by a
-//!   cooker and read in place from a loaded or mmapped buffer.
+//!   [`read_value`], and [`stream`] for reading from a file incrementally) for any [`Reflect`]
+//!   type: save games, editor assets, anything whose types evolve between writing and reading.
+//! - **Cooked layouts** ([`cooked`]): `#[repr(C)]` [`Pod`](cooked::Pod) data with relative
+//!   pointers, written once by a cooker and read in place from a loaded or mmapped buffer.
 //!
-//! # Format (version 1)
+//! # Format (version 2)
 //!
-//! Little-endian, fixed-width integers; writing the same value always gives the same bytes.
+//! Little-endian, fixed-width integers; writing the same value always gives the same bytes (hash
+//! maps and sets are written sorted by their encoded entries).
 //!
 //! ```text
 //! file    = "MRLS" version:u16 flags:u16(=0) root_type_id:u64 sig value
-//! sig     = kind:u8                         scalar, string, struct or enum
-//!         | LIST sig | OPTION sig | ARRAY len:u32 sig
+//! sig     = kind:u8                         scalar, string, struct, tuple or enum
+//!         | LIST sig | OPTION sig | SET sig | ARRAY len:u32 sig | MAP sig sig
+//!         | CUSTOM type_id:u64              opaque type with a custom serializer
+//!         | VERSIONED version:u32 kind:u8   struct or enum with a data version
 //! value   = scalar                          bool as 0/1, char as u32, usize/isize as 64-bit
 //!         | len:u32 utf8                    string
-//!         | fields                          struct
+//!         | fields                          struct, tuple (fields "0", "1", ...)
 //!         | variant_hash:u32 fields         enum (variant by name hash)
-//!         | count:u32 value*                list
+//!         | count:u32 value*                list, set
 //!         | value*                          array (length from the signature)
+//!         | count:u32 (value value)*        map (key, value)
 //!         | 0 | 1 value                     option
+//!         | len:u32 bytes                   custom
 //! fields  = count:u32 (name_hash:u32 len:u32 sig value)*
 //! ```
+//!
+//! Pointers (`Box`, `Rc`, `Arc`) are written as their pointee, and opaque types with a
+//! [`ReflectProxy`](marlin_reflect::ReflectProxy) as their proxy, so neither appears in the
+//! format. Opaque types are written by their custom serializer if they have one; see [`custom`].
+//! Version 1 data (the same without tuples, maps, sets, custom values and versions) is still
+//! read.
 //!
 //! Fields carry their name hash, byte length and signature, which is what makes evolution work:
 //! when reading, fields are matched by name hash, so fields can be added, removed and reordered;
 //! unknown fields are skipped and missing ones keep their default. Fields whose type changed are
-//! converted when possible (between any numeric types, `T` <-> `Option<T>`, array <-> `Vec`).
-//! A field whose type changed incompatibly, a number that no longer fits, a `None` read into a
-//! non-optional field and a removed enum variant all leave the value as it was: when loading with
-//! [`from_bytes`], that is the default. A field that fails for lack of a default (a list of items
-//! without one, say) is reset to its own type's default.
+//! converted when possible (between any numeric types, `T` <-> `Option<T>`, `T` <-> `Box<T>`,
+//! arrays, lists and sets, structs and tuples). A field whose type changed incompatibly, a number
+//! that no longer fits, a `None` read into a non-optional field and a removed enum variant all
+//! leave the value as it was: when loading with [`from_bytes`], that is the default. A field that
+//! fails for lack of a default (a list of items without one, say) is reset to its own type's
+//! default. Changes beyond that are handled by explicit [`migrate`]ions between data versions.
 //!
 //! Corrupt or truncated input returns an [`Error`]; it never panics or reads out of bounds. An
 //! element count is checked against the bytes left before anything is allocated for it, so a
 //! list never grows beyond the number of elements the input can actually hold. Nesting is limited
 //! by [`ReadOptions::max_depth`].
+//!
+//! Lengths and counts are 32-bit, so a string, list or field holds at most 4 GiB; cooked
+//! relative offsets are 32-bit signed (2 GiB). All supported targets are little-endian, which
+//! the crate checks at compile time; cooked data relies on it.
 #![cfg_attr(not(test), no_std)]
 
 extern crate alloc;
 
 pub mod cooked;
+pub mod custom;
+pub mod migrate;
 mod read;
+pub mod stream;
 mod wire;
 mod write;
 
@@ -56,10 +75,19 @@ use marlin_reflect::{Mut, Ref, Reflect, Registry, TypeId, Value};
 use crate::read::Reader;
 use crate::wire::Input;
 
+pub use custom::{CustomSerial, SerialFns, register_custom};
+pub use migrate::{Migrate, MigrateFn, OldFields, register_migration};
+
+const _: () = assert!(
+    cfg!(target_endian = "little"),
+    "marlin-serial assumes a little-endian target: cooked data is used in place without byte \
+     swapping"
+);
+
 /// First bytes of every serialized value.
 pub const MAGIC: [u8; 4] = *b"MRLS";
 /// Format version written by this crate; readers accept versions up to it.
-pub const VERSION: u16 = 1;
+pub const VERSION: u16 = 2;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Error {
@@ -92,10 +120,14 @@ pub enum Error {
     UnknownType(TypeId),
 
     // Writing.
-    /// The type (or a field's type) cannot be serialized, such as an opaque type.
+    /// The type (or a field's type) cannot be serialized, such as an opaque type without a
+    /// custom serializer or proxy.
     Unsupported(TypeId),
     /// A string, list or field longer than `u32::MAX` bytes or elements.
     TooLarge,
+
+    /// Reading a [`stream::Source`] failed.
+    Io(marlin_std::io::Error),
 }
 
 impl Error {
@@ -124,9 +156,12 @@ impl fmt::Display for Error {
             Self::UnknownType(id) => write!(f, "unregistered type {id}"),
             Self::Unsupported(id) => write!(f, "type {id} cannot be serialized"),
             Self::TooLarge => f.write_str("value too large for the format"),
+            Self::Io(e) => write!(f, "reading serialized data: {e}"),
         }
     }
 }
+
+impl core::error::Error for Error {}
 
 #[derive(Clone, Copy, Debug)]
 pub struct ReadOptions {
@@ -172,6 +207,9 @@ pub struct Header {
     /// Stable id of the type that was written.
     pub root: TypeId,
 }
+
+/// Size of the fixed header: magic, version, flags and root type id.
+pub(crate) const HEADER_LEN: usize = 16;
 
 fn header(input: &mut Input<'_>) -> Result<Header, Error> {
     if input.array::<4>().map_err(|_| Error::BadMagic)? != MAGIC {

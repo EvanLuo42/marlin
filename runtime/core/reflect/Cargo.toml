@@ -7,8 +7,11 @@ publish.workspace = true
 
 [dependencies]
 marlin-hash.workspace = true
+marlin-containers.workspace = true
+marlin-math.workspace = true
 marlin-reflect-derive.workspace = true
 marlin-std.workspace = true
+marlin-text.workspace = true
 
 [lints]
 workspace = true
