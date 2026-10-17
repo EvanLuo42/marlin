@@ -7,13 +7,13 @@
 //! Client and server each run one queue on one thread.
 #![cfg(marlin_platform = "windows")]
 
-mod common;
+mod support;
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use common::{Mode, Server, drain_frames, frame, next};
 use marlin_net::{Completed, IoBuffer, NetQueue, Shutdown, SocketId, SocketOptions};
+use support::{Mode, Server, drain_frames, frame, next};
 
 const RUN: Duration = Duration::from_secs(3);
 

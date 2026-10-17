@@ -11,17 +11,15 @@ use marlin_asset::{
 };
 use marlin_reflect::{Reflect, type_info};
 
+use crate::support::uuid;
+
 #[derive(Clone, PartialEq, Debug, Default, Reflect)]
 struct Part {
     value: u32,
     next: Link<Part>,
 }
 
-fn uuid(n: u128) -> Uuid {
-    Uuid::from_u128(0x0199_0000_0000_7000_8000_0000_0000_0000 | n)
-}
-
-fn part(id: u128, value: u32) -> UnitObject {
+fn part(id: u64, value: u32) -> UnitObject {
     UnitObject {
         uuid: uuid(id),
         type_id: type_info::<Part>().id.0,

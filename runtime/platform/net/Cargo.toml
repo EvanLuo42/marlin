@@ -21,6 +21,7 @@ windows-sys = { workspace = true, features = [
 
 [dev-dependencies]
 marlin-math.workspace = true
+marlin-test-support.workspace = true
 
 [lints]
 workspace = true

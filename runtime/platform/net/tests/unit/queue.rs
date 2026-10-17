@@ -1,15 +1,14 @@
 //! NetQueue over real loopback sockets.
-#![cfg(marlin_platform = "windows")]
-
-mod common;
 
 use std::time::{Duration, Instant};
 
-use common::{Mode, Server, any_port, buffer_from, connected_pair, next, pattern};
 use marlin_net::{
     Completed, Engine, ErrorKind, IoBuffer, Keepalive, ListenOptions, NetQueue, Shutdown,
     SocketOptions,
 };
+use marlin_test_support::assert_duration_in;
+
+use crate::support::{Mode, Server, any_port, buffer_from, connected_pair, next, pattern};
 
 #[test]
 fn echo_in_one_queue() {
@@ -383,11 +382,7 @@ fn drop_with_operations_in_flight() {
         drop(queue);
     }
     // Dropping cancels; it must not wait for the peer.
-    assert!(
-        start.elapsed() < Duration::from_secs(10),
-        "{:?}",
-        start.elapsed()
-    );
+    assert_duration_in(start.elapsed(), ..Duration::from_secs(10));
 }
 
 #[test]

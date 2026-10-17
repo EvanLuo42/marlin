@@ -9,6 +9,7 @@
 mod alloc;
 mod drop;
 mod env;
+mod exclusive;
 mod fs;
 mod git;
 pub mod golden;
@@ -21,6 +22,7 @@ mod wait;
 pub use alloc::MemCap;
 pub use drop::{DropCounter, DropToken, Tracked, Tracker};
 pub use env::{bless, data_path, record_skip, scale, seed, test_uuid};
+pub use exclusive::one_at_a_time;
 pub use fs::{TempDir, TempFile};
 pub use git::{git, git_init, git_output};
 pub use panic::{assert_panics_with, panic_message};

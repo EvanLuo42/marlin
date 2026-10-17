@@ -1,33 +1,131 @@
-//! Win32 windows. Each test opens real windows, so they need a desktop session:
-//! `cargo test -p marlin-app -- --ignored`. Some briefly appear on screen.
-#![cfg(marlin_platform = "windows")]
+//! The Win32 backend: lifecycle notifications sent to the hidden helper window exactly as Windows
+//! sends them (sleep, session lock, display off), display device names, and windows driven
+//! through Win32 messages and queried through Win32 calls.
 
 use std::ptr;
 
-use marlin_app::os::windows::WindowExt;
-use marlin_app::{App, CursorGrab, Event, Point, Size, Surface, Window, WindowDesc, WindowMode};
+use marlin_app::os::windows::{AppExt, WindowExt};
+use marlin_app::{
+    App, CursorGrab, Event, Lifecycle, Point, Size, Surface, Window, WindowDesc, WindowMode,
+};
+use marlin_test_support::one_at_a_time;
 use windows_sys::Win32::Foundation::{POINT, RECT};
 use windows_sys::Win32::System::Memory::{GHND, GlobalAlloc, GlobalLock, GlobalUnlock};
+use windows_sys::Win32::System::Power::POWERBROADCAST_SETTING;
+use windows_sys::Win32::System::SystemServices::GUID_CONSOLE_DISPLAY_STATE;
 use windows_sys::Win32::UI::Shell::DROPFILES;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     GW_OWNER, GWL_EXSTYLE, GWL_STYLE, GetClipCursor, GetWindow, GetWindowLongPtrW, GetWindowRect,
-    PostMessageW, SW_MINIMIZE, SW_RESTORE, SendMessageW, SetForegroundWindow, ShowWindow, WM_CLOSE,
-    WM_DPICHANGED, WM_DROPFILES, WS_EX_APPWINDOW, WS_POPUP,
+    PBT_APMRESUMEAUTOMATIC, PBT_APMSUSPEND, PBT_POWERSETTINGCHANGE, PostMessageW, SW_MINIMIZE,
+    SW_RESTORE, SendMessageW, SetForegroundWindow, ShowWindow, WM_CLOSE, WM_DISPLAYCHANGE,
+    WM_DPICHANGED, WM_DROPFILES, WM_POWERBROADCAST, WM_WTSSESSION_CHANGE, WS_EX_APPWINDOW,
+    WS_POPUP, WTS_REMOTE_CONNECT, WTS_REMOTE_DISCONNECT, WTS_SESSION_LOCK, WTS_SESSION_UNLOCK,
 };
 
-fn hidden(title: &str) -> WindowDesc<'_> {
-    WindowDesc {
-        title,
-        width: 320,
-        height: 200,
-        visible: false,
-        ..WindowDesc::default()
+use crate::hidden;
+
+fn send(app: &App, msg: u32, wparam: usize, lparam: isize) {
+    // SAFETY: sending to the app's live helper window on its own thread; pointer lparams point to
+    // live locals.
+    unsafe { SendMessageW(app.message_window(), msg, wparam, lparam) };
+}
+
+#[test]
+fn suspend_and_resume() {
+    let mut app = App::new().unwrap();
+    send(&app, WM_POWERBROADCAST, PBT_APMSUSPEND as usize, 0);
+    // Windows tells every top-level window; reported once.
+    send(&app, WM_POWERBROADCAST, PBT_APMSUSPEND as usize, 0);
+    assert_eq!(app.pump(), &[Event::Suspended]);
+    assert_eq!(app.lifecycle(), Lifecycle::Suspended);
+
+    send(&app, WM_POWERBROADCAST, PBT_APMRESUMEAUTOMATIC as usize, 0);
+    assert_eq!(app.pump(), &[Event::Resumed]);
+    assert_eq!(app.lifecycle(), Lifecycle::Running);
+}
+
+/// A `PBT_POWERSETTINGCHANGE` for the console display state (0 off, 1 on, 2 dimmed).
+fn display_state(app: &App, state: u32) {
+    #[repr(C)]
+    struct Setting {
+        header: POWERBROADCAST_SETTING,
+        rest: [u8; 3],
+    }
+    let mut setting = Setting {
+        header: POWERBROADCAST_SETTING {
+            PowerSetting: GUID_CONSOLE_DISPLAY_STATE,
+            DataLength: 4,
+            Data: [0],
+        },
+        rest: [0; 3],
+    };
+    let data = state.to_le_bytes();
+    setting.header.Data[0] = data[0];
+    setting.rest.copy_from_slice(&data[1..]);
+    send(
+        app,
+        WM_POWERBROADCAST,
+        PBT_POWERSETTINGCHANGE as usize,
+        (&raw const setting) as isize,
+    );
+}
+
+#[test]
+fn constrained_while_locked_disconnected_or_display_off() {
+    let mut app = App::new().unwrap();
+    send(&app, WM_WTSSESSION_CHANGE, WTS_SESSION_LOCK as usize, 0);
+    assert_eq!(app.pump(), &[Event::Constrained]);
+    assert_eq!(app.lifecycle(), Lifecycle::Constrained);
+
+    // Further reasons while constrained change nothing visible.
+    display_state(&app, 0);
+    send(
+        &app,
+        WM_WTSSESSION_CHANGE,
+        WTS_REMOTE_DISCONNECT as usize,
+        0,
+    );
+    assert!(app.pump().is_empty());
+
+    // Dimmed counts as on; constrained until the last reason clears.
+    display_state(&app, 2);
+    send(&app, WM_WTSSESSION_CHANGE, WTS_SESSION_UNLOCK as usize, 0);
+    assert!(app.pump().is_empty());
+    assert_eq!(app.lifecycle(), Lifecycle::Constrained);
+    send(&app, WM_WTSSESSION_CHANGE, WTS_REMOTE_CONNECT as usize, 0);
+    assert_eq!(app.pump(), &[Event::Unconstrained]);
+    assert_eq!(app.lifecycle(), Lifecycle::Running);
+
+    // Suspended takes precedence.
+    display_state(&app, 0);
+    send(&app, WM_POWERBROADCAST, PBT_APMSUSPEND as usize, 0);
+    assert_eq!(app.pump(), &[Event::Constrained, Event::Suspended]);
+    assert_eq!(app.lifecycle(), Lifecycle::Suspended);
+    send(&app, WM_POWERBROADCAST, PBT_APMRESUMEAUTOMATIC as usize, 0);
+    display_state(&app, 1);
+    assert_eq!(app.pump(), &[Event::Resumed, Event::Unconstrained]);
+}
+
+#[test]
+fn display_changes_coalesce() {
+    let mut app = App::new().unwrap();
+    for _ in 0..3 {
+        send(&app, WM_DISPLAYCHANGE, 32, 0);
+    }
+    assert_eq!(app.pump(), &[Event::DisplaysChanged]);
+}
+
+#[test]
+fn display_device_names() {
+    let app = App::new().unwrap();
+    for d in &app.displays() {
+        assert!(d.device_name().starts_with(r"\\.\DISPLAY"), "{d:?}");
     }
 }
 
 #[test]
-#[ignore = "needs a desktop session"]
 fn window_lifecycle() {
+    let _desktop = one_at_a_time();
     let mut app = App::new().unwrap();
     let window = app.create_window(&hidden("marlin-app test")).unwrap();
 
@@ -70,89 +168,8 @@ fn window_lifecycle() {
 }
 
 #[test]
-#[ignore = "needs a desktop session"]
-fn position_size_and_limits() {
-    let mut app = App::new().unwrap();
-    let window = app.create_window(&hidden("placement")).unwrap();
-    let id = window.id();
-    app.pump();
-
-    let work = window.display().unwrap().work_area;
-    let target = Point::new(work.x + 40, work.y + 50);
-    window.set_position(target);
-    assert_eq!(window.position(), target);
-    let events = app.pump();
-    assert!(events.contains(&Event::Moved {
-        window: id,
-        position: target,
-    }));
-
-    window.set_size(Size::new(400, 300));
-    assert_eq!(window.size(), Size::new(400, 300));
-    assert!(app.pump().contains(&Event::Resized {
-        window: id,
-        size: Size::new(400, 300),
-    }));
-    // Resizing keeps the client origin.
-    assert_eq!(window.position(), target);
-
-    // Limits clamp both the current size and later requests.
-    window.set_min_size(Some(Size::new(500, 350)));
-    assert_eq!(window.size(), Size::new(500, 350));
-    window.set_max_size(Some(Size::new(600, 400)));
-    window.set_size(Size::new(2000, 2000));
-    assert_eq!(window.size(), Size::new(600, 400));
-    window.set_size(Size::new(10, 10));
-    assert_eq!(window.size(), Size::new(500, 350));
-    window.set_min_size(None);
-    window.set_max_size(None);
-    window.set_size(Size::new(200, 150));
-    assert_eq!(window.size(), Size::new(200, 150));
-}
-
-#[test]
-#[ignore = "needs a desktop session"]
-fn windows_open_on_the_chosen_display() {
-    let mut app = App::new().unwrap();
-    let displays = app.displays();
-    for display in &displays {
-        let window = app
-            .create_window(&WindowDesc {
-                display: Some(display.id),
-                ..hidden("display")
-            })
-            .unwrap();
-        assert_eq!(window.display().unwrap().id, display.id);
-        assert!(display.work_area.contains(window.position()));
-
-        // Fullscreen covers the window's display.
-        window.set_mode(WindowMode::BorderlessFullscreen).unwrap();
-        let size = Size::new(display.bounds.width, display.bounds.height);
-        assert_eq!(window.size(), size);
-        assert_eq!(
-            window.position(),
-            Point::new(display.bounds.x, display.bounds.y)
-        );
-
-        // Moving a fullscreen window to every display covers that display.
-        for other in &displays {
-            window.set_display(other.id).unwrap();
-            assert_eq!(window.display().unwrap().id, other.id);
-            assert_eq!(
-                window.position(),
-                Point::new(other.bounds.x, other.bounds.y)
-            );
-        }
-        window.set_mode(WindowMode::Windowed).unwrap();
-        window.set_display(display.id).unwrap();
-        assert_eq!(window.display().unwrap().id, display.id);
-        app.pump();
-    }
-}
-
-#[test]
-#[ignore = "needs a desktop session"]
 fn minimize_restore_and_visibility() {
+    let _desktop = one_at_a_time();
     let mut app = App::new().unwrap();
     let window = app.create_window(&hidden("minimize")).unwrap();
     let id = window.id();
@@ -184,8 +201,8 @@ fn minimize_restore_and_visibility() {
 }
 
 #[test]
-#[ignore = "needs a desktop session"]
 fn dpi_change_rescales() {
+    let _desktop = one_at_a_time();
     let mut app = App::new().unwrap();
     let window = app.create_window(&hidden("dpi")).unwrap();
     let id = window.id();
@@ -236,8 +253,8 @@ fn dpi_change_rescales() {
 }
 
 #[test]
-#[ignore = "needs a desktop session"]
 fn file_drop() {
+    let _desktop = one_at_a_time();
     let mut app = App::new().unwrap();
     let window = app
         .create_window(&WindowDesc {
@@ -282,8 +299,8 @@ fn file_drop() {
 }
 
 #[test]
-#[ignore = "needs a desktop session"]
 fn owned_and_undecorated_windows() {
+    let _desktop = one_at_a_time();
     let app = App::new().unwrap();
     let owner = app.create_window(&hidden("owner")).unwrap();
     let tool: Window = app
@@ -318,8 +335,8 @@ fn owned_and_undecorated_windows() {
 }
 
 #[test]
-#[ignore = "needs a desktop session"]
 fn cursor_grab_clips_while_focused() {
+    let _desktop = one_at_a_time();
     let mut app = App::new().unwrap();
     let window = app
         .create_window(&WindowDesc {

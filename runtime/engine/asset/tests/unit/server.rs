@@ -8,6 +8,8 @@ use marlin_asset::{
 };
 use marlin_reflect::{Reflect, type_info};
 
+use crate::support::uuid;
+
 #[derive(Clone, PartialEq, Debug, Default, Reflect)]
 struct Part {
     value: u32,
@@ -20,11 +22,7 @@ struct Linked {
     next: Option<AssetRef<Linked>>,
 }
 
-fn uuid(n: u128) -> Uuid {
-    Uuid::from_u128(0x0199_0000_0000_7000_8000_0000_0000_0000 | n)
-}
-
-fn part(id: u128, value: u32, next: Option<u128>) -> UnitObject {
+fn part(id: u64, value: u32, next: Option<u64>) -> UnitObject {
     let part = Part {
         value,
         next: next.map_or(Link::NONE, |n| Link::new(uuid(n))),
@@ -39,7 +37,7 @@ fn part(id: u128, value: u32, next: Option<u128>) -> UnitObject {
 }
 
 /// A unit at `path` of `parts`, importing what they link to outside it (`(uuid, unit path)`).
-fn unit_of(path: &str, parts: Vec<UnitObject>, imports: &[(u128, &str)]) -> Vec<u8> {
+fn unit_of(path: &str, parts: Vec<UnitObject>, imports: &[(u64, &str)]) -> Vec<u8> {
     let imports: Vec<(Uuid, u64)> = imports
         .iter()
         .map(|&(u, p)| (uuid(u), unit_id(p)))

@@ -1,3 +1,6 @@
+//! Helpers shared by marlin-net's test binaries (and tests/bench.rs): loopback addresses,
+//! connected pairs, the request/response framing and a threaded server with its own queue.
+
 #![allow(dead_code)]
 
 use std::collections::HashMap;

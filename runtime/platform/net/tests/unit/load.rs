@@ -1,12 +1,12 @@
 //! Many connections, large transfers and pipelining over real loopback sockets.
-#![cfg(marlin_platform = "windows")]
-
-mod common;
 
 use std::collections::{HashMap, VecDeque};
 
-use common::{Mode, Server, buffer_from, connected_pair, drain_frames, frame, next, pattern};
 use marlin_net::{Completed, ErrorKind, IoBuffer, NetQueue, RequestId, SocketId, SocketOptions};
+
+use crate::support::{
+    Mode, Server, buffer_from, connected_pair, drain_frames, frame, next, pattern,
+};
 
 /// Receives that wait for data before taking their buffer, on both ends.
 const READABLE: SocketOptions = SocketOptions {

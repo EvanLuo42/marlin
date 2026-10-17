@@ -1,16 +1,15 @@
 //! HID report parsing and encoding, from hand-built reports laid out as the controllers send
-//! them. Platform-independent.
+//! them.
 
 use marlin_input::hid::{
     self, Calibration, Feedback, Transport, dualsense, dualshock4, switch_pro,
 };
 use marlin_input::{GamepadButton as B, GamepadKind, HapticTone, TriggerEffect};
+use marlin_math::scalar::abs_diff_eq;
 
 const RAD: f32 = std::f32::consts::PI / 180.0;
-
-fn close(a: f32, b: f32) -> bool {
-    (a - b).abs() <= 1e-4 * b.abs().max(1.0)
-}
+/// Scaled sensor readings against their exact values.
+const EPS: f32 = 1e-4;
 
 fn bits(buttons: &[B]) -> u32 {
     buttons.iter().fold(0, |acc, b| acc | b.bit())
@@ -83,9 +82,17 @@ fn dualsense_usb_report() {
     assert_eq!(r.right_stick, [0.0, 1.0], "report +y is down");
     assert_eq!((r.left_trigger, r.right_trigger), (1.0, 64.0 / 255.0));
     let motion = r.motion.unwrap();
-    assert!(close(motion.gyro[0], 1000.0 * 2000.0 / 32767.0 * RAD));
-    assert!(close(motion.gyro[1], -500.0 * 2000.0 / 32767.0 * RAD));
-    assert!(close(motion.accel[1], 9.80665));
+    assert!(abs_diff_eq(
+        motion.gyro[0],
+        1000.0 * 2000.0 / 32767.0 * RAD,
+        EPS
+    ));
+    assert!(abs_diff_eq(
+        motion.gyro[1],
+        -500.0 * 2000.0 / 32767.0 * RAD,
+        EPS
+    ));
+    assert!(abs_diff_eq(motion.accel[1], 9.80665, EPS));
 
     // Wrong id or short report.
     report[0] = 0x02;
@@ -137,8 +144,8 @@ fn dualsense_calibration() {
     // 1080 °/s over 16000 counts; 2 g over 16384 counts.
     for i in 0..3 {
         assert_eq!(cal.gyro[i].0, 0.0);
-        assert!(close(cal.gyro[i].1, 1080.0 / 16000.0 * RAD));
-        assert!(close(cal.accel[i].1, 9.80665 / 8192.0));
+        assert!(abs_diff_eq(cal.gyro[i].1, 1080.0 / 16000.0 * RAD, EPS));
+        assert!(abs_diff_eq(cal.accel[i].1, 9.80665 / 8192.0, EPS));
     }
 
     let mut report = [0u8; 64];
@@ -149,7 +156,7 @@ fn dualsense_calibration() {
         .unwrap()
         .motion
         .unwrap();
-    assert!(close(motion.gyro[0], 1080.0 * RAD));
+    assert!(abs_diff_eq(motion.gyro[0], 1080.0 * RAD, EPS));
 
     // Degenerate or foreign data falls back to the nominal scales.
     assert_eq!(dualsense::calibration(&[0x05; 10]), Calibration::NOMINAL);
@@ -270,8 +277,12 @@ fn dualshock4_reports() {
     assert_eq!(r.buttons, expected);
     assert_eq!(r.left_stick, [0.0, 0.0]);
     let motion = r.motion.unwrap();
-    assert!(close(motion.gyro[1], 100.0 * 2000.0 / 32767.0 * RAD));
-    assert!(close(motion.accel[2], -9.80665));
+    assert!(abs_diff_eq(
+        motion.gyro[1],
+        100.0 * 2000.0 / 32767.0 * RAD,
+        EPS
+    ));
+    assert!(abs_diff_eq(motion.accel[2], -9.80665, EPS));
 
     let mut bt = [0u8; 78];
     bt[0] = 0x11;
@@ -314,7 +325,11 @@ fn dualshock4_calibration_orders_differ_by_transport() {
     let bt = dualshock4::calibration(&bt, Transport::Bluetooth);
     assert_eq!(usb, bt);
     for (i, (plus, _)) in plus_minus.iter().enumerate() {
-        assert!(close(usb.gyro[i].1, 1000.0 / (2.0 * *plus as f32) * RAD));
+        assert!(abs_diff_eq(
+            usb.gyro[i].1,
+            1000.0 / (2.0 * *plus as f32) * RAD,
+            EPS
+        ));
     }
     // A USB report read as Bluetooth is rejected by its id.
     assert_eq!(
@@ -378,8 +393,12 @@ fn switch_pro_reports() {
     assert_eq!(r.right_stick, [1.0, 0.0]);
     let motion = r.motion.unwrap();
     // IMU z is the PlayStation y; IMU x is minus z.
-    assert!(close(motion.accel[1], 4096.0 * 0.000244 * 9.80665));
-    assert!(close(motion.gyro[2], -1000.0 * 0.070 * RAD));
+    assert!(abs_diff_eq(
+        motion.accel[1],
+        4096.0 * 0.000244 * 9.80665,
+        EPS
+    ));
+    assert!(abs_diff_eq(motion.gyro[2], -1000.0 * 0.070 * RAD, EPS));
     assert_eq!((motion.gyro[0], motion.gyro[1]), (0.0, 0.0));
 
     // Command replies carry buttons and sticks but no IMU.

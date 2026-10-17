@@ -1,69 +1,16 @@
-//! The Win32 backend: hook and raw input registration, XInput and HID gamepads, extensions;
-//! with windows (ignored by default, need a desktop session): message translation, IME, injected
-//! touch, mouse and keyboard input.
-#![cfg(marlin_platform = "windows")]
+//! The Win32 backend with windows: message translation, the IME, extensions, and touch, mouse and
+//! keyboard input injected through the OS; connected XInput and HID gamepads (manual).
+
+use std::time::{Duration, Instant};
 
 use marlin_app::App;
-use marlin_input::{Input, KEY_LABEL_CAPACITY, Key, MAX_GAMEPADS};
-
-#[test]
-fn update_without_windows() {
-    let mut app = App::new().unwrap();
-    let mut input = Input::new(&app).unwrap();
-    for _ in 0..3 {
-        app.pump();
-        input.update();
-        let state = input.state();
-        assert_eq!(state.keys_down().count(), 0);
-        assert_eq!(state.text(), "");
-        assert_eq!(state.mouse().delta(), [0.0, 0.0]);
-    }
-}
-
-#[test]
-fn input_outlives_app() {
-    let app = App::new().unwrap();
-    let mut input = Input::new(&app).unwrap();
-    drop(app);
-    input.update();
-}
-
-#[test]
-fn several_inputs_per_app() {
-    let app = App::new().unwrap();
-    let inputs: Vec<_> = (0..3).map(|_| Input::new(&app).unwrap()).collect();
-    drop(inputs);
-    // Dropped inputs free their hook slots.
-    let _more: Vec<_> = (0..8).map(|_| Input::new(&app).unwrap()).collect();
-}
-
-#[test]
-fn key_labels_follow_the_layout() {
-    let app = App::new().unwrap();
-    let input = Input::new(&app).unwrap();
-    let mut buf = [0; KEY_LABEL_CAPACITY];
-    // The text depends on the layout and display language, but every letter key has one.
-    let label = input.key_label(Key::A, &mut buf).unwrap();
-    assert!(!label.is_empty());
-    assert!(input.key_label(Key::from_hid(0), &mut buf).is_none());
-}
-
-#[test]
-fn rumble_on_empty_slot_fails() {
-    let app = App::new().unwrap();
-    let mut input = Input::new(&app).unwrap();
-    input.update();
-    for pad in 0..MAX_GAMEPADS {
-        if !input.state().gamepad(pad).is_connected() {
-            assert!(input.set_rumble(pad, 0.0, 0.0).is_err());
-        }
-    }
-}
+use marlin_input::{Input, Key, MAX_GAMEPADS};
+use marlin_test_support::{one_at_a_time, skip, wait_until};
 
 /// Posts messages as the OS would deliver them, so translation runs without needing focus.
 #[test]
-#[ignore = "needs a desktop session"]
 fn translates_window_messages() {
+    let _desktop = one_at_a_time();
     use marlin_app::WindowDesc;
     use marlin_app::os::windows::WindowExt;
     use marlin_input::MouseButton;
@@ -187,26 +134,24 @@ fn topmost_window(app: &App, title: &str) -> marlin_app::Window {
     window
 }
 
-/// Pumps and updates until `done` holds for the latest state, for at most two seconds.
+/// Pumps and updates until `done` holds for the latest state; fails the test, naming `what`,
+/// after two seconds.
 fn pump_until(
     app: &mut App,
     input: &mut Input,
+    what: &str,
     mut done: impl FnMut(&marlin_input::InputState) -> bool,
-) -> bool {
-    let start = std::time::Instant::now();
-    while start.elapsed() < std::time::Duration::from_secs(2) {
-        app.pump_timeout(Some(std::time::Duration::from_millis(10)));
+) {
+    wait_until(Duration::from_secs(2), what, || {
+        app.pump_timeout(Some(Duration::from_millis(10)));
         input.update();
-        if done(input.state()) {
-            return true;
-        }
-    }
-    false
+        done(input.state())
+    });
 }
 
 #[test]
-#[ignore = "needs a desktop session"]
 fn text_input_toggles_the_ime() {
+    let _desktop = one_at_a_time();
     use marlin_app::Rect;
     use marlin_app::os::windows::WindowExt;
     use windows_sys::Win32::UI::Input::Ime::{ImmGetContext, ImmReleaseContext};
@@ -243,8 +188,8 @@ fn text_input_toggles_the_ime() {
 /// contacts land on it. Pen translation is not covered here: synthetic pen devices
 /// (`InjectSyntheticPointerInput`) deliver nothing without pen hardware.
 #[test]
-#[ignore = "needs a desktop session; injects touch input"]
 fn touch_from_injected_contacts() {
+    let _desktop = one_at_a_time();
     use std::mem;
 
     use windows_sys::Win32::Foundation::POINT;
@@ -285,23 +230,23 @@ fn touch_from_injected_contacts() {
         60,
     );
     inject(held, 50, 60);
-    assert!(pump_until(&mut app, &mut input, |s| {
+    pump_until(&mut app, &mut input, "a pressed touch", |s| {
         inject(held, 50, 60);
         s.touches().any(|t| t.pressed)
-    }));
+    });
     let t = *input.state().touches().next().unwrap();
     assert_eq!(t.window, window.id());
     assert_eq!(t.position, [50.0, 60.0]);
     assert!(!t.released);
 
-    assert!(pump_until(&mut app, &mut input, |s| {
+    pump_until(&mut app, &mut input, "the touch moved to (80, 70)", |s| {
         inject(held, 80, 70);
         s.touches().any(|t| t.position == [80.0, 70.0])
-    }));
+    });
     inject(POINTER_FLAG_UP, 80, 70);
-    assert!(pump_until(&mut app, &mut input, |s| {
+    pump_until(&mut app, &mut input, "a released touch", |s| {
         s.touches().any(|t| t.released && !t.cancelled)
-    }));
+    });
     // Lifted touches are gone the frame after.
     input.update();
     assert_eq!(input.state().touches().count(), 0);
@@ -311,8 +256,8 @@ fn touch_from_injected_contacts() {
 /// attribute to a device. Injects only while the test window has the foreground, so nothing
 /// reaches other applications.
 #[test]
-#[ignore = "needs a desktop session; injects mouse and keyboard input"]
 fn raw_input_from_injected_devices() {
+    let _desktop = one_at_a_time();
     use marlin_app::os::windows::WindowExt;
     use marlin_input::DeviceId;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
@@ -327,8 +272,7 @@ fn raw_input_from_injected_devices() {
     app.pump();
     // SAFETY: no preconditions.
     if unsafe { GetForegroundWindow() } != window.hwnd() {
-        eprintln!("the test window did not get the foreground; nothing injected");
-        return;
+        skip!("the test window did not get the foreground; nothing injected");
     }
     let send = |input: INPUT| {
         // SAFETY: one valid INPUT.
@@ -364,23 +308,26 @@ fn raw_input_from_injected_devices() {
     send(key(0));
     let mut moved = [0.0; 2];
     let mut device_pressed = false;
-    assert!(pump_until(&mut app, &mut input, |s| {
+    pump_until(&mut app, &mut input, "the mouse move and F24 press", |s| {
         let d = s.mouse().delta();
         moved = [moved[0] + d[0], moved[1] + d[1]];
         device_pressed |= s
             .device(DeviceId::UNKNOWN)
             .is_some_and(|d| d.key_pressed(Key::F24));
         moved == [7.0, -3.0] && device_pressed
-    }));
+    });
     assert!(input.state().key_down(Key::F24));
     send(key(KEYEVENTF_KEYUP));
-    assert!(pump_until(&mut app, &mut input, |s| s.key_released(Key::F24)));
+    pump_until(&mut app, &mut input, "the F24 release", |s| {
+        s.key_released(Key::F24)
+    });
 }
 
 /// Reads every connected gamepad, XInput and HID alike. Connect at least one first.
 #[test]
 #[ignore = "needs a connected gamepad"]
 fn connected_gamepads() {
+    let _desktop = one_at_a_time();
     use marlin_input::ext::adaptive_triggers::AdaptiveTriggers;
     use marlin_input::ext::gyro::Gyro;
     use marlin_input::ext::haptics::Haptics;
@@ -388,15 +335,15 @@ fn connected_gamepads() {
 
     let mut app = App::new().unwrap();
     let mut input = Input::new(&app).unwrap();
-    assert!(
-        pump_until(&mut app, &mut input, |s| s
-            .gamepads()
-            .iter()
-            .any(|p| p.is_connected())),
-        "no gamepad connected"
-    );
+    pump_until(&mut app, &mut input, "a connected gamepad", |s| {
+        s.gamepads().iter().any(|p| p.is_connected())
+    });
     // Let reports and setup commands flow for a while.
-    pump_until(&mut app, &mut input, |_| false);
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(2) {
+        app.pump_timeout(Some(Duration::from_millis(10)));
+        input.update();
+    }
     let gyro = Gyro::get(&input).unwrap();
     for pad in 0..MAX_GAMEPADS {
         let state = *input.state().gamepad(pad);

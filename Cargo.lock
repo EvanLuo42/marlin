@@ -267,6 +267,7 @@ name = "marlin-app"
 version = "0.1.0"
 dependencies = [
  "marlin-pal",
+ "marlin-test-support",
  "windows-sys",
 ]
 
@@ -285,6 +286,7 @@ dependencies = [
  "marlin-reflect",
  "marlin-serial",
  "marlin-sync",
+ "marlin-test-support",
 ]
 
 [[package]]
@@ -619,7 +621,9 @@ name = "marlin-input"
 version = "0.1.0"
 dependencies = [
  "marlin-app",
+ "marlin-math",
  "marlin-pal",
+ "marlin-test-support",
  "windows-sys",
 ]
 
@@ -679,6 +683,7 @@ dependencies = [
  "marlin-io",
  "marlin-math",
  "marlin-pal",
+ "marlin-test-support",
  "windows-sys",
 ]
 

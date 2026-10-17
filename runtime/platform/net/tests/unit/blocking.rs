@@ -1,15 +1,14 @@
 //! TcpStream, TcpListener and name resolution.
-#![cfg(marlin_platform = "windows")]
-
-mod common;
 
 use std::time::{Duration, Instant};
 
-use common::{Mode, Server, any_port, buffer_from, pattern};
 use marlin_net::{
     ErrorKind, IoBuffer, IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketOptions, TcpListener,
     TcpStream, resolve,
 };
+use marlin_test_support::{assert_duration_in, assert_waited};
+
+use crate::support::{Mode, Server, any_port, buffer_from, pattern};
 
 #[test]
 fn listener_and_stream() {
@@ -49,7 +48,7 @@ fn receive_timeout() {
         stream.recv(&mut buf).unwrap_err().kind(),
         ErrorKind::TimedOut
     );
-    assert!(start.elapsed() >= Duration::from_millis(90));
+    assert_waited(start, Duration::from_millis(90));
     // Still usable after a timed-out receive.
     stream.send_all(b"still here").unwrap();
 }
@@ -70,7 +69,7 @@ fn connect_errors() {
     )
     .err()
     .unwrap();
-    assert!(start.elapsed() < Duration::from_secs(5));
+    assert_duration_in(start.elapsed(), ..Duration::from_secs(5));
     println!("blackhole: {error}");
 }
 
