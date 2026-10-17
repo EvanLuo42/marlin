@@ -5,8 +5,7 @@
 前置：
 - [0001](0001-repo-layout.md)：crate 分层，`runtime/engine/render_graph`
 - [0002](0002-shader-interface.md)：bindless ABI 和 push constants
-- [0004](0004-shader-language.md) §10、§11.3：资源类型和 `[Push]` 参数
-- [0005](0005-shader-compiler.md) §6、§9：反射；Rust 端手写参数结构，用反射校验布局
+- [0005](0005-shader-compiler.md) §9：Rust 端手写参数结构，用反射校验布局
 
 本文以已删除的旧版渲染文档中的 render graph 一节为底稿，按这次访谈的结论修订。
 
@@ -17,10 +16,9 @@
 | 模型 | 每帧声明式重建；**声明顺序就是逻辑执行顺序**；编译器只做不改变可观察结果的变换：剔除、别名、跨队列调度 | 1 |
 | 粒度 | **整帧一个图**：所有 view、所有窗口、UI、present 都在同一个图里 | 1.3 |
 | 资源 | 瞬态（图创建，参与别名）、导入（外部 RHI 对象）、**历史**（graph 管理的双缓冲）和持久（graph 管理的单份） | 2 |
-| Pass 形式 | **手写参数结构推导访问**：`#[derive(PassParams)]` 的 `#[repr(C)]` struct，资源字段是 `Srv`/`Uav`/`Cbv` 句柄，GPU 上就是一个 u32；graph 从字段推导读写；闭包只录制命令 | 3 |
-| 其余访问 | render target、深度、indirect 参数、index buffer、copy、通过 buffer 间接引用的资源，在 pass builder 上显式声明 | 3.4 |
-| 校验 | Development 构建用反射同时校验参数结构的布局和每个资源字段的读写类型 | 3.3、9.2 |
-| 队列 | 默认 Graphics；`.async_compute()` 显式标注；graph 可以把异步 pass **提前**、把等待点**推迟** | 4.3 |
+| Pass 形式 | **显式声明 + 闭包**：setup 闭包里用 `b.read_*`/`b.write_*` 声明访问，返回执行闭包；执行闭包里用 `ctx.srv(h)`/`ctx.uav(h)` 取 bindless 下标填参数 | 3 |
+| 句柄 | `Copy` 的小整数，带版本号，每写一次产生新版本；用旧版本在 Development 构建里 panic；生命周期参数保证句柄不逃出本帧 | 2.4 |
+| 队列 | 默认 Graphics；`b.async_compute()` 显式标注；graph 可以把异步 pass **提前**、把等待点**推迟** | 4.3 |
 | 第一版范围 | 瞬态别名、异步计算与 Copy 队列、并行录制、编译缓存全部要做 | 4–6 |
 | 编译缓存 | 按拓扑哈希缓存 `CompiledPlan`；命中时连同物理资源和 bindless 视图一起复用 | 5 |
 | 并行录制 | 按代价切段，每段一个 job、一个 command list，按队列顺序提交 | 6 |
@@ -32,18 +30,18 @@
 
 ### 1.1 每帧重建，顺序语义
 
-- 每帧从头声明一遍图。图对象、pass 记录、闭包和参数结构都从帧 arena（`marlin_mem::FrameArenas`）分配，帧结束整体丢弃。
+- 每帧从头声明一遍图。图对象、pass 记录、闭包都从帧 arena（`marlin_mem::FrameArenas`）分配，帧结束整体丢弃。
 - **声明顺序就是逻辑执行顺序**，和单线程程序一样：一个 pass 读某资源，读到的是声明顺序里在它之前最后一次写入的内容。
 - 编译器在此基础上只做三类变换，并且都不改变可观察结果：
   - **剔除**：结果没人用的 pass；
   - **别名**：生命周期不重叠的瞬态资源共用内存；
   - **跨队列调度**：异步 pass 放到 Compute 队列并调整位置（§4.3）。
-- 句柄里不出现版本号。版本只在编译器内部存在，用来推导依赖。
+- 每次写产生资源的一个新版本，句柄带着版本号（§2.4）。顺序语义决定读到什么，版本号用来在 Development 构建里抓"读到了错误时刻的数据"这类 bug。
 
 ### 1.2 graph 管什么、不管什么
 
 - **管**：本帧中会改变状态的资源，也就是会被写入、或者在不同访问方式之间切换的资源。
-- **不管**：常驻只读资源，例如网格的顶点/index buffer、cook 出来的纹理、采样器。它们上传后一直停在 `SHADER_READ`（或 `INDEX`）状态，shader 直接用 bindless 下标访问。参数结构里这类字段写成普通 `u32`（采样器写成 `SamplerIndex`），graph 不跟踪。
+- **不管**：常驻只读资源，例如网格的顶点/index buffer、cook 出来的纹理、采样器。它们上传后一直停在 `SHADER_READ`（或 `INDEX`）状态，shader 直接用 bindless 下标访问。参数结构里直接放它们的下标，graph 不跟踪。
 - 上传完成之前的那次状态切换（`COPY_DST → SHADER_READ`）由上传方负责。以后流送上传改成 graph 里的 Copy pass 时，这条规则不变：资源交给 shader 之前，状态已经切好。
 
 ### 1.3 整帧一个图
@@ -81,107 +79,88 @@
 
 ### 2.4 句柄
 
-- `Tex`、`Buf` 是 `Copy` 的 4 字节句柄，指向本帧图里的资源表。
-- 视图句柄在资源句柄上派生：
-  - `tex.srv()`、`tex.uav()`：整个资源；
-  - `tex.mip(i).srv()`、`tex.mips(a..b).uav()`、`tex.layer(i)`：子资源范围（HZB 逐级生成、立方体贴图逐面）；
-  - `buf.srv()`、`buf.uav()`、`buf.cbv()`、`buf.range(offset, size)`。
-- 视图句柄（`Srv<T>`、`Uav<T>`、`Cbv`）也是 4 字节，`#[repr(transparent)]` 包着一个 u32。这个 u32 在建图时是"本帧视图表的下标"，执行时被替换成 bindless 下标。
-- **不用生命周期参数**把句柄绑在图上，否则所有参数结构都要带生命周期参数。作为代替，视图表下标里带一段帧序号；Development 构建里，用上一帧的句柄会直接 panic。
+- `TextureHandle<'g>`、`BufferHandle<'g>` 是 `Copy` 的小整数：资源槽加版本号。
+- **版本**：每次写（`b.write_*`、`b.color`、`b.depth`）返回同一资源的新版本句柄。之后再拿旧版本去读或写，Development 构建里直接 panic，并给出 pass 名和资源名。
+- **生命周期**：`'g` 是本帧图的生命周期，句柄不能逃出这一帧。跨帧的数据走历史或持久资源（§8），每帧重新取句柄。
+- **子资源范围**：`tex.mip(i)`、`tex.mips(a..b)`、`tex.layer(i)`、`buf.range(offset, size)` 返回带范围的句柄，用于 HZB 逐级生成、立方体贴图逐面这类情况。
+- 句柄只在 graph 内部有意义；要给 shader 的下标在执行闭包里用 `ctx.srv`/`ctx.uav`/`ctx.cbv` 取（§3.2）。
 
 ## 3. Pass
 
-### 3.1 参数结构
+### 3.1 声明读写，闭包录制
 
 ```rust
-#[derive(Reflect, PassParams)]
-#[repr(C)]
-struct BlurArgs {
-    src: Srv<Texture>,        // Texture2D<float4>
-    dst: Uav<Texture>,        // StorageTexture2D<float4>
-    linear: SamplerIndex,     // Sampler，不跟踪
-    radius: f32,
-}
-
 let half = g.create_texture("BloomHalf", TextureDesc::new_2d(w / 2, h / 2, Format::Rgba16Float));
-g.compute("BloomDown", BlurArgs { src: hdr.srv(), dst: half.uav(), linear, radius: 1.5 },
-    |ctx, a| {
+
+let half = g.add_compute("BloomDown", |b| {
+    let src = b.read_texture(hdr, Access::ComputeRead);
+    let dst = b.write_texture(half, Access::ComputeWrite);
+    (dst, move |ctx: &mut PassContext| {
         ctx.set_pipeline(&shaders.bloom_down);
+        ctx.push(&BlurArgs { src: ctx.srv(src), dst: ctx.uav(dst), linear, radius: 1.5 });
         ctx.dispatch(groups2(w / 2, h / 2, 8, 8));
-    });
+    })
+});
 ```
 
-- 参数结构是 Rust 端手写的 `#[repr(C)]` struct，和 shader 的 `[Push]` 参数类型一一对应（0005 §9：不生成 Rust 代码）。
-- 资源字段写成句柄类型，和 shader 语言的资源类型对应：
+- `add_raster`、`add_compute`、`add_copy` 都接一个 setup 闭包。setup 闭包在声明时立即执行：通过 builder `b` 声明读写和 pass 的选项，返回 (输出, 执行闭包)。输出是任意值，一般是新版本的句柄或句柄结构体。
+- 访问用 `b.read_texture`/`b.write_texture`/`b.read_buffer`/`b.write_buffer` 声明：
+  - 读返回同一个句柄，写返回新版本的句柄（§2.4）；
+  - 可以只声明子资源范围，例如 `b.write_texture(hzb.mip(i), Access::ComputeWrite)`。
+- `Access` 是一个枚举，每个值对应 RHI 的一个 (Stage, Access, Layout) 三元组：
 
-  | Rust 字段 | shader 类型（0004 §10） | graph 推导的访问 |
-  |---|---|---|
-  | `Srv<Buffer>` | `ReadOnlyBuffer<T>`、`ReadOnlyByteBuffer` | 本 pass 所在 stage 的 shader 读 |
-  | `Uav<Buffer>` | `Buffer<T>`、`ByteBuffer` | shader 读写 |
-  | `Cbv` | `Uniform<T>` | uniform 读 |
-  | `Srv<Texture>` | `Texture2D<T>`、`Texture2DArray<T>`、`TextureCube<T>` | shader 读 |
-  | `Uav<Texture>` | `StorageTexture2D<T>`、`StorageTexture2DArray<T>` | shader 读写（单个 mip） |
-  | `u32` | 常驻资源的下标 | 不跟踪 |
-  | `SamplerIndex` | `Sampler`、`ComparisonSampler` | 不跟踪 |
+  | `Access` | 含义 |
+  |---|---|
+  | `ComputeRead`、`VertexRead`、`PixelRead`、`MeshRead` | 对应 stage 的 shader 只读 |
+  | `ComputeWrite`、`PixelWrite` | shader 读写（UAV / 存储纹理） |
+  | `Uniform` | uniform 读 |
+  | `Indirect`、`Index` | indirect 参数、index buffer |
+  | `CopySrc`、`CopyDst` | 拷贝 |
+  | `RayQueryAs` | 加速结构（ext，以后用） |
 
-- `#[derive(PassParams)]` 生成两个方法：
-  - `visit_accesses`：列出每个句柄字段和它的访问方式，graph 在声明时调用，推导依赖和 barrier；
-  - `resolve`：执行时把每个视图表下标原地换成 bindless 下标。
+  render target 和深度不在这里，由 `b.color`、`b.depth` 声明（§3.3）。
+- shader 通过 buffer 里存的下标间接访问的 graph 资源（例如材质表引用的反馈 buffer），也照样用 `b.read_*`/`b.write_*` 声明。
+- 执行闭包是 `FnOnce(&mut PassContext) + Send`，捕获 setup 里拿到的句柄。
 
-  字段类型和大小都不变，所以 `resolve` 之后的结构就是 GPU 要的那份字节。
-- 支持嵌套 struct 和定长数组，例如 `[Srv<Texture>; 4]`。
-- 参数结构整体写进 push constants，大小不能超过 128 字节（0002 §2.1），否则 `derive` 报编译错误。更大的数据由 pass 自己 `ctx.upload(&T)` 写进当帧上传 ring，再把得到的 `Cbv` 放进参数结构。
-- stage 由 pass 类型决定：compute pass 是 compute stage；raster pass 默认"vertex + pixel 都可能读"，可以用 `#[stage(pixel)]` 字段属性收窄，以减少 barrier 的等待范围。
+### 3.2 PassContext
 
-### 3.2 闭包
-
-- 执行闭包是 `FnOnce(&mut PassContext, &Args) + Send`，拿到的 `&Args` 已经 resolve 过。
-- graph 在调用闭包之前就把参数写进 push constants，闭包只负责绑定 pipeline 和发命令。需要不同参数的多次 dispatch 用 `ctx.push(&other)` 覆盖。
+- `ctx.srv(h)`、`ctx.uav(h)`、`ctx.cbv(h)`：返回 bindless 下标，视图覆盖声明时的子资源范围。只能解析本 pass 声明过的句柄（§9.2）。
+- 参数结构是 Rust 端手写的 `#[repr(C)]` struct，资源字段就是 `u32`（0004 §10、0005 §9）。布局由 0005 §9 的反射比对负责，graph 不做额外检查。
 - 闭包不能插 barrier、不能开关 render pass，也看不到 RHI 对象本身，只能通过 `PassContext`：
   - `set_pipeline`、`dispatch`、`dispatch_indirect`、`draw*`、`dispatch_mesh*`、`set_viewport`、`set_scissor`、`set_stencil_reference`；
-  - `push(&T)`、`upload(&T) -> Cbv`；
-  - `index_buffer(h)`、`indirect_args(h)`：解析本 pass 已声明的 buffer；
+  - `push(&T)`：写 push constants，T 不超过 128 字节（0002 §2.1）；
+  - `upload(&T) -> u32`：写进当帧上传 ring，返回 uniform 视图的下标，用来传更大的数据；
+  - `index_buffer(h)`、`indirect_args(h)`：使用本 pass 声明过的 buffer；
   - `parallel(n, |i, sub| ...)`：把一个大 pass 拆成 n 个子 list 并行录制（§6.3）。
 
-### 3.3 和反射的校验
-
-Development 构建第一次用某个 pipeline 执行某个参数类型时，做一次比对（之后按 (pipeline, 类型) 缓存结果）：
-
-- **布局**：沿用 0005 §9 的规则，比较字段名、偏移和大小。
-- **读写类型**：
-  - 反射里是只读资源类型的字段，Rust 端必须是 `Srv` 或 `u32`；
-  - 是可写类型的，Rust 端必须是 `Uav`；
-  - 是 `Uniform<T>` 的，必须是 `Cbv` 或 `u32`。
-- 不一致就报错，指出 pass 名、字段名，以及双方的类型。
-
-这条校验保证 graph 推导出的访问和 shader 实际的访问一致。shader 通过 buffer 里存的下标间接访问的资源（材质表、实例数据里引用的纹理）看不到，这部分靠 §3.4 的显式声明。
-
-### 3.4 Pass 类型和显式声明
+### 3.3 Pass 类型和选项
 
 ```rust
-g.raster("Forward", ForwardArgs { frame: frame_cb, instances: inst.srv() }, |ctx, a| { ... })
-    .color(target, LoadOp::Clear(clear), StoreOp::Store)
-    .depth(depth, LoadOp::Clear(0.0), StoreOp::DontCare)
-    .index_buffer(mesh_indices)          // 只在 index buffer 由 graph 管理时才需要
-    .indirect_args(draw_args);
+let (color, depth) = g.add_raster("Forward", |b| {
+    let color = b.color(target, LoadOp::Clear(clear), StoreOp::Store);
+    let depth = b.depth(depth, LoadOp::Clear(0.0), StoreOp::DontCare);
+    let inst = b.read_buffer(instances, Access::VertexRead);
+    ((color, depth), move |ctx: &mut PassContext| { ... })
+});
 
-g.compute("Lum", args, |ctx, a| { ... }).async_compute();
-g.copy("Readback", |ctx| { ... }).copy_src(hdr).copy_dst(staging);
-g.compute("Resolve", args, ...).reads(material_table).writes(feedback);
+let lum = g.add_compute("Luminance", |b| {
+    b.async_compute();
+    ...
+});
 ```
 
-- **Raster**：带附件，graph 负责 begin/end render pass。附件的 load/store 写在 builder 上，不写在参数结构里。
+- **Raster**：带附件。`b.color`、`b.depth` 声明附件和 load/store op，返回新版本句柄；graph 负责 begin/end render pass。
 - **Compute**。
-- **Copy**：没有参数结构，访问全部显式声明（`.copy_src`、`.copy_dst`）。默认在 Graphics 队列；`.copy_queue()` 放到 Copy 队列。
-- builder 上的其他声明：
-  - `.reads(h)` / `.writes(h)`：通过 buffer 里存的下标间接访问的 graph 资源；
-  - `.side_effect()`：没有输出也不剔除，用于 readback、present、捕获；
-  - `.cost(us)`：录制代价的提示，没有历史计时的时候用（§4.7）。
+- **Copy**：默认在 Graphics 队列；`b.copy_queue()` 放到 Copy 队列。
+- builder 上的其他选项：
+  - `b.async_compute()`：放到 Compute 队列（§4.3）；
+  - `b.side_effect()`：没有输出也不剔除，用于 readback、present、捕获；
+  - `b.cost(us)`：录制代价的提示，没有历史计时的时候用（§4.7）。
 - 内置的 side-effect pass：`g.present(image)`、`g.readback(buf) -> Readback`、`g.capture(h, "name")`（§9.4）。
 
-### 3.5 子系统的接入约定
+### 3.4 子系统的接入约定
 
-- 每个子系统提供 `fn add_passes(g: &mut RenderGraph, inputs: &XInputs) -> XOutputs`，输入和输出都是句柄结构体。
+- 每个子系统提供 `fn add_passes<'g>(g: &mut RenderGraph<'g>, inputs: &XInputs<'g>) -> XOutputs<'g>`，输入和输出都是句柄结构体。
 - 子系统之间只交换句柄，不交换 RHI 对象。
 - 渲染器的整帧就是按顺序调用各个子系统的 `add_passes` 组装起来的。
 
@@ -198,7 +177,7 @@ g.compute("Resolve", args, ...).reads(material_table).writes(feedback);
 
 ### 4.3 队列分配与异步调度
 
-- 默认放在 Graphics 队列；`.async_compute()` 的放到 Compute 队列，`.copy_queue()` 的放到 Copy 队列。
+- 默认放在 Graphics 队列；`b.async_compute()` 的放到 Compute 队列，`b.copy_queue()` 的放到 Copy 队列。
 - 平台没有专用队列时（`Device::dedicated_queue` 返回 `None`），退化到 Graphics 队列。这时异步 pass 按声明位置执行，结果不变。
 - **提前与推迟**：
   - 每个异步 pass 在它的 Compute 队列上放到依赖允许的最早位置：只要它的所有前驱都已经在它之前完成。
@@ -230,7 +209,7 @@ g.compute("Resolve", args, ...).reads(material_table).writes(feedback);
 ### 4.7 分段
 
 - 每个队列的 pass 序列按估算代价切段，每段的录制量大约 0.1–0.3 ms。
-- 代价取上一帧该 pass 的 CPU 录制耗时（按 pass 名记），没有记录时用 `.cost()` 提示，再没有就按默认值。
+- 代价取上一帧该 pass 的 CPU 录制耗时（按 pass 名记），没有记录时用 `b.cost()` 提示，再没有就按默认值。
 - 跨队列的同步点必然是段边界。
 - 每段是一个 job、一个 command list。
 
@@ -245,7 +224,7 @@ g.compute("Resolve", args, ...).reads(material_table).writes(feedback);
 - 瞬态资源的描述，包括推导出的 usage；
 - 导入、历史和持久资源的初始状态。
 
-不包括：参数结构里的标量、闭包、导入资源具体是哪个 RHI 对象（但包括它的描述）。
+不包括：闭包和它捕获的值、导入资源具体是哪个 RHI 对象（但包括它的描述）。
 
 ### 5.2 CompiledPlan
 
@@ -330,10 +309,9 @@ let probes = g.persistent("ProbeCache", PERSISTENT_SCOPE, BufferDesc::structured
 只在 debug/development 构建里开，shipping 构建里关掉：
 
 - `PassContext` 只能解析本 pass 声明过的句柄；
-- 用上一帧的句柄；
-- 参数结构和反射不一致（§3.3）；
+- 读或写了旧版本的句柄（§2.4）；
 - 写了标成 `.read_only()` 的导入资源；
-- 同一个 pass 对同一子资源既声明读又声明写（应该用 `Uav`）；
+- 同一个 pass 对同一子资源既声明读又声明写（应该只声明一次写访问，`ComputeWrite` 这类访问本身包含读）；
 
 graph 的误用一律 panic，并给出 pass 名和资源名。RHI 本身返回的错误（设备丢失、内存不够）通过 `marlin-error` 以 `Result` 返回。
 
@@ -353,9 +331,7 @@ graph 的误用一律 panic，并给出 pass 名和资源名。RHI 本身返回�
 
 ### 10.1 crate 与依赖
 
-- `marlin-render-graph`（`runtime/engine/render_graph`）依赖 `marlin-rhi`、`marlin-mem`、`marlin-jobs`、`marlin-containers`、`marlin-hash`、`marlin-profile`、`marlin-reflect`、`marlin-diag`、`marlin-error`。
-- 新增 proc-macro crate `marlin-render-graph-derive`（`runtime/engine/render_graph_derive`），提供 `#[derive(PassParams)]`，由 `marlin-render-graph` 重新导出。
-- 反射比对要用 shader 产物的反射类型：放在 shader 编译器的 `reflect` crate 里（0005 §6.1），render_graph 依赖它。
+- `marlin-render-graph`（`runtime/engine/render_graph`）依赖 `marlin-rhi`、`marlin-mem`、`marlin-jobs`、`marlin-containers`、`marlin-hash`、`marlin-profile`、`marlin-diag`、`marlin-error`。
 - RHI 保持"薄"：状态跟踪、barrier 推导、延迟销毁都在 graph 里，RHI 不变（§10.3 的改动除外）。
 
 ### 10.2 迁移现有代码
@@ -388,7 +364,7 @@ graph 的误用一律 panic，并给出 pass 名和资源名。RHI 本身返回�
   - 异步调度：提前和推迟的位置、同步点合并、资源生命周期延长；
   - 分段：同步点必然是段边界；
   - 缓存：拓扑相同命中，改了任一访问或描述就失效；
-  - `PassParams` derive：访问列表、resolve 前后字节、嵌套和数组、超过 128 字节时编译失败；
+  - 句柄版本：读写旧版本时 panic，消息里有 pass 名和资源名；
   - 历史资源：交换、`prev` 为 `None` 的三种情况、退休。
 
   这些测试用一个不发 GPU 命令的录制后端，或者直接断言 `CompiledPlan`。
