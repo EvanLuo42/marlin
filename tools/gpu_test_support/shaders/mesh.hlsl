@@ -1,6 +1,6 @@
 // PLACEHOLDER: stands in for a Marlin shader until the Marlin shader compiler exists; the test
-// harness only ever sees the mesh.*.dxil blobs. Compiled once with the Windows SDK's dxc (see
-// tests/support/mod.rs). Never part of any build.
+// harness only ever sees mesh.*.dxil and mesh.*.spv. Compiled once by hand with dxc
+// (commands in marlin-gpu-test-support's src/lib.rs). Never part of any build.
 //
 // Mesh shading into an R32Uint target of `columns` columns: each mesh group emits one quad
 // covering one column, written as `column + 1`.

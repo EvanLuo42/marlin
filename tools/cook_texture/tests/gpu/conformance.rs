@@ -9,11 +9,12 @@
 //! combinations no encoder emits.
 //!
 //! The readback shader is a PLACEHOLDER for the in-house shader language:
-//! tests/data/shaders/texel_load.hlsl, compiled once by hand with the Windows SDK's dxc (in that
-//! directory) and committed as texel_load.cs.dxil:
+//! tests/data/shaders/texel_load.hlsl, compiled once by hand with dxc (in that directory) and
+//! committed as texel_load.cs.dxil and texel_load.cs.spv (SPIR-V bindings: 0016 §4.2):
 //!
 //! ```text
 //! dxc -HV 2021 -Qstrip_debug -Qstrip_reflect -T cs_6_6 -E main -Fo texel_load.cs.dxil texel_load.hlsl
+//! dxc -spirv -fspv-target-env=vulkan1.3 -HV 2021 -fvk-bind-resource-heap 0 0 -fvk-bind-sampler-heap 1 0 -fvk-bind-register b0 0 2 0 -T cs_6_6 -E main -Fo texel_load.cs.spv texel_load.hlsl
 //! ```
 
 use marlin_cook_texture::{
@@ -37,11 +38,14 @@ const INTERPOLATION_TOLERANCE: f32 = 8.0 / 255.0;
 
 const NVIDIA: u32 = 0x10de;
 
+/// The readback shader in the backend's [`SHADER_FORMAT`](rhi::SHADER_FORMAT).
 fn shader() -> ShaderModule<'static> {
-    ShaderModule {
-        code: include_bytes!("../data/shaders/texel_load.cs.dxil"),
-        entry: "main",
-    }
+    let code: &'static [u8] = match rhi::SHADER_FORMAT {
+        rhi::ShaderFormat::Dxil => include_bytes!("../data/shaders/texel_load.cs.dxil"),
+        rhi::ShaderFormat::SpirV => include_bytes!("../data/shaders/texel_load.cs.spv"),
+        format => panic!("no texel_load placeholder compiled to {format:?}"),
+    };
+    ShaderModule { code, entry: "main" }
 }
 
 fn rhi_format(format: Format) -> rhi::Format {

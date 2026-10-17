@@ -170,7 +170,7 @@ GPU 层的看门狗：xtask 监控测试进程，超时没有输出就报告卡�
 
 依赖 `marlin-rhi` 和只读写 PNG 的 `png` crate（不用 `image`：`png` 不和任何 runtime crate 共享依赖，不会经 feature 统一漏进 runtime 构建），只做 dev-dependency；xtask `check-layers` 本来就不管 dev-dependency。内容从 rhi 的 `tests/support` 搬过来，再补上其他 crate 自己抄的部分：
 
-- `devices()` / `device()`：每个测试二进制一对（enhanced + legacy barrier）共享、永不 drop 的硬件设备，开 validation。**禁止在 `gpu` 二进制里自己建 `Device`**，需要独占设备的测试放 `isolated_*`。
+- `devices()` / `hardware_device()`：每个测试二进制共享、永不 drop 的硬件设备，开 validation，backend 的每条屏障路径一个（Vulkan 一个；D3D12 是 enhanced + legacy 两个，0016 §9）；测试遍历切片，不写死下标。**禁止在 `gpu` 二进制里自己建 `Device`**，需要独占设备的测试放 `isolated_*`。
 - `run` / `run_on`：录制、提交、等待。
 - `buffer` / `upload` / `readback` / `read_bytes` / `read_words` / `bytes_of`。
 - `ColorTarget`、`ColumnTarget`、`compute_pipeline`、`solid_pipeline` 等常用目标和管线。
@@ -190,7 +190,7 @@ GPU 层的看门狗：xtask 监控测试进程，超时没有输出就报告卡�
 ### 7.1 渲染 golden image
 
 - 场景离屏渲染到小分辨率（64×64～256×256）目标，回读成 RGBA8。
-- 参考图：`tests/data/golden/<backend>/<name>.png`，用 Git LFS（`.gitattributes` 的 `**/tests/data/golden/** filter=lfs diff=lfs merge=lfs -text`；不带 `**/` 只匹配仓库根）。RHI 还没有 backend 名，`marlin_gpu_test_support::image::backend()` 暂按构建平台返回 `"d3d12"`。
+- 参考图：`tests/data/golden/<backend>/<name>.png`，用 Git LFS（`.gitattributes` 的 `**/tests/data/golden/** filter=lfs diff=lfs merge=lfs -text`；不带 `**/` 只匹配仓库根）。`<backend>` 是 `marlin_gpu_test_support::image::backend()`，即 `marlin_rhi::GRAPHICS_API.name()`（`vulkan`、`d3d12`）。
 - 比较：每像素通道差 ≤ `per_channel`，且超差像素比例 ≤ `max_ratio`；默认 `per_channel = 2`、`max_ratio = 0`，个别测试可放宽。
 - 失败时在 `target/golden/<crate>/<name>.{actual,diff}.png` 输出实际图和差异图，错误信息里给出路径（相对路径）。
 - `MARLIN_BLESS=1` 或 `xtask test --tier gpu --bless` 只重写**比较失败**的参考图（已匹配的 LFS 文件不动）；更新参考图要单独提交，提交信息写明原因。

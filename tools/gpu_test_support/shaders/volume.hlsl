@@ -1,6 +1,6 @@
 // PLACEHOLDER: stands in for a Marlin shader until the Marlin shader compiler exists; the test
-// harness only ever sees volume.write.cs.dxil and volume.read.cs.dxil. Compiled once with the
-// Windows SDK's dxc (see tests/support/mod.rs). Never part of any build.
+// harness only ever sees volume.*.dxil and volume.*.spv. Compiled once by hand with dxc
+// (commands in marlin-gpu-test-support's src/lib.rs). Never part of any build.
 //
 // 3D textures through the bindless table, `size` texels on a side:
 // - write_main: texel (x, y, z) of an R32Uint volume UAV = x + 16 * y + 256 * z + 1.

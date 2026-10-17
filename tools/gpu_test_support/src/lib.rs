@@ -3,10 +3,11 @@
 //! readback, common render targets and pipelines, the test shaders, and golden images
 //! ([`assert_image!`], [`read_texture`]).
 //!
-//! Shaders are looked up by name and stage. This is the shape the planned test-shader crate will
-//! have: its build.rs compiles every Marlin shader under `shaders/` with the Marlin shader
-//! compiler library and generates this lookup. Until that compiler exists, the blobs are
-//! PLACEHOLDERS: the `.hlsl` files beside them, compiled once by hand with the Windows SDK's dxc:
+//! Shaders are looked up by name and stage, in the backend's [`SHADER_FORMAT`]. This is the
+//! shape the planned test-shader crate will have: its build.rs compiles every Marlin shader under
+//! `shaders/` with the Marlin shader compiler library and generates this lookup. Until that
+//! compiler exists, the blobs are PLACEHOLDERS: the `.hlsl` files beside them, compiled once by
+//! hand with dxc, to DXIL:
 //!
 //! ```text
 //! dxc -HV 2021 -Qstrip_debug -Qstrip_reflect -T cs_6_6 -E main         -Fo fill.cs.dxil fill.hlsl
@@ -31,14 +32,48 @@
 //! dxc -HV 2021 -Qstrip_debug -Qstrip_reflect -T cs_6_6 -E cube_main    -Fo sample.cube.cs.dxil sample.hlsl
 //! dxc -HV 2021 -Qstrip_debug -Qstrip_reflect -T cs_6_6 -E main         -Fo rayquery.cs.dxil rayquery.hlsl
 //! ```
+//!
+//! and to SPIR-V with the Vulkan SDK's dxc, resources at the set 0 bindings of
+//! docs/design/0016-rhi-vulkan.md §4.2 (`$VK` stands for
+//! `-spirv -fspv-target-env=vulkan1.3 -HV 2021 -fvk-bind-resource-heap 0 0
+//! -fvk-bind-sampler-heap 1 0 -fvk-bind-register b0 0 2 0`), each checked with
+//! `spirv-val --target-env vulkan1.3`:
+//!
+//! ```text
+//! dxc $VK -T cs_6_6 -E main         -Fo fill.cs.spv fill.hlsl
+//! dxc $VK -T vs_6_6 -E vs_main      -Fo quad.vs.spv quad.hlsl
+//! dxc $VK -T ps_6_6 -E ps_main      -Fo quad.ps.spv quad.hlsl
+//! dxc $VK -T vs_6_6 -E vs_main      -Fo columns.vs.spv columns.hlsl
+//! dxc $VK -T ps_6_6 -E ps_main      -Fo columns.ps.spv columns.hlsl
+//! dxc $VK -T ms_6_6 -E ms_main      -Fo mesh.ms.spv mesh.hlsl
+//! dxc $VK -T as_6_6 -E as_main      -Fo mesh.as.spv mesh.hlsl
+//! dxc $VK -T ms_6_6 -E ms_amplified -Fo mesh.amplified.ms.spv mesh.hlsl
+//! dxc $VK -T ps_6_6 -E ps_main      -Fo mesh.ps.spv mesh.hlsl
+//! dxc $VK -T cs_6_6 -E main         -Fo count.cs.spv count.hlsl
+//! dxc $VK -T cs_6_6 -E write_main   -Fo volume.write.cs.spv volume.hlsl
+//! dxc $VK -T cs_6_6 -E read_main    -Fo volume.read.cs.spv volume.hlsl
+//! dxc $VK -T vs_6_6 -E vs_main      -Fo solid.vs.spv solid.hlsl
+//! dxc $VK -T ps_6_6 -E ps_main      -Fo solid.ps.spv solid.hlsl
+//! dxc $VK -T ps_6_6 -E ps_dual      -Fo solid.dual.ps.spv solid.hlsl
+//! dxc $VK -T ps_6_6 -E ps_coord     -Fo solid.coord.ps.spv solid.hlsl
+//! dxc $VK -T cs_6_6 -E sample_main  -Fo sample.sample.cs.spv sample.hlsl
+//! dxc $VK -T cs_6_6 -E stencil_main -Fo sample.stencil.cs.spv sample.hlsl
+//! dxc $VK -T cs_6_6 -E ms_main      -Fo sample.ms.cs.spv sample.hlsl
+//! dxc $VK -T cs_6_6 -E cube_main    -Fo sample.cube.cs.spv sample.hlsl
+//! dxc $VK -T cs_6_6 -E main         -Fo rayquery.cs.spv rayquery.hlsl
+//! ```
+//!
+//! A vertex shader that reads `SV_InstanceID` also needs `-fvk-support-nonzero-base-instance`
+//! for SPIR-V (it starts at 0 on every backend, 0002 §3); none of these does.
 
 pub mod image;
 
 pub use image::{Image, Tolerance, read_texture};
 
 use marlin_rhi::{
-    AdapterPreference, Buffer, BufferDesc, BufferUsage, CommandList, Device, DeviceDesc, Instance,
-    InstanceDesc, MemoryLocation, QueueType, ShaderModule,
+    AdapterPreference, Buffer, BufferDesc, BufferUsage, CommandList, Device, DeviceDesc,
+    GRAPHICS_API, GraphicsApi, Instance, InstanceDesc, MemoryLocation, QueueType, SHADER_FORMAT,
+    ShaderFormat, ShaderModule,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -50,86 +85,94 @@ pub enum Stage {
     Mesh,
 }
 
-/// The compiled shader `name` for `stage`. Panics if there is none.
+/// The compiled shader `name` for `stage`, in the backend's [`SHADER_FORMAT`]. Panics if there
+/// is none.
 pub fn shader(name: &str, stage: Stage) -> ShaderModule<'static> {
-    let (code, entry): (&'static [u8], _) = match (name, stage) {
-        ("fill", Stage::Compute) => (include_bytes!("../shaders/fill.cs.dxil"), "main"),
-        ("quad", Stage::Vertex) => (include_bytes!("../shaders/quad.vs.dxil"), "vs_main"),
-        ("quad", Stage::Pixel) => (include_bytes!("../shaders/quad.ps.dxil"), "ps_main"),
-        ("columns", Stage::Vertex) => (include_bytes!("../shaders/columns.vs.dxil"), "vs_main"),
-        ("columns", Stage::Pixel) => (include_bytes!("../shaders/columns.ps.dxil"), "ps_main"),
-        ("mesh", Stage::Mesh) => (include_bytes!("../shaders/mesh.ms.dxil"), "ms_main"),
-        ("mesh", Stage::Amplification) => (include_bytes!("../shaders/mesh.as.dxil"), "as_main"),
-        ("mesh.amplified", Stage::Mesh) => (
-            include_bytes!("../shaders/mesh.amplified.ms.dxil"),
-            "ms_amplified",
-        ),
-        ("mesh", Stage::Pixel) => (include_bytes!("../shaders/mesh.ps.dxil"), "ps_main"),
-        ("count", Stage::Compute) => (include_bytes!("../shaders/count.cs.dxil"), "main"),
-        ("volume.write", Stage::Compute) => (
-            include_bytes!("../shaders/volume.write.cs.dxil"),
-            "write_main",
-        ),
-        ("volume.read", Stage::Compute) => (
-            include_bytes!("../shaders/volume.read.cs.dxil"),
-            "read_main",
-        ),
-        ("solid", Stage::Vertex) => (include_bytes!("../shaders/solid.vs.dxil"), "vs_main"),
-        ("solid", Stage::Pixel) => (include_bytes!("../shaders/solid.ps.dxil"), "ps_main"),
-        ("solid.dual", Stage::Pixel) => {
-            (include_bytes!("../shaders/solid.dual.ps.dxil"), "ps_dual")
-        }
-        ("solid.coord", Stage::Pixel) => {
-            (include_bytes!("../shaders/solid.coord.ps.dxil"), "ps_coord")
-        }
-        ("sample", Stage::Compute) => (
-            include_bytes!("../shaders/sample.sample.cs.dxil"),
-            "sample_main",
-        ),
-        ("sample.stencil", Stage::Compute) => (
-            include_bytes!("../shaders/sample.stencil.cs.dxil"),
-            "stencil_main",
-        ),
-        ("sample.ms", Stage::Compute) => {
-            (include_bytes!("../shaders/sample.ms.cs.dxil"), "ms_main")
-        }
-        ("sample.cube", Stage::Compute) => (
-            include_bytes!("../shaders/sample.cube.cs.dxil"),
-            "cube_main",
-        ),
-        ("rayquery", Stage::Compute) => (include_bytes!("../shaders/rayquery.cs.dxil"), "main"),
-        _ => panic!("no test shader {name} for {stage:?}"),
+    // (name, stage) => file under shaders/ without the format's extension, entry point.
+    macro_rules! shaders {
+        ($(($name:literal, $stage:ident) => ($file:literal, $entry:literal),)*) => {
+            match (name, stage) {
+                $(($name, Stage::$stage) => (
+                    include_bytes!(concat!("../shaders/", $file, ".dxil")).as_slice(),
+                    include_bytes!(concat!("../shaders/", $file, ".spv")).as_slice(),
+                    $entry,
+                ),)*
+                _ => panic!("no test shader {name} for {stage:?}"),
+            }
+        };
+    }
+    let (dxil, spirv, entry) = shaders! {
+        ("fill", Compute) => ("fill.cs", "main"),
+        ("quad", Vertex) => ("quad.vs", "vs_main"),
+        ("quad", Pixel) => ("quad.ps", "ps_main"),
+        ("columns", Vertex) => ("columns.vs", "vs_main"),
+        ("columns", Pixel) => ("columns.ps", "ps_main"),
+        ("mesh", Mesh) => ("mesh.ms", "ms_main"),
+        ("mesh", Amplification) => ("mesh.as", "as_main"),
+        ("mesh.amplified", Mesh) => ("mesh.amplified.ms", "ms_amplified"),
+        ("mesh", Pixel) => ("mesh.ps", "ps_main"),
+        ("count", Compute) => ("count.cs", "main"),
+        ("volume.write", Compute) => ("volume.write.cs", "write_main"),
+        ("volume.read", Compute) => ("volume.read.cs", "read_main"),
+        ("solid", Vertex) => ("solid.vs", "vs_main"),
+        ("solid", Pixel) => ("solid.ps", "ps_main"),
+        ("solid.dual", Pixel) => ("solid.dual.ps", "ps_dual"),
+        ("solid.coord", Pixel) => ("solid.coord.ps", "ps_coord"),
+        ("sample", Compute) => ("sample.sample.cs", "sample_main"),
+        ("sample.stencil", Compute) => ("sample.stencil.cs", "stencil_main"),
+        ("sample.ms", Compute) => ("sample.ms.cs", "ms_main"),
+        ("sample.cube", Compute) => ("sample.cube.cs", "cube_main"),
+        ("rayquery", Compute) => ("rayquery.cs", "main"),
+    };
+    let code = match SHADER_FORMAT {
+        ShaderFormat::Dxil => dxil,
+        ShaderFormat::SpirV => spirv,
+        format => panic!("no test shaders are compiled to {format:?} (the backend's format)"),
     };
     ShaderModule { code, entry }
 }
 
-/// The hardware adapter with validation on, through enhanced barriers (where supported), then
-/// legacy ones. GPU tests run on real hardware, never on a software rasterizer.
+/// `DeviceDesc::disable_enhanced_barriers` for each barrier path the backend has: D3D12 has
+/// enhanced barriers and the legacy resource-state ones, every other backend one path (Vulkan's
+/// synchronization2). Known from the API, without creating a device to ask.
+fn barrier_paths() -> &'static [bool] {
+    match GRAPHICS_API {
+        GraphicsApi::D3D12 => &[false, true],
+        _ => &[false],
+    }
+}
+
+/// The hardware adapter with validation on, one device per barrier path the backend has (D3D12:
+/// enhanced barriers where supported, then legacy ones; Vulkan: one). Tests iterate the slice
+/// rather than index it. GPU tests run on real hardware, never on a software rasterizer.
 ///
-/// One pair per test binary, shared by its tests and never dropped, as an application keeps its
-/// device: D3D12 has one device per adapter in a process anyway, and tearing down `Device`s
-/// while other threads use the same adapter is not what engines do (it can deadlock the NVIDIA
-/// driver when another thread creates pipelines from cached blobs).
-pub fn devices() -> &'static [Device; 2] {
-    static DEVICES: std::sync::OnceLock<[Device; 2]> = std::sync::OnceLock::new();
+/// Created once per test binary, shared by its tests and never dropped, as an application keeps
+/// its device: tearing down devices while other threads use the same adapter is not what
+/// engines do, and it has deadlocked the NVIDIA driver (when another thread created pipelines
+/// from cached blobs).
+pub fn devices() -> &'static [Device] {
+    static DEVICES: std::sync::OnceLock<Vec<Device>> = std::sync::OnceLock::new();
     DEVICES.get_or_init(|| {
         let instance = Instance::new(&InstanceDesc {
             validation: true,
             ..InstanceDesc::default()
         })
         .unwrap();
-        [false, true].map(|legacy| {
-            instance
-                .create_device(&DeviceDesc {
-                    adapter: AdapterPreference::HighPerformance,
-                    disable_enhanced_barriers: legacy,
-                })
-                .unwrap()
-        })
+        barrier_paths()
+            .iter()
+            .map(|&legacy| {
+                instance
+                    .create_device(&DeviceDesc {
+                        adapter: AdapterPreference::HighPerformance,
+                        disable_enhanced_barriers: legacy,
+                    })
+                    .unwrap()
+            })
+            .collect()
     })
 }
 
-/// The shared device through enhanced barriers (see [`devices`]).
+/// The first shared device (see [`devices`]): enhanced barriers on D3D12.
 pub fn hardware_device() -> &'static Device {
     &devices()[0]
 }

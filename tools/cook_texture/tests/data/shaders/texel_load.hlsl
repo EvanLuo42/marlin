@@ -1,6 +1,6 @@
 // PLACEHOLDER: stands in for a Marlin shader until the in-house shader language and compiler
-// exist; the tests only ever see texel_load.cs.dxil. Compiled once by hand with the Windows SDK's
-// dxc (see tests/gpu/conformance.rs). Never part of any build.
+// exist; the tests only ever see texel_load.cs.dxil and texel_load.cs.spv. Compiled once by hand
+// with dxc (commands in tests/gpu/conformance.rs). Never part of any build.
 //
 // Loads every texel of one mip and layer of a texture, unfiltered, and stores it as four floats
 // at `offset + (y * width + x) * 16` of a raw buffer.

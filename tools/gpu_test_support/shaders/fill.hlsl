@@ -1,6 +1,6 @@
 // PLACEHOLDER: stands in for a Marlin shader until the Marlin shader compiler exists; the test
-// harness only ever sees fill.cs.dxil. Compiled once with the Windows SDK's dxc (see
-// tests/support/mod.rs). Never part of any build.
+// harness only ever sees fill.*.dxil and fill.*.spv. Compiled once by hand with dxc
+// (commands in marlin-gpu-test-support's src/lib.rs). Never part of any build.
 //
 // Writes `base + 3 * i` to word i of a raw buffer reached through the bindless table.
 

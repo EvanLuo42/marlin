@@ -1,6 +1,6 @@
 // PLACEHOLDER: stands in for a Marlin shader until the Marlin shader compiler exists; the test
-// harness only ever sees the sample.*.cs.dxil blobs. Compiled once with the Windows SDK's dxc (see
-// tests/support/mod.rs). Never part of any build.
+// harness only ever sees sample.*.dxil and sample.*.spv. Compiled once by hand with dxc
+// (commands in marlin-gpu-test-support's src/lib.rs). Never part of any build.
 //
 // Reads textures through views and samplers the tests make, writing what it saw to a raw buffer.
 

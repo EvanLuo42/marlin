@@ -3,7 +3,8 @@
 //! `marlin_gpu_test_support`, with a cook service on a background thread where a test needs one.
 //! Never create a `Device` here.
 //! Run alone with `cargo test -p marlin-framework --test gpu`; `MARLIN_BLESS=1` rewrites the
-//! golden images in `tests/data/golden/<backend>/` that no longer match.
+//! golden images in `tests/data/golden/<api>/` (`<api>` = `marlin_rhi::GRAPHICS_API.name()`) that
+//! no longer match.
 #![cfg(marlin_platform = "windows")]
 
 mod end_to_end;

@@ -1,6 +1,6 @@
 // PLACEHOLDER: stands in for a Marlin shader until the Marlin shader compiler exists; the test
-// harness only ever sees rayquery.cs.dxil. Compiled once with the Windows SDK's dxc (see
-// tests/support/mod.rs). Never part of any build.
+// harness only ever sees rayquery.*.dxil and rayquery.*.spv. Compiled once by hand with dxc
+// (commands in marlin-gpu-test-support's src/lib.rs). Never part of any build.
 //
 // Casts `count` rays along +Z from z = -1, spread over x in -2..2 at y = 0.1, against a top-level
 // acceleration structure reached through the bindless table. Word i of the output is

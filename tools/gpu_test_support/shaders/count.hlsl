@@ -1,6 +1,6 @@
 // PLACEHOLDER: stands in for a Marlin shader until the Marlin shader compiler exists; the test
-// harness only ever sees count.cs.dxil. Compiled once with the Windows SDK's dxc (see
-// tests/support/mod.rs). Never part of any build.
+// harness only ever sees count.*.dxil and count.*.spv. Compiled once by hand with dxc
+// (commands in marlin-gpu-test-support's src/lib.rs). Never part of any build.
 //
 // Counts threads per dispatch: every thread adds 1 to word `constant` (push-constant word 31,
 // set per indirect dispatch) of a raw buffer.

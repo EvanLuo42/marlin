@@ -1,6 +1,6 @@
 // PLACEHOLDER: stands in for a Marlin shader until the Marlin shader compiler exists; the test
-// harness only ever sees solid.vs.dxil and solid.*.ps.dxil. Compiled once with the Windows SDK's
-// dxc (see tests/support/mod.rs). Never part of any build.
+// harness only ever sees solid.*.dxil and solid.*.spv. Compiled once by hand with dxc
+// (commands in marlin-gpu-test-support's src/lib.rs). Never part of any build.
 //
 // One triangle from SV_VertexID alone, shaded flat. Push constants: color (words 0-3), mode
 // (word 4: 0 = covers the whole target, 1 = the lower-left half below the diagonal, 2 = a sliver
@@ -33,9 +33,15 @@ float4 ps_main() : SV_Target {
     return push.color;
 }
 
+// Vulkan takes the second source at location 0, index 1 (D3D12 at SV_Target1).
 struct Dual {
+#ifdef __spirv__
+    [[vk::location(0)]] float4 color0 : SV_Target0;
+    [[vk::location(0), vk::index(1)]] float4 color1 : SV_Target1;
+#else
     float4 color0 : SV_Target0;
     float4 color1 : SV_Target1;
+#endif
 };
 
 Dual ps_dual() {

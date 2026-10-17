@@ -1,6 +1,6 @@
 // PLACEHOLDER: stands in for a Marlin shader until the Marlin shader compiler exists; the engine
-// only ever sees forward.vs.dxil and forward.ps.dxil. Compiled once with the Windows SDK's dxc
-// (see src/shaders.rs). Never part of any build. Interface: docs/design/0002-shader-interface.md.
+// only ever sees forward.*.dxil and forward.*.spv. Compiled once by hand with dxc (commands in
+// src/shaders.rs). Never part of any build. Interface: docs/design/0002-shader-interface.md.
 //
 // Forward opaque pass: vertex pulling, per-instance transforms and colors, one directional light
 // plus ambient.

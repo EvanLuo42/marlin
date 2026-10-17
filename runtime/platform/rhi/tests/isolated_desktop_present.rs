@@ -1,4 +1,5 @@
-//! Clear-and-present on a real (hidden) window, with validation on, through both barrier paths.
+//! Clear-and-present on a real (hidden) window, with validation on, through each barrier path
+//! the backend has.
 //! Desktop tier (docs/design/0014-testing.md §5): it needs a desktop session. Its own binary, as
 //! it owns the window and swapchain. Run alone with
 //! `cargo test -p marlin-rhi --test isolated_desktop_present`.
@@ -126,12 +127,10 @@ fn clear_and_present(device: &Device) {
     assert_eq!(device.validation_errors(), 0);
 }
 
+/// On each shared device: every barrier path the backend has (`devices`).
 #[test]
-fn enhanced_barriers() {
-    clear_and_present(&devices()[0]);
-}
-
-#[test]
-fn legacy_barriers() {
-    clear_and_present(&devices()[1]);
+fn clears_and_presents() {
+    for device in devices() {
+        clear_and_present(device);
+    }
 }

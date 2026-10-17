@@ -1,6 +1,7 @@
 //! Golden images (docs/design/0014-testing.md §7.1): a frame rendered offscreen and read back,
-//! compared with a reference PNG under `<crate>/tests/data/golden/<backend>/<name>.png` (kept in
-//! Git LFS) within a per-channel tolerance.
+//! compared with a reference PNG under `<crate>/tests/data/golden/<api>/<name>.png` (kept in Git
+//! LFS) within a per-channel tolerance. `<api>` is [`backend`]: the graphics API's name, so each
+//! API keeps its own references (`vulkan`, `d3d12`).
 //!
 //! On a mismatch the actual image and a diff image go to `target/golden/<crate>/`, and the panic
 //! names them. `MARLIN_BLESS=1` rewrites the references that do not match instead.
@@ -150,14 +151,11 @@ pub fn read_texture(device: &Device, texture: &Texture) -> Image {
     Image::new(width, height, rgba8)
 }
 
-/// The backend golden references are kept under. The RHI does not name its backend yet; D3D12 is
-/// the only one with hardware. Per-vendor directories (`d3d12-nvidia`) come when vendors differ.
+/// The directory golden references are kept under: the backend's graphics API,
+/// [`GRAPHICS_API`](marlin_rhi::GRAPHICS_API)`.name()` (`vulkan`, `d3d12`, ...). Per-vendor
+/// directories (`vulkan-nvidia`) come when vendors differ.
 pub fn backend() -> &'static str {
-    if cfg!(any(marlin_platform = "windows", marlin_platform = "xbox")) {
-        "d3d12"
-    } else {
-        "unknown"
-    }
+    marlin_rhi::GRAPHICS_API.name()
 }
 
 /// Asserts that `image` matches the golden reference `name` of the calling crate within a

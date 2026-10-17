@@ -1,6 +1,6 @@
 // PLACEHOLDER: stands in for a Marlin shader until the Marlin shader compiler exists; the test
-// harness only ever sees columns.vs.dxil and columns.ps.dxil. Compiled once with the Windows SDK's
-// dxc (see tests/support/mod.rs). Never part of any build.
+// harness only ever sees columns.*.dxil and columns.*.spv. Compiled once by hand with dxc
+// (commands in marlin-gpu-test-support's src/lib.rs). Never part of any build.
 //
 // Draws vertical columns into an R32Uint target: column `first` (push-constant word 31, which
 // indirect draws set per draw) through `first + span - 1` of `columns`, written as `first + 1 +
