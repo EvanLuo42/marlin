@@ -204,6 +204,7 @@ pub(super) const D3D12_RESOURCE_STATE_COPY_SOURCE: u32 = 0x800;
 pub(super) const D3D12_RESOURCE_STATE_RESOLVE_DEST: u32 = 0x1000;
 pub(super) const D3D12_RESOURCE_STATE_RESOLVE_SOURCE: u32 = 0x2000;
 
+pub(super) const D3D12_BARRIER_TYPE_GLOBAL: i32 = 0;
 pub(super) const D3D12_BARRIER_TYPE_TEXTURE: i32 = 1;
 pub(super) const D3D12_BARRIER_TYPE_BUFFER: i32 = 2;
 pub(super) const D3D12_BARRIER_ACCESS_NO_ACCESS: u32 = 0x8000_0000;
@@ -579,6 +580,15 @@ pub(super) struct D3D12_BUFFER_BARRIER {
     pub pResource: *mut c_void,
     pub Offset: u64,
     pub Size: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(super) struct D3D12_GLOBAL_BARRIER {
+    pub SyncBefore: u32,
+    pub SyncAfter: u32,
+    pub AccessBefore: u32,
+    pub AccessAfter: u32,
 }
 
 /// The union holds one pointer, whichever barrier type `Type` names.

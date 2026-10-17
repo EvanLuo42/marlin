@@ -18,14 +18,14 @@ use alloc::vec::Vec;
 use crate::{
     AccelerationStructure, AccelerationStructureCopy, AccelerationStructureInputs,
     AccelerationStructureKind, AccelerationStructureSizes, AdapterInfo, Buffer, BufferBarrier,
-    BufferDesc, BufferTextureCopy, BufferViewDesc, BuildAccelerationStructure, BuildFlags,
-    ClearColor, ClockCalibration, ColorSpace, ComputePipelineDesc, DepthStencilViewDesc,
-    DeviceDesc, Features, Fence, FenceWait, Format, FormatSupport, FrameStatistics,
-    GraphicsPipelineDesc, HdrMetadata, HeapDesc, IndexFormat, IndirectArgs, InstanceDesc,
-    MarkerPoint, MemoryBudget, MemoryRequirements, MeshPipelineDesc, OutputInfo, Pageable,
-    PredicateSkip, PresentMode, PresentStatus, QueryPoolDesc, QueueType, Rect, RenderPassDesc,
-    RenderTargetView, RenderTargetViewDesc, ResidencyPriority, Result, SamplerDesc, ShaderFormat,
-    ShadingRate, ShadingRateCombiner, SparseBind, SparseTextureLayout, SubmitDesc,
+    BufferDesc, BufferState, BufferTextureCopy, BufferViewDesc, BuildAccelerationStructure,
+    BuildFlags, ClearColor, ClockCalibration, ColorSpace, ComputePipelineDesc,
+    DepthStencilViewDesc, DeviceDesc, Features, Fence, FenceWait, Format, FormatSupport,
+    FrameStatistics, GraphicsPipelineDesc, HdrMetadata, HeapDesc, IndexFormat, IndirectArgs,
+    InstanceDesc, MarkerPoint, MemoryBudget, MemoryRequirements, MeshPipelineDesc, OutputInfo,
+    Pageable, PredicateSkip, PresentMode, PresentStatus, QueryPoolDesc, QueueType, Rect,
+    RenderPassDesc, RenderTargetView, RenderTargetViewDesc, ResidencyPriority, Result, SamplerDesc,
+    ShaderFormat, ShadingRate, ShadingRateCombiner, SparseBind, SparseTextureLayout, SubmitDesc,
     SubresourceRange, SurfaceHandle, SwapchainDesc, Texture, TextureBarrier, TextureCopy,
     TextureDesc, TextureResolve, TextureViewDesc, Viewport,
 };
@@ -198,11 +198,13 @@ pub(crate) trait Device: Types {
         inputs: &AccelerationStructureInputs<'_>,
         flags: BuildFlags,
     ) -> AccelerationStructureSizes;
-    /// The structure and the buffer holding it.
+    /// A structure at `offset` of `storage`, a buffer with acceleration structure storage usage,
+    /// and a second handle to `storage` sharing its resource (the structure keeps it alive).
     fn create_acceleration_structure(
         device: &Self::Device,
+        storage: &Self::Buffer,
+        offset: u64,
         kind: AccelerationStructureKind,
-        size: u64,
     ) -> Result<(Self::Buffer, Self::AccelerationStructure)>;
 
     fn create_sparse_buffer(device: &Self::Device, desc: &BufferDesc) -> Result<Self::Buffer>;
@@ -301,6 +303,7 @@ pub(crate) trait Commands: Types {
     fn end(list: &mut Self::CommandList) -> Result<()>;
     fn texture_barriers(list: &mut Self::CommandList, barriers: &[TextureBarrier<'_>]);
     fn buffer_barriers(list: &mut Self::CommandList, barriers: &[BufferBarrier<'_>]);
+    fn memory_barrier(list: &mut Self::CommandList, before: BufferState, after: BufferState);
     fn begin_render_pass(list: &mut Self::CommandList, desc: &RenderPassDesc<'_>);
     fn end_render_pass(list: &mut Self::CommandList);
     fn copy_buffer(

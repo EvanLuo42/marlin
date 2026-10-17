@@ -5,24 +5,29 @@
 
 use core::ffi::c_void;
 
-use crate::api::ResourceKind;
 use crate::backend::imp::Backend;
 use crate::contract::{Commands, Handles, Object};
 use crate::{
     ACCELERATION_STRUCTURE_ALIGNMENT, AccelerationStructure, AccelerationStructureCopy,
-    AccelerationStructureGeometry, AccelerationStructureInputs, Buffer, BufferBarrier,
-    BufferTextureCopy, BufferUsage, BuildAccelerationStructure, BuildFlags, ClearColor,
-    CommandList, CommandPool, ComputePipeline, DispatchIndirectArgs, DrawIndexedIndirectArgs,
-    DrawIndirectArgs, GraphicsPipeline, INSTANCE_ALIGNMENT, IndexFormat, IndirectArgs, Layout,
-    MAX_COLOR_ATTACHMENTS, MAX_PUSH_CONSTANTS, MarkerPoint, MeshPipeline, PredicateSkip, QueryKind,
-    QueryPool, QueueType, Rect, RenderPassDesc, Result, ShadingRate, ShadingRateCombiner,
-    SubresourceRange, TEXTURE_OFFSET_ALIGNMENT, TEXTURE_ROW_PITCH_ALIGNMENT, Texture,
-    TextureBarrier, TextureCopy, TextureDesc, TextureResolve, TextureUsage, VariableRateShading,
-    Viewport,
+    AccelerationStructureGeometry, AccelerationStructureInputs, Access, Buffer, BufferBarrier,
+    BufferState, BufferTextureCopy, BufferUsage, BuildAccelerationStructure, BuildFlags,
+    ClearColor, CommandList, CommandPool, ComputePipeline, DispatchIndirectArgs,
+    DrawIndexedIndirectArgs, DrawIndirectArgs, GraphicsPipeline, INSTANCE_ALIGNMENT, IndexFormat,
+    IndirectArgs, Layout, MAX_COLOR_ATTACHMENTS, MAX_PUSH_CONSTANTS, MarkerPoint, MeshPipeline,
+    PredicateSkip, QueryKind, QueryPool, QueueType, Rect, RenderPassDesc, Result, ShadingRate,
+    ShadingRateCombiner, SubresourceRange, TEXTURE_OFFSET_ALIGNMENT, TEXTURE_ROW_PITCH_ALIGNMENT,
+    Texture, TextureBarrier, TextureCopy, TextureDesc, TextureResolve, TextureUsage,
+    VariableRateShading, Viewport,
 };
 
 /// Most viewports and scissors one call sets (D3D12's and Vulkan's guaranteed minimum).
 pub const MAX_VIEWPORTS: usize = 16;
+
+/// The accesses [`CommandList::memory_barrier`] orders: the ones that need no layout or state
+/// change (legacy D3D12 orders them with a UAV barrier naming no resource).
+pub const MEMORY_BARRIER_ACCESS: Access = Access::UNORDERED_ACCESS
+    .union(Access::ACCELERATION_STRUCTURE_READ)
+    .union(Access::ACCELERATION_STRUCTURE_WRITE);
 
 fn index_size(format: IndexFormat) -> u64 {
     match format {
@@ -89,6 +94,22 @@ impl CommandList {
 
     pub fn buffer_barriers(&mut self, barriers: &[BufferBarrier<'_>]) {
         Backend::buffer_barriers(&mut self.raw, barriers);
+    }
+
+    /// An execution and memory dependency on every resource without naming one: the
+    /// unordered-access and acceleration structure accesses of `before` complete and become
+    /// visible before those of `after` start. For many resources at once, such as a batch of
+    /// bottom-level builds followed by the top-level build reading them. It changes no layout or
+    /// state, so both sides take only [`MEMORY_BARRIER_ACCESS`] (or [`Access::NONE`]);
+    /// other hazards need a buffer or texture barrier.
+    pub fn memory_barrier(&mut self, before: BufferState, after: BufferState) {
+        self.compute("a memory barrier");
+        assert!(
+            MEMORY_BARRIER_ACCESS.contains(before.access)
+                && MEMORY_BARRIER_ACCESS.contains(after.access),
+            "memory barriers order unordered-access and acceleration structure accesses only"
+        );
+        Backend::memory_barrier(&mut self.raw, before, after);
     }
 
     /// Binds render targets and applies their load ops. No barriers or copies are allowed until
@@ -825,10 +846,6 @@ fn check_copy(buffer: &Buffer, texture: &Texture, r: &BufferTextureCopy) {
     assert!(
         d.sample_count == 1,
         "multisampled textures do not copy to buffers"
-    );
-    assert!(
-        texture.kind != ResourceKind::AccelerationStructure,
-        "not a texture"
     );
     assert!(
         r.mip < d.mip_levels && r.layer < d.array_layers,

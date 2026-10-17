@@ -730,6 +730,11 @@ flags! {
         /// May be exported to another device or process
         /// ([`Device::export_buffer`](crate::Device::export_buffer)).
         SHARED = 0x100,
+        /// Holds acceleration structures, at [`ACCELERATION_STRUCTURE_ALIGNMENT`] offsets
+        /// ([`Device::create_acceleration_structure_in`](crate::Device::create_acceleration_structure_in)).
+        /// Combines with no other usage; [`MemoryLocation::GpuOnly`], committed or placed. Its
+        /// structures are synchronized through barriers on the whole buffer.
+        ACCELERATION_STRUCTURE_STORAGE = 0x200,
     }
 }
 

@@ -315,6 +315,7 @@ fn allocation_info(device: &Device, desc: &D3D12_RESOURCE_DESC) -> D3D12_RESOURC
 
 // --- Buffers ---
 
+#[derive(Clone)]
 pub(crate) struct Buffer {
     pub(super) resource: Com<ID3D12Resource>,
     pub(super) address: u64,
@@ -434,7 +435,11 @@ pub(super) fn buffer_resource_desc(size: u64, uav: bool) -> D3D12_RESOURCE_DESC 
 }
 
 fn buffer_desc(desc: &BufferDesc) -> D3D12_RESOURCE_DESC {
-    buffer_resource_desc(desc.size, desc.usage.contains(BufferUsage::SHADER_WRITE))
+    // Acceleration structure storage is unordered access too.
+    let uav = desc
+        .usage
+        .intersects(BufferUsage::SHADER_WRITE.union(BufferUsage::ACCELERATION_STRUCTURE_STORAGE));
+    buffer_resource_desc(desc.size, uav)
 }
 
 pub(super) fn buffer_requirements(device: &Device, desc: &BufferDesc) -> MemoryRequirements {
@@ -510,6 +515,12 @@ fn committed_flags(shared: bool) -> u32 {
 }
 
 pub(super) fn create_buffer(device: &Device, desc: &BufferDesc) -> Result<Buffer> {
+    if desc
+        .usage
+        .contains(BufferUsage::ACCELERATION_STRUCTURE_STORAGE)
+    {
+        return create_acceleration_structure_buffer(device, desc.size, None);
+    }
     let shared = desc.usage.contains(BufferUsage::SHARED);
     new_buffer(
         device,
@@ -524,6 +535,12 @@ pub(super) fn create_placed_buffer(
     offset: u64,
     desc: &BufferDesc,
 ) -> Result<Buffer> {
+    if desc
+        .usage
+        .contains(BufferUsage::ACCELERATION_STRUCTURE_STORAGE)
+    {
+        return create_acceleration_structure_buffer(device, desc.size, Some((heap, offset)));
+    }
     new_buffer(device, desc, Placement::Placed(heap, offset))
 }
 
@@ -531,10 +548,15 @@ pub(super) fn create_sparse_buffer(device: &Device, desc: &BufferDesc) -> Result
     new_buffer(device, desc, Placement::Reserved)
 }
 
-/// Committed storage for an acceleration structure: device-local, unordered access. With
-/// enhanced barriers it carries the acceleration structure resource flag (barriers then name its
-/// accesses); otherwise it is created in, and never leaves, the acceleration structure state.
-pub(super) fn create_acceleration_structure_buffer(device: &Device, size: u64) -> Result<Buffer> {
+/// Storage for an acceleration structure, committed or in `heap` at an offset: device-local,
+/// unordered access. With enhanced barriers it carries the acceleration structure resource flag
+/// (barriers then name its accesses); otherwise it is created in, and never leaves, the
+/// acceleration structure state.
+fn create_acceleration_structure_buffer(
+    device: &Device,
+    size: u64,
+    heap: Option<(&Heap, u64)>,
+) -> Result<Buffer> {
     let resource = match &device.device10 {
         Some(d) => {
             let b = buffer_resource_desc(size, true);
@@ -551,29 +573,53 @@ pub(super) fn create_acceleration_structure_buffer(device: &Device, size: u64) -
                 Flags: b.Flags | D3D12_RESOURCE_FLAG_RAYTRACING_ACCELERATION_STRUCTURE,
                 SamplerFeedbackMipRegion: [0; 3],
             };
-            let heap = heap_properties(D3D12_HEAP_TYPE_DEFAULT);
-            // SAFETY: valid interface, descriptions, IID and out pointer; buffers start in the
-            // undefined layout; no protected session or castable formats.
-            com::create(|iid, out| unsafe {
-                (d.vtbl().CreateCommittedResource3)(
-                    d.as_raw(),
-                    &heap,
-                    0,
-                    &desc,
-                    D3D12_BARRIER_LAYOUT_UNDEFINED,
-                    ptr::null(),
-                    ptr::null_mut(),
-                    0,
-                    ptr::null(),
-                    iid,
-                    out,
-                )
-            })
+            match heap {
+                // SAFETY: valid interfaces, description, IID and out pointer; `api.rs` checked
+                // that the offset is aligned and the resource fits; buffers start in the undefined
+                // layout; no castable formats.
+                Some((heap, offset)) => com::create(|iid, out| unsafe {
+                    (d.vtbl().CreatePlacedResource2)(
+                        d.as_raw(),
+                        heap.heap.as_raw(),
+                        offset,
+                        &desc,
+                        D3D12_BARRIER_LAYOUT_UNDEFINED,
+                        ptr::null(),
+                        0,
+                        ptr::null(),
+                        iid,
+                        out,
+                    )
+                }),
+                None => {
+                    let properties = heap_properties(D3D12_HEAP_TYPE_DEFAULT);
+                    // SAFETY: valid interface, descriptions, IID and out pointer; buffers start
+                    // in the undefined layout; no protected session or castable formats.
+                    com::create(|iid, out| unsafe {
+                        (d.vtbl().CreateCommittedResource3)(
+                            d.as_raw(),
+                            &properties,
+                            0,
+                            &desc,
+                            D3D12_BARRIER_LAYOUT_UNDEFINED,
+                            ptr::null(),
+                            ptr::null_mut(),
+                            0,
+                            ptr::null(),
+                            iid,
+                            out,
+                        )
+                    })
+                }
+            }
             .map_err(error)?
         }
         None => create_resource(
             &device.device,
-            Placement::Committed(D3D12_HEAP_TYPE_DEFAULT, 0),
+            match heap {
+                Some((heap, offset)) => Placement::Placed(heap, offset),
+                None => Placement::Committed(D3D12_HEAP_TYPE_DEFAULT, 0),
+            },
             &buffer_resource_desc(size, true),
             D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
             None,
@@ -583,11 +629,15 @@ pub(super) fn create_acceleration_structure_buffer(device: &Device, size: u64) -
         resource,
         &BufferDesc {
             size,
-            usage: BufferUsage::SHADER_WRITE,
+            usage: BufferUsage::ACCELERATION_STRUCTURE_STORAGE,
             memory: MemoryLocation::GpuOnly,
         },
     )?;
     buffer.acceleration_structure = true;
+    if let Some((heap, _)) = heap {
+        buffer.placed = true;
+        buffer._heap = Some(heap.heap.clone());
+    }
     Ok(buffer)
 }
 

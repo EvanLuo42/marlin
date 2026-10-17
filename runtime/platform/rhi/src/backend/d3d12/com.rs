@@ -567,7 +567,19 @@ pub(super) struct ID3D12Device10Vtbl {
         *const GUID,
         *mut *mut c_void,
     ) -> HRESULT,
-    _77_78: [usize; 2],
+    pub CreatePlacedResource2: unsafe extern "system" fn(
+        This,
+        *mut c_void,
+        u64,
+        *const D3D12_RESOURCE_DESC1,
+        u32,
+        *const D3D12_CLEAR_VALUE,
+        u32,
+        *const u32,
+        *const GUID,
+        *mut *mut c_void,
+    ) -> HRESULT,
+    _78: usize,
 }
 
 interface!(

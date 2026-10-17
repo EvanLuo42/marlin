@@ -1,9 +1,10 @@
 //! Acceleration structures for inline ray queries (DXR 1.1 `RayQuery`): storage, bindless
 //! views, sizes and the translation of build inputs.
 //!
-//! A structure is a range of a committed buffer created in, and never leaving, the
-//! `RAYTRACING_ACCELERATION_STRUCTURE` state; its bindless slot holds an SRV of dimension
-//! `RAYTRACING_ACCELERATION_STRUCTURE` that shaders open as `RaytracingAccelerationStructure`.
+//! A structure is a range of a storage buffer (committed or placed) created in, and never
+//! leaving, the `RAYTRACING_ACCELERATION_STRUCTURE` state; its bindless slot holds an SRV of
+//! dimension `RAYTRACING_ACCELERATION_STRUCTURE` that shaders open as
+//! `RaytracingAccelerationStructure`.
 
 use alloc::vec::Vec;
 
@@ -12,8 +13,8 @@ use super::com::*;
 use super::ffi::*;
 use super::resource::{Buffer, Descriptor, dxgi_format};
 use crate::{
-    AccelerationStructureGeometry, AccelerationStructureInputs, AccelerationStructureKind,
-    AccelerationStructureSizes, BuildFlags, Format, IndexFormat, Result, VertexFormat,
+    AccelerationStructureGeometry, AccelerationStructureInputs, AccelerationStructureSizes,
+    BuildFlags, Format, IndexFormat, Result, VertexFormat,
 };
 
 pub(crate) struct AccelerationStructure {
@@ -23,12 +24,13 @@ pub(crate) struct AccelerationStructure {
     pub(super) view: Descriptor,
 }
 
+/// The structure at `offset` of `storage`.
 pub(super) fn create(
     device: &Device,
-    _kind: AccelerationStructureKind,
-    size: u64,
-) -> Result<(Buffer, AccelerationStructure)> {
-    let buffer = super::resource::create_acceleration_structure_buffer(device, size)?;
+    storage: &Buffer,
+    offset: u64,
+) -> Result<AccelerationStructure> {
+    let address = storage.address + offset;
     let view = Descriptor::new(&device.bindless.resources)?;
     // The view's union holds `RaytracingAccelerationStructure.Location`: the address, low word
     // first. The resource itself is not named.
@@ -36,26 +38,18 @@ pub(super) fn create(
         Format: DXGI_FORMAT_UNKNOWN,
         ViewDimension: D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE,
         Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
-        u: ViewUnion([
-            buffer.address as u32,
-            (buffer.address >> 32) as u32,
-            0,
-            0,
-            0,
-            0,
-        ]),
+        u: ViewUnion([address as u32, (address >> 32) as u32, 0, 0, 0, 0]),
     };
     let d = &device.device;
     // SAFETY: valid device; acceleration structure views take no resource; the slot is ours.
     unsafe {
         (d.vtbl().CreateShaderResourceView)(d.as_raw(), core::ptr::null_mut(), &desc, view.handle())
     };
-    let structure = AccelerationStructure {
-        resource: buffer.resource.clone(),
-        address: buffer.address,
+    Ok(AccelerationStructure {
+        resource: storage.resource.clone(),
+        address,
         view,
-    };
-    Ok((buffer, structure))
+    })
 }
 
 fn vertex_format(format: VertexFormat) -> u32 {

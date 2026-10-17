@@ -14,14 +14,14 @@ use crate::contract::{
 use crate::{
     AccelerationStructure, AccelerationStructureCopy, AccelerationStructureInputs,
     AccelerationStructureKind, AccelerationStructureSizes, AdapterInfo, Buffer, BufferBarrier,
-    BufferDesc, BufferTextureCopy, BufferViewDesc, BuildAccelerationStructure, BuildFlags,
-    ClearColor, ClockCalibration, ColorSpace, ComputePipelineDesc, DepthStencilViewDesc,
-    DeviceDesc, Error, ErrorKind, Features, Fence, FenceWait, Format, FormatSupport,
-    FrameStatistics, GraphicsPipelineDesc, HdrMetadata, HeapDesc, IndexFormat, IndirectArgs,
-    InstanceDesc, MarkerPoint, MemoryBudget, MemoryRequirements, MeshPipelineDesc, OutputInfo,
-    Pageable, PredicateSkip, PresentMode, PresentStatus, QueryPoolDesc, QueueType, Rect,
-    RenderPassDesc, RenderTargetView, RenderTargetViewDesc, ResidencyPriority, Result, SamplerDesc,
-    ShadingRate, ShadingRateCombiner, SparseBind, SparseTextureLayout, SubmitDesc,
+    BufferDesc, BufferState, BufferTextureCopy, BufferViewDesc, BuildAccelerationStructure,
+    BuildFlags, ClearColor, ClockCalibration, ColorSpace, ComputePipelineDesc,
+    DepthStencilViewDesc, DeviceDesc, Error, ErrorKind, Features, Fence, FenceWait, Format,
+    FormatSupport, FrameStatistics, GraphicsPipelineDesc, HdrMetadata, HeapDesc, IndexFormat,
+    IndirectArgs, InstanceDesc, MarkerPoint, MemoryBudget, MemoryRequirements, MeshPipelineDesc,
+    OutputInfo, Pageable, PredicateSkip, PresentMode, PresentStatus, QueryPoolDesc, QueueType,
+    Rect, RenderPassDesc, RenderTargetView, RenderTargetViewDesc, ResidencyPriority, Result,
+    SamplerDesc, ShadingRate, ShadingRateCombiner, SparseBind, SparseTextureLayout, SubmitDesc,
     SubresourceRange, SurfaceHandle, SwapchainDesc, Texture, TextureBarrier, TextureCopy,
     TextureDesc, TextureResolve, TextureViewDesc, Viewport,
 };
@@ -147,7 +147,7 @@ impl Device for Backend {
         fn evict(device: &Never, objects: &[Pageable<'_>]) -> Result<()>;
         fn set_residency_priority(device: &Never, objects: &[Pageable<'_>], priority: ResidencyPriority) -> Result<()>;
         fn acceleration_structure_sizes(device: &Never, inputs: &AccelerationStructureInputs<'_>, flags: BuildFlags) -> AccelerationStructureSizes;
-        fn create_acceleration_structure(device: &Never, kind: AccelerationStructureKind, size: u64) -> Result<(Never, Never)>;
+        fn create_acceleration_structure(device: &Never, storage: &Never, offset: u64, kind: AccelerationStructureKind) -> Result<(Never, Never)>;
         fn create_sparse_buffer(device: &Never, desc: &BufferDesc) -> Result<Never>;
         fn create_sparse_texture(device: &Never, desc: &TextureDesc) -> Result<Never>;
         fn sparse_texture_layout(device: &Never, texture: &Texture) -> SparseTextureLayout;
@@ -293,6 +293,7 @@ impl Commands for Backend {
     unreachable_commands! {
         fn texture_barriers(list: &mut Never, barriers: &[TextureBarrier<'_>]);
         fn buffer_barriers(list: &mut Never, barriers: &[BufferBarrier<'_>]);
+        fn memory_barrier(list: &mut Never, before: BufferState, after: BufferState);
         fn begin_render_pass(list: &mut Never, desc: &RenderPassDesc<'_>);
         fn end_render_pass(list: &mut Never);
         fn copy_buffer(list: &mut Never, src: &Buffer, src_offset: u64, dst: &Buffer, dst_offset: u64, size: u64);

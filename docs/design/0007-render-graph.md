@@ -302,7 +302,7 @@ let probes = g.persistent("ProbeCache", PERSISTENT_SCOPE, BufferDesc::structured
 
 光追只用 inline ray query（0002 §1、0004 §12.4），没有 RT pipeline，所以 graph 不需要 RT 专用的 pass 类型：ray query 写在普通的 compute pass（或 raster pass 的 pixel shader）里。graph 要管的是**加速结构（AS）本身**：它的构建、它和构建输入之间的依赖，以及它被 ray query 读取时的同步。
 
-本节先把设计写全。RHI 的加速结构已经补齐，只差全局内存 barrier（§11.3）；graph 第一版不等它。
+本节先把设计写全。RHI 需要的加速结构功能和全局内存 barrier 都已经补齐（§11.3）；graph 第一版不等它。
 
 ### 9.1 AS 作为资源
 
@@ -361,7 +361,7 @@ let tlas = g.add_accel("BuildTlas", |b| {
 
 - 把一批 BLAS 当作**一个逻辑资源**导入：`g.import_accel_group("StaticBlas", &pool)`，得到一个 `AccelGroupHandle`。
 - 对组的访问在拓扑上就是一次访问，不管这一帧组里有几个 BLAS 被构建。拓扑键只记录"这一帧有没有写这个组"。
-- 组上的 barrier 用**全局内存 barrier**（D3D12 enhanced 的 global barrier、Vulkan 的 `VkMemoryBarrier2`、D3D12 legacy 的空资源 UAV barrier），而不是逐个 BLAS 的 barrier。RHI 需要补这个命令（§11.3）。
+- 组上的 barrier 用**全局内存 barrier**（D3D12 enhanced 的 global barrier、Vulkan 的 `VkMemoryBarrier2`、D3D12 legacy 的空资源 UAV barrier），而不是逐个 BLAS 的 barrier（RHI 的 `memory_barrier`，§11.3）。
 - 组里具体建哪几个、写到哪里，是执行闭包里的数据（一个列表），不进拓扑。
 
 ### 9.5 谁持有 AS
@@ -376,7 +376,7 @@ let tlas = g.add_accel("BuildTlas", |b| {
 - TLAS 是瞬态的，不需要跨帧。需要上一帧 TLAS 的子系统用历史资源（§8）。
 - 实例上限 `capacity` 是 TLAS 描述的一部分，也就进了拓扑键。为了不让实例数的小变化导致缓存失效，`capacity` 按 2 的幂向上取整，并且只增不减；连续若干帧低于一半时才缩小。
 - AS 的内存：
-  - BLAS 数量多、大小不一，不能每个都是一个 committed 资源。它们由 RHI 之上的 GPU 内存子分配层管理（RHI 只提供 heap 和 placed 资源，子分配策略放在它上面；这一层和流送的纹理、网格共用），按 AS 要求的 256 字节对齐；
+  - BLAS 数量多、大小不一，不能每个都是一个 committed 资源。它们由 RHI 之上的 GPU 内存子分配层管理（RHI 只提供 heap、placed 资源和 AS 存储 buffer 里按偏移建 AS 的能力，子分配策略放在它上面；这一层和流送的纹理、网格共用），按 AS 要求的 256 字节对齐；
   - 瞬态 TLAS 和 scratch 放在帧槽的瞬态 heap 里。AS 单独一个内存类别，不和其他资源别名；同类之间是否可以别名，等 RHI 实测之后再放开（§13）。
 
 ### 9.6 TLAS 的实例由 GPU 生成
@@ -486,23 +486,18 @@ graph 的误用一律 panic，并给出 pass 名和资源名。RHI 本身返回�
   2. 加一条后处理链：HDR 场景目标 → bloom 降采样/升采样链（多个瞬态纹理，别名可以发生）→ 异步计算的亮度直方图与自动曝光 → tonemap 到 swapchain。
 - 后处理链的 shader 用 Marlin shader 编写，所以第 2 步在编译器能产出 DXIL 之后做。graph 本身和第 1 步不依赖新 shader。
 
-### 11.3 RHI 需要的改动
-
-已完成：
+### 11.3 RHI 需要的改动（已完成）
 
 - **legacy barrier 的真实 before 状态由调用方提供**：backend 不再按录制顺序记录纹理状态（并行录制下会出错，§4.6）。`TextureBarrier::undefined_from` 给出 `before.layout` 为 `Undefined` 时资源真实所在的 layout，enhanced 路径忽略它。`TextureBarrier::discard(texture, 上一个 TextureState, after)` 是 graph 要用的写法：等上一次访问的 stage 完成，丢弃内容，并把上一 layout 告诉 legacy 路径。
 - `CommandList::fill_buffer` 和 `CommandList::clear_storage_texture` 已经补上（D3D12 用 `ClearUnorderedAccessView*`），graph 的清零（计数器、直方图）直接用它们。
 - **加速结构**（§9）。RHI 里的 `AccelerationStructure` 就是本文的 `Accel`：
-  - committed 创建（`create_acceleration_structure`），D3D12 上是带加速结构标志的 buffer；
+  - AS 住在**存储 buffer** 里：`BufferUsage::ACCELERATION_STRUCTURE_STORAGE` 的 buffer（只能有这一种用途，device-local），committed 或 placed 都行，D3D12 上带加速结构标志。`create_acceleration_structure_in(storage, offset, kind, size)` 在它的 256 字节对齐偏移上建 AS，§9.5 的子分配层就用它把许多小 BLAS 放进一个 buffer（placed 资源本身要 64 KiB 对齐）。`create_acceleration_structure(kind, size)` 是一个 AS 独占一个 committed 存储 buffer 的简写；
+  - 同一个存储 buffer 里的 AS 共用这个 buffer 的 barrier（`AccelerationStructure::buffer` 返回它）；
   - prebuild 查询 `acceleration_structure_sizes`：AS 大小、构建 scratch、refit scratch；
   - 命令 `build_acceleration_structure`（BLAS/TLAS 都用它，`update` 字段做 refit，可以原地）、`copy_acceleration_structure`（含 compact）、`write_compacted_sizes`，可以录在 Graphics 和 Compute 队列的 list 上；
   - AS 的 bindless 槽位（`AccelerationStructure::index`），以及 `Stage`/`Access` 里的 AS 构建、拷贝、postbuild 和读取；
   - 实例描述 `AccelerationStructureInstance`（64 字节，对齐 `INSTANCE_ALIGNMENT`）和 BLAS 引用值 `AccelerationStructure::instance_address`。
-
-还没做：
-
-- **全局内存 barrier**（`memory_barrier(before, after)`），AS 组要用（§9.4），别的地方也用得上；
-- AS placed 在 heap 里（目前只有 committed），§9.5 的别名需要它时再加。
+- **全局内存 barrier** `CommandList::memory_barrier(before, after)`（§9.4）：不指名资源，两边都是 `BufferState`（stage + access）。它不改 layout 或状态，所以 access 只能是 `MEMORY_BARRIER_ACCESS` 里的（UAV、AS 读、AS 写）或 `NONE`，别的冒险仍然用 buffer/texture barrier。D3D12 enhanced 是 global barrier，legacy 是不指名资源的 UAV barrier；Copy 队列不能用。
 
 ## 12. 测试
 

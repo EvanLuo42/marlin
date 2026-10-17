@@ -21,7 +21,7 @@ use super::pipeline::{Bindless, ComputePipeline, GraphicsPipeline, MeshPipeline,
 use super::resource::{self, Descriptor, Texture};
 use super::{Backend, Device, QueryPool, check, error};
 use crate::{
-    AccelerationStructure, AccelerationStructureCopy, Access, Buffer, BufferBarrier,
+    AccelerationStructure, AccelerationStructureCopy, Access, Buffer, BufferBarrier, BufferState,
     BufferTextureCopy, BuildAccelerationStructure, ClearColor, IndexFormat, IndirectArgs, Layout,
     LoadOp, MAX_COLOR_ATTACHMENTS, MAX_PUSH_CONSTANTS, MAX_VIEWPORTS, MarkerPoint, PredicateSkip,
     QueueType, Rect, RenderPassDesc, Result, ShadingRate, ShadingRateCombiner, SubresourceRange,
@@ -602,6 +602,22 @@ impl crate::contract::Commands for Backend {
                 };
             }
         }
+    }
+
+    fn memory_barrier(list: &mut CommandList, before: BufferState, after: BufferState) {
+        if let Some(l7) = &list.list7 {
+            let barrier = D3D12_GLOBAL_BARRIER {
+                SyncBefore: before.stage.bits(),
+                SyncAfter: after.stage.bits(),
+                AccessBefore: barrier_access(before.access),
+                AccessAfter: barrier_access(after.access),
+            };
+            enhanced_flush(l7, D3D12_BARRIER_TYPE_GLOBAL)(&[barrier]);
+            return;
+        }
+        // Legacy: a UAV barrier naming no resource orders every unordered-access and
+        // acceleration structure access before it with every one after it.
+        legacy_flush(&list.list)(&[uav_barrier(ptr::null_mut())]);
     }
 
     fn buffer_barriers(list: &mut CommandList, barriers: &[BufferBarrier<'_>]) {

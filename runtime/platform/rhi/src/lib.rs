@@ -71,7 +71,7 @@ pub use api::{
     Device, Fence, GraphicsPipeline, Heap, Instance, MeshPipeline, PipelineCache, QueryPool, Queue,
     RenderTargetView, Sampler, ShaderView, SharedHandle, Swapchain, Texture,
 };
-pub use commands::MAX_VIEWPORTS;
+pub use commands::{MAX_VIEWPORTS, MEMORY_BARRIER_ACCESS};
 pub use error::{Error, ErrorKind, Result};
 pub use frames::FramesInFlight;
 pub use types::{

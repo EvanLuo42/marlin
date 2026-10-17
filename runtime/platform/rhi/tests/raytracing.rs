@@ -6,11 +6,12 @@
 mod support;
 
 use marlin_rhi::{
-    AccelerationStructure, AccelerationStructureCopy, AccelerationStructureGeometry,
-    AccelerationStructureInputs, AccelerationStructureInstance, AccelerationStructureKind,
-    AccelerationStructureTriangles, Access, Buffer, BufferBarrier, BufferState, BufferUsage,
-    BuildAccelerationStructure, BuildFlags, CommandList, Device, GeometryFlags, IndexFormat,
-    InstanceFlags, MemoryLocation, Stage, VertexFormat,
+    ACCELERATION_STRUCTURE_ALIGNMENT, AccelerationStructure, AccelerationStructureCopy,
+    AccelerationStructureGeometry, AccelerationStructureInputs, AccelerationStructureInstance,
+    AccelerationStructureKind, AccelerationStructureTriangles, Access, Buffer, BufferBarrier,
+    BufferDesc, BufferState, BufferUsage, BufferViewDesc, BufferViewKind,
+    BuildAccelerationStructure, BuildFlags, CommandList, Device, GeometryFlags, HeapDesc, HeapKind,
+    IndexFormat, InstanceFlags, MemoryLocation, QueueType, Stage, VertexFormat,
 };
 use support::{
     buffer, compute_pipeline, copy_out, devices, read_bytes, read_words, readback, run, storage,
@@ -60,14 +61,6 @@ fn instance_records(blas: &AccelerationStructure) -> Vec<u8> {
             .as_bytes()
         })
         .collect()
-}
-
-fn geometry(
-    scene_vertices: &Buffer,
-    indices: &Buffer,
-) -> [AccelerationStructureGeometry<'static>; 0] {
-    let _ = (scene_vertices, indices);
-    []
 }
 
 fn triangles<'a>(vertices: &'a Buffer, indices: &'a Buffer) -> AccelerationStructureGeometry<'a> {
@@ -358,5 +351,194 @@ fn builds_check_their_inputs() {
         });
     }));
     assert!(wrong.is_err());
-    let _ = geometry(&s.vertices, &s.indices);
+}
+
+/// Two bottom-level structures sub-allocated from one storage buffer placed in a heap, built
+/// together and published to the top-level build and the ray queries by memory barriers alone:
+/// the render graph's group of structures.
+#[test]
+fn sub_allocated_structures_sync_as_a_group() {
+    for device in devices() {
+        if !device.features().ray_query {
+            return;
+        }
+        let s = scene(device);
+        let geometries = [triangles(&s.vertices, &s.indices)];
+        let blas_sizes = device
+            .acceleration_structure_sizes(
+                &AccelerationStructureInputs::BottomLevel(&geometries),
+                BuildFlags::PREFER_FAST_TRACE,
+            )
+            .unwrap();
+        // Packed at the structure alignment, far below a placed resource's.
+        let stride = blas_sizes
+            .size
+            .next_multiple_of(ACCELERATION_STRUCTURE_ALIGNMENT);
+        let desc = BufferDesc {
+            size: 2 * stride,
+            usage: BufferUsage::ACCELERATION_STRUCTURE_STORAGE,
+            memory: MemoryLocation::GpuOnly,
+        };
+        let req = device.buffer_requirements(&desc);
+        let heap = device
+            .create_heap(&HeapDesc {
+                size: req.size,
+                memory: MemoryLocation::GpuOnly,
+                kind: HeapKind::Buffers,
+            })
+            .unwrap();
+        let storage = device.create_placed_buffer(&heap, 0, &desc).unwrap();
+        let place = |i: u64| {
+            device
+                .create_acceleration_structure_in(
+                    &storage,
+                    i * stride,
+                    AccelerationStructureKind::BottomLevel,
+                    blas_sizes.size,
+                )
+                .unwrap()
+        };
+        let (a, b) = (place(0), place(1));
+        assert_eq!(b.instance_address(), a.instance_address() + stride);
+        // Instance 7 uses the first, the moved instance 9 the second.
+        let mut records = instance_records(&a);
+        records[64..].copy_from_slice(&instance_records(&b)[64..]);
+        // SAFETY: no submitted work reads the instance buffer.
+        unsafe { s.instances.write(0, &records) };
+        // One scratch range per build: the two run unordered.
+        let scratch_stride = blas_sizes
+            .build_scratch_size
+            .next_multiple_of(ACCELERATION_STRUCTURE_ALIGNMENT);
+        let scratch = buffer(
+            device,
+            2 * scratch_stride,
+            BufferUsage::SHADER_WRITE,
+            MemoryLocation::GpuOnly,
+        );
+        let hits = cast(device, &s.tlas, |list| {
+            list.buffer_barriers(&[
+                BufferBarrier {
+                    buffer: &scratch,
+                    before: BufferState::NONE,
+                    after: BufferState::BUILD_SCRATCH,
+                },
+                // Activates the placed storage; covers both structures.
+                BufferBarrier {
+                    buffer: &storage,
+                    before: BufferState::NONE,
+                    after: BufferState::ACCELERATION_STRUCTURE_WRITE,
+                },
+                BufferBarrier {
+                    buffer: s.tlas.buffer(),
+                    before: BufferState::NONE,
+                    after: BufferState::ACCELERATION_STRUCTURE_WRITE,
+                },
+            ]);
+            for (i, dst) in [&a, &b].into_iter().enumerate() {
+                list.build_acceleration_structure(&BuildAccelerationStructure {
+                    dst,
+                    inputs: AccelerationStructureInputs::BottomLevel(&geometries),
+                    flags: BuildFlags::PREFER_FAST_TRACE,
+                    update: None,
+                    scratch: &scratch,
+                    scratch_offset: i as u64 * scratch_stride,
+                });
+            }
+            // Both bottom levels, and the scratch the top-level build reuses.
+            let built = BufferState {
+                stage: Stage::BUILD_ACCELERATION_STRUCTURE,
+                access: Access::ACCELERATION_STRUCTURE_WRITE.union(Access::UNORDERED_ACCESS),
+            };
+            let read = BufferState {
+                stage: Stage::BUILD_ACCELERATION_STRUCTURE,
+                access: Access::ACCELERATION_STRUCTURE_READ.union(Access::UNORDERED_ACCESS),
+            };
+            list.memory_barrier(built, read);
+            list.build_acceleration_structure(&BuildAccelerationStructure {
+                dst: &s.tlas,
+                inputs: AccelerationStructureInputs::TopLevel {
+                    instances: &s.instances,
+                    offset: 0,
+                    count: 2,
+                },
+                flags: BuildFlags::PREFER_FAST_TRACE,
+                update: None,
+                scratch: &scratch,
+                scratch_offset: 0,
+            });
+            list.memory_barrier(
+                BufferState::ACCELERATION_STRUCTURE_WRITE,
+                BufferState {
+                    stage: Stage::COMPUTE_SHADING,
+                    access: Access::ACCELERATION_STRUCTURE_READ,
+                },
+            );
+        });
+        assert_eq!(hits, expected());
+        assert_eq!(device.validation_errors(), 0);
+    }
+}
+
+#[test]
+fn placement_and_memory_barriers_are_checked() {
+    let device = support::hardware_device();
+    if !device.features().ray_query {
+        return;
+    }
+    let desc = BufferDesc {
+        size: 8192,
+        usage: BufferUsage::ACCELERATION_STRUCTURE_STORAGE,
+        memory: MemoryLocation::GpuOnly,
+    };
+    let storage = device.create_buffer(&desc).unwrap();
+    let kind = AccelerationStructureKind::BottomLevel;
+    let at = |buffer: &Buffer, offset| {
+        device.create_acceleration_structure_in(buffer, offset, kind, 4096)
+    };
+    assert!(at(&storage, 4096).is_ok());
+    assert!(at(&storage, 128).is_err(), "misaligned offset");
+    assert!(at(&storage, 4352).is_err(), "past the end");
+    let plain = buffer(
+        device,
+        8192,
+        BufferUsage::SHADER_WRITE,
+        MemoryLocation::GpuOnly,
+    );
+    assert!(at(&plain, 0).is_err(), "not storage");
+    let mixed = BufferDesc {
+        usage: BufferUsage::ACCELERATION_STRUCTURE_STORAGE | BufferUsage::COPY_SRC,
+        ..desc
+    };
+    assert!(device.create_buffer(&mixed).is_err(), "storage only");
+    let upload = BufferDesc {
+        memory: MemoryLocation::Upload,
+        ..desc
+    };
+    assert!(device.create_buffer(&upload).is_err(), "device-local only");
+    assert!(
+        device
+            .create_buffer_view(
+                &storage,
+                &BufferViewDesc {
+                    kind: BufferViewKind::Raw,
+                    offset: 0,
+                    size: 256,
+                    writable: true,
+                }
+            )
+            .is_err(),
+        "no views of storage"
+    );
+    let copy_access = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run(device, |list| {
+            list.memory_barrier(BufferState::COPY_DST, BufferState::COPY_SRC)
+        });
+    }));
+    assert!(copy_access.is_err(), "copies need buffer barriers");
+    let copy_queue = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        support::run_on(device, QueueType::Copy, |list| {
+            list.memory_barrier(BufferState::COMPUTE_WRITE, BufferState::COMPUTE_WRITE)
+        });
+    }));
+    assert!(copy_queue.is_err(), "copy queues have no unordered access");
 }

@@ -696,9 +696,10 @@ impl Device {
     }
 
     /// An acceleration structure of `size` bytes (from
-    /// [`acceleration_structure_sizes`](Self::acceleration_structure_sizes)), unbuilt. Its
-    /// [`index`](AccelerationStructure::index) is a bindless slot shaders open as a
-    /// `RaytracingAccelerationStructure` for ray queries (top-level structures).
+    /// [`acceleration_structure_sizes`](Self::acceleration_structure_sizes)), unbuilt, in a
+    /// committed storage buffer of its own. Its [`index`](AccelerationStructure::index) is a
+    /// bindless slot shaders open as a `RaytracingAccelerationStructure` for ray queries
+    /// (top-level structures).
     pub fn create_acceleration_structure(
         &self,
         kind: AccelerationStructureKind,
@@ -706,19 +707,53 @@ impl Device {
     ) -> Result<AccelerationStructure> {
         require(self.features().ray_query)?;
         ensure(size > 0)?;
+        let storage = self.create_buffer(&BufferDesc {
+            size: size.next_multiple_of(crate::ACCELERATION_STRUCTURE_ALIGNMENT),
+            usage: BufferUsage::ACCELERATION_STRUCTURE_STORAGE,
+            memory: MemoryLocation::GpuOnly,
+        })?;
+        self.create_acceleration_structure_in(&storage, 0, kind, size)
+    }
+
+    /// An acceleration structure of `size` bytes at `offset` (a multiple of
+    /// [`ACCELERATION_STRUCTURE_ALIGNMENT`](crate::ACCELERATION_STRUCTURE_ALIGNMENT)) of
+    /// `storage`, a buffer with [`BufferUsage::ACCELERATION_STRUCTURE_STORAGE`]: many small
+    /// structures sub-allocated from one committed or placed buffer. It keeps the buffer alive;
+    /// structures in one buffer must not overlap while in use, and share its barriers (one
+    /// [`buffer_barriers`](crate::CommandList::buffer_barriers) entry, or a
+    /// [`memory_barrier`](crate::CommandList::memory_barrier), covers all of them).
+    pub fn create_acceleration_structure_in(
+        &self,
+        storage: &Buffer,
+        offset: u64,
+        kind: AccelerationStructureKind,
+        size: u64,
+    ) -> Result<AccelerationStructure> {
+        require(self.features().ray_query)?;
+        ensure(
+            storage
+                .desc
+                .usage
+                .contains(BufferUsage::ACCELERATION_STRUCTURE_STORAGE),
+        )?;
         let size = size.next_multiple_of(crate::ACCELERATION_STRUCTURE_ALIGNMENT);
-        let (buffer, raw) = Backend::create_acceleration_structure(&self.raw, kind, size)?;
+        ensure(size > 0 && offset.is_multiple_of(crate::ACCELERATION_STRUCTURE_ALIGNMENT))?;
+        ensure(
+            offset
+                .checked_add(size)
+                .is_some_and(|e| e <= storage.desc.size),
+        )?;
+        let (shared, raw) =
+            Backend::create_acceleration_structure(&self.raw, &storage.raw, offset, kind)?;
         Ok(AccelerationStructure {
             raw,
-            buffer: Buffer {
-                raw: buffer,
-                desc: BufferDesc {
-                    size,
-                    usage: BufferUsage::SHADER_WRITE,
-                    memory: MemoryLocation::GpuOnly,
-                },
-                kind: ResourceKind::AccelerationStructure,
+            storage: Buffer {
+                raw: shared,
+                desc: storage.desc,
+                kind: storage.kind,
             },
+            offset,
+            size,
             kind,
         })
     }
@@ -731,7 +766,12 @@ impl Device {
     pub fn create_sparse_buffer(&self, desc: &BufferDesc) -> Result<Buffer> {
         require(self.features().sparse_resources)?;
         self.validate_buffer(desc)?;
-        ensure(desc.memory == MemoryLocation::GpuOnly)?;
+        ensure(
+            desc.memory == MemoryLocation::GpuOnly
+                && !desc
+                    .usage
+                    .contains(BufferUsage::ACCELERATION_STRUCTURE_STORAGE),
+        )?;
         Ok(Buffer {
             raw: Backend::create_sparse_buffer(&self.raw, desc)?,
             desc: *desc,
@@ -889,6 +929,16 @@ impl Device {
         ensure(desc.size > 0)?;
         let shader_write = desc.usage.contains(BufferUsage::SHADER_WRITE);
         ensure(!shader_write || desc.memory == MemoryLocation::GpuOnly)?;
+        if desc
+            .usage
+            .contains(BufferUsage::ACCELERATION_STRUCTURE_STORAGE)
+        {
+            require(self.features().ray_query)?;
+            ensure(
+                desc.usage == BufferUsage::ACCELERATION_STRUCTURE_STORAGE
+                    && desc.memory == MemoryLocation::GpuOnly,
+            )?;
+        }
         if desc.memory == MemoryLocation::GpuUpload {
             require(self.features().gpu_upload_heap)?;
         }
@@ -934,7 +984,8 @@ fn validate_pageables(objects: &[Pageable<'_>]) -> Result<()> {
     ensure(objects.iter().all(|o| match o {
         Pageable::Buffer(b) => b.kind == ResourceKind::Committed,
         Pageable::Texture(t) => t.kind == ResourceKind::Committed,
-        Pageable::Heap(_) | Pageable::AccelerationStructure(_) => true,
+        Pageable::AccelerationStructure(a) => a.storage.kind == ResourceKind::Committed,
+        Pageable::Heap(_) => true,
     }))
 }
 
@@ -1206,8 +1257,6 @@ pub(crate) enum ResourceKind {
     Sparse,
     /// Imported or wrapped from a native object.
     External,
-    /// The storage of an acceleration structure.
-    AccelerationStructure,
     /// A swapchain image.
     Swapchain,
 }
@@ -1471,7 +1520,9 @@ impl Heap {
 /// [`BufferState::ACCELERATION_STRUCTURE_WRITE`]: crate::BufferState::ACCELERATION_STRUCTURE_WRITE
 pub struct AccelerationStructure {
     pub(crate) raw: <Backend as Types>::AccelerationStructure,
-    buffer: Buffer,
+    storage: Buffer,
+    offset: u64,
+    size: u64,
     kind: AccelerationStructureKind,
 }
 
@@ -1484,13 +1535,20 @@ impl AccelerationStructure {
     /// Bytes of storage.
     #[inline]
     pub fn size(&self) -> u64 {
-        self.buffer.desc.size
+        self.size
     }
 
-    /// The memory holding it: for barriers and residency.
+    /// The storage buffer holding it, shared with the other structures in it: for barriers and
+    /// residency.
     #[inline]
     pub fn buffer(&self) -> &Buffer {
-        &self.buffer
+        &self.storage
+    }
+
+    /// Where in [`buffer`](Self::buffer) it starts.
+    #[inline]
+    pub fn offset(&self) -> u64 {
+        self.offset
     }
 
     /// Its slot in the bindless resource table: `ResourceDescriptorHeap[index]` is a

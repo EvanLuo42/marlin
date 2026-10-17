@@ -822,10 +822,14 @@ impl crate::contract::Device for Backend {
 
     fn create_acceleration_structure(
         device: &Device,
-        kind: crate::AccelerationStructureKind,
-        size: u64,
+        storage: &resource::Buffer,
+        offset: u64,
+        _kind: crate::AccelerationStructureKind,
     ) -> Result<(resource::Buffer, raytracing::AccelerationStructure)> {
-        raytracing::create(device, kind, size)
+        Ok((
+            storage.clone(),
+            raytracing::create(device, storage, offset)?,
+        ))
     }
 
     fn create_sparse_buffer(device: &Device, desc: &BufferDesc) -> Result<resource::Buffer> {
