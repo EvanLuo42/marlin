@@ -1,5 +1,6 @@
 //! `SlotMap<T>`: storage addressed by generational handles.
 
+use alloc::alloc::{Allocator, Global};
 use alloc::vec::Vec;
 use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
@@ -22,7 +23,7 @@ impl<T> Handle<T> {
     pub const NULL: Self = Self::new(u32::MAX, 0);
 
     #[inline]
-    const fn new(index: u32, generation: u32) -> Self {
+    pub(crate) const fn new(index: u32, generation: u32) -> Self {
         Self {
             index,
             generation,
@@ -134,8 +135,10 @@ enum Entry<T> {
 ///
 /// A slot whose generation would wrap is retired instead of reused, so a handle can never be
 /// confused with a later occupant even after 2^32 reuses.
-pub struct SlotMap<T> {
-    slots: Vec<Slot<T>>,
+///
+/// The slots live in one block from `A`.
+pub struct SlotMap<T, A: Allocator = Global> {
+    slots: Vec<Slot<T>, A>,
     free_head: u32,
     len: u32,
 }
@@ -150,11 +153,30 @@ impl<T> SlotMap<T> {
     }
 
     pub fn with_capacity(capacity: usize) -> Self {
+        Self::with_capacity_in(capacity, Global)
+    }
+}
+
+impl<T, A: Allocator> SlotMap<T, A> {
+    pub fn new_in(alloc: A) -> Self {
         Self {
-            slots: Vec::with_capacity(capacity),
+            slots: Vec::new_in(alloc),
             free_head: NONE,
             len: 0,
         }
+    }
+
+    pub fn with_capacity_in(capacity: usize, alloc: A) -> Self {
+        Self {
+            slots: Vec::with_capacity_in(capacity, alloc),
+            free_head: NONE,
+            len: 0,
+        }
+    }
+
+    #[inline]
+    pub fn allocator(&self) -> &A {
+        self.slots.allocator()
     }
 
     #[inline]
@@ -328,36 +350,34 @@ impl<T> Default for SlotMap<T> {
     }
 }
 
-impl<T: Clone> Clone for SlotMap<T> {
+impl<T: Clone, A: Allocator + Clone> Clone for SlotMap<T, A> {
     /// Handles into the original are valid in the clone too.
     fn clone(&self) -> Self {
+        let mut slots = Vec::with_capacity_in(self.slots.len(), self.allocator().clone());
+        slots.extend(self.slots.iter().map(|s| Slot {
+            generation: s.generation,
+            value: match &s.value {
+                Entry::Occupied(v) => Entry::Occupied(v.clone()),
+                Entry::Vacant { next_free } => Entry::Vacant {
+                    next_free: *next_free,
+                },
+            },
+        }));
         Self {
-            slots: self
-                .slots
-                .iter()
-                .map(|s| Slot {
-                    generation: s.generation,
-                    value: match &s.value {
-                        Entry::Occupied(v) => Entry::Occupied(v.clone()),
-                        Entry::Vacant { next_free } => Entry::Vacant {
-                            next_free: *next_free,
-                        },
-                    },
-                })
-                .collect(),
+            slots,
             free_head: self.free_head,
             len: self.len,
         }
     }
 }
 
-impl<T: fmt::Debug> fmt::Debug for SlotMap<T> {
+impl<T: fmt::Debug, A: Allocator> fmt::Debug for SlotMap<T, A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_map().entries(self.iter()).finish()
     }
 }
 
-impl<T> Index<Handle<T>> for SlotMap<T> {
+impl<T, A: Allocator> Index<Handle<T>> for SlotMap<T, A> {
     type Output = T;
 
     /// Panics on a stale handle.
@@ -370,7 +390,7 @@ impl<T> Index<Handle<T>> for SlotMap<T> {
     }
 }
 
-impl<T> IndexMut<Handle<T>> for SlotMap<T> {
+impl<T, A: Allocator> IndexMut<Handle<T>> for SlotMap<T, A> {
     #[track_caller]
     fn index_mut(&mut self, handle: Handle<T>) -> &mut T {
         match self.get_mut(handle) {

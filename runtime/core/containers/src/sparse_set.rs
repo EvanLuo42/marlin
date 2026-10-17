@@ -1,6 +1,6 @@
-//! `SparseSet<T>`: `u32` keys mapped to densely packed values.
+//! `SparseSet<T, A>`: `u32` keys mapped to densely packed values.
 
-use alloc::boxed::Box;
+use alloc::alloc::{Allocator, Global};
 use alloc::vec::Vec;
 use core::fmt;
 
@@ -12,19 +12,23 @@ const ABSENT: u32 = u32::MAX;
 /// Maps `u32` keys to values stored contiguously: lookup is two array reads, iteration is a slice
 /// walk, and removal swaps the last value into the hole (so order is not preserved).
 ///
-/// The usual ECS building block: keys are entity indices, values are components.
-pub struct SparseSet<T> {
-    /// key -> dense index, paged; `ABSENT` where there is no value.
-    sparse: Vec<Option<Box<[u32; PAGE_LEN]>>>,
+/// The usual ECS building block: keys are entity indices, values are components. All four arrays
+/// (page table, pages, keys, values) allocate from `A`.
+pub struct SparseSet<T, A: Allocator = Global> {
+    /// key / PAGE_LEN -> index into `pages`; `ABSENT` for a page never touched.
+    page_table: Vec<u32, A>,
+    /// key % PAGE_LEN -> dense index; `ABSENT` where there is no value.
+    pages: Vec<[u32; PAGE_LEN], A>,
     /// dense index -> key.
-    keys: Vec<u32>,
-    values: Vec<T>,
+    keys: Vec<u32, A>,
+    values: Vec<T, A>,
 }
 
 impl<T> SparseSet<T> {
     pub const fn new() -> Self {
         Self {
-            sparse: Vec::new(),
+            page_table: Vec::new(),
+            pages: Vec::new(),
             keys: Vec::new(),
             values: Vec::new(),
         }
@@ -32,11 +36,29 @@ impl<T> SparseSet<T> {
 
     /// Room for `capacity` values without reallocating the dense arrays.
     pub fn with_capacity(capacity: usize) -> Self {
+        Self::with_capacity_in(capacity, Global)
+    }
+}
+
+impl<T, A: Allocator + Clone> SparseSet<T, A> {
+    pub fn new_in(alloc: A) -> Self {
+        Self::with_capacity_in(0, alloc)
+    }
+
+    pub fn with_capacity_in(capacity: usize, alloc: A) -> Self {
         Self {
-            sparse: Vec::new(),
-            keys: Vec::with_capacity(capacity),
-            values: Vec::with_capacity(capacity),
+            page_table: Vec::new_in(alloc.clone()),
+            pages: Vec::new_in(alloc.clone()),
+            keys: Vec::with_capacity_in(capacity, alloc.clone()),
+            values: Vec::with_capacity_in(capacity, alloc),
         }
+    }
+}
+
+impl<T, A: Allocator> SparseSet<T, A> {
+    #[inline]
+    pub fn allocator(&self) -> &A {
+        self.values.allocator()
     }
 
     #[inline]
@@ -52,8 +74,11 @@ impl<T> SparseSet<T> {
     /// Where `key`'s value sits in [`values`](Self::values).
     #[inline]
     pub fn dense_index(&self, key: u32) -> Option<usize> {
-        let page = self.sparse.get(key as usize / PAGE_LEN)?.as_ref()?;
-        match page[key as usize % PAGE_LEN] {
+        let page = *self.page_table.get(key as usize / PAGE_LEN)?;
+        if page == ABSENT {
+            return None;
+        }
+        match self.pages[page as usize][key as usize % PAGE_LEN] {
             ABSENT => None,
             i => Some(i as usize),
         }
@@ -103,9 +128,8 @@ impl<T> SparseSet<T> {
     /// Removes every value; keeps the allocated pages.
     pub fn clear(&mut self) {
         for &key in &self.keys {
-            if let Some(Some(page)) = self.sparse.get_mut(key as usize / PAGE_LEN) {
-                page[key as usize % PAGE_LEN] = ABSENT;
-            }
+            let page = self.page_table[key as usize / PAGE_LEN];
+            self.pages[page as usize][key as usize % PAGE_LEN] = ABSENT;
         }
         self.keys.clear();
         self.values.clear();
@@ -150,12 +174,17 @@ impl<T> SparseSet<T> {
     }
 
     fn sparse_slot(&mut self, key: u32) -> &mut u32 {
-        let page = key as usize / PAGE_LEN;
-        if page >= self.sparse.len() {
-            self.sparse.resize_with(page + 1, || None);
+        let index = key as usize / PAGE_LEN;
+        if index >= self.page_table.len() {
+            self.page_table.resize(index + 1, ABSENT);
         }
-        let page = self.sparse[page].get_or_insert_with(|| Box::new([ABSENT; PAGE_LEN]));
-        &mut page[key as usize % PAGE_LEN]
+        let mut page = self.page_table[index];
+        if page == ABSENT {
+            page = self.pages.len() as u32;
+            self.pages.push([ABSENT; PAGE_LEN]);
+            self.page_table[index] = page;
+        }
+        &mut self.pages[page as usize][key as usize % PAGE_LEN]
     }
 }
 
@@ -165,17 +194,18 @@ impl<T> Default for SparseSet<T> {
     }
 }
 
-impl<T: Clone> Clone for SparseSet<T> {
+impl<T: Clone, A: Allocator + Clone> Clone for SparseSet<T, A> {
     fn clone(&self) -> Self {
         Self {
-            sparse: self.sparse.clone(),
+            page_table: self.page_table.clone(),
+            pages: self.pages.clone(),
             keys: self.keys.clone(),
             values: self.values.clone(),
         }
     }
 }
 
-impl<T: fmt::Debug> fmt::Debug for SparseSet<T> {
+impl<T: fmt::Debug, A: Allocator> fmt::Debug for SparseSet<T, A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_map().entries(self.iter()).finish()
     }

@@ -1,6 +1,6 @@
 [package]
 name = "marlin-containers"
-description = "Hash maps, inline vectors, slot maps and sparse sets."
+description = "Allocator-aware hash maps, inline vectors, rings, bit sets, slot maps and sparse sets."
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
@@ -11,6 +11,7 @@ marlin-hash.workspace = true
 
 [dev-dependencies]
 marlin-math.workspace = true
+marlin-std.workspace = true
 
 [lints]
 workspace = true

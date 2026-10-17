@@ -4,10 +4,10 @@ use core::borrow::{Borrow, BorrowMut};
 use core::hash::{Hash, Hasher};
 use core::iter::FusedIterator;
 use core::mem::{ManuallyDrop, MaybeUninit};
-use core::ops::{Deref, DerefMut};
+use core::ops::{Deref, DerefMut, RangeBounds};
 use core::{cmp, fmt, ptr, slice};
 
-use crate::raw;
+use crate::raw::{self, Drain};
 
 /// A vector of at most `N` elements stored inline. Never allocates: the `try_` methods report a
 /// full vector, the others panic.
@@ -218,6 +218,89 @@ impl<T, const N: usize> ArrayVec<T, N> {
         let base = self.as_mut_ptr();
         // SAFETY: `base` holds `self.len` initialized elements.
         unsafe { raw::retain(base, &mut self.len, f) };
+    }
+
+    /// Removes consecutive equal elements, keeping the first of each run.
+    pub fn dedup(&mut self)
+    where
+        T: PartialEq,
+    {
+        self.dedup_by(|a, b| a == b);
+    }
+
+    /// Removes consecutive elements with equal keys, keeping the first of each run.
+    pub fn dedup_by_key<K: PartialEq>(&mut self, mut key: impl FnMut(&mut T) -> K) {
+        self.dedup_by(|a, b| key(a) == key(b));
+    }
+
+    /// Removes each element for which `same(element, previous_kept)` is true.
+    pub fn dedup_by(&mut self, same: impl FnMut(&mut T, &mut T) -> bool) {
+        let base = self.as_mut_ptr();
+        // SAFETY: `base` holds `self.len` initialized elements.
+        unsafe { raw::dedup_by(base, &mut self.len, same) };
+    }
+
+    /// Removes `range` and returns it as an iterator. Panics if the range is out of bounds.
+    pub fn drain(&mut self, range: impl RangeBounds<usize>) -> Drain<'_, T> {
+        let (start, end) = raw::range(range, self.len);
+        let base = self.as_mut_ptr();
+        // SAFETY: `base` holds `len` elements and the drain borrows the vector exclusively.
+        unsafe { Drain::new(base, &mut self.len, start, end) }
+    }
+
+    /// Resizes to `new_len`, filling with clones of `value`. Panics if `new_len > N`.
+    #[track_caller]
+    pub fn resize(&mut self, new_len: usize, value: T)
+    where
+        T: Clone,
+    {
+        if new_len <= self.len {
+            self.truncate(new_len);
+            return;
+        }
+        if new_len > N {
+            capacity_overflow::<N>();
+        }
+        while self.len + 1 < new_len {
+            // SAFETY: len < new_len <= N.
+            unsafe { self.push_unchecked(value.clone()) };
+        }
+        // SAFETY: as above, for the last slot.
+        unsafe { self.push_unchecked(value) };
+    }
+
+    /// Resizes to `new_len`, filling with the values `f` returns. Panics if `new_len > N`.
+    #[track_caller]
+    pub fn resize_with(&mut self, new_len: usize, mut f: impl FnMut() -> T) {
+        if new_len <= self.len {
+            self.truncate(new_len);
+            return;
+        }
+        if new_len > N {
+            capacity_overflow::<N>();
+        }
+        while self.len < new_len {
+            // SAFETY: len < new_len <= N.
+            unsafe { self.push_unchecked(f()) };
+        }
+    }
+
+    /// Appends clones of the elements in `range`. Panics if the range is out of bounds or the
+    /// clones do not fit.
+    #[track_caller]
+    pub fn extend_from_within(&mut self, range: impl RangeBounds<usize>)
+    where
+        T: Clone,
+    {
+        let (start, end) = raw::range(range, self.len);
+        if end - start > self.remaining_capacity() {
+            capacity_overflow::<N>();
+        }
+        for i in start..end {
+            let x = self[i].clone();
+            // SAFETY: checked above that everything fits.
+            unsafe { self.push_unchecked(x) };
+        }
     }
 
     /// Appends clones of `other`. Panics if they do not all fit.
