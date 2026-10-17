@@ -30,6 +30,7 @@ fn zones_across_job_waits() {
         fibers: 512,
         fiber_stack_size: 128 << 10,
         pin_workers: false,
+        ..Config::default()
     })
     .unwrap();
     clear();
