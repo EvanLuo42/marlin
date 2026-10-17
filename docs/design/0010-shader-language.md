@@ -66,6 +66,8 @@
 | 可微类型 | 声明 `IDifferentiable<T>`，由编译器合成 `Differential` | 15.1 |
 | 导数源 | 用 `Derivatives.Seed(x, dx, dy)` 标记 | 15.3 |
 | 数值接口 | 精简的几层：`IArithmetic<T>`、`IInteger<T>`、`IFloat<T>`、`IComparable<T>` | 8.6 |
+| 浮点语义 | 默认宽松（允许重结合、fma 收缩、近似倒数），`[Precise]` 关闭这些变换 | 9.7 |
+| 编译期函数 | `const` 函数在编译期求值；`[Export]` 常量的值写进反射 | 13.4 |
 
 ## 1. 从 C# 去掉的东西
 
@@ -91,7 +93,7 @@
   - 接口用 `I` 前缀；
   - 内建函数也遵守这套规范：`Dot`、`Cross`、`Lerp`、`Saturate`、`Sqrt`。
 - 例外：向量分量和 swizzle 用小写（§9.4），向量和矩阵的短类型名也是小写（`float3`），和 `float`、`int` 这些关键字保持一致。
-- 和资产的关系：材质参数在 shader 和 `.masset` 里**同名**，都是 PascalCase，中间没有转换。只有在为参数块生成 Rust 类型时（0007 §2.8），才按 0003 §1.2 的规则转换成 snake_case。
+- 和资产的关系：材质参数在 shader 和 `.masset` 里**同名**，都是 PascalCase，中间没有转换。Rust 端手写的参数结构用 snake_case，做布局校验时按 0003 §1.2 的规则对应（0011 §9）。
 
 ## 3. 类型
 
@@ -443,6 +445,12 @@ float4 r0 = m.Row(0);
 - 整数除以 0 的结果**固定为 0**：除数不是常量时，编译器插入检查。这是因为 SPIR-V 上除零是未定义行为，D3D12 上得到 0xFFFFFFFF；这样规定之后，各平台的结果一致。
 - 没有 `checked`。
 
+### 9.7 浮点语义
+
+- 默认是宽松的：允许重结合、fma 收缩和近似倒数。这是 GPU 的常规做法，也和 HLSL 的默认行为一致。
+- 但不假设没有 NaN 和 Inf，所以 `IsNan`、`IsInf` 是可靠的。
+- `[Precise]` 可以标在函数、局部变量或字段上，被标记的计算不做上面这些变换。用在不允许裂缝的位置计算、补偿求和这类地方。
+
 ## 10. 资源与 bindless
 
 0002 定了只有 bindless 这一种模型。资源类型的值**本身就是一个 32 位 bindless 下标**，可以放进 struct、push constants 和 buffer。
@@ -469,7 +477,7 @@ var c = p.Albedo.Sample(p.Sampler, uv);
 ```
 
 - 命名照 C# 的 Span/ReadOnlySpan 规则：不带前缀的可写，带 `ReadOnly` 前缀的只读。不用 `RW`、`Structured`、`ByteAddress` 这类历史名字。
-- 反射和生成的 Rust 类型里，资源字段就是一个 u32 下标（对应 `ShaderView::index()` 或 `Sampler::index()`）。
+- 反射里，资源字段就是一个 u32 下标（对应 `ShaderView::index()` 或 `Sampler::index()`）；Rust 端对应的字段也写成 `u32`。
 - 不支持指针。
 
 ### 10.1 采样器表
@@ -769,6 +777,24 @@ public struct Rock : IMaterial
 - 反射把它列为静态参数，它不占参数块的空间（0007 §3）。
 - 改变它的值会改变 permutation。
 
+### 13.4 编译期函数与导出
+
+```csharp
+public const ClosureInfo Flatten<M>() where M : IMaterial { ... }
+
+[Compute(64, 1, 1)]
+public void ResolvePixel<M>(...) where M : IMaterial
+{
+    [Export] const ClosureInfo Topology = Flatten<M>();
+    ...
+}
+// 反射：exports["Topology"] = { Count = 2, Features = Aniso | Fuzz }
+```
+
+- 用 `const` 修饰的函数可以在编译期求值。它只能调用其他 `const` 函数，不能访问资源、groupshared、系统值和 `Debug.*`。C# 没有这个特性，它借自 C++ 的 constexpr。
+- `const` 字段和局部 `const` 的初始化表达式可以调用 `const` 函数。
+- 标了 `[Export]` 的 `const`，求出的值会写进反射（0011 §6.2），用来导出 Substrate 拓扑这类"库自己定义的编译期信息"。
+
 ## 14. Attribute 与反射
 
 ```csharp
@@ -878,13 +904,13 @@ internal DiffPair<float> AcosFwd(DiffPair<float> x) => ...;
 ## 16. 内存布局
 
 - 只有一种布局：**scalar 布局**，也就是自然对齐。比如 `float3` 占 12 字节、4 字节对齐。
-- 同一个 struct 在任何地方都是同一种布局，生成的 Rust 类型也只有一份。
+- 同一个 struct 在任何地方都是同一种布局，Rust 端也只需要手写一份对应的 struct（0011 §9）。
 - `Uniform<T>` 另外要求字段不能跨 16 字节行，这是 D3D12 cbuffer 的规则。不满足时报错，并建议怎么重排字段。
 - 需要精确控制时，可以用 C# 的 `[StructLayout(LayoutKind.Explicit)]` 和 `[FieldOffset(n)]`。
 - 资源字段占 4 字节（§10）；`bool` 不能放进 buffer（§3.1）。
 
 ## 17. 待定
 
-- 编译器 API、反射输出格式和 Rust 类型生成：另写一份 0011。
+- 编译器 API 和反射：见 0011。
 - 标准库的完整清单：各个 namespace 里有哪些函数，打包类型有哪些。
 - 采样反馈（0007 §3）属于材质库的 `SurfaceContext` 采样函数，不属于语法。
