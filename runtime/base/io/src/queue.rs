@@ -228,6 +228,26 @@ impl<'f> IoQueue<'f> {
         }
     }
 
+    /// Asks the OS to stop operation `id`. It still completes exactly once: with `Cancelled` if
+    /// it was stopped in time, otherwise with its normal result. Returns `false`, doing nothing,
+    /// if `id` is not in flight (already returned, or never submitted here).
+    ///
+    /// Takes effect at the next submit, poll or wait on IoRing and io_uring.
+    pub fn cancel(&mut self, id: RequestId) -> Result<bool> {
+        let Some(slot) = self.slots.get(id.index as usize) else {
+            return Ok(false);
+        };
+        if slot.generation != id.generation || slot.buffer.is_none() {
+            return Ok(false);
+        }
+        // SAFETY: the slot holds a buffer, so its request is in flight with this id's tag.
+        unsafe {
+            let request = self.requests.add(id.index as usize);
+            self.raw.cancel(request, id.tag())?;
+        }
+        Ok(true)
+    }
+
     /// Starts queued operations without waiting for any.
     pub fn submit(&mut self) -> Result<()> {
         self.raw.submit()

@@ -14,7 +14,7 @@ use crate::file::{File, MAX_PATH_LEN};
 use crate::{Error, ErrorKind, Result};
 
 /// What a path names.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum FileKind {
     File,
     Dir,

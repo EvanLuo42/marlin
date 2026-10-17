@@ -47,6 +47,20 @@ impl File {
         self.0.set_len(len)
     }
 
+    /// Flushes data and metadata to the storage device (needs write access on Windows).
+    pub fn sync_all(&self) -> Result<()> {
+        self.0.sync_all()
+    }
+
+    /// Flushes data, and only the metadata needed to read it back, to the storage device.
+    pub fn sync_data(&self) -> Result<()> {
+        self.0.sync_data()
+    }
+
+    pub fn metadata(&self) -> Result<crate::fs::Metadata> {
+        self.0.metadata()
+    }
+
     /// Reads up to `buf.len()` bytes at `offset`; fewer near the end of the file, 0 past it.
     pub fn read_at(&self, buf: &mut [u8], offset: u64) -> Result<usize> {
         self.0.read_at(buf, offset)
