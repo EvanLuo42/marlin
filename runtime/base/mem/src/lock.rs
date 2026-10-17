@@ -75,6 +75,11 @@ impl<T> Locked<T> {
         }
     }
 
+    /// The value, without locking: `&mut self` already excludes everyone else.
+    pub(crate) fn get_mut(&mut self) -> &mut T {
+        self.value.get_mut()
+    }
+
     pub(crate) fn with<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
         self.lock.lock();
         // SAFETY: the lock gives exclusive access. A panic in `f` aborts the process, so the lock

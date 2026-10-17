@@ -5,6 +5,10 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
+[features]
+# Guard pages and leak tracking for MarlinHeap (`marlin_mem::debug`).
+mem-debug = []
+
 [dependencies]
 marlin-pal.workspace = true
 
