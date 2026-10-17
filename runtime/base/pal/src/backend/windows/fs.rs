@@ -18,7 +18,6 @@ use windows_sys::Win32::System::Memory::{
     CreateFileMappingW, FILE_MAP_READ, FILE_MAP_WRITE, FlushViewOfFile, MEMORY_MAPPED_VIEW_ADDRESS,
     MapViewOfFile, PAGE_READONLY, PAGE_READWRITE, UnmapViewOfFile,
 };
-use windows_sys::Win32::System::SystemServices::IO_REPARSE_TAG_SYMLINK;
 
 use super::error::{check, last_error};
 use super::file::File;
@@ -26,6 +25,9 @@ use super::{Backend, utf16_to_utf8, with_wide_path};
 use crate::contract::{Fs, VMem};
 use crate::fs::{DirEntry, FileKind, Metadata};
 use crate::{Error, ErrorKind, Result};
+
+/// The name-surrogate bit of a reparse tag (`IsReparseTagNameSurrogate` in `winnt.h`).
+const REPARSE_TAG_NAME_SURROGATE: u32 = 0x2000_0000;
 
 /// 100 ns intervals from 1601-01-01 (the FILETIME epoch) to 1970-01-01.
 const EPOCH_DIFFERENCE: i64 = 116_444_736_000_000_000;
@@ -201,8 +203,11 @@ unsafe impl Fs for Backend {
                 continue;
             }
             let attributes = dir.data.dwFileAttributes;
+            // Symbolic links, junctions and other name surrogates (`IsReparseTagNameSurrogate`)
+            // stand for another path; listing reports them as links so that nothing walks or
+            // deletes through them. Other reparse points (cloud files, dedup) are what they hold.
             let kind = if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
-                && dir.data.dwReserved0 == IO_REPARSE_TAG_SYMLINK
+                && dir.data.dwReserved0 & REPARSE_TAG_NAME_SURROGATE != 0
             {
                 FileKind::Symlink
             } else if attributes & FILE_ATTRIBUTE_DIRECTORY != 0 {

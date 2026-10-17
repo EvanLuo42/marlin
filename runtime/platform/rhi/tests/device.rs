@@ -107,7 +107,8 @@ fn frames_in_flight_cycle() {
     for frame in 0..6 {
         assert_eq!(frames.index(), frame % 2);
         frames.begin().unwrap();
-        frames.submit(device.queue()).unwrap();
+        // SAFETY: the lists use no resources.
+        unsafe { frames.submit(device.queue()).unwrap() };
     }
     frames.wait_idle().unwrap();
     drop(frames);

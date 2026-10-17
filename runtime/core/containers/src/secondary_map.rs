@@ -20,7 +20,11 @@ struct Slot<V> {
 ///
 /// Stale handles behave as in the slot map: a value inserted for an old occupant of a slot is
 /// invisible to (and replaced by) the newer occupant's handle, and a handle older than the
-/// stored value inserts nothing. Memory grows with the highest slot index used.
+/// stored value inserts nothing.
+///
+/// Memory grows with the highest slot index used. A handle the slot map did not issue (one
+/// rebuilt with [`Handle::from_bits`]) can name any index up to 2^32 - 2, so check such handles
+/// against the slot map before inserting them; growth that cannot be allocated inserts nothing.
 pub struct SecondaryMap<K, V, A: Allocator = Global> {
     slots: Vec<Slot<V>, A>,
     len: usize,
@@ -70,8 +74,9 @@ impl<K, V, A: Allocator> SecondaryMap<K, V, A> {
         self.len == 0
     }
 
-    /// Sets `handle`'s value; returns the previous value for this same handle. A null handle, or
-    /// one older than the value already stored in its slot, drops `value` and returns `None`.
+    /// Sets `handle`'s value; returns the previous value for this same handle. A null handle, one
+    /// older than the value already stored in its slot, or one whose slot cannot be allocated drops
+    /// `value` and returns `None`.
     pub fn insert(&mut self, handle: Handle<K>, value: V) -> Option<V> {
         let old = self.slot_for(handle)?.value.replace(value);
         if old.is_none() {
@@ -97,13 +102,16 @@ impl<K, V, A: Allocator> SecondaryMap<K, V, A> {
     }
 
     /// The slot for `handle`, with its generation, cleared of any older occupant's value; `None`
-    /// if `handle` is null or older than the slot's value.
+    /// if `handle` is null, older than the slot's value, or its slot cannot be allocated.
     fn slot_for(&mut self, handle: Handle<K>) -> Option<&mut Slot<V>> {
-        if handle.is_null() {
+        // Slot maps never issue index `u32::MAX` (it is `Handle::NULL`'s).
+        if handle.is_null() || handle.index() == u32::MAX {
             return None;
         }
         let index = handle.index() as usize;
         if index >= self.slots.len() {
+            // Handles can be made from any bits, so growing for one may ask for too much.
+            self.slots.try_reserve(index + 1 - self.slots.len()).ok()?;
             self.slots.resize_with(index + 1, || Slot {
                 generation: 0,
                 value: None,

@@ -18,7 +18,8 @@ use crate::{Error, ErrorKind, Result};
 pub enum FileKind {
     File,
     Dir,
-    /// Only reported by [`ReadDir`], which does not follow links; [`metadata`] does.
+    /// A symbolic link, or on Windows any name-surrogate reparse point such as a junction. Only
+    /// reported by [`ReadDir`], which does not follow links; [`metadata`] does.
     Symlink,
     /// Devices, pipes, sockets and the like.
     Other,
@@ -36,6 +37,10 @@ pub struct Metadata {
     /// The read-only attribute on Windows; no write permission bit at all on POSIX.
     pub readonly: bool,
 }
+
+/// Longest entry name in UTF-8 bytes: 255 UTF-16 units on Windows and macOS (3 bytes each at
+/// most), 255 bytes on Linux. A buffer this long holds every name [`ReadDir::next`] writes.
+pub const MAX_NAME_LEN: usize = 765;
 
 /// One entry of a [`ReadDir`].
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]

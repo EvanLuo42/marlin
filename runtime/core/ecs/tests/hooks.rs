@@ -146,6 +146,50 @@ fn hook_commands_apply_when_the_triggering_call_returns() {
     assert_eq!(world.get::<Echo>(last[0]), Some(&Echo(0)));
 }
 
+/// Spawns a `Tag` entity naming the despawned one in its `Echo`.
+fn spawn_on_remove(ctx: &mut HookContext<'_, '_>) {
+    let index = ctx.entity.index();
+    ctx.commands.spawn((Tag, Echo(index)));
+    ctx.commands.spawn_empty();
+}
+
+#[test]
+fn despawn_keeps_ids_hooks_reserve() {
+    let mut world = World::new();
+    world.component_hooks::<Health>().on_remove(spawn_on_remove);
+    // A freed id first, so the hook's reservations reuse it as well as taking fresh ones.
+    let freed = world.spawn((Pos(0.0),));
+    world.despawn(freed);
+    let a = world.spawn((Health(1),));
+    let b = world.spawn((Health(2),));
+    let others = world.spawn((Pos(1.0),));
+    assert_eq!(world.entity_count(), 3);
+
+    for e in [a, b] {
+        assert!(world.despawn(e));
+        assert!(!world.is_alive(e));
+    }
+    // Each despawn left a tagged entity and an empty one, all distinct and alive.
+    assert_eq!(world.entity_count(), 1 + 2 * 2);
+    let mut tagged: Vec<(Entity, u32)> = world
+        .query::<(Entity, &Echo)>()
+        .map(|(e, n)| (e, n.0))
+        .collect();
+    tagged.sort_unstable_by_key(|&(_, n)| n);
+    assert_eq!(
+        tagged.iter().map(|&(_, n)| n).collect::<Vec<_>>(),
+        [a.index(), b.index()]
+    );
+    for &(e, _) in &tagged {
+        assert!(world.has::<Tag>(e));
+        assert_ne!(e, others);
+    }
+    // Ids spawned afterwards do not alias the reserved ones.
+    let next = world.spawn((Pos(2.0),));
+    assert!(tagged.iter().all(|&(e, _)| e.index() != next.index()));
+    assert_eq!(world.entity_count(), 6);
+}
+
 #[test]
 #[should_panic(expected = "already has an `on_add` hook")]
 fn one_hook_per_slot() {

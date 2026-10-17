@@ -199,6 +199,8 @@ fn render_frame(
         TextureState::RENDER_TARGET,
         TextureState::PRESENT,
     )]);
-    frames.submit(device.queue())?;
+    // SAFETY: the list uses the swapchain image (kept alive by the swapchain, which waits for the
+    // GPU before resizing or dropping) and the renderer's resources (as above).
+    unsafe { frames.submit(device.queue())? };
     Ok(swapchain.present()?)
 }

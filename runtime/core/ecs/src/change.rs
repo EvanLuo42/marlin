@@ -299,7 +299,8 @@ impl TickFetch {
 
 macro_rules! tick_filter {
     ($Filter:ident, $test:ident) => {
-        impl<T: Component> QueryFilter for $Filter<T> {
+        // SAFETY: reads only `T`'s ticks, and declares a read of `T`.
+        unsafe impl<T: Component> QueryFilter for $Filter<T> {
             type State = Option<ComponentId>;
             type Fetch = TickFetch;
             const ROW_FILTER: bool = true;

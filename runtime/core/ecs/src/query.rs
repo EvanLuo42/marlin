@@ -552,7 +552,25 @@ tuple_query!(
 
 /// Restricts which entities a query visits: by archetype ([`With`], [`Without`]) or row by row
 /// ([`Changed`](crate::Changed), [`Added`](crate::Added)).
-pub trait QueryFilter {
+///
+/// # Safety
+///
+/// `access` must declare every component `fetch`/`filter` read: the scheduler runs systems in
+/// parallel on what it declares, so an undeclared read races with another system's writes.
+/// `fetch` and `filter` may not write anything.
+///
+/// ```compile_fail
+/// use marlin_ecs::{Archetype, ChangeTicks, QueryFilter, Table, World};
+/// struct Anything;
+/// impl QueryFilter for Anything { // needs `unsafe impl`
+///     type State = ();
+///     type Fetch = ();
+///     fn state(_: &World) {}
+///     fn matches(_: &(), _: &Archetype) -> bool { true }
+///     unsafe fn fetch(_: &(), _: &World, _: &Table, _: ChangeTicks) {}
+/// }
+/// ```
+pub unsafe trait QueryFilter {
     type State: Copy + Send + Sync + PartialEq;
     type Fetch: Copy;
     /// Whether [`filter`](Self::filter) may reject rows (else only archetypes are filtered).
@@ -578,7 +596,8 @@ pub trait QueryFilter {
     }
 }
 
-impl QueryFilter for () {
+// SAFETY: reads nothing.
+unsafe impl QueryFilter for () {
     type State = ();
     type Fetch = ();
 
@@ -594,7 +613,8 @@ impl QueryFilter for () {
 /// Entities that have a `T`.
 pub struct With<T>(PhantomData<fn() -> T>);
 
-impl<T: Component> QueryFilter for With<T> {
+// SAFETY: only looks at archetypes, never at component data.
+unsafe impl<T: Component> QueryFilter for With<T> {
     type State = Option<ComponentId>;
     type Fetch = ();
 
@@ -612,7 +632,8 @@ impl<T: Component> QueryFilter for With<T> {
 /// Entities without a `T`.
 pub struct Without<T>(PhantomData<fn() -> T>);
 
-impl<T: Component> QueryFilter for Without<T> {
+// SAFETY: only looks at archetypes, never at component data.
+unsafe impl<T: Component> QueryFilter for Without<T> {
     type State = Option<ComponentId>;
     type Fetch = ();
 
@@ -629,7 +650,8 @@ impl<T: Component> QueryFilter for Without<T> {
 
 macro_rules! tuple_filter {
     ($(($F:ident, $f:ident)),+) => {
-        impl<$($F: QueryFilter),+> QueryFilter for ($($F,)+) {
+        // SAFETY: declares the union of what the members declare and only forwards to them.
+        unsafe impl<$($F: QueryFilter),+> QueryFilter for ($($F,)+) {
             type State = ($($F::State,)+);
             type Fetch = ($($F::Fetch,)+);
             const ROW_FILTER: bool = false $(|| $F::ROW_FILTER)+;

@@ -82,7 +82,8 @@ fn clear_and_present(disable_enhanced_barriers: bool) {
             TextureState::RENDER_TARGET,
             TextureState::PRESENT,
         )]);
-        frames.submit(device.queue()).unwrap();
+        // SAFETY: the list only uses the swapchain image, which the swapchain keeps alive.
+        unsafe { frames.submit(device.queue()).unwrap() };
         swapchain.present().unwrap();
     }
     frames.wait_idle().unwrap();

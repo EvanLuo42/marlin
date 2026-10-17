@@ -79,6 +79,84 @@ fn create_walk_and_remove_trees() {
 }
 
 #[test]
+fn long_names_are_listed() {
+    let tmp = TempDir::new("long-names");
+    // The longest names the file system takes: 255 bytes on Linux, 255 UTF-16 units elsewhere
+    // (765 UTF-8 bytes of CJK), both longer than a small first guess at the buffer size.
+    let count = if cfg!(target_os = "linux") { 85 } else { 255 };
+    let long: String = core::iter::repeat_n('名', count).collect();
+    for name in [&*long, "short"] {
+        marlin_io::write(tmp.0.join(name), b"x").unwrap();
+    }
+    let listed: BTreeSet<String> = fs::read_dir(&tmp.0)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_owned())
+        .collect();
+    assert_eq!(listed, BTreeSet::from([long, "short".to_owned()]));
+}
+
+/// Junctions are directory links any user can make (`mklink /J`, no privilege needed); listing
+/// must report them as links so walking and removing never go through them.
+#[cfg(windows)]
+#[test]
+fn junctions_are_links() {
+    let tmp = TempDir::new("junction");
+    let target = tmp.0.join("target");
+    let tree = tmp.0.join("tree");
+    fs::create_dir_all(tree.join("sub")).unwrap();
+    fs::create_dir(&target).unwrap();
+    marlin_io::write(target.join("keep.txt"), b"keep").unwrap();
+    let junction = |link: &PathBuf, to: &PathBuf| {
+        let status = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(link.as_str().replace('/', "\\"))
+            .arg(to.as_str().replace('/', "\\"))
+            .stdout(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "mklink /J failed");
+    };
+    junction(&tree.join("out"), &target);
+    // A cycle back to the tree's root.
+    junction(&tree.join("sub/up"), &tree);
+
+    let kinds: BTreeSet<(String, FileKind)> = fs::read_dir(&tree)
+        .unwrap()
+        .map(|e| {
+            let e = e.unwrap();
+            (e.file_name().to_owned(), e.kind)
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        BTreeSet::from([
+            ("out".to_owned(), FileKind::Symlink),
+            ("sub".to_owned(), FileKind::Dir)
+        ])
+    );
+    // Metadata follows the junction.
+    assert_eq!(fs::metadata(tree.join("out")).unwrap().kind, FileKind::Dir);
+
+    // The walk ends: neither junction is entered.
+    let walked: BTreeSet<String> = fs::walk_dir(&tree)
+        .unwrap()
+        .map(|e| {
+            let path = e.unwrap().path;
+            path.as_str()[tree.as_str().len() + 1..].to_owned()
+        })
+        .collect();
+    assert_eq!(
+        walked,
+        BTreeSet::from(["out", "sub", "sub/up"].map(str::to_owned))
+    );
+
+    // Removing the tree removes the junctions, not what they point at.
+    fs::remove_dir_all(&tree).unwrap();
+    assert!(!fs::exists(&tree));
+    assert_eq!(marlin_io::read(target.join("keep.txt")).unwrap(), b"keep");
+}
+
+#[test]
 fn file_sync_and_metadata() {
     let tmp = TempDir::new("sync");
     let file = File::create(tmp.0.join("f")).unwrap();

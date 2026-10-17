@@ -3,7 +3,8 @@
 //! A thin, explicit layer in the style of D3D12 and Vulkan: the caller records barriers, owns
 //! synchronization through fences, and keeps resources alive while the GPU uses them (those
 //! points are `unsafe fn`s). State tracking, barrier derivation and deferred destruction belong
-//! to the render graph above. [`FramesInFlight`] is the safe helper for the common frame loop.
+//! to the render graph above. [`FramesInFlight`] keeps the common frame loop's
+//! command pools, lists and fence safe; what the lists use is still the caller's.
 //!
 //! # Abstraction choices
 //!

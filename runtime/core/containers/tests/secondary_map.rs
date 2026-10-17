@@ -2,7 +2,9 @@
 
 mod common;
 
+use std::alloc::{AllocError, Allocator, Global, Layout};
 use std::collections::HashMap;
+use std::ptr::NonNull;
 
 use common::{Rng, Tracker};
 use marlin_containers::{Handle, SecondaryMap, SlotMap};
@@ -91,4 +93,55 @@ fn matches_a_hash_map_model() {
     assert_eq!(extra.len(), model.len());
     drop(extra);
     t.assert_all_dropped();
+}
+
+/// Refuses blocks over 1 MiB, so a test asking for a huge slot array fails fast instead of
+/// committing gigabytes.
+#[derive(Clone, Copy)]
+struct Capped;
+
+// SAFETY: forwards to `Global`, which upholds the contract.
+unsafe impl Allocator for Capped {
+    fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+        if layout.size() > 1 << 20 {
+            return Err(AllocError);
+        }
+        Global.allocate(layout)
+    }
+
+    unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
+        // SAFETY: forwarded from the caller; the block came from `Global`.
+        unsafe { Global.deallocate(ptr, layout) }
+    }
+}
+
+#[test]
+fn foreign_handles_never_abort() {
+    let bogus = |index: u32| Handle::<&str>::from_bits(1 << 32 | u64::from(index));
+    // `u32::MAX` is never issued: nothing is allocated for it, even with the global heap.
+    let mut global: SecondaryMap<&str, u64> = SecondaryMap::new();
+    assert_eq!(global.insert(bogus(u32::MAX), 1), None);
+    assert!(
+        global
+            .get_or_insert_with(bogus(u32::MAX), || unreachable!())
+            .is_none()
+    );
+    assert!(global.is_empty());
+
+    // An index too far to allocate for inserts nothing; the map keeps working.
+    let mut slots = SlotMap::new();
+    let a = slots.insert("a");
+    let mut capped: SecondaryMap<&str, u64, Capped> = SecondaryMap::new_in(Capped);
+    assert_eq!(capped.insert(a, 1), None);
+    for index in [u32::MAX - 1, 1 << 28] {
+        assert_eq!(capped.insert(bogus(index), 2), None);
+        assert!(
+            capped
+                .get_or_insert_with(bogus(index), || unreachable!())
+                .is_none()
+        );
+        assert_eq!(capped.get(bogus(index)), None);
+    }
+    assert_eq!(capped.len(), 1);
+    assert_eq!(capped[a], 1);
 }

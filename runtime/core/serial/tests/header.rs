@@ -46,11 +46,20 @@ struct Node {
 #[repr(transparent)]
 struct Meters(f32);
 
-#[derive(Pod, Clone, Copy)]
+#[derive(Pod, Clone, Copy, Debug, PartialEq)]
 #[repr(C)]
 struct Pair<T> {
     a: T,
     b: T,
+}
+
+/// A non-generic struct holding a generic one: its `CHECK` also evaluates `Pair<u32>::CHECK`
+/// (a padded `Pair` here fails to compile; see the `marlin-serial-derive` docs).
+#[derive(Pod, Clone, Copy, Debug, PartialEq)]
+#[repr(C)]
+struct Nested {
+    pair: Pair<u32>,
+    tail: [Pair<u16>; 2],
 }
 
 /// A hand-written impl: described by size and alignment only.
@@ -75,6 +84,26 @@ fn derived_layouts() {
     assert!(matches!(pod_layout::<Meters>().kind, PodKind::Struct(f) if f[0].name == "0"));
     assert!(matches!(pod_layout::<Manual>().kind, PodKind::Opaque));
     assert_eq!(pod_layout::<Pair<u16>>().size, 4);
+}
+
+#[test]
+fn nested_generic_fields() {
+    let nested = Nested {
+        pair: Pair { a: 1, b: 2 },
+        tail: [Pair { a: 3, b: 4 }, Pair { a: 5, b: 6 }],
+    };
+    let mut builder = CookedBuilder::new();
+    let at = builder.push_slice(&[nested, nested]);
+    let buffer = builder.finish();
+    let view = buffer.view();
+    assert_eq!(
+        view.slice_at::<Nested>(at.offset(), 2).unwrap(),
+        [nested; 2]
+    );
+    let PodKind::Struct(fields) = pod_layout::<Nested>().kind else {
+        panic!("not a struct")
+    };
+    assert_eq!(fields[1].offset, offset_of!(Nested, tail));
 }
 
 #[test]

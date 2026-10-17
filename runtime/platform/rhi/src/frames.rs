@@ -18,7 +18,8 @@ struct Slot {
 /// ```ignore
 /// let list = frames.begin()?;
 /// list.texture_barriers(...);
-/// frames.submit(device.queue())?;
+/// // SAFETY: the resources the list uses outlive the frames.
+/// unsafe { frames.submit(device.queue())? };
 /// swapchain.present()?;
 /// ```
 pub struct FramesInFlight {
@@ -81,17 +82,26 @@ impl FramesInFlight {
 
     /// Ends the current list, submits it to `queue` and moves to the next slot.
     ///
-    /// The caller keeps every resource the list uses alive until the GPU finishes it (as
-    /// [`Queue::submit`] requires): for swapchain images that holds because resizing and dropping
-    /// a swapchain wait for the GPU.
-    pub fn submit(&mut self, queue: &Queue) -> Result<()> {
+    /// # Safety
+    /// As [`Queue::submit`], for the resources and views the list uses: they stay alive until the
+    /// GPU finishes it (the slot's next [`begin`](Self::begin), or [`wait_idle`](Self::wait_idle)).
+    /// The list and its pool are this type's to keep. Swapchain images qualify because resizing
+    /// and dropping a swapchain wait for the GPU.
+    ///
+    /// ```compile_fail
+    /// fn submit(frames: &mut marlin_rhi::FramesInFlight, queue: &marlin_rhi::Queue) {
+    ///     frames.submit(queue).unwrap(); // needs `unsafe`
+    /// }
+    /// ```
+    pub unsafe fn submit(&mut self, queue: &Queue) -> Result<()> {
         assert!(self.recording, "FramesInFlight::submit without begin");
         self.recording = false;
         let value = self.next_value;
         let slot = &mut self.slots[self.current];
         slot.list.end()?;
         // SAFETY: the pool is reset only after the fence passes `value` (`begin`), and the list is
-        // not touched before that either. Resource lifetimes are the caller's (see above).
+        // not touched before that either. Resource lifetimes are the caller's (this function's
+        // contract).
         unsafe { queue.submit(&[&slot.list], Some((&self.fence, value)))? };
         slot.value = value;
         self.next_value += 1;

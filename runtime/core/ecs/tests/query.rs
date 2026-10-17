@@ -2,7 +2,9 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use marlin_ecs::{Entity, With, Without, World};
+use marlin_ecs::{
+    Access, Archetype, ChangeTicks, Entity, QueryFilter, Table, With, Without, World,
+};
 use marlin_jobs::{Config, JobSystem};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -102,4 +104,48 @@ fn par_for_each_visits_every_entity_once() {
     });
     assert_eq!(visits.load(Ordering::Relaxed), 100_000);
     assert!(world.query_ref::<(&Pos, &Vel)>().all(|(p, v)| p.0 == v.0));
+}
+
+/// A filter outside the crate: entities with an even index. Implementing `QueryFilter` is
+/// `unsafe` because the scheduler trusts `access` to name everything the filter reads.
+struct EvenIndex;
+
+// SAFETY: reads no component data, only the entity id it is handed.
+unsafe impl QueryFilter for EvenIndex {
+    type State = ();
+    type Fetch = ();
+    const ROW_FILTER: bool = true;
+
+    fn access(_: &mut Access) {}
+
+    fn state(_: &World) {}
+
+    fn matches(_: &(), _: &Archetype) -> bool {
+        true
+    }
+
+    unsafe fn fetch(_: &(), _: &World, _: &Table, _: ChangeTicks) {}
+
+    unsafe fn filter(_: (), _: usize, entity: Entity) -> bool {
+        entity.index() % 2 == 0
+    }
+}
+
+#[test]
+fn custom_filters_are_unsafe_impls() {
+    let (mut world, es) = world();
+    let mut even: Vec<Entity> = world
+        .query_filtered::<Entity, (EvenIndex, With<Vel>)>()
+        .collect();
+    even.sort_unstable();
+    let mut expected: Vec<Entity> = es
+        .iter()
+        .copied()
+        .enumerate()
+        .filter(|&(i, e)| i % 3 != 0 && e.index() % 2 == 0)
+        .map(|(_, e)| e)
+        .collect();
+    expected.sort_unstable();
+    assert!(!expected.is_empty());
+    assert_eq!(even, expected);
 }

@@ -109,7 +109,7 @@ pub fn read_dir(path: impl AsRef<Path>) -> Result<ReadDir> {
     Ok(ReadDir {
         raw: pal::ReadDir::open(path.as_str())?,
         dir: path.to_path_buf(),
-        name: alloc::vec![0; 256],
+        name: alloc::vec![0; pal::MAX_NAME_LEN],
     })
 }
 
@@ -128,10 +128,8 @@ impl Iterator for ReadDir {
             Ok(None) => None,
             Err(error) => Some(Err(error)),
             Ok(Some(entry)) => {
+                // The buffer holds the longest name a file system allows.
                 if entry.name_len > self.name.len() {
-                    // The entry is consumed; names are at most 255 UTF-16 units, which is 765
-                    // bytes, so size for the worst case and report this one as unreadable.
-                    self.name.resize(1024, 0);
                     return Some(Err(Error::from_kind(ErrorKind::InvalidData)));
                 }
                 let name = &self.name[..entry.name_len];

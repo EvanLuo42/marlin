@@ -171,7 +171,9 @@ fn run() -> Result<(), Failure> {
             TextureState::RENDER_TARGET,
             TextureState::PRESENT,
         )]);
-        frames.submit(device.queue())?;
+        // SAFETY: the list only uses the swapchain image, which the swapchain keeps alive (it waits
+        // for the GPU before resizing or dropping).
+        unsafe { frames.submit(device.queue())? };
         if swapchain.present()? == PresentStatus::Occluded {
             // Fully covered: nothing is shown, so don't burn power on more frames.
             app.pump_timeout(Some(Duration::from_millis(16)));

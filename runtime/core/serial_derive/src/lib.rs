@@ -73,6 +73,15 @@
 //! let mut b = marlin_serial::cooked::CookedBuilder::new();
 //! b.push(&Pair { a: 1u8, b: 2u32 });
 //! ```
+//! A padded generic type nested in a non-generic one:
+//! ```compile_fail
+//! #[derive(marlin_serial::cooked::Pod, Clone, Copy)]
+//! #[repr(C)]
+//! struct Pair<T> { a: u8, b: T }
+//! #[derive(marlin_serial::cooked::Pod, Clone, Copy)]
+//! #[repr(C)]
+//! struct Outer { pair: Pair<u32> }
+//! ```
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
@@ -199,11 +208,16 @@ fn expand(input: &DeriveInput) -> Result<TokenStream2> {
         "`{ident}` has padding bytes: add explicit padding fields (such as `_pad: [u8; N]`) so \
          that every byte belongs to a field"
     );
+    // The fields' own checks run too: a padded generic field type (`Pair<u32>`) has the size of
+    // its padding included, so only its own `CHECK` rejects it.
     let check = quote! {
-        ::core::assert!(
-            ::core::mem::size_of::<Self>() == 0 #(+ ::core::mem::size_of::<#types>())*,
-            #padding_message
-        )
+        {
+            ::core::assert!(
+                ::core::mem::size_of::<Self>() == 0 #(+ ::core::mem::size_of::<#types>())*,
+                #padding_message
+            );
+            #(<#types as #krate::cooked::Pod>::CHECK;)*
+        }
     };
     // Field types must be `Pod`; for generic types this is checked against the declared bounds.
     let field_check = quote! {

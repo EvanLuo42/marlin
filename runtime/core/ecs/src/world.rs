@@ -264,8 +264,12 @@ impl World {
                 .to_vec();
             self.trigger(entity, &ids, HookKind::Replace);
             self.trigger(entity, &ids, HookKind::Remove);
+            // Hooks may reserve ids (`ctx.commands.spawn`); freeing needs a flushed table and
+            // would otherwise hand a reserved index out again.
+            self.flush();
         }
-        // Hooks cannot change the world's structure, so the location still holds.
+        // Hooks cannot change the world's structure and flushing only appends to the empty
+        // archetype and table, so the location still holds.
         let tick = self.change_tick();
         let archetype = &mut self.archetypes.list[location.archetype.index()];
         for &id in archetype.components.iter() {
