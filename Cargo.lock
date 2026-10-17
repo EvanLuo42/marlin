@@ -233,7 +233,6 @@ dependencies = [
  "marlin-render",
  "marlin-render-graph",
  "marlin-rhi",
- "marlin-script",
  "marlin-serial",
  "marlin-services",
  "marlin-shader",
@@ -241,8 +240,6 @@ dependencies = [
  "marlin-text",
  "marlin-ui-render",
  "marlin-vfx",
- "marlin-vm",
- "marlin-vm-bytecode",
  "marlin-world",
 ]
 
@@ -369,10 +366,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "marlin-cook-script"
-version = "0.1.0"
-
-[[package]]
 name = "marlin-cook-shader"
 version = "0.1.0"
 
@@ -417,7 +410,6 @@ dependencies = [
  "marlin-cook-core",
  "marlin-cook-level",
  "marlin-cook-mesh",
- "marlin-cook-script",
  "marlin-cook-shader",
  "marlin-cook-texture",
  "marlin-framework",
@@ -466,7 +458,6 @@ dependencies = [
  "marlin",
  "marlin-editor-asset-tools",
  "marlin-editor-core",
- "marlin-editor-script-tools",
  "marlin-editor-ui-core",
  "marlin-editor-ui-theme",
  "marlin-editor-ui-widgets",
@@ -482,10 +473,6 @@ version = "0.1.0"
 
 [[package]]
 name = "marlin-editor-core"
-version = "0.1.0"
-
-[[package]]
-name = "marlin-editor-script-tools"
 version = "0.1.0"
 
 [[package]]
@@ -699,10 +686,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "marlin-script"
-version = "0.1.0"
-
-[[package]]
 name = "marlin-serial"
 version = "0.1.0"
 dependencies = [
@@ -786,25 +769,6 @@ dependencies = [
 [[package]]
 name = "marlin-vfx"
 version = "0.1.0"
-
-[[package]]
-name = "marlin-vm"
-version = "0.1.0"
-
-[[package]]
-name = "marlin-vm-bytecode"
-version = "0.1.0"
-
-[[package]]
-name = "marlin-vm-compiler"
-version = "0.1.0"
-
-[[package]]
-name = "marlin-vm-lsp"
-version = "0.1.0"
-dependencies = [
- "marlin-vm-compiler",
-]
 
 [[package]]
 name = "marlin-world"

@@ -52,9 +52,6 @@ marlin-compress = { path = "runtime/core/compress" }
 # --- L3 runtime/engine ---
 marlin-asset = { path = "runtime/engine/asset" }
 marlin-world = { path = "runtime/engine/world" }
-marlin-vm-bytecode = { path = "runtime/engine/vm_bytecode" }
-marlin-vm = { path = "runtime/engine/vm" }
-marlin-script = { path = "runtime/engine/script" }
 marlin-shader = { path = "runtime/engine/shader" }
 marlin-render-graph = { path = "runtime/engine/render_graph" }
 marlin-render = { path = "runtime/engine/render" }
@@ -76,7 +73,6 @@ marlin-editor-core = { path = "editor/core" }
 marlin-editor-viewport = { path = "editor/viewport" }
 marlin-editor-world-tools = { path = "editor/world_tools" }
 marlin-editor-asset-tools = { path = "editor/asset_tools" }
-marlin-editor-script-tools = { path = "editor/script_tools" }
 # --- tools ---
 marlin-masset = { path = "tools/masset" }
 marlin-asset-db = { path = "tools/asset_db" }
@@ -89,8 +85,6 @@ marlin-cook-mesh = { path = "tools/cook_mesh" }
 marlin-cook-shader = { path = "tools/cook_shader" }
 marlin-cook-audio = { path = "tools/cook_audio" }
 marlin-cook-level = { path = "tools/cook_level" }
-marlin-cook-script = { path = "tools/cook_script" }
-marlin-vm-compiler = { path = "tools/vm_compiler" }
 
 # --- third party ---
 # Anything a runtime crate depends on must be no_std (default-features = false).

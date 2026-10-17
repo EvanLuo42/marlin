@@ -11,7 +11,6 @@ marlin-mem.workspace = true
 marlin-rt.workspace = true
 marlin-editor-asset-tools.workspace = true
 marlin-editor-core.workspace = true
-marlin-editor-script-tools.workspace = true
 marlin-editor-ui-core.workspace = true
 marlin-editor-ui-theme.workspace = true
 marlin-editor-ui-widgets.workspace = true

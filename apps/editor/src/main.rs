@@ -4,7 +4,6 @@
 use marlin as _;
 use marlin_editor_asset_tools as _;
 use marlin_editor_core as _;
-use marlin_editor_script_tools as _;
 use marlin_editor_ui_core as _;
 use marlin_editor_ui_theme as _;
 use marlin_editor_ui_widgets as _;

@@ -10,7 +10,6 @@ use marlin_cook_audio as _;
 use marlin_cook_core::{Cookers, Ddc, LayeredDdc, LocalDdc};
 use marlin_cook_level as _;
 use marlin_cook_mesh::{AnimationCooker, MeshCooker, SkeletonCooker};
-use marlin_cook_script as _;
 use marlin_cook_shader as _;
 use marlin_cook_texture::TextureCooker;
 use marlin_framework::Level;

@@ -33,12 +33,9 @@ marlin-nav.workspace = true
 marlin-physics.workspace = true
 marlin-render.workspace = true
 marlin-render-graph.workspace = true
-marlin-script.workspace = true
 marlin-shader.workspace = true
 marlin-ui-render.workspace = true
 marlin-vfx.workspace = true
-marlin-vm.workspace = true
-marlin-vm-bytecode.workspace = true
 marlin-world.workspace = true
 
 [lints]

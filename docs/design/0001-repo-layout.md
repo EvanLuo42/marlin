@@ -46,11 +46,12 @@ marlin/
 │   ├── base/                  #   L0  OS 基础：PAL 与它的直接封装（std 的角色）
 │   ├── platform/              #   L1  其他平台层：窗口/输入/音频设备/网络/平台服务/RHI
 │   ├── core/                  #   L2  与平台无关的基础设施：math/容器/job/ECS/反射…
-│   ├── engine/                #   L3  引擎子系统：render/asset/world/vm/physics…
+│   ├── engine/                #   L3  引擎子系统：render/asset/world/physics…
 │   └── marlin/                #   umbrella crate `marlin`：game 与 editor 共同链接的 runtime
 │
+├── compiler/                  # 语言工具链（待建）：VM 语言的编译器与运行时放在 compiler/vm
 ├── editor/                    # editor-only 库（std 可用，仅桌面）
-├── tools/                     # 离线工具（std）：cooker、vm 编译器、shader 编译器…
+├── tools/                     # 离线工具（std）：cooker 与各资源类型的 cook…
 ├── apps/                      # 最终可执行文件：game、editor（全局符号只允许在这里定义）
 ├── xtask/                     # 构建编排：cargo xtask build/cook/run/package/check-layers
 │
@@ -296,9 +297,6 @@ runtime/core/
 runtime/engine/
 ├── asset/         资源句柄、包挂载/VFS、流式加载调度（建在 marlin_io 异步队列上）
 ├── world/         Level/流式 cell、Transform 层级、面向 VM 的对象化 Entity/Component API（底层 ECS）
-├── vm_bytecode/   VM 字节码与模块格式（no_std；tools/vm_compiler 也依赖它）
-├── vm/            VM 运行时：解释器、GC、模块加载、调试协议（主机禁止 JIT → 解释器 + 可选 cook 期 AOT）
-├── script/        引擎 API 绑定到 VM（world/asset/input/audio…，基于 reflect 自动生成为主）
 ├── shader/        运行时 shader 容器、permutation 查找
 ├── render_graph/  render graph：资源生命周期、barrier 推导、异步计算调度
 ├── render/        场景渲染：材质、光照、阴影、后处理、可见性
@@ -337,8 +335,7 @@ editor/
 ├── core/          项目模型、undo/redo 事务、选择集、命令系统、源资源数据库（GUID/依赖）、editor 插件注册
 ├── viewport/      场景视口、gizmo、相机、PIE（进程内运行 world）
 ├── world_tools/   关卡编辑：放置、地形、流式 cell 编辑
-├── asset_tools/   资源浏览器、导入（直接调用 tools/cook_* 的库）、热重新 cook
-└── script_tools/  VM 脚本集成：热重载、调试器（断点/单步）、错误面板
+└── asset_tools/   资源浏览器、导入（直接调用 tools/cook_* 的库）、热重新 cook
 ```
 
 建议 `ui_core` 只用 `core + alloc` 编写。虽然 editor 允许 std，但这样以后游戏内 UI 也能复用同一套保留模式框架，成本几乎为零。
@@ -353,10 +350,7 @@ tools/
 ├── cook_shader/     shader 编译（Marlin shader → DXIL/SPIR-V/MSL/主机格式）、permutation
 ├── cook_audio/
 ├── cook_level/      关卡/世界数据 → 流式 cell
-├── cook_script/     调用 vm_compiler，产出字节码模块
-├── cooker/          CLI：marlin-cook --platform ps5 --project samples/xxx
-├── vm_compiler/     VM 语言前端：lexer/parser/类型检查/codegen → vm_bytecode
-└── vm_lsp/          VM 语言的 language server
+└── cooker/          CLI：marlin-cook --platform ps5 --project samples/xxx
 ```
 
 ### 6.3 `apps/`
