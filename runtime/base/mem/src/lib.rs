@@ -7,6 +7,7 @@
 //! - [`tag`] and [`budget`]: attribution of memory to subsystems, and soft limits.
 //! - [`vmem`]: virtual memory for crates that may not use the PAL directly.
 //! - `debug` (feature `mem-debug`): guard pages and leak tracking for the heap.
+//! - [`ext`]: large-page arenas and mirrored rings, where the platform has them.
 //!
 //! This crate implements `alloc`, so it must not use it.
 #![cfg_attr(not(test), no_std)]
@@ -17,6 +18,7 @@ pub mod arena;
 pub mod budget;
 #[cfg(feature = "mem-debug")]
 pub mod debug;
+pub mod ext;
 mod global;
 mod heap;
 mod layout;
@@ -36,7 +38,7 @@ pub mod vmem {
 }
 
 pub use arena::{Arena, FrameArenas};
-pub use budget::{budget, is_over_budget, set_budget};
+pub use budget::{MemoryInfo, budget, is_over_budget, set_budget, system_memory};
 pub use global::MarlinHeap;
 pub use heap::{
     DEFAULT_PURGE_DELAY, HeapStats, collect_abandoned, good_size, purge, purge_delay,

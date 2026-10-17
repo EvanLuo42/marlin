@@ -47,6 +47,8 @@ pub struct Arena {
     /// Most bytes used since the last trim: what [`Arena::trim`] keeps by default.
     peak: AtomicUsize,
     commit: Lock,
+    /// Committed in full up front (large pages), never decommitted.
+    fixed: bool,
 }
 
 // SAFETY: the arena owns its reservation; allocation is atomic, and commits happen under `commit`.
@@ -73,7 +75,27 @@ impl Arena {
             committed: AtomicUsize::new(0),
             peak: AtomicUsize::new(0),
             commit: Lock::new(),
+            fixed: false,
         })
+    }
+
+    /// An arena over `size` bytes that are committed already and must never be decommitted (large
+    /// pages). Dropping it releases the range with `vmem::release`.
+    ///
+    /// # Safety
+    /// `base..base + size` is a committed read-write allocation the arena now owns, releasable
+    /// with `vmem::release(base, size)`.
+    #[cfg_attr(not(marlin_ext = "large_pages"), allow(dead_code))]
+    pub(crate) unsafe fn from_committed(base: NonNull<u8>, size: usize) -> Self {
+        Self {
+            base,
+            reserved: size,
+            used: AtomicUsize::new(0),
+            committed: AtomicUsize::new(size),
+            peak: AtomicUsize::new(0),
+            commit: Lock::new(),
+            fixed: true,
+        }
     }
 
     /// Bytes of address space reserved.
@@ -283,7 +305,7 @@ impl Arena {
             .next_multiple_of(COMMIT_GRANULE)
             .min(self.reserved);
         let committed = *self.committed.get_mut();
-        if keep < committed {
+        if keep < committed && !self.fixed {
             // SAFETY: `keep..committed` is granule-aligned, committed, and unused (`&mut self`).
             if unsafe { vmem::decommit(self.base.add(keep), committed - keep) }.is_ok() {
                 *self.committed.get_mut() = keep;

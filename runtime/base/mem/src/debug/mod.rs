@@ -41,6 +41,14 @@ pub type CaptureFn = fn(&mut [usize]) -> usize;
 static HOOK: AtomicPtr<()> = AtomicPtr::new(null_mut());
 static GUARD_PAGES: AtomicBool = AtomicBool::new(false);
 
+/// A [`CaptureFn`] using the PAL's stack walker, for `set_capture_hook(Some(capture_stack))`.
+/// It walks the stack on every allocation, so expect allocation-heavy code to slow down a lot.
+#[inline(never)]
+pub fn capture_stack(frames: &mut [usize]) -> usize {
+    // Skip this function and the leak table's call into it.
+    marlin_pal::debug::capture_stack(2, frames)
+}
+
 /// Installs the stack-capture hook, or removes it with `None`. Allocations made while it is
 /// installed carry their call stack.
 pub fn set_capture_hook(hook: Option<CaptureFn>) {

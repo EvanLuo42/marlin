@@ -5,8 +5,8 @@
 //! loads) and react, e.g. streaming stops prefetching and drops cached mips; development builds
 //! can report the overruns.
 //!
-//! Not here yet: system-wide totals (physical memory, the process's commit and working set), which
-//! budgets will be checked against once `marlin_pal::sysinfo` reports them.
+//! [`system_memory`] reports the totals budgets are usually derived from: physical memory, the
+//! process's resident set and private memory.
 
 use core::sync::atomic::Ordering;
 
@@ -51,4 +51,12 @@ pub fn for_each_over_budget(mut f: impl FnMut(MemTag, usize, usize)) {
             f(tag, bytes, budget);
         }
     }
+}
+
+pub use marlin_pal::sysinfo::MemoryInfo;
+
+/// The system's and this process's memory (see [`MemoryInfo`] for what each platform reports).
+/// A few system calls; poll it at most once a frame.
+pub fn system_memory() -> marlin_pal::Result<MemoryInfo> {
+    marlin_pal::sysinfo::memory()
 }
