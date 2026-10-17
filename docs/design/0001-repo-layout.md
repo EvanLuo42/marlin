@@ -278,12 +278,14 @@ RHI 放在 L1 而不是 L3：它和 pal 一样含平台 backend，放在这里�
 ```
 runtime/core/
 ├── math/          向量/矩阵/四元数/TRS/几何（自研，portable_simd；右手 Y 向上、列向量、reverse-Z）、确定性随机数 Rng（xoshiro256**）
-├── containers/    allocator-aware 容器：Vec 别名、HashMap（hashbrown）、SmallVec、SlotMap、Handle、侵入式链表
+├── containers/    allocator-aware 容器：HashMap（hashbrown）、SmallVec、ArrayVec、SlotMap/Handle、SparseSet（不做侵入式链表：用 SlotMap 上的索引链表代替）
 ├── text/          Name（驻留字符串，类似 FName）、UTF-8 工具、格式化
 ├── hash/          稳定哈希（资源 ID）、快速哈希
+├── compress/      自研 LZ4/zstd/GDeflate 编解码（.mpak chunk 用）；解码器随运行时发布，编码器在 `encode` feature 后（仅 cook 工具）
 ├── jobs/          fiber job system：counter、优先级、main-thread 亲和、fiber-aware 同步原语
 ├── profile/       CPU/GPU 标记、计数器；backend 借助 marlin_diag::ext::cpu_markers
 ├── reflect/       类型反射（VM 绑定、序列化、editor 属性面板共用）
+├── reflect_derive/ #[derive(Reflect)] 过程宏
 ├── serial/        二进制序列化；cooked 数据的零拷贝布局（相对指针、可直接 mmap）
 ├── ecs/           archetype ECS：存储、查询、调度（运行在 jobs 上）
 └── config/        cvar / 启动配置

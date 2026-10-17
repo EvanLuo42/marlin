@@ -715,6 +715,7 @@ version = "0.1.0"
 dependencies = [
  "marlin-anim",
  "marlin-asset",
+ "marlin-containers",
  "marlin-ecs",
  "marlin-math",
  "marlin-reflect",

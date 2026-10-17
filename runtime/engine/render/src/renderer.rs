@@ -2,6 +2,7 @@
 
 use alloc::vec::Vec;
 
+use marlin_containers::{Handle, SlotMap};
 use marlin_ecs::World;
 use marlin_math::{Mat4, Transform, Vec3};
 use marlin_rhi::{
@@ -36,9 +37,10 @@ impl Default for Camera {
     }
 }
 
-/// A mesh uploaded with [`Renderer::upload_mesh`].
+/// A mesh uploaded with [`Renderer::upload_mesh`]. Generational: once the mesh is released the
+/// handle draws nothing, even after a later upload reuses its slot.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct MeshHandle(u32);
+pub struct MeshHandle(Handle<Mesh>);
 
 /// Draws a mesh at the entity's [`Transform`].
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -159,13 +161,12 @@ struct DepthTarget {
 /// Draws the meshes of a [`World`]: see the crate docs.
 pub struct Renderer {
     pipeline: GraphicsPipeline,
-    /// By handle; `None` once released.
-    meshes: Vec<Option<Mesh>>,
+    meshes: SlotMap<Mesh>,
     frames: Vec<Option<FrameData>>,
     depth: DepthTarget,
     size: (u32, u32),
     /// Scratch: (mesh, instance words), sorted by mesh each frame.
-    instances: Vec<(u32, [f32; INSTANCE_WORDS])>,
+    instances: Vec<(Handle<Mesh>, [f32; INSTANCE_WORDS])>,
     pub environment: Environment,
 }
 
@@ -204,7 +205,7 @@ impl Renderer {
         })?;
         Ok(Self {
             pipeline,
-            meshes: Vec::new(),
+            meshes: SlotMap::new(),
             frames: (0..desc.frames_in_flight.max(1)).map(|_| None).collect(),
             depth: create_depth(device, desc.width, desc.height)?,
             size: (desc.width, desc.height),
@@ -281,13 +282,12 @@ impl Renderer {
                 false,
             ),
         )?;
-        self.meshes.push(Some(Mesh {
+        Ok(MeshHandle(self.meshes.insert(Mesh {
             vertex_view,
             _vertices: vertices,
             indices,
             index_count: data.indices.len() as u32,
-        }));
-        Ok(MeshHandle(self.meshes.len() as u32 - 1))
+        })))
     }
 
     /// Frees a mesh's GPU buffers. Its handle draws nothing from now on.
@@ -296,14 +296,12 @@ impl Renderer {
     /// The GPU has finished every frame that drew the mesh (after `frames_in_flight` more frames,
     /// or a wait for idle).
     pub unsafe fn release_mesh(&mut self, mesh: MeshHandle) {
-        if let Some(slot) = self.meshes.get_mut(mesh.0 as usize) {
-            *slot = None;
-        }
+        self.meshes.remove(mesh.0);
     }
 
     /// Meshes uploaded and not released.
     pub fn mesh_count(&self) -> usize {
-        self.meshes.iter().filter(|m| m.is_some()).count()
+        self.meshes.len()
     }
 
     /// The target size [`render`](Self::render) draws at.
@@ -412,12 +410,12 @@ impl Renderer {
             });
             let mut start = 0;
             while start < self.instances.len() {
-                let mesh_index = self.instances[start].0;
+                let handle = self.instances[start].0;
                 let count = self.instances[start..]
                     .iter()
-                    .take_while(|(m, _)| *m == mesh_index)
+                    .take_while(|(m, _)| *m == handle)
                     .count();
-                let Some(mesh) = self.meshes[mesh_index as usize].as_ref() else {
+                let Some(mesh) = self.meshes.get(handle) else {
                     start += count;
                     continue;
                 };

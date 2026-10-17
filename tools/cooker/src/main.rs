@@ -29,7 +29,7 @@ use marlin_cook_core::{
 use marlin_cooker::{engine_cookers, open_ddc};
 use marlin_masset::{NodeKind, parse};
 
-const USAGE: &str = "usage:\n  marlin-cook cook <root> [--platform <name>] [--threads <n>] [--store <addr>]\n  marlin-cook index <root>\n  marlin-cook validate <root> [--pre-submit]\n  marlin-cook install-hook <root>\n  marlin-cook check <file-or-directory>...";
+const USAGE: &str = "usage:\n  marlin-cook cook <root> [--platform <name>] [--threads <n>] [--store <addr>]\n  marlin-cook package <root> [--platform <name>] [--store <addr>] [--out <file>] [--head-codec <codec>] [--bulk-codec <codec>] [--level <1-9>]\n  marlin-cook index <root>\n  marlin-cook validate <root> [--pre-submit]\n  marlin-cook install-hook <root>\n  marlin-cook check <file-or-directory>...";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();

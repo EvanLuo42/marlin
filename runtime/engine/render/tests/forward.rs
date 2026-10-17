@@ -286,3 +286,38 @@ fn renders_repeatedly_into_the_same_slot() {
         assert_eq!(pixel(&pixels, 32, 32), 0xff00_0000 | (0xff << (8 * i)));
     }
 }
+
+#[test]
+fn a_released_handle_stays_dead_after_its_slot_is_reused() {
+    let mut h = Harness::new();
+    let (vertices, indices) = cube();
+    let mesh = MeshData {
+        vertices: &vertices,
+        indices: &indices,
+    };
+    let old = h.cube;
+    // SAFETY: nothing has drawn the mesh yet.
+    unsafe { h.renderer.release_mesh(old) };
+    assert_eq!(h.renderer.mesh_count(), 0);
+    let new = h.renderer.upload_mesh(h.device, &mesh).unwrap();
+    assert_ne!(new, old);
+    assert_eq!(h.renderer.mesh_count(), 1);
+
+    let mut world = World::new();
+    camera(&mut world, 3.0);
+    let entity = world.spawn((
+        Transform::IDENTITY,
+        MeshRenderer {
+            mesh: old,
+            color: [1.0, 0.0, 0.0, 1.0],
+        },
+    ));
+    let (pixels, stats) = h.render(&world);
+    assert_eq!(stats.draws, 0, "the old handle draws nothing");
+    assert!(pixels.iter().all(|&p| p == BLACK));
+
+    world.get_mut::<MeshRenderer>(entity).unwrap().mesh = new;
+    let (pixels, stats) = h.render(&world);
+    assert_eq!(stats.draws, 1);
+    assert_eq!(pixel(&pixels, 32, 32), 0xff00_00ff);
+}

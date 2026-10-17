@@ -1,5 +1,5 @@
-//! Linux backend: the shared POSIX implementation plus the Linux-only pieces below (io_uring and
-//! hugetlb later).
+//! Linux backend: the shared POSIX implementation plus the Linux-only pieces below (io_uring file
+//! I/O in `file/uring.rs`; hugetlb later).
 
 mod file;
 mod futex;

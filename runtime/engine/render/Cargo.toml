@@ -8,6 +8,7 @@ publish.workspace = true
 [dependencies]
 marlin-anim.workspace = true
 marlin-asset.workspace = true
+marlin-containers.workspace = true
 marlin-ecs.workspace = true
 marlin-math.workspace = true
 marlin-reflect.workspace = true
