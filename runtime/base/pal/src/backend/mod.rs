@@ -6,7 +6,7 @@
 //! `cargo fmt` working without the private repositories (format those from their own repository).
 
 #[cfg(any(marlin_platform = "linux", marlin_platform = "macos"))]
-mod unix;
+pub(crate) mod unix;
 
 #[cfg(any(marlin_platform = "windows", marlin_platform = "xbox"))]
 pub(crate) mod windows;

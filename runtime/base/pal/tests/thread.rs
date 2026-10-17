@@ -67,3 +67,23 @@ fn detach() {
 fn parallelism_is_positive() {
     assert!(thread::available_parallelism() >= 1);
 }
+
+#[cfg(marlin_ext = "hybrid_cores")]
+#[test]
+fn efficiency_modes_apply() {
+    use marlin_pal::ext::hybrid_cores::{EfficiencyMode, HybridCores};
+    let Some(hybrid) = HybridCores::get() else {
+        return;
+    };
+    std::thread::spawn(move || {
+        for mode in [
+            EfficiencyMode::Efficient,
+            EfficiencyMode::Performance,
+            EfficiencyMode::Default,
+        ] {
+            hybrid.set_current_mode(mode).unwrap();
+        }
+    })
+    .join()
+    .unwrap();
+}

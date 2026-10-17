@@ -34,7 +34,7 @@ pub(super) fn errno() -> c_int {
     code
 }
 
-pub(super) fn from_errno(code: c_int) -> Error {
+pub(crate) fn from_errno(code: c_int) -> Error {
     let kind = match code {
         libc::ENOMEM => ErrorKind::OutOfMemory,
         libc::EINVAL => ErrorKind::InvalidInput,
@@ -56,7 +56,7 @@ pub(super) fn from_errno(code: c_int) -> Error {
 }
 
 /// The calling thread's `errno`.
-pub(super) fn last_error() -> Error {
+pub(crate) fn last_error() -> Error {
     from_errno(errno())
 }
 
@@ -84,7 +84,7 @@ pub(super) fn with_c_path<R>(path: &str, f: impl FnOnce(*const c_char) -> Result
 
 /// Converts the result of a pthread function, which returns the error code instead of setting
 /// errno.
-pub(super) fn check_code(code: c_int) -> Result<()> {
+pub(crate) fn check_code(code: c_int) -> Result<()> {
     if code == 0 {
         Ok(())
     } else {
