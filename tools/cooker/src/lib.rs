@@ -11,6 +11,7 @@ use marlin_cook_core::{Cookers, Ddc, LayeredDdc, LocalDdc};
 use marlin_cook_level as _;
 use marlin_cook_mesh::{AnimationCooker, MeshCooker, SkeletonCooker};
 use marlin_cook_shader as _;
+use marlin_cook_text::{StringTable, StringTableCooker};
 use marlin_cook_texture::TextureCooker;
 use marlin_framework::Level;
 use marlin_render::asset::{Mesh, Texture};
@@ -24,6 +25,7 @@ pub fn engine_cookers() -> Cookers {
         .and_then(|()| cookers.register::<Mesh>(MeshCooker))
         .and_then(|()| cookers.register::<Skeleton>(SkeletonCooker))
         .and_then(|()| cookers.register::<AnimationClip>(AnimationCooker))
+        .and_then(|()| cookers.register::<StringTable>(StringTableCooker))
         .and_then(|()| cookers.register_generic::<Level>());
     if let Err(e) = registered {
         // Two engine types with one text name: a programming error, caught by any run.

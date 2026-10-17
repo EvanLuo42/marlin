@@ -1,0 +1,14 @@
+!Version 1
+
+// Russian UI strings; keys missing here fall back to English.
+StringTable
+{
+    !Uuid = "019a0000-0000-7000-8000-000000000e02"
+    !Name = "UiRussian"
+    Locale = "ru-RU"
+    Entries = [
+        { Key = "menu.start", Message = "Начать игру" },
+        { Key = "hud.coins", Message = "{n, plural, =0 {Нет монет} one {# монета} few {# монеты} many {# монет} other {# монеты}}" },
+        { Key = "save.date", Message = "Сохранено {when, date, long} в {at, time}" },
+    ]
+}

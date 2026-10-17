@@ -87,6 +87,7 @@ marlin-cook-shader = { path = "tools/cook_shader" }
 marlin-cook-audio = { path = "tools/cook_audio" }
 marlin-cook-level = { path = "tools/cook_level" }
 marlin-test-support = { path = "tools/test_support" }
+marlin-cook-text = { path = "tools/cook_text" }
 
 # --- third party ---
 # Anything a runtime crate depends on must be no_std (default-features = false).

@@ -387,6 +387,17 @@ name = "marlin-cook-shader"
 version = "0.1.0"
 
 [[package]]
+name = "marlin-cook-text"
+version = "0.1.0"
+dependencies = [
+ "marlin-asset",
+ "marlin-asset-db",
+ "marlin-cook-core",
+ "marlin-reflect",
+ "marlin-text",
+]
+
+[[package]]
 name = "marlin-cook-texture"
 version = "0.1.0"
 dependencies = [
@@ -431,6 +442,7 @@ dependencies = [
  "marlin-cook-level",
  "marlin-cook-mesh",
  "marlin-cook-shader",
+ "marlin-cook-text",
  "marlin-cook-texture",
  "marlin-framework",
  "marlin-masset",

@@ -1,0 +1,17 @@
+!Version 1
+
+// English UI strings: the fallback for every other language.
+StringTable
+{
+    !Uuid = "019a0000-0000-7000-8000-000000000e01"
+    !Name = "UiEnglish"
+    Locale = "en"
+    Entries = [
+        { Key = "menu.start", Message = "Start game" },
+        { Key = "menu.quit", Message = "Quit" },
+        { Key = "hud.greeting", Message = "Welcome back, {player}!" },
+        { Key = "hud.coins", Message = "{n, plural, =0 {No coins} one {# coin} other {# coins}}" },
+        { Key = "hud.distance", Message = "{km, number, 1} km to go" },
+        { Key = "save.date", Message = "Saved on {when, date, long} at {at, time}" },
+    ]
+}
