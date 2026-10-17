@@ -5,7 +5,7 @@ use super::Arena;
 /// `N` arenas used in turn by frames `0, 1, 2, …`: frame `f` allocates from arena `f % N`.
 ///
 /// Frames overlap: frame N's simulation writes its arena while the renderer still reads frame
-/// N - 1's (0004 §3.1). With `N = 3`, an arena is reused three frames later, once the pipeline
+/// N - 1's. With `N = 3`, an arena is reused three frames later, once the pipeline
 /// guarantees its readers are done (in the engine, the job handle of the frame that consumed it).
 pub struct FrameArenas<const N: usize = 3> {
     arenas: [Arena; N],

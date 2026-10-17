@@ -1,5 +1,5 @@
 //! The game framework: startup, the frame loop and the engine's subsystems wired together
-//! (`docs/design/0003-asset-pipeline.md` §9, `docs/design/0004-rendering-overview.md` §3).
+//! (`docs/design/0003-asset-pipeline.md` §9).
 //!
 //! - [`boot`]: `boot.toml` cvars → mounted content (packages, the cook service) and the entry
 //!   level.

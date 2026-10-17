@@ -1,5 +1,4 @@
-//! Meshes: the source settings authored in `.masset` text and the cooked form of
-//! `docs/design/0006-scene-renderer.md` §2.
+//! Meshes: the source settings authored in `.masset` text and their cooked form.
 //!
 //! A cooked mesh is a [`CookedMesh`] payload (a marlin-serial cooked layout) plus one bulk blob
 //! per LOD, the LOD's streaming page. A page holds, each 16-byte aligned:
@@ -243,7 +242,7 @@ pub struct Meshlet {
     pub vertex_count: u8,
     pub triangle_count: u8,
     pub section: u16,
-    /// DAG fields (0004 §0). With discrete LODs: `group` is the meshlet's LOD, `lod_error` the
+    /// DAG fields. With discrete LODs: `group` is the meshlet's LOD, `lod_error` the
     /// LOD's error, `parent_error` +∞ and `error_sphere` the mesh's bounding sphere.
     pub group: u32,
     pub lod_error: f32,
@@ -633,7 +632,7 @@ pub fn f32_to_f16(v: f32) -> u16 {
 impl MeshView<'_> {
     /// LOD `lod`'s triangles in the forward renderer's form: positions and normals, 32-bit
     /// indices. A CPU decode of its page (checked first), for the forward path until the
-    /// visibility buffer consumes pages as they are (0006 §2).
+    /// visibility buffer consumes pages as they are.
     pub fn decode_lod(
         &self,
         lod: usize,

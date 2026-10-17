@@ -300,10 +300,10 @@ runtime/engine/
 ├── shader/        运行时 shader 容器、permutation 查找
 ├── render_graph/  render graph：资源生命周期、barrier 推导、异步计算调度
 ├── render/        场景渲染：材质、光照、阴影、后处理、可见性
-├── material/      材质类型/实例/动态实例/MPC/参数表（0007，新增）
-├── terrain/       地形 cell 运行时数据、RVT 合成、多层查询（0009，新增）
+├── material/      材质类型/实例/动态实例/MPC/参数表
+├── terrain/       地形 cell 运行时数据、RVT 合成、多层查询
 ├── font/          字形栅格化/SDF 图集、shaping
-├── ui_render/     立即模式 UI 渲染：rect/圆角/线/图像/文字 → GPU tile binning → rhi（0008）
+├── ui_render/     立即模式 UI 渲染：rect/圆角/线/图像/文字 → GPU tile binning → rhi
 ├── anim/          骨骼动画、混合、IK
 ├── physics/       物理（自研或 third_party 绑定）
 ├── audio/         混音、DSP、空间化（输出走 audio_device）
@@ -531,7 +531,7 @@ runtime/<layer>/<name>/
   - **Views:** RTV/DSV come from CPU-side heaps. Buffer and texture views (`ShaderView`) and samplers occupy slots in device-wide shader-visible tables, and shaders index them through SM 6.6 `ResourceDescriptorHeap[i]` / `SamplerDescriptorHeap[i]`.
   - **Pipelines:** all of them share one root signature (32 words of push constants plus directly indexed heaps). There are no input layouts; vertices are fetched from buffers (vertex pulling).
   - **Commands:** buffer barriers, copies (buffer↔buffer and buffer↔texture), draw / draw_indexed / dispatch, and render passes with depth.
-  - **Baseline:** D3D12 rejects adapters below FL 12_0, SM 6.6, resource binding tier 3, mesh shader tier 1 or wave intrinsics (R0, 0005 §1.8).
+  - **Baseline:** D3D12 rejects adapters below FL 12_0, SM 6.6, resource binding tier 3, mesh shader tier 1 or wave intrinsics (R0).
   - **Shaders:** the RHI accepts only bytecode, and `SHADER_FORMAT` tells engine code which format this build uses. The shader interface contract is in `docs/design/0002-shader-interface.md`. Until the in-house shader compiler exists, test and renderer shaders are **placeholders** (HLSL compiled once by hand with the SDK's dxc; only `.dxil` is committed, and nothing in the build calls dxc).
 - **Testing convention**: tests come in two kinds, platform-independent ones and platform-dependent ones (`cfg(marlin_platform)`). GPU tests run on real hardware (`AdapterPreference::HighPerformance` with validation on), never on WARP or other software rasterizers. They read results back to the CPU and assert on pixels exactly, and validation must report 0 errors. The legacy barrier path is tested on the same hardware through `disable_enhanced_barriers`.
 - **marlin-render (temporary minimal version)**:

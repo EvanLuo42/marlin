@@ -4,8 +4,8 @@
 //! meshes to upload (new, or replaced by a reload), the camera, the environment and every
 //! instance, naming meshes by asset UUID. The [`RenderSide`] owns the renderer and the GPU
 //! meshes: it applies the delta and draws. So the two run on different jobs, the simulation one
-//! frame ahead (0004 §3). Instances are sent whole for now; 0006 §1 narrows the delta to what
-//! changed once the GPU Scene keeps the rest.
+//! frame ahead. Instances are sent whole for now; the delta narrows to what changed once a
+//! GPU Scene keeps the rest.
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;

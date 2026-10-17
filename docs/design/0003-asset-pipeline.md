@@ -215,7 +215,7 @@ bulk        GPU 数据（顶点、纹理 mip），对齐到 4 KiB，直接上传
   - 加载入口关卡。
 - **帧流水线**：
   - 模拟第 N+1 帧的同时，提交第 N 帧的渲染。
-  - 每帧结束时，从 world 抽取不可变的渲染快照。（已由 0006 §1 修订：渲染侧持有持久的 GPU Scene，每帧只抽取不可变的**变化量**，即 `RenderDelta`。流水线扩展为三级：Game N+1 ∥ Render N ∥ GPU N-1，见 0004 §3。）
+  - 每帧结束时，从 world 抽取不可变的渲染快照。（已修订：渲染侧持有持久的 GPU Scene，每帧只抽取不可变的**变化量**，即 `RenderDelta`。流水线扩展为三级：Game N+1 ∥ Render N ∥ GPU N-1。）
   - 两侧都以 fiber job 图运行，不设固定线程。
   - 每帧调用 profile 的 `frame_mark`。
 - `apps/game` 成为真正的"读包和关卡"的可执行文件，`apps/demo_cubes` 删除。示例工程放在 `samples/`。
@@ -286,7 +286,7 @@ bulk        GPU 数据（顶点、纹理 mip），对齐到 4 KiB，直接上传
     - 构建清单（MMAN）同时写入 DDC 与 `.marlin/build/<platform>.manifest`。
   - 资产类型与 cooked 布局都是 marlin-serial cooked 布局（相对指针、就地读取），带校验的 view：
     - `marlin-render::asset::Texture`：用法、格式、立方体、mip、`MaxSize`、alpha 覆盖率。cooked 为 RHI 拷贝布局（行 256、子资源 512 对齐）；mip 尾以上每级一个 bulk（流送页），64 KiB 以下的级别合成常驻的 mip 尾。
-    - `marlin-render::asset::Mesh`：0006 §2 的格式。16 位量化位置；法线、切线和副切线符号打包进 32 位（八面体法线 2×10 位，切线角 11 位）；UV 为 f16；蒙皮为 4×u16 加 unorm8 权重，和为 255；每个 LOD 一页，含 meshlet、meshlet 顶点与三角形，以及给 BLAS 和无 mesh shader 路径用的索引。
+    - `marlin-render::asset::Mesh`：16 位量化位置；法线、切线和副切线符号打包进 32 位（八面体法线 2×10 位，切线角 11 位）；UV 为 f16；蒙皮为 4×u16 加 unorm8 权重，和为 255；每个 LOD 一页，含 meshlet、meshlet 顶点与三角形，以及给 BLAS 和无 mesh shader 路径用的索引。
     - `marlin-anim::asset::{Skeleton, AnimationClip}`：关节按父先子后排列；动画按固定采样率重采样，常量通道只存一个键，旋转用 48 位 smallest-three 量化（误差 < 0.01°）。网格的蒙皮关节和动画轨道都**按名字**绑定骨骼，所以网格、骨骼和动画可以来自不同文件。
   - `tools/cook_texture`：解码 PNG/TGA/JPEG/EXR/HDR（解析用 `image`），经纬图转立方体（线性空间超采样），然后生成 mip 并做 BC 编码（这两步是 P1 的成果）。
   - `tools/cook_mesh`（glTF 2.0 用 `gltf` 解析；以下算法全部自研）：
@@ -353,8 +353,8 @@ bulk        GPU 数据（顶点、纹理 mip），对齐到 4 KiB，直接上传
     - `boot`：读 `boot.toml` 里的 cvar（`content.package`、`content.cookd`、`game.level`、`game.platform`、`r.vsync`、`window.*`），命令行 `+cvar value` 可以覆盖。先挂载包，cookd 挂在包的上层。入口关卡按 UUID 指定，没有按路径加载。`ContentSettings` 是这些 cvar 解析后的纯数据，`mount` 直接用它，不读全局状态。
     - `Level` 资产：实体加引擎组件（`StaticMesh`、`Camera`、`Spin`、`FlyCamera`）和环境。关卡链接到网格，网格靠 import 闭包随关卡加载。关卡重载会重建它生成的实体。
     - `loaders`：`Mesh` 解码 LOD 0，产出 `Arc<MeshGeometry>`；`Texture`、`Skeleton`、`AnimationClip` 校验一次后原地保留在单元字节里（`InPlace<T>`），不拷贝。
-    - `Engine`（模拟侧）与 `RenderSide`（渲染侧）完全不共享状态，每帧之间只传一份不可变的 `RenderDelta`：要上传或替换的网格（按 UUID 加版本）、要释放的网格、相机、环境和实例。GPU 上的旧网格要等在途帧都结束后才释放。目前每帧整份发送，0006 的 GPU Scene 到位后再缩成只发变化量。
-    - `run`：主线程渲染第 N 帧，同时在 job 上模拟第 N+1 帧（0004 §3）。`Offscreen` 做离屏渲染和读回。
+    - `Engine`（模拟侧）与 `RenderSide`（渲染侧）完全不共享状态，每帧之间只传一份不可变的 `RenderDelta`：要上传或替换的网格（按 UUID 加版本）、要释放的网格、相机、环境和实例。GPU 上的旧网格要等在途帧都结束后才释放。目前每帧整份发送，GPU Scene 到位后再缩成只发变化量。
+    - `run`：主线程渲染第 N 帧，同时在 job 上模拟第 N+1 帧。`Offscreen` 做离屏渲染和读回。
   - `marlin-render`：`Scene`（从 ECS 里抽取出来的不可变场景）和 `render_scene`；网格槽位可以释放；`MeshView::decode_lod` 是给前向路径用的 CPU 解码。
   - `marlin-rt::args()`：进程参数。
   - `apps/game`：真正的可执行文件，`marlin-game [boot.toml] [+cvar value]`。`apps/demo_cubes` 已删除。
@@ -371,5 +371,5 @@ bulk        GPU 数据（顶点、纹理 mip），对齐到 4 KiB，直接上传
   - 加载：
     - 按 blob 流送，带优先级和内存预算（包格式与 `Package::read_blob` 已经支持）；
     - unbuffered IO 与 DirectStorage；
-    - 纹理上传到 GPU、网格按页上传（随 0004 R2 的 visbuffer 渲染器一起做；目前 P6 的网格走 CPU 解码加前向路径）；
+    - 纹理上传到 GPU、网格按页上传（随 visbuffer 渲染器一起做；目前 P6 的网格走 CPU 解码加前向路径）；
     - 关卡组件扩展到脚本（随 VM 集成），以及世界流送（多关卡 / cell）。

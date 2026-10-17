@@ -1,5 +1,5 @@
 //! Meshlet building: clusters of up to 64 vertices and 124 triangles, spatially compact and with
-//! tight normal cones (0006 §2.2), plus their culling bounds.
+//! tight normal cones, plus their culling bounds.
 //!
 //! Greedy growth in the manner of meshoptimizer's builder: a meshlet grows by the adjacent
 //! triangle that adds the fewest new vertices, then by distance from the meshlet's center and

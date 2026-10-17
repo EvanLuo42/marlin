@@ -1,7 +1,7 @@
 //! The windowed game loop.
 //!
 //! Each turn of the loop renders the previous simulation frame's [`RenderDelta`] on this
-//! thread while a job simulates the next one, so the CPU sides overlap (0004 §3: Game N+1 ∥
+//! thread while a job simulates the next one, so the CPU sides overlap (Game N+1 ∥
 //! Render N, with the GPU on N-1 through two frames in flight).
 
 use core::fmt::Write;

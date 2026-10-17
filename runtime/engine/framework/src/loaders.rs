@@ -5,7 +5,7 @@
 //!   (which uploads it) through an `Arc`.
 //! - `Texture`, `Skeleton`, `AnimationClip` → [`InPlace`]: the cooked layout checked once and
 //!   kept in the unit's bytes, read through its view without copying. Texture upload arrives
-//!   with the renderer that samples textures (0004 R2).
+//!   with the renderer that samples textures.
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;

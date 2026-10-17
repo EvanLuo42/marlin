@@ -1,6 +1,6 @@
 //! Mesh simplification by edge collapse under quadric error metrics (Garland and Heckbert,
 //! "Surface Simplification Using Quadric Error Metrics", 1997), with attribute costs and
-//! locked borders, for LOD chains (0006 §2.2).
+//! locked borders, for LOD chains.
 //!
 //! Collapses are half-edge collapses: a vertex moves onto a neighbor, so no new attribute values
 //! are invented and UVs, normals and colors stay exactly as authored. Vertices are grouped by

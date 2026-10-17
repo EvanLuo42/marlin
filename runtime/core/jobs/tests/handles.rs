@@ -151,7 +151,7 @@ fn jobs_wait_on_handles_by_parking() {
     waiters.iter().for_each(JobHandle::wait);
 }
 
-/// The frame pipeline of 0004 §3.1: `extract(N)` after `sim(N)`, `render(N)` after
+/// The frame pipeline: `extract(N)` after `sim(N)`, `render(N)` after
 /// `extract(N)` and `render(N - 1)`, and `sim(N + 2)` after `render(N)`.
 #[test]
 fn frame_pipeline_keeps_its_order() {
