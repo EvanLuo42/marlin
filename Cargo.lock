@@ -405,6 +405,7 @@ dependencies = [
  "marlin-asset",
  "marlin-asset-db",
  "marlin-cook-core",
+ "marlin-gpu-test-support",
  "marlin-math",
  "marlin-reflect",
  "marlin-render",
@@ -559,6 +560,7 @@ dependencies = [
  "marlin-diag",
  "marlin-ecs",
  "marlin-error",
+ "marlin-gpu-test-support",
  "marlin-input",
  "marlin-io",
  "marlin-jobs",
@@ -581,6 +583,14 @@ dependencies = [
  "marlin-framework",
  "marlin-io",
  "marlin-rt",
+]
+
+[[package]]
+name = "marlin-gpu-test-support"
+version = "0.1.0"
+dependencies = [
+ "marlin-rhi",
+ "marlin-test-support",
 ]
 
 [[package]]
@@ -717,6 +727,7 @@ dependencies = [
  "marlin-asset",
  "marlin-containers",
  "marlin-ecs",
+ "marlin-gpu-test-support",
  "marlin-math",
  "marlin-reflect",
  "marlin-rhi",
@@ -734,8 +745,10 @@ dependencies = [
  "marlin-app",
  "marlin-diag",
  "marlin-error",
+ "marlin-gpu-test-support",
  "marlin-pal",
  "marlin-sync",
+ "marlin-test-support",
  "windows-sys",
 ]
 
@@ -810,6 +823,7 @@ name = "marlin-sync"
 version = "0.1.0"
 dependencies = [
  "marlin-pal",
+ "marlin-test-support",
 ]
 
 [[package]]

@@ -18,18 +18,16 @@
 
 mod common;
 
-use std::sync::OnceLock;
-
 use common::Rng;
 use marlin_cook_texture::{
     self as ct, EncodeOptions, EncodedTexture, Format, Image, Interpolation, MipOptions, Quality,
     Subresource, UploadAlignment,
 };
+use marlin_gpu_test_support::{hardware_device, read_bytes, readback, run, storage, upload};
 use marlin_rhi::{
-    self as rhi, AdapterPreference, BufferBarrier, BufferDesc, BufferState, BufferTextureCopy,
-    BufferUsage, BufferViewDesc, BufferViewKind, ComputePipelineDesc, Device, DeviceDesc, Instance,
-    InstanceDesc, MemoryLocation, ShaderModule, SubresourceRange, TextureBarrier, TextureDesc,
-    TextureState, TextureUsage, TextureViewDesc, TextureViewDimension,
+    self as rhi, BufferBarrier, BufferState, BufferTextureCopy, BufferUsage, ComputePipelineDesc,
+    Device, ShaderModule, SubresourceRange, TextureBarrier, TextureDesc, TextureState,
+    TextureUsage, TextureViewDesc, TextureViewDimension,
 };
 
 /// Largest difference allowed between unprofiled hardware and the exact BC1–BC5 decoders, in
@@ -61,39 +59,12 @@ fn rhi_format(format: Format) -> rhi::Format {
     }
 }
 
-/// The hardware adapter with validation on, shared by every test in this binary and never
-/// dropped: tearing down `Device`s while other threads use the same adapter can deadlock the
-/// NVIDIA driver (see the RHI tests' `support::devices`).
-fn device() -> &'static Device {
-    static DEVICE: OnceLock<Device> = OnceLock::new();
-    DEVICE.get_or_init(|| {
-        Instance::new(&InstanceDesc {
-            validation: true,
-            ..InstanceDesc::default()
-        })
-        .unwrap()
-        .create_device(&DeviceDesc {
-            adapter: AdapterPreference::HighPerformance,
-            ..DeviceDesc::default()
-        })
-        .unwrap()
-    })
-}
-
 /// Every subresource of `texture` as the GPU reads it through a view of the linear format.
 fn gpu_decode(device: &Device, texture: &EncodedTexture) -> Vec<Vec<[f32; 4]>> {
     let layout = texture.upload_layout(UploadAlignment::RHI);
     let mut staging_data = vec![0; layout.size as usize];
     texture.write_upload(&layout, &mut staging_data);
-    let staging = device
-        .create_buffer(&BufferDesc {
-            size: layout.size,
-            usage: BufferUsage::COPY_SRC,
-            memory: MemoryLocation::Upload,
-        })
-        .unwrap();
-    // SAFETY: no GPU work uses the buffer yet.
-    unsafe { staging.write(0, &staging_data) };
+    let staging = upload(device, &staging_data, BufferUsage::COPY_SRC);
 
     let gpu_texture = device
         .create_texture(&TextureDesc {
@@ -132,23 +103,8 @@ fn gpu_decode(device: &Device, texture: &EncodedTexture) -> Vec<Vec<[f32; 4]>> {
         .collect();
     let s = texture.subresources.last().unwrap();
     let size = offsets.last().unwrap() + s.width as u64 * s.height as u64 * 16;
-    let output = device
-        .create_buffer(&BufferDesc {
-            size,
-            usage: BufferUsage::SHADER_WRITE | BufferUsage::COPY_SRC,
-            memory: MemoryLocation::GpuOnly,
-        })
-        .unwrap();
-    let output_view = device
-        .create_buffer_view(&output, &BufferViewDesc::whole(BufferViewKind::Raw, true))
-        .unwrap();
-    let readback = device
-        .create_buffer(&BufferDesc {
-            size,
-            usage: BufferUsage::COPY_DST,
-            memory: MemoryLocation::Readback,
-        })
-        .unwrap();
+    let (output, output_view) = storage(device, size / 4);
+    let readback = readback(device, size);
     let pipeline = device
         .create_compute_pipeline(&ComputePipelineDesc {
             shader: shader(),
@@ -156,68 +112,59 @@ fn gpu_decode(device: &Device, texture: &EncodedTexture) -> Vec<Vec<[f32; 4]>> {
         })
         .unwrap();
 
-    let mut pool = device.create_command_pool().unwrap();
-    let mut list = device.create_command_list(&pool).unwrap();
-    let fence = device.create_fence(0).unwrap();
-    list.begin(&mut pool).unwrap();
-    list.texture_barriers(&[TextureBarrier::new(
-        &gpu_texture,
-        TextureState::UNDEFINED,
-        TextureState::COPY_DST,
-    )]);
-    for r in &layout.regions {
-        list.copy_buffer_to_texture(
-            &staging,
+    run(device, |list| {
+        list.texture_barriers(&[TextureBarrier::new(
             &gpu_texture,
-            &BufferTextureCopy {
-                buffer_offset: r.buffer_offset,
-                bytes_per_row: r.bytes_per_row,
-                mip: r.mip,
-                layer: r.layer,
-                x: 0,
-                y: 0,
-                z: 0,
-                width: r.width,
-                height: r.height,
-                depth: 1,
-            },
-        );
-    }
-    list.texture_barriers(&[TextureBarrier::new(
-        &gpu_texture,
-        TextureState::COPY_DST,
-        TextureState::SHADER_READ,
-    )]);
-    list.set_compute_pipeline(&pipeline);
-    for (s, &offset) in texture.subresources.iter().zip(&offsets) {
-        list.push_constants(
-            0,
-            &[
-                view.index(),
-                output_view.index(),
-                s.width,
-                s.height,
-                s.mip,
-                s.layer,
-                offset as u32,
-            ],
-        );
-        list.dispatch(s.width.div_ceil(8), s.height.div_ceil(8), 1);
-    }
-    list.buffer_barriers(&[BufferBarrier {
-        buffer: &output,
-        before: BufferState::COMPUTE_WRITE,
-        after: BufferState::COPY_SRC,
-    }]);
-    list.copy_buffer(&output, 0, &readback, 0, size);
-    list.end().unwrap();
-    // SAFETY: everything the list uses outlives the wait below.
-    unsafe { device.queue().submit(&[&list], Some((&fence, 1))).unwrap() };
-    fence.wait(1, None).unwrap();
-
-    let mut bytes = vec![0; size as usize];
-    // SAFETY: the GPU work that wrote it has finished.
-    unsafe { readback.read(0, &mut bytes) };
+            TextureState::UNDEFINED,
+            TextureState::COPY_DST,
+        )]);
+        for r in &layout.regions {
+            list.copy_buffer_to_texture(
+                &staging,
+                &gpu_texture,
+                &BufferTextureCopy {
+                    buffer_offset: r.buffer_offset,
+                    bytes_per_row: r.bytes_per_row,
+                    mip: r.mip,
+                    layer: r.layer,
+                    x: 0,
+                    y: 0,
+                    z: 0,
+                    width: r.width,
+                    height: r.height,
+                    depth: 1,
+                },
+            );
+        }
+        list.texture_barriers(&[TextureBarrier::new(
+            &gpu_texture,
+            TextureState::COPY_DST,
+            TextureState::SHADER_READ,
+        )]);
+        list.set_compute_pipeline(&pipeline);
+        for (s, &offset) in texture.subresources.iter().zip(&offsets) {
+            list.push_constants(
+                0,
+                &[
+                    view.index(),
+                    output_view.index(),
+                    s.width,
+                    s.height,
+                    s.mip,
+                    s.layer,
+                    offset as u32,
+                ],
+            );
+            list.dispatch(s.width.div_ceil(8), s.height.div_ceil(8), 1);
+        }
+        list.buffer_barriers(&[BufferBarrier {
+            buffer: &output,
+            before: BufferState::COMPUTE_WRITE,
+            after: BufferState::COPY_SRC,
+        }]);
+        list.copy_buffer(&output, 0, &readback, 0, size);
+    });
+    let bytes = read_bytes(&readback, 0, size as usize);
     texture
         .subresources
         .iter()
@@ -344,7 +291,7 @@ fn options(quality: Quality, mode_mask: u32) -> EncodeOptions {
 /// The common cases for `format`: a mip chain of two layers at every quality, forced modes, and
 /// random blocks.
 fn conformance(format: Format, sources: [Image; 2], modes: &[(u32, Image, EncodeOptions)]) {
-    let device = device();
+    let device = hardware_device();
     let mut report = Report::default();
 
     for quality in [Quality::Fast, Quality::Normal, Quality::High] {

@@ -3,8 +3,8 @@
 #![cfg(marlin_platform = "windows")]
 
 use std::path::Path;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use marlin_asset::Uuid;
@@ -15,8 +15,9 @@ use marlin_cooker::{engine_cookers, open_ddc};
 use marlin_framework::{
     Boot, ContentSettings, Engine, OFFSCREEN_FORMAT, Offscreen, RenderSide, mount,
 };
+use marlin_gpu_test_support::hardware_device;
 use marlin_render::{Renderer, RendererDesc};
-use marlin_rhi::{AdapterPreference, Device, DeviceDesc, Instance, InstanceDesc};
+use marlin_rhi::Device;
 use marlin_test_support::{TempDir, wait_until};
 
 const LEVEL: &str = "01992d00-0000-7000-8000-000000000001";
@@ -72,25 +73,6 @@ fn package(root: &Path) -> String {
     out.to_string_lossy().into_owned()
 }
 
-/// The hardware adapter with validation on, shared by every test in this binary and never
-/// dropped: tearing down `Device`s while other threads use the same adapter can deadlock the
-/// NVIDIA driver (see the RHI tests' `support::devices`).
-fn device() -> &'static Device {
-    static DEVICE: OnceLock<Device> = OnceLock::new();
-    DEVICE.get_or_init(|| {
-        Instance::new(&InstanceDesc {
-            validation: true,
-            ..InstanceDesc::default()
-        })
-        .unwrap()
-        .create_device(&DeviceDesc {
-            adapter: AdapterPreference::HighPerformance,
-            ..DeviceDesc::default()
-        })
-        .unwrap()
-    })
-}
-
 struct Viewer {
     device: &'static Device,
     render: RenderSide,
@@ -99,7 +81,7 @@ struct Viewer {
 
 impl Viewer {
     fn new() -> Self {
-        let device = device();
+        let device = hardware_device();
         let renderer = Renderer::new(
             device,
             &RendererDesc {

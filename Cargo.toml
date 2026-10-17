@@ -88,6 +88,7 @@ marlin-cook-shader = { path = "tools/cook_shader" }
 marlin-cook-audio = { path = "tools/cook_audio" }
 marlin-cook-level = { path = "tools/cook_level" }
 marlin-test-support = { path = "tools/test_support" }
+marlin-gpu-test-support = { path = "tools/gpu_test_support" }
 marlin-cook-text = { path = "tools/cook_text" }
 
 # --- third party ---

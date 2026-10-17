@@ -28,3 +28,5 @@ workspace = true
 
 [dev-dependencies]
 marlin-app.workspace = true
+marlin-gpu-test-support.workspace = true
+marlin-test-support.workspace = true

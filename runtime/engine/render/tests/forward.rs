@@ -2,41 +2,20 @@
 //! and read back.
 #![cfg(marlin_platform = "windows")]
 
-use std::sync::OnceLock;
-
 use marlin_ecs::World;
+use marlin_gpu_test_support::{hardware_device, read_words, readback, run};
 use marlin_math::{Quat, Transform, Vec3};
 use marlin_render::{
     Camera, Environment, MeshData, MeshHandle, MeshRenderer, RenderStats, Renderer, RendererDesc,
     cube,
 };
 use marlin_rhi::{
-    AdapterPreference, Buffer, BufferDesc, BufferTextureCopy, BufferUsage, ClearValue, Device,
-    DeviceDesc, Format, Instance, InstanceDesc, MemoryLocation, RenderTargetViewDesc, Texture,
+    Buffer, BufferTextureCopy, ClearValue, Device, Format, RenderTargetViewDesc, Texture,
     TextureBarrier, TextureDesc, TextureState, TextureUsage,
 };
 
 const SIZE: u32 = 64;
 const BLACK: u32 = 0xff00_0000;
-
-/// The hardware adapter with validation on, shared by every test in this binary and never
-/// dropped: tearing down `Device`s while other threads use the same adapter can deadlock the
-/// NVIDIA driver (see the RHI tests' `support::devices`).
-fn hardware_device() -> &'static Device {
-    static DEVICE: OnceLock<Device> = OnceLock::new();
-    DEVICE.get_or_init(|| {
-        Instance::new(&InstanceDesc {
-            validation: true,
-            ..InstanceDesc::default()
-        })
-        .unwrap()
-        .create_device(&DeviceDesc {
-            adapter: AdapterPreference::HighPerformance,
-            ..DeviceDesc::default()
-        })
-        .unwrap()
-    })
-}
 
 /// Lit straight on with no ambient and a black background, so faces facing the camera come out
 /// in exactly their color.
@@ -92,13 +71,7 @@ impl Harness {
                 )
             })
             .unwrap();
-        let readback = device
-            .create_buffer(&BufferDesc {
-                size: SIZE as u64 * 256,
-                usage: BufferUsage::COPY_DST,
-                memory: MemoryLocation::Readback,
-            })
-            .unwrap();
+        let readback = readback(device, SIZE as u64 * 256);
         Self {
             device,
             renderer,
@@ -114,53 +87,35 @@ impl Harness {
         let view = device
             .create_render_target_view(&self.target, &RenderTargetViewDesc::default())
             .unwrap();
-        let mut pool = device.create_command_pool().unwrap();
-        let mut list = device.create_command_list(&pool).unwrap();
-        let fence = device.create_fence(0).unwrap();
-        list.begin(&mut pool).unwrap();
-        list.texture_barriers(&[TextureBarrier::new(
-            &self.target,
-            TextureState::UNDEFINED,
-            TextureState::RENDER_TARGET,
-        )]);
-        // SAFETY: slot 0's previous work (if any) was waited for at the end of the last call.
-        let stats = unsafe {
-            self.renderer
-                .render(device, &mut list, 0, &view, world)
-                .unwrap()
-        };
-        list.texture_barriers(&[TextureBarrier::new(
-            &self.target,
-            TextureState::RENDER_TARGET,
-            TextureState::COPY_SRC,
-        )]);
-        list.copy_texture_to_buffer(
-            &self.target,
-            &self.readback,
-            &BufferTextureCopy::whole_mip(self.target.desc(), 0, 0, 0),
-        );
-        // The next call starts from UNDEFINED, which legacy barriers take as the common state.
-        list.texture_barriers(&[TextureBarrier::new(
-            &self.target,
-            TextureState::COPY_SRC,
-            TextureState::PRESENT,
-        )]);
-        list.end().unwrap();
-        // SAFETY: everything the list uses outlives the wait below.
-        unsafe { device.queue().submit(&[&list], Some((&fence, 1))).unwrap() };
-        fence.wait(1, None).unwrap();
-
-        let mut bytes = vec![0; SIZE as usize * 256];
-        // SAFETY: the copy has finished.
-        unsafe { self.readback.read(0, &mut bytes) };
-        let pixels = bytes
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .map(|&p| u32::from_le_bytes(p))
-            .collect();
+        let mut stats = None;
+        run(device, |list| {
+            list.texture_barriers(&[TextureBarrier::new(
+                &self.target,
+                TextureState::UNDEFINED,
+                TextureState::RENDER_TARGET,
+            )]);
+            // SAFETY: slot 0's previous work (if any) was waited for at the end of the last call.
+            stats = Some(unsafe { self.renderer.render(device, list, 0, &view, world).unwrap() });
+            list.texture_barriers(&[TextureBarrier::new(
+                &self.target,
+                TextureState::RENDER_TARGET,
+                TextureState::COPY_SRC,
+            )]);
+            list.copy_texture_to_buffer(
+                &self.target,
+                &self.readback,
+                &BufferTextureCopy::whole_mip(self.target.desc(), 0, 0, 0),
+            );
+            // The next call starts from UNDEFINED, which legacy barriers take as the common state.
+            list.texture_barriers(&[TextureBarrier::new(
+                &self.target,
+                TextureState::COPY_SRC,
+                TextureState::PRESENT,
+            )]);
+        });
+        let pixels = read_words(&self.readback, 0, SIZE as usize * 64);
         assert_eq!(device.validation_errors(), 0);
-        (pixels, stats)
+        (pixels, stats.unwrap())
     }
 }
 

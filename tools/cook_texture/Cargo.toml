@@ -25,6 +25,7 @@ switch2 = []
 marlin-test-support.workspace = true
 # The GPU conformance test uploads encoded textures, and the layout tests check the RHI's rules.
 marlin-rhi.workspace = true
+marlin-gpu-test-support.workspace = true
 marlin-asset-db.workspace = true
 
 [lints]

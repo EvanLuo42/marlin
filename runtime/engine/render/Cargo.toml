@@ -17,3 +17,6 @@ marlin-serial.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+marlin-gpu-test-support.workspace = true

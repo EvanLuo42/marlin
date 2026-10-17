@@ -3,7 +3,9 @@
 mod build;
 mod cfg;
 mod check;
+mod coverage;
 mod platform;
+mod test;
 mod unicode;
 
 use std::path::{Path, PathBuf};
@@ -24,6 +26,18 @@ Commands:
                     --target <triple>   default: the platform's first target
                     -- <args>...        passed through to cargo build
   check-layers    Check crate layering and that runtime crates are no_std
+  test            Run the tests by tier (docs/design/0014-testing.md §4)
+                    --tier <tier>       quick | gpu | desktop | stress | manual | all (default: quick)
+                    -p <crate>          only this package (repeatable)
+                    --seed <n>          MARLIN_TEST_SEED for randomized tests
+                    --bless             MARLIN_BLESS=1: rewrite golden files
+                    --stall <secs>      watchdog: no test finishing for this long is a hang
+                    -- <args>...        passed to every test binary (name filters, ...)
+  coverage        Source coverage of src/ from the test tiers (0014 §7.4)
+                    --tier <tier>       quick | gpu | desktop | all (default: all = the three)
+                    -p, --seed, --stall, --  as for test
+                    --html              also write target/coverage/html/
+                    --save-baseline     store the numbers to compare later runs against
   gen-unicode     Regenerate marlin-text's Unicode tables from the Unicode Character Database
                     --ucd <dir>         the UCD files (default: $MARLIN_UCD_DIR)
 ";
@@ -36,6 +50,8 @@ fn main() -> ExitCode {
         Some("gen-cfg") => cfg::gen_cfg(&root),
         Some("build") => build::run(&root, &args[1..]),
         Some("check-layers") => check::layers(&root),
+        Some("test") => test::run(&root, &args[1..]),
+        Some("coverage") => coverage::run(&root, &args[1..]),
         Some("gen-unicode") => unicode::gen_unicode(&root, &args[1..]),
         Some("help" | "-h" | "--help") | None => {
             print!("{HELP}");

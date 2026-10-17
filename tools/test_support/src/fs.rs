@@ -80,3 +80,52 @@ impl AsRef<OsStr> for TempDir {
         self.0.as_os_str()
     }
 }
+
+/// A path for one temporary file under the system temp directory (not created), named
+/// `marlin-{name}-{pid}-{n}`; the file is removed on drop if it exists. For APIs that create the
+/// file themselves; use [`TempDir`] when a test needs several files.
+#[derive(Debug)]
+pub struct TempFile(PathBuf);
+
+impl TempFile {
+    pub fn new(name: &str) -> Self {
+        let path = std::env::temp_dir().join(format!(
+            "marlin-{name}-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        // A leftover from a crashed run with a reused pid.
+        let _ = fs::remove_file(&path);
+        Self(path)
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+impl Deref for TempFile {
+    type Target = Path;
+
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl AsRef<Path> for TempFile {
+    fn as_ref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl AsRef<OsStr> for TempFile {
+    fn as_ref(&self) -> &OsStr {
+        self.0.as_os_str()
+    }
+}
