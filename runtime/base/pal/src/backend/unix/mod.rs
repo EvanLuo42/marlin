@@ -2,6 +2,8 @@
 //! `../macos` and are reached through `crate::backend::imp`.
 
 mod debug;
+#[cfg(marlin_ext = "dylib")]
+mod dylib;
 mod fiber;
 pub(super) mod file;
 mod fs;
@@ -10,6 +12,8 @@ mod thread;
 mod time;
 mod tls;
 mod vmem;
+#[cfg(marlin_ext = "vmem_alias")]
+mod vmem_alias;
 
 use core::ffi::{c_char, c_int};
 

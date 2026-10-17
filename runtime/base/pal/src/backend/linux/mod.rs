@@ -3,6 +3,8 @@
 
 mod file;
 mod futex;
+#[cfg(marlin_ext = "large_pages")]
+mod large_pages;
 mod process;
 mod sysinfo;
 mod thread;

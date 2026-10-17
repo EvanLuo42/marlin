@@ -8,5 +8,5 @@ targets = ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"]
 target-cpu = { x86_64 = "x86-64-v3" }
 # Capabilities this platform's backends implement; each becomes `--cfg marlin_ext="<name>"`.
 # Listing a capability that a backend does not implement is a compile error.
-# Planned: vmem_alias, direct_storage, crash_dump, cpu_markers, dylib.
-ext = ["large_pages", "hybrid_cores"]
+# Planned: direct_storage, cpu_markers.
+ext = ["large_pages", "hybrid_cores", "vmem_alias", "crash_dump", "dylib"]

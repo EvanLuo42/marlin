@@ -11,7 +11,13 @@
 //! }
 //! ```
 
+#[cfg(marlin_ext = "crash_dump")]
+pub mod crash_dump;
+#[cfg(marlin_ext = "dylib")]
+pub mod dylib;
 #[cfg(marlin_ext = "hybrid_cores")]
 pub mod hybrid_cores;
 #[cfg(marlin_ext = "large_pages")]
 pub mod large_pages;
+#[cfg(marlin_ext = "vmem_alias")]
+pub mod vmem_alias;

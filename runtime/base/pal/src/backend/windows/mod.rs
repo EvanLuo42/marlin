@@ -1,6 +1,10 @@
 //! Win32 backend. The Xbox backend reuses most of it.
 
+#[cfg(marlin_ext = "crash_dump")]
+mod crash_dump;
 mod debug;
+#[cfg(marlin_ext = "dylib")]
+mod dylib;
 pub(crate) mod error;
 mod fiber;
 pub(super) mod file;
@@ -16,6 +20,8 @@ mod thread;
 mod time;
 mod tls;
 mod vmem;
+#[cfg(marlin_ext = "vmem_alias")]
+mod vmem_alias;
 mod watch;
 
 use core::ptr;

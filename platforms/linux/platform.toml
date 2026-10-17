@@ -4,5 +4,5 @@ family = "desktop"
 targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
 # See platforms/windows/platform.toml.
 target-cpu = { x86_64 = "x86-64-v3" }
-# Planned: large_pages, vmem_alias, crash_dump, dylib.
-ext = []
+# Planned: crash_dump.
+ext = ["large_pages", "vmem_alias", "dylib"]
