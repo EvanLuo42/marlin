@@ -1,27 +1,54 @@
-//! Stable and fast hash functions.
+//! Stable and fast hash functions, checksums and GUIDs.
 //!
 //! Two families with opposite contracts:
 //!
 //! - [`FastHasher`] / [`FastState`]: for in-memory hash maps. Tuned for speed on short keys, not
 //!   for hash-flooding resistance, and free to change between engine versions. Never persist its
 //!   output. [`PrehashedState`] passes keys that already are good hashes straight through.
-//! - [`stable`]: xxh3-64, xxh3-128, xxh32, xxh64 and FNV-1a. Their output is fixed forever: identical on every
-//!   platform, endianness, compiler and run, and computable in `const fn`. Use them for anything
-//!   that leaves the process: asset IDs and GUIDs, name hashes in cooked data, network IDs.
+//!   [`KeyedState`] (SipHash-1-3 with a secret per-map key) is the flooding-resistant choice for
+//!   maps whose keys come from outside the project: network input, mods, user files.
+//! - [`stable`]: xxh3-64, xxh3-128, xxh32, xxh64 and FNV-1a. Their output is fixed forever:
+//!   identical on every platform, endianness, compiler and run, and computable in `const fn`. Use
+//!   them for anything that leaves the process: asset IDs and GUIDs, name hashes in cooked data,
+//!   network IDs. [`Xxh3`] and [`Xxh64`] stream the same hashes over input that arrives in
+//!   pieces.
+//!
+//! On top of the stable family:
+//!
+//! - [`StableHash`] (with `#[derive(StableHash)]`): hashes values through a fixed byte encoding,
+//!   for cook keys and other persisted hashes of structured data.
+//! - [`Guid`]: 128-bit ids in the UUID layout, with [`Guid::from_name`] for derived ids.
+//! - [`crc32`] / [`Crc32`]: CRC-32 (IEEE), for the formats that specify it.
 #![cfg_attr(not(test), no_std)]
 #![feature(const_eval_select, core_intrinsics, portable_simd)]
 // `const_eval_select` is an intrinsic: the const and runtime paths are tested to agree.
 #![allow(internal_features)]
 
+extern crate alloc;
+
+mod crc32;
 mod fast;
+mod guid;
+mod keyed;
 mod simd;
 pub mod stable;
+mod stable_hash;
+mod stream;
 
+pub use crc32::{Crc32, crc32, crc32_extend};
 pub use fast::{FastHasher, FastState, PrehashedHasher, PrehashedState, fast_hash};
+pub use guid::{Guid, ParseGuidError};
+pub use keyed::{KeyedState, SipHasher, SipHasher13, SipHasher24};
+/// `#[derive(StableHash)]`: fields in order; enum variants need explicit discriminants.
+/// `#[stable_hash(skip)]` leaves a field out, `#[stable_hash(crate = "path")]` names this crate
+/// when it is re-exported.
+pub use marlin_hash_derive::StableHash;
 pub use stable::{
     fnv1a_32, fnv1a_64, xxh3_64, xxh3_64_ascii_lowercase, xxh3_64_with_seed, xxh3_128,
     xxh3_128_with_seed, xxh32, xxh64,
 };
+pub use stable_hash::{StableHash, StableHasher, stable_hash_64, stable_hash_128};
+pub use stream::{Xxh3, Xxh64};
 
 /// 64x64 -> 128-bit multiply, folded back to 64 bits by xoring the halves. The core mixing step of
 /// both families: one `mul` (+ `umulh` on aarch64) mixes every input bit into every output bit.

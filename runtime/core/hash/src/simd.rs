@@ -7,7 +7,9 @@
 use core::simd::prelude::*;
 use core::simd::simd_swizzle;
 
-use crate::stable::{BLOCK_LEN, INIT_ACC, P32_1, SECRET_LEN, STRIPE_LEN, Secret};
+use crate::stable::{
+    BLOCK_LEN, INIT_ACC, P32_1, SECRET_LEN, STRIPE_LEN, STRIPES_PER_BLOCK, Secret,
+};
 
 /// Eight little-endian u64s.
 #[inline(always)]
@@ -87,6 +89,35 @@ pub(crate) fn long_accumulate<const L: bool>(input: &[u8], secret: &Secret) -> [
         .expect("long inputs exceed 240 bytes");
     acc = accumulate_512::<L>(acc, last, last_key);
     acc.to_array()
+}
+
+/// Streaming XXH3: feeds whole stripes, `stripes` of the current block already consumed, and
+/// scrambles at each block end. `data.len()` is a multiple of the stripe length.
+pub(crate) fn consume_stripes(
+    acc: &mut [u64; 8],
+    stripes: &mut usize,
+    data: &[u8],
+    secret: &Secret,
+) {
+    debug_assert!(data.len().is_multiple_of(STRIPE_LEN));
+    let scramble_key = load(window(secret, SECRET_LEN - STRIPE_LEN));
+    let mut v = u64x8::from_array(*acc);
+    for stripe in data.as_chunks::<STRIPE_LEN>().0 {
+        v = accumulate_512::<false>(v, stripe, key(secret, *stripes));
+        *stripes += 1;
+        if *stripes == STRIPES_PER_BLOCK {
+            v = scramble(v, scramble_key);
+            *stripes = 0;
+        }
+    }
+    *acc = v.to_array();
+}
+
+/// Streaming XXH3: the final stripe (the input's last 64 bytes), with its own key.
+pub(crate) fn last_stripe(acc: &mut [u64; 8], stripe: &[u8; 64], secret: &Secret) {
+    let v = u64x8::from_array(*acc);
+    let last_key = load(window(secret, SECRET_LEN - STRIPE_LEN - 7));
+    *acc = accumulate_512::<false>(v, stripe, last_key).to_array();
 }
 
 /// The 64 bytes of `secret` at `offset` (secret offsets are constants within bounds).

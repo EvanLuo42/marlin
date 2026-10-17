@@ -565,7 +565,18 @@ dependencies = [
 name = "marlin-hash"
 version = "0.1.0"
 dependencies = [
+ "marlin-hash-derive",
  "marlin-math",
+ "marlin-std",
+]
+
+[[package]]
+name = "marlin-hash-derive"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
 ]
 
 [[package]]

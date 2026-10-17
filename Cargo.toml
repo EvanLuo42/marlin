@@ -41,6 +41,7 @@ marlin-math = { path = "runtime/core/math" }
 marlin-containers = { path = "runtime/core/containers" }
 marlin-text = { path = "runtime/core/text" }
 marlin-hash = { path = "runtime/core/hash" }
+marlin-hash-derive = { path = "runtime/core/hash_derive" }
 marlin-jobs = { path = "runtime/core/jobs" }
 marlin-profile = { path = "runtime/core/profile" }
 marlin-reflect = { path = "runtime/core/reflect" }
