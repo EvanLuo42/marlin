@@ -1,7 +1,7 @@
 //! marlin-jobs's tests (quick tier, docs/design/0014-testing.md §5): scopes, handles, graphs,
 //! cancellation, the fiber pool, the main thread as a worker, and fiber-aware sync. On the host's
-//! PAL. Run alone with `cargo test -p marlin-jobs --test unit`; the ignored throughput benchmark
-//! is in `jobs`.
+//! PAL. Run alone with `cargo test -p marlin-jobs --test unit`; the throughput benchmark
+//! is `benches/jobs.rs`.
 
 #[path = "../support/mod.rs"]
 mod support;

@@ -9,7 +9,12 @@ publish.workspace = true
 marlin-hash-derive.workspace = true
 
 [dev-dependencies]
+marlin-bench.workspace = true
 marlin-math.workspace = true
+
+[[bench]]
+name = "simd"
+harness = false
 
 [lints]
 workspace = true

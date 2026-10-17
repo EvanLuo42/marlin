@@ -1,6 +1,4 @@
-//! The indexing fast path agrees with the full parser.
-
-use std::time::Instant;
+//! The indexing fast path agrees with the full parser. Their throughput is `benches/extract.rs`.
 
 use marlin_asset::Uuid;
 use marlin_masset::{Extract, NodeKind, extract, new_uuid, parse};
@@ -148,45 +146,4 @@ fn new_uuids_are_version_7_and_increasing() {
     let text = ids[0].to_string();
     assert_eq!(text.parse::<Uuid>().unwrap(), ids[0]);
     assert_eq!(text.as_bytes()[14], b'7');
-}
-
-/// A synthetic project file with `objects` objects of a few links and files each.
-fn big_file(objects: usize) -> String {
-    let mut text = String::from("!Version 1\n");
-    for i in 0..objects {
-        text.push_str(&format!(
-            "\nMeshInstance\n{{\n    !Uuid = \"{}\"\n    !Name = \"Instance{i}\"\n    Mesh = <props/rock_{}:Rock #{}>\n    Material = <materials/stone:Stone #{}>\n    Transform = {{ Translation = ({i}.5, 2.0, -3.25), Rotation = (0.0, 0.0, 0.0, 1.0), Scale = (1.0, 1.0, 1.0) }}\n    Tags = [\"rock\", \"static\", \"lod{}\"]\n    Lightmap = `source:lightmaps/l{i}.exr`\n}}\n",
-            new_uuid(),
-            i % 50,
-            new_uuid(),
-            new_uuid(),
-            i % 4,
-        ));
-    }
-    text
-}
-
-#[test]
-#[ignore = "benchmark; run with --ignored --nocapture"]
-fn bench_extract_and_parse() {
-    let text = big_file(50_000);
-    let mb = text.len() as f64 / (1024.0 * 1024.0);
-    let start = Instant::now();
-    let e = extract(&text).unwrap();
-    let extract_time = start.elapsed().as_secs_f64();
-    assert_eq!(e.objects.len(), 50_000);
-    let start = Instant::now();
-    let doc = parse(&text).unwrap();
-    let parse_time = start.elapsed().as_secs_f64();
-    assert_eq!(doc.objects.len(), 50_000);
-    let start = Instant::now();
-    let written = marlin_masset::write(&doc);
-    let write_time = start.elapsed().as_secs_f64();
-    assert!(written.len() > text.len() / 2);
-    println!(
-        "{mb:.1} MiB, 50k objects: extract {:.0} MiB/s, parse {:.0} MiB/s, write {:.0} MiB/s",
-        mb / extract_time,
-        mb / parse_time,
-        mb / write_time
-    );
 }

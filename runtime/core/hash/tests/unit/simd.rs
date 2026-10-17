@@ -1,7 +1,6 @@
 //! The runtime SIMD path of XXH3 against the forced-scalar path, which shares its code with the
-//! const evaluation pinned by the reference vectors in `stable.rs`.
-
-use std::time::Instant;
+//! const evaluation pinned by the reference vectors in `stable.rs`. Their throughput is
+//! `benches/simd.rs`.
 
 use marlin_hash::stable::scalar;
 use marlin_hash::{xxh3_64_ascii_lowercase, xxh3_64_with_seed, xxh3_128_with_seed};
@@ -59,41 +58,4 @@ fn unaligned_and_large_inputs_match_scalar() {
         xxh3_64_ascii_lowercase(big),
         scalar::xxh3_64_ascii_lowercase(big)
     );
-}
-
-/// `cargo test --release -p marlin-hash --test unit simd::bench -- --ignored --nocapture`
-#[test]
-#[ignore]
-fn bench_throughput() {
-    fn gbps(bytes: usize, f: impl Fn() -> u64) -> f64 {
-        // Enough repetitions for ~256 MiB per measurement; best of three runs.
-        let reps = ((256 << 20) / bytes).max(1);
-        (0..3)
-            .map(|_| {
-                let start = Instant::now();
-                let mut sink = 0;
-                for _ in 0..reps {
-                    sink ^= f();
-                }
-                std::hint::black_box(sink);
-                (bytes * reps) as f64 / start.elapsed().as_secs_f64() / 1e9
-            })
-            .fold(0.0, f64::max)
-    }
-
-    println!(
-        "{:>10} {:>12} {:>12} {:>8}",
-        "size", "scalar GB/s", "simd GB/s", "speedup"
-    );
-    for size in [256, 1 << 10, 4 << 10, 64 << 10, 1 << 20, 16 << 20] {
-        let d = data(size, 3);
-        let scalar = gbps(size, || {
-            scalar::xxh3_64_with_seed(std::hint::black_box(&d), 0)
-        });
-        let simd = gbps(size, || xxh3_64_with_seed(std::hint::black_box(&d), 0));
-        println!(
-            "{size:>10} {scalar:>12.2} {simd:>12.2} {:>7.2}x",
-            simd / scalar
-        );
-    }
 }

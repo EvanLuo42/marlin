@@ -617,6 +617,7 @@ dependencies = [
 name = "marlin-hash"
 version = "0.1.0"
 dependencies = [
+ "marlin-bench",
  "marlin-hash-derive",
  "marlin-math",
 ]
@@ -654,6 +655,7 @@ dependencies = [
 name = "marlin-jobs"
 version = "0.1.0"
 dependencies = [
+ "marlin-bench",
  "marlin-profile",
  "marlin-std",
  "marlin-test-support",
@@ -664,6 +666,7 @@ name = "marlin-masset"
 version = "0.1.0"
 dependencies = [
  "marlin-asset",
+ "marlin-bench",
  "marlin-error",
  "marlin-math",
  "marlin-reflect",
@@ -680,6 +683,7 @@ dependencies = [
 name = "marlin-mem"
 version = "0.1.0"
 dependencies = [
+ "marlin-bench",
  "marlin-math",
  "marlin-pal",
  "marlin-test-support",

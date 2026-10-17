@@ -9,7 +9,6 @@ use std::alloc::{GlobalAlloc, Layout};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::mpsc;
 use std::thread;
-use std::time::Instant;
 
 use marlin_math::Rng;
 use marlin_mem::{MarlinHeap, collect_abandoned, stats};
@@ -247,29 +246,4 @@ fn over_aligned_blocks_freed_elsewhere() {
         .map(|i| Alloc::new(1 + i % 500, [32, 64, 256, 1024][i % 4], i as u8))
         .collect();
     thread::spawn(move || drop(blocks)).join().unwrap();
-}
-
-/// `cargo test --release -p marlin-mem --test isolated_global_heap -- --ignored --nocapture`
-#[test]
-#[ignore]
-fn bench_against_system() {
-    fn run<A: GlobalAlloc>(name: &str, a: &A) {
-        let layouts: Vec<Layout> = (0..1024)
-            .map(|i| Layout::from_size_align(16 + (i * 37) % 512, 8).unwrap())
-            .collect();
-        let mut ptrs = vec![std::ptr::null_mut(); 1024];
-        let start = Instant::now();
-        for _ in 0..2_000 {
-            for (p, &l) in ptrs.iter_mut().zip(&layouts) {
-                *p = unsafe { a.alloc(l) };
-            }
-            for (&p, &l) in ptrs.iter().zip(&layouts) {
-                unsafe { a.dealloc(p, l) };
-            }
-        }
-        let ns = start.elapsed().as_nanos() as f64 / (2_000.0 * 1024.0);
-        println!("{name:>8}: {ns:.1} ns per alloc+free");
-    }
-    run("system", &std::alloc::System);
-    run("marlin", &HEAP);
 }

@@ -205,7 +205,7 @@ GPU 层的看门狗：xtask 监控测试进程，超时没有输出就报告卡�
 - 命令行：位置参数是名字过滤；`--quick` 少量短样本；`--list` 只列名字。`cargo test --benches`（不带 `--bench`）时每个基准只跑一次当冒烟测试，不写结果。
 - 结果写到 `target/bench/<crate>/<name>.json`。`xtask test --tier bench --save-baseline <tag>` 存到 `target/bench/baselines/<tag>/`，`--baseline <tag>` 比较，中位数变慢超过 `--threshold`（默认 5%）标出来，不改退出码；每个基准进程超过 `--stall`（默认 1800 秒）就结束。
 - 基线只存在本地 `target/` 下（目前只有一台机器）。
-- 已迁：compress（`codecs`）、ecs（`world`）、net（`loopback`）、asset_db（`index`）、cook_texture（`encode`）。还嵌在测试文件里的 `#[ignore]` 基准（mem `isolated_global_heap`、hash/simd 的 `gbps`、jobs/jobs、masset/extract、profile/stats 的 `spin`）待迁，见 §9。
+- 已迁：compress（`codecs`）、ecs（`world`）、net（`loopback`）、asset_db（`index`）、cook_texture（`encode`）、mem（`global_heap`，文件里声明 `MarlinHeap` 为全局分配器）、hash（`simd`）、jobs（`jobs`，同样跑在 `MarlinHeap` 上）、masset（`extract`）。测试文件里不再有 `#[ignore]` 基准；profile/stats 的 `spin` 是 stats 测试用来造固定时长 zone 的，不是基准，留在原处。
 - GPU 计时（timestamp query）以后加到 `marlin-gpu-test-support`。
 
 ### 7.3 Fuzz 与属性测试
@@ -262,14 +262,13 @@ GPU 层的看门狗：xtask 监控测试进程，超时没有输出就报告卡�
    - jobs、text 在 `main.rs` 里统一声明一次 `#[global_allocator]`。
    - 只有 clipboard（会覆盖用户剪贴板）和 `connected_gamepads`（要插手柄）还是手动测试；其余 12 个"需要桌面会话"的测试进了 desktop 层。
    - 顺带修掉一个真 bug：config 的注册测试按大小写敏感过滤 cvar，链接顺序不同时会失败。
-5. ✅ `marlin-bench` 和 `--tier bench`；compress、ecs、net、asset_db、cook_texture 的基准已迁到 `benches/`。
+5. ✅ `marlin-bench` 和 `--tier bench`；compress、ecs、net、asset_db、cook_texture 的基准已迁到 `benches/`；mem、hash、jobs、masset 嵌在测试文件里的 `#[ignore]` 基准随后也迁了（2026-10-17）。
 6. ✅ Git LFS + golden image：render 3 张、framework 1 张（2026-10-17）。
 7. ✅ `fuzz/` 和 `--tier fuzz`，先覆盖 text、serial、compress、cooked 格式（2026-10-17，12 个目标）。
 8. ✅ 0001 §11 的"约定"一条改成指向本文档。
 
 迁移后留下的后续：
-- 嵌在测试文件里的 `#[ignore]` 基准迁到 `benches/`（见 §7.2）。
-- pal/thread 里有一个没有上限的 `while !job.ran` 循环，改成 `wait_until`；diag 里几个有界的自旋等待可以顺手换掉。
+- diag 里几个有界的自旋等待可以换成 `wait_until`。
 - pal 的 `windows_command_line_quoting` 需要精确的原始命令行，`isolated::run` 传不了，仍自己重入。
 - app 的窗口测试和 input 的触摸/原始输入注入测试并行时偶尔失败，现在靠 `one_at_a_time()` 串行；app 那部分也可能是多个 `App` 在不同线程上的真 bug，还没查。
 - 每个 fuzz 目标在所属 crate 的 `unit` 里加一个 `regress::for_each` 回放测试（text 3 个、serial 2 个、compress 4 个、asset 3 个；serial 的要把 `fuzz/src/lib.rs` 里的测试类型也复制过去），这样 `tests/data/regress/` 一有用例就会被跑到。

@@ -13,8 +13,13 @@ mem-debug = []
 marlin-pal.workspace = true
 
 [dev-dependencies]
+marlin-bench.workspace = true
 marlin-math.workspace = true
 marlin-test-support.workspace = true
+
+[[bench]]
+name = "global_heap"
+harness = false
 
 [lints]
 workspace = true

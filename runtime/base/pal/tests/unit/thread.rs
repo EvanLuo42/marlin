@@ -2,8 +2,10 @@
 
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Duration;
 
 use marlin_pal::thread::{self, ThreadStart};
+use marlin_test_support::wait_until;
 
 #[repr(C)]
 struct Job {
@@ -58,9 +60,11 @@ fn detach() {
     unsafe { thread::spawn(0, job.start_ptr()) }
         .unwrap()
         .detach();
-    while !job.ran.load(Ordering::Acquire) {
-        thread::yield_now();
-    }
+    wait_until(
+        Duration::from_secs(10),
+        "the detached thread to run",
+        || job.ran.load(Ordering::Acquire),
+    );
 }
 
 #[test]

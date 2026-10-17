@@ -11,7 +11,12 @@ marlin-error.workspace = true
 marlin-reflect.workspace = true
 
 [dev-dependencies]
+marlin-bench.workspace = true
 marlin-math.workspace = true
+
+[[bench]]
+name = "extract"
+harness = false
 
 [lints]
 workspace = true

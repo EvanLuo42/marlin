@@ -9,8 +9,13 @@ publish.workspace = true
 marlin-profile.workspace = true
 marlin-std.workspace = true
 
+[dev-dependencies]
+marlin-bench.workspace = true
+marlin-test-support.workspace = true
+
+[[bench]]
+name = "jobs"
+harness = false
+
 [lints]
 workspace = true
-
-[dev-dependencies]
-marlin-test-support.workspace = true
