@@ -496,6 +496,7 @@ type VkSwapchainKHR
 type VkQueryPool
 type VkSurfaceKHR
 type VkAccelerationStructureKHR
+type VkImageView
 
 # fences (shared)
 struct VkExportSemaphoreCreateInfo

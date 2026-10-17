@@ -331,14 +331,55 @@ impl Texture {
     pub(crate) fn shared(&self) -> &Shared {
         &self.0.shared
     }
+
+    /// Wraps an image this backend did not create from a `TextureDesc`: swapchain images
+    /// (swapchain area) and native images (`texture_from_native`, sharing area). `owned`: destroy
+    /// the image on drop. The image is taken to be in `Layout::Common` (GENERAL) or, for swapchain
+    /// images, undefined until their first barrier.
+    pub(crate) fn from_image(
+        shared: &Arc<Shared>,
+        image: VkImage,
+        desc: &TextureDesc,
+        owned: bool,
+    ) -> Self {
+        let _ = (shared, image, desc, owned);
+        todo!("vulkan: Texture::from_image")
+    }
 }
 
+/// A color attachment for dynamic rendering (draw area reads the fields; resource area creates
+/// it; the swapchain area makes one per image with [`render_target_view`]).
 pub(crate) struct RenderTargetView {
-    _texture: Texture,
+    pub(crate) texture: Texture,
+    pub(crate) view: VkImageView,
+    pub(crate) format: VkFormat,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) samples: u32,
 }
 
+/// A depth attachment for dynamic rendering, as [`RenderTargetView`].
 pub(crate) struct DepthStencilView {
-    _texture: Texture,
+    pub(crate) texture: Texture,
+    pub(crate) view: VkImageView,
+    pub(crate) format: VkFormat,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) samples: u32,
+    /// The format has a stencil plane.
+    pub(crate) stencil: bool,
+}
+
+/// A render target view of `texture` (whose public description is `desc`), for
+/// `create_render_target_view` and swapchain images.
+pub(crate) fn render_target_view(
+    shared: &Arc<Shared>,
+    texture: &Texture,
+    desc: &TextureDesc,
+    view: &RenderTargetViewDesc,
+) -> Result<RenderTargetView> {
+    let _ = (shared, texture, desc, view);
+    todo!("vulkan: render_target_view")
 }
 
 pub(crate) fn format_support(device: &Device, format: Format) -> FormatSupport {

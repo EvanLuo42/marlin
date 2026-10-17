@@ -3151,6 +3151,7 @@ pub(crate) type VkFramebuffer = u64;
 pub(crate) type VkImage = u64;
 pub(crate) type VkImageAspectFlags = u32;
 pub(crate) type VkImageLayout = i32;
+pub(crate) type VkImageView = u64;
 pub(crate) type VkImageViewCreateFlags = u32;
 pub(crate) type VkImageViewType = i32;
 pub(crate) type VkInstance = *mut c_void;
