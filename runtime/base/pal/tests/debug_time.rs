@@ -38,3 +38,11 @@ fn sleep_waits_at_least_the_duration() {
     let elapsed = Duration::from_secs_f64(elapsed as f64 / time::ticks_per_second() as f64);
     assert!(elapsed >= duration, "slept {elapsed:?}");
 }
+
+#[test]
+fn terminal_colors_query_does_not_fail() {
+    // Under the test harness stderr is usually a pipe; only check that the call is harmless and
+    // stable.
+    let first = marlin_pal::debug::enable_terminal_colors();
+    assert_eq!(marlin_pal::debug::enable_terminal_colors(), first);
+}

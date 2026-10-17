@@ -24,6 +24,14 @@ pub fn break_point() {
     Backend::break_point()
 }
 
+/// Makes stderr show ANSI color escapes if it can, and reports whether it does: on Windows,
+/// enables virtual terminal processing on a console (Windows 10+); on POSIX, checks that stderr is
+/// a terminal. False when stderr is a file or pipe.
+#[inline]
+pub fn enable_terminal_colors() -> bool {
+    Backend::enable_terminal_colors()
+}
+
 /// Writes the return addresses of the calling thread's stack into `out`, innermost first, and
 /// returns how many were written. The innermost `skip` frames of the caller are left out
 /// (`capture_stack` itself never appears).

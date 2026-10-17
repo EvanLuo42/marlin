@@ -5,7 +5,8 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
 use windows_sys::Win32::Storage::FileSystem::WriteFile;
 use windows_sys::Win32::System::Console::{
-    GetConsoleMode, GetStdHandle, STD_ERROR_HANDLE, WriteConsoleW,
+    ENABLE_VIRTUAL_TERMINAL_PROCESSING, GetConsoleMode, GetStdHandle, STD_ERROR_HANDLE,
+    SetConsoleMode, WriteConsoleW,
 };
 use windows_sys::Win32::System::Diagnostics::Debug::{
     DebugBreak, IMAGEHLP_LINEW64, IsDebuggerPresent, OutputDebugStringW, RtlCaptureStackBackTrace,
@@ -41,6 +42,22 @@ impl Debug for Backend {
     fn break_point() {
         // SAFETY: no preconditions.
         unsafe { DebugBreak() }
+    }
+
+    fn enable_terminal_colors() -> bool {
+        // SAFETY: no preconditions.
+        let handle = unsafe { GetStdHandle(STD_ERROR_HANDLE) };
+        if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+            return false;
+        }
+        let mut mode = 0;
+        // SAFETY: `mode` is a valid out pointer; the call fails for anything but a console.
+        if unsafe { GetConsoleMode(handle, &mut mode) } == 0 {
+            return false;
+        }
+        // SAFETY: the handle is a console.
+        mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING != 0
+            || unsafe { SetConsoleMode(handle, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING) } != 0
     }
 
     #[inline(never)]

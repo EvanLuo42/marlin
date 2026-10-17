@@ -32,6 +32,11 @@ impl Debug for Backend {
         unsafe { libc::raise(libc::SIGTRAP) };
     }
 
+    fn enable_terminal_colors() -> bool {
+        // SAFETY: no preconditions.
+        unsafe { libc::isatty(libc::STDERR_FILENO) == 1 }
+    }
+
     #[inline(never)]
     fn capture_stack(skip: usize, out: &mut [usize]) -> usize {
         // backtrace's first entry is its caller, this function; the public wrapper comes next.

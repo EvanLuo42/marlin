@@ -348,8 +348,8 @@ impl LineSink for DebugOutput {
 /// [`DebugOutput`] with the level optionally colored by ANSI escapes.
 ///
 /// Colors are only written when `color` is set. The escapes go to the debugger too when one is
-/// attached. A Windows console shows them only with virtual terminal processing enabled
-/// (`ENABLE_VIRTUAL_TERMINAL_PROCESSING`), which is the application's job, not this sink's.
+/// attached. A Windows console shows them only with virtual terminal processing enabled, which
+/// [`ConsoleSink::auto`] turns on (and which it checks stderr supports).
 #[derive(Clone, Copy, Default, Debug)]
 pub struct ConsoleSink {
     pub color: bool,
@@ -358,6 +358,14 @@ pub struct ConsoleSink {
 impl ConsoleSink {
     pub const fn new(color: bool) -> Self {
         Self { color }
+    }
+
+    /// Colored when stderr is a terminal that shows ANSI colors, enabling virtual terminal
+    /// processing on a Windows console first.
+    pub fn auto() -> Self {
+        Self {
+            color: debug::enable_terminal_colors(),
+        }
     }
 
     const fn color_of(level: Level) -> &'static str {

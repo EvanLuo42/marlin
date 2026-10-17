@@ -8,6 +8,9 @@ pub(crate) trait Debug {
     fn is_debugger_present() -> bool;
     /// Raises a breakpoint trap. Without a debugger this usually terminates the process.
     fn break_point();
+    /// Makes stderr interpret ANSI color escapes where possible; whether it is a terminal that
+    /// does.
+    fn enable_terminal_colors() -> bool;
 
     /// Writes the return addresses of the calling thread's stack, innermost first, skipping the
     /// innermost `skip` frames of the caller; returns how many were written.
