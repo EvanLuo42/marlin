@@ -468,7 +468,7 @@ runtime/<layer>/<name>/
 
 已实现：
 
-- `marlin-pal`：契约 `VMem`、`Process`、`Debug`、`Time`、`Thread`（含亲和性与优先级）、`Futex`、`Tls`、`SysInfo`（目前只有 CPU 拓扑），以及 ext `LargePages`、`HybridCores`（仅 Windows）。Windows、Linux、macOS 都有实现（Linux/macOS 共享 `backend/unix`，futex 和调试器检测各自实现）。
+- `marlin-pal`：契约 `VMem`、`Process`、`Debug`、`Time`、`Thread`（含亲和性与优先级）、`Futex`、`Tls`、`SysInfo`、`File`、`Fs`、`Watch`，以及 ext `LargePages`、`HybridCores`、`VmemAlias`、`CrashDump`、`Dylib`（各平台的清单见 `platforms/*/platform.toml`；2026-10-16 的补全见文末 "L0 completion"）。Windows、Linux、macOS 都有实现（Linux/macOS 共享 `backend/unix`，futex 和调试器检测各自实现）。
 - `marlin-mem::MarlinHeap`：mimalloc 式通用堆（见 §2.3 与 `MarlinHeap` 文档）。单线程 alloc+free 约 3.5 ns，同一测试下 Windows 系统分配器约 52 ns（release）。另提供 `stats()` 和 `collect_abandoned()`。
 - `marlin-rt`：`start` / `game_entry!` / `panic::report` / `hosted::init`。
 - xtask：`platforms`、`gen-cfg`、`build`、`check-layers`。
@@ -499,7 +499,7 @@ runtime/<layer>/<name>/
 - 对齐 > 16 的小分配：在 page 内多分配一些，返回块内对齐后的指针，并给该 page 打 `has_aligned` 标记，`free` 时回推到块起点。对齐 > 2 MiB 不支持，返回 null。
 - mem 用了 nightly 的 `#[thread_local]`；没有原生 TLS 的主机平台需要换成 PAL TLS key 的慢路径。
 - **Arena**（`marlin_mem::arena`）：`Arena` 先 reserve 一段地址空间，按 64 KiB 粒度随用随 commit。分配就是一次原子 bump（CAS），多线程并发分配无锁；只有 commit 走锁。reset 后已 commit 的内存保留，`trim` 才归还。`&Arena` 实现了 `Allocator`，`Vec::new_in(&arena)` 在自己是最后一块分配时原地增长或收缩。debug 构建会在 reset/rewind 时把释放的内存填成 0xCD。`Arena::scope` 提供栈式用法（用高阶生命周期保证分配不会逃出闭包）。`FrameArenas<N>` 是帧流水线用的环：`begin(frame)` 重置第 `frame % N` 个 arena，是 unsafe 的，由调用方（job handle）保证上一轮的读者已经结束。arena 里的值不会被 drop。
-- 尚未实现：purge（延迟 decommit 空闲 page）、内存标签与预算、通用堆的 `Allocator` trait、定长 pool、mem-debug（guard page、泄漏追踪）、free list 指针编码（防止 heap 被利用）。
+- 上一版列出的 purge、内存标签与预算、通用堆的 `Allocator`、定长 pool、mem-debug、free list 指针编码都已实现，见文末 "L0 completion"。
 - **Fiber**（`pal::fiber`，经 `marlin_thread::fiber` 原样提供给上层）：`Stack` 底部有一个不可访问的 guard page，其余部分预先 commit；`make_context` 在栈顶手工构造初始帧，返回地址指向 trampoline，trampoline 再调用 `entry(arg)`；`switch` 把 callee-saved 寄存器和浮点控制字压栈，然后交换栈指针。Win64 还保存 xmm6–15，以及 TEB 的 StackBase / StackLimit / DeallocationStack，否则 `__chkstk` 和异常分发会出错（有 800 KiB 深递归的测试覆盖）。5 个目标都完整 build 过（汇编通过汇编器），但只有 x86_64 Windows 实际运行过。
 - **TLS 与 fiber 迁移**：LLVM 可能在同一个函数里把 TLS 地址缓存下来，跨过不透明调用继续使用；fiber 在别的线程上恢复后，就会读到旧线程的值。因此所有可能在 fiber 上执行的 `#[thread_local]` 读取都包在 `#[inline(never)]` 访问函数里（mem 的 `thread_heap()`、jobs 的 `current_worker()`）。新写的代码要遵守同样的规则。
 - **marlin-jobs**：每个 worker 线程在 fiber 上跑调度循环。job 在 counter 上等待时，fiber 被 park，worker 换一个空闲 fiber 继续；counter 归零后，被 park 的 fiber 进入 ready 队列，优先于新 job 执行。凡是"切走之后才能做"的动作（把 fiber 还回池子、登记为等待者）都放进 `Worker::pending`，由切换到的那个 fiber 去完成，避免另一个线程恢复一个还在运行的 fiber。
@@ -523,7 +523,7 @@ runtime/<layer>/<name>/
   - 注册 component 时可以附带反射信息（`register_reflected`），供 VM 和 editor 使用。
   - **Change detection**：每个 component 行旁边存 `added`/`changed` 两个 tick（`Column` 里的 `Vec<TickCell>`，随行一起 swap-remove 和迁移）。`&mut T` 查询产出 `Mut<T>`，只有 `DerefMut` 才记录写入（另有 `bypass_change_detection`、`set_if_neq`），`Ref<T>` 只读但带变化信息。过滤器 `Changed<T>`/`Added<T>` 是行级过滤（`QueryFilter::ROW_FILTER`），并声明对 `T` 的读；同一个 query 可以写它自己过滤的类型。每个 system 有自己的 `last_run`，看到的是"自己上次运行以来"的变化；直接通过 World 的查询以 `clear_trackers()` 为界（framework 每帧 extract 之后调用一次）。删除和 despawn 按类型记入 `World::removed`，保留两个周期。tick 是会回绕的 u32，每隔 `CHECK_TICK_THRESHOLD` 把过旧的 tick 钳到 `MAX_CHANGE_AGE`（与 Bevy 相同的方案）。exclusive system 用的是 world 的 tick，没有自己的 `last_run`。
   - **尚未实现**：query 缓存（目前每次 query 都要重新匹配所有 archetype）、bundle 信息缓存、Commands 里 spawn 时预留实体 id、函数式 system 参数（类似 Bevy 的 `fn(Query, Res)`）、性能基准。另外，system 内部的 job 一旦 panic 会直接 abort；越权访问的 panic 只有在 system 单独占一个 wave 时才能被测试捕获。
-- **Registered same-layer dependencies** (§1.1 rule 3): `marlin-input → marlin-app` (L1: keyboard and mouse input arrives through the app's message pump); `marlin-rt → marlin-diag` (L0: the panic handler logs through the diag sinks).
+- **Registered same-layer dependencies** (§1.1 rule 3): `marlin-input → marlin-app` (L1: keyboard and mouse input arrives through the app's message pump); `marlin-rt → marlin-diag` (L0: the panic handler logs through the diag sinks); `marlin-std → marlin-rt` (L0: the facade re-exports `rt` and `rt::process`).
 - **L1 first slice**: the Win32 window and message pump (no_std), input (keyboard/mouse/raw input/XInput), and a D3D12 RHI (hand-written COM vtables, enhanced barriers with a legacy fallback, flip-model swapchain, frames in flight). `apps/demo_clear` animates a clear color. The Linux/macOS backends compile but return `Unsupported` at runtime.
 - **Error convention** (`marlin-error`, `#[derive(Error)]` / `#[derive(ErrorKind)]`): OS/API errors are a `Copy` `{ kind, raw }`, and each subsystem has its own kind enum. Wrapper errors only describe their own layer and carry the cause through `source`. An error is logged once, where it is handled (`marlin_diag::chain`). Fatal errors go through `fatal!`/`or_fatal`, and the panic handler doesn't log them a second time. Sinks must not panic: the panic handler logs through the sinks, so a panic inside a sink can hang it.
 - **RHI bindless slice**:
@@ -539,3 +539,71 @@ runtime/<layer>/<name>/
   - **Why it exists:** to validate the whole RHI → shader interface → ECS chain end to end. Its tests render offscreen and assert on the pixels read back.
   - **What replaces it:** the real renderer will be rewritten on top of `render_graph`, as designed in docs 0008–0013: a cluster DAG with a visibility buffer, Substrate materials with open BSDFs, unified ReSTIR lighting, TSR, and a GPU tile-based UIRenderer. Its migration is stage R1 in 0008 §8.
   - **`apps/demo_cubes`** was removed in asset phase P6: `apps/game` now boots `samples/basic` (cooked and packaged, or streamed from `marlin-cookd`), whose level holds the same kind of scene.
+- **L0 completion (2026-10-16)**: everything the crate audit found missing in `runtime/base`, except the items listed at the end.
+  - **pal**:
+    - `process`: exit, id, current exe and dir, environment variables, and arguments read from the OS rather than from a C `main`. On Windows that is `GetCommandLineW`, split by the MSVC rules as std does, because the C runtime's `argv` is in the ANSI code page. Linux uses the `argv` glibc passes to `.init_array`, and macOS `_NSGetArgv`.
+    - `sysinfo::memory`: physical memory, commit (Windows/Linux), and the process's resident set, peak and private memory (macOS: `phys_footprint`).
+    - `time`: `system_time` and `local_offset` (per date, DST included), plus `cycles` (`rdtsc` / `cntvct_el0`).
+    - `thread::current_name`.
+    - `fs`: metadata, remove/create/rename, `ReadDir`, `Mapping` (unaligned offsets) and `File::sync_all`/`sync_data`.
+    - `file::Queue::cancel`. IoRing and io_uring queue their own cancel requests tagged `CANCEL_TAG` (`u64::MAX`, reserved) and filter them out; their queues are sized for one cancel per operation. IOCP uses `CancelIoEx`, and the blocking engine completes requests that have not run with `Cancelled`.
+    - `watch::Watcher`: recursive, paths relative to the root, `Overflow` means rescan.
+      - Windows: `ReadDirectoryChangesW`.
+      - Linux: inotify, one watch per directory, with the tree kept in a reservation.
+      - macOS: FSEvents per-file events on a dispatch queue.
+    - `debug`: `capture_stack`, `module_of`, `symbolize` and `enable_terminal_colors`. Windows uses dbghelp, serialized, with a search path that includes the exe's directory; without it the exe's PDB is not found. POSIX uses `backtrace` and `dladdr`.
+    - `os::linux` / `os::macos`: errno helpers.
+    - New exts:
+      - `dylib` on all three platforms.
+      - `vmem_alias` on all three: `Mirror` maps the same pages twice in a row (placeholders and a pagefile section, memfd, or unlinked shm), and `reset` (`MEM_RESET` / `MADV_FREE` / `MADV_FREE_REUSABLE`).
+      - `crash_dump` on Windows: `MiniDumpWriteDump` from a helper thread, so the crashing thread's stack is intact, and an unhandled-exception handler.
+      - `large_pages` on Linux: `MAP_HUGETLB`, used only when huge pages are reserved.
+    - New `ErrorKind`s: `InvalidData`, `Cancelled`, `DirectoryNotEmpty`, `NotADirectory`, `IsADirectory`.
+  - **mem**:
+    - `Allocator` for `MarlinHeap`.
+    - `Pool` / `TypedPool`.
+    - Free-list links encoded per page as `next ^ ((block ^ k0) * k1)`. This costs about 0.4 ns per alloc+free: about 4.1 ns against 3.7 ns.
+    - Delayed purge of retired pages (`set_purge_delay`, default 100 ms) and `purge()`.
+    - `MemTag` counters through `Tagged<A>`, and soft budgets with `system_memory()`.
+    - `vmem::Reservation` for crates above L1.
+    - The `mem-debug` feature: guard pages (switched on at run time), a leak table, and a stack hook (`debug::capture_stack`).
+    - `ext::large_pages::arena`: committed in full, never trimmed. `ext::vmem_alias::MirroredRing`.
+  - **sync**:
+    - `Semaphore` and `Barrier`.
+    - A bounded MPMC `Channel<T, N>`: a Vyukov ring with futex event counts, usable in a `static`.
+    - Timed `try_lock_for` / `try_read_for` / `try_write_for`.
+    - `SpinLock` and `ReentrantMutex`.
+    - Fixed: `RawRwLock::try_read`/`try_write` computed the new state eagerly and could overflow in debug builds.
+  - **thread**: `scope` / `Scope::spawn` / `Builder::spawn_scoped` (std's design), and `current::name`.
+  - **time**: `FrameClock` (clamp, scale, pause, smoothed delta) and `FixedStep` (integer accumulator, capped steps, alpha). Also `SystemTime`, `DateTime` (UTC, local, ISO 8601, compact file-name form) and `cycles`.
+  - **io**:
+    - `fs` (incl. `create_dir_all`, `remove_dir_all`, `walk_dir`).
+    - `Mmap` / `MmapMut`; creating one is unsafe because the file must not change underneath.
+    - `IoQueue::cancel`, `watch::Watcher`, and `File::sync_*`.
+    - No VFS here: mounting is `marlin_asset::Vfs` at L3.
+  - **diag**:
+    - Record timestamps and `init`.
+    - `ConsoleSink` (with `auto`), `FileSink`, `RingSink<N>` and `AsyncSink`.
+    - `unregister_sink`: per-slot seqlock over the two pointer words.
+    - Per-target levels (longest prefix at `::` boundaries).
+    - `Backtrace`: allocation-free, symbolized on display, legacy Rust symbols demangled.
+    - `ext::crash_dump`: `install(dir)` for unhandled crashes (dump plus logged report), and `write_now()`.
+  - **rt**:
+    - `process`: args, env, exe, dir, id, exit.
+    - The startup sequence in `start` / `hosted::init`: CPU check → log clock → crash handler (dumps in `MARLIN_CRASH_DIR`, else `<exe dir>/crashes`) → unwinder warm-up on POSIX.
+    - Panics log a backtrace and write a dump.
+    - `hosted::report_panic` for the editor's std panic hook. `rt` stays no_std: a `std` feature would unify into the game in `--workspace` builds.
+    - `ext::dylib`.
+    - A Windows GUI game uses `#![windows_subsystem = "windows"]`: rustc keeps the C `main` from `game_entry!` as the entry, so no `WinMain` is needed.
+  - **std**: re-exports `rt` and `process`; `Arc` and `Rc` are in the prelude.
+  - **Verification**:
+    - Everything above runs on Windows hardware (339 L0 tests; mem also in release and with `mem-debug`).
+    - The Linux and macOS code (watch, vmem_alias, dylib, large_pages, process, memory info, stack capture, fs) is only compile-checked: `cargo clippy --tests --target x86_64-unknown-linux-gnu / aarch64-apple-darwin`. The same holds for fibers on aarch64/SysV.
+  - **Still not done in L0**:
+    - Console-only exts (`physical_memory`, `gpu_memory`, `hw_decompression`), which wait for the console repositories.
+    - `direct_storage` and Windows `cpu_markers` (they need redistributable DLLs).
+    - `crash_dump` on Linux/macOS.
+    - Fiber-aware locks, which belong to `marlin-jobs`.
+    - An asynchronous macOS file engine: still the blocking QD1 engine, see `pal::file`.
+    - IO priority classes, which belong to the asset streaming scheduler.
+    - The PAL TLS slow path for hosts without native TLS.
