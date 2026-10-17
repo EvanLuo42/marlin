@@ -608,9 +608,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "marlin-gpu-test-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
+]
+
+[[package]]
 name = "marlin-gpu-test-support"
 version = "0.1.0"
 dependencies = [
+ "marlin-gpu-test-macros",
  "marlin-rhi",
  "marlin-test-support",
  "png",

@@ -7,12 +7,12 @@ use std::time::Duration;
 
 use marlin_rhi::{
     BufferBarrier, BufferDesc, BufferState, BufferUsage, FenceWait, Format, FormatFeatures,
-    GRAPHICS_API, GraphicsApi, HeapDesc, HeapKind, MarkerPoint, MemoryLocation, Pageable,
-    QueueType, ResidencyPriority, TextureDesc, TextureUsage,
+    HeapDesc, HeapKind, MarkerPoint, MemoryLocation, Pageable, QueueType, ResidencyPriority,
+    TextureDesc, TextureUsage,
 };
 use support::{
-    buffer, compute_pipeline, copy_out, devices, hardware_device, read_words, readback, run,
-    run_on, skip, storage,
+    buffer, compute_pipeline, copy_out, devices, gpu_test, hardware_device, read_words, readback,
+    run, run_on, storage,
 };
 
 #[test]
@@ -295,11 +295,8 @@ fn format_support_reports_capabilities() {
     assert_eq!(device.validation_errors(), 0);
 }
 
-#[test]
+#[gpu_test(api = d3d12)]
 fn d3d12_has_no_astc_or_etc2() {
-    if GRAPHICS_API != GraphicsApi::D3D12 {
-        skip!("D3D12 only: other APIs' devices may have them");
-    }
     let device = hardware_device();
     for format in [Format::Astc4x4Unorm, Format::Etc2Rgb8Unorm] {
         assert_eq!(device.format_support(format), Default::default());

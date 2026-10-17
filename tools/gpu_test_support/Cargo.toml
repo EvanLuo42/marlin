@@ -7,6 +7,7 @@ publish.workspace = true
 
 # A dev-dependency only, of marlin-rhi itself and of every crate that tests on the GPU.
 [dependencies]
+marlin-gpu-test-macros.workspace = true
 marlin-rhi.workspace = true
 marlin-test-support.workspace = true
 png.workspace = true

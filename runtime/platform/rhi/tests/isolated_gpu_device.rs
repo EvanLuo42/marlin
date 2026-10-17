@@ -7,10 +7,9 @@ use marlin_gpu_test_support as support;
 use std::time::Duration;
 
 use marlin_rhi::{
-    AdapterKind, AdapterPreference, DeviceDesc, ErrorKind, FramesInFlight, GRAPHICS_API,
-    GraphicsApi, Instance, InstanceDesc,
+    AdapterKind, AdapterPreference, DeviceDesc, ErrorKind, FramesInFlight, Instance, InstanceDesc,
 };
-use support::{hardware_device, skip};
+use support::{gpu_test, hardware_device};
 
 #[test]
 fn enumerates_adapters() {
@@ -36,11 +35,8 @@ fn enumerates_adapters() {
     );
 }
 
-#[test]
+#[gpu_test(api = d3d12)]
 fn d3d12_lists_the_basic_render_driver() {
-    if GRAPHICS_API != GraphicsApi::D3D12 {
-        skip!("D3D12 only: DXGI always lists its software adapter");
-    }
     let instance = Instance::new(&InstanceDesc::default()).unwrap();
     assert!(
         instance.adapters().any(|a| a.kind == AdapterKind::Software),

@@ -8,11 +8,12 @@ use std::time::Duration;
 
 use marlin_rhi::{
     BufferBarrier, BufferState, BufferUsage, BufferViewDesc, BufferViewKind, CommandList,
-    ComputePipelineDesc, Device, ErrorKind, GRAPHICS_API, GraphicsApi, MemoryLocation, QueryKind,
-    QueryPoolDesc, QueueType, SubmitDesc,
+    ComputePipelineDesc, Device, ErrorKind, MemoryLocation, QueryKind, QueryPoolDesc, QueueType,
+    SubmitDesc,
 };
 use support::{
-    Stage, buffer, devices, read_words, readback, run_on, shader, skip, upload, words_to_bytes,
+    Stage, buffer, devices, gpu_test, read_words, readback, run_on, shader, skip, upload,
+    words_to_bytes,
 };
 
 /// A recorded list of type `ty`, with its pool.
@@ -50,11 +51,8 @@ fn queue_types_fall_back_to_the_graphics_queue() {
     }
 }
 
-#[test]
+#[gpu_test(api = d3d12)]
 fn d3d12_has_dedicated_compute_and_copy_queues() {
-    if GRAPHICS_API != GraphicsApi::D3D12 {
-        skip!("D3D12 only: other APIs may lack dedicated compute or copy queues");
-    }
     let device = support::hardware_device();
     for ty in [QueueType::Graphics, QueueType::Compute, QueueType::Copy] {
         let queue = device.dedicated_queue(ty).unwrap();

@@ -5,13 +5,13 @@ use marlin_gpu_test_support as support;
 
 use marlin_rhi::{
     BufferBarrier, BufferDesc, BufferState, BufferTextureCopy, BufferUsage, ClearValue,
-    DepthAttachment, DepthStencilViewDesc, Device, ErrorKind, Format, GRAPHICS_API, GraphicsApi,
-    Heap, HeapDesc, HeapKind, INDIRECT_CONSTANT_WORD, LoadOp, MemoryLocation, PLACEMENT_ALIGNMENT,
-    RenderPassDesc, StoreOp, TextureBarrier, TextureDesc, TextureState, TextureUsage,
+    DepthAttachment, DepthStencilViewDesc, Device, ErrorKind, Format, Heap, HeapDesc, HeapKind,
+    INDIRECT_CONSTANT_WORD, LoadOp, MemoryLocation, PLACEMENT_ALIGNMENT, RenderPassDesc, StoreOp,
+    TextureBarrier, TextureDesc, TextureState, TextureUsage,
 };
 use support::{
-    COLUMNS, ColumnTarget, buffer, columns_pipeline, devices, read_bytes, read_words, readback,
-    run, skip, upload, words_to_bytes,
+    COLUMNS, ColumnTarget, buffer, columns_pipeline, devices, gpu_test, read_bytes, read_words,
+    readback, run, upload, words_to_bytes,
 };
 
 fn heap(device: &Device, size: u64, memory: MemoryLocation, kind: HeapKind) -> Heap {
@@ -68,11 +68,8 @@ fn memory_requirements() {
     assert_eq!(device.validation_errors(), 0);
 }
 
-#[test]
+#[gpu_test(api = d3d12)]
 fn d3d12_alignments_are_64k_or_4k_for_small_textures() {
-    if GRAPHICS_API != GraphicsApi::D3D12 {
-        skip!("D3D12 only: other APIs report the driver's alignments");
-    }
     let device = support::hardware_device();
     let b = device.buffer_requirements(&buffer_desc(
         100,

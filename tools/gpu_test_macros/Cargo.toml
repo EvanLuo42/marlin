@@ -1,0 +1,17 @@
+[package]
+name = "marlin-gpu-test-macros"
+description = "#[gpu_test(api = ...)] for GPU tests that only make sense on some graphics APIs; re-exported by marlin-gpu-test-support."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2.workspace = true
+quote.workspace = true
+syn.workspace = true
+
+[lints]
+workspace = true

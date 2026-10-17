@@ -159,7 +159,7 @@ dxc 的 `-fspv-use-descriptor-heap`（原生）目前不支持 UAV，所以占�
 
 ## 9. 测试
 
-- 所有 RHI 测试与图形 API 无关，同一套在 Vulkan 上跑。只对某个 API 有意义的 case（例如"D3D12 一定有专用 compute/copy 队列"）**保留**，开头按 `marlin_rhi::GRAPHICS_API` 用 `skip!` 跳过。
+- 所有 RHI 测试与图形 API 无关，同一套在 Vulkan 上跑。只对某个 API 有意义的 case（例如"D3D12 一定有专用 compute/copy 队列"）**保留**，用 `#[gpu_test(api = d3d12)]` 代替 `#[test]`：其他 API 上按 `marlin_rhi::GRAPHICS_API` 在运行期 `skip!`。
 - `marlin_gpu_test_support::devices()` 返回每条屏障路径一个设备：Vulkan 只有一条，所以一个；D3D12 是 enhanced + legacy 两个。测试遍历切片，不写死下标。
 - 测试 shader 按 `SHADER_FORMAT` 选 `.dxil` 或 `.spv`，查找函数形状不变；等自研编译器就绪整个换掉（[0002 §5](0002-shader-interface.md)）。
 - golden 目录 `tests/data/golden/<api>/`，`<api>` 是 `GraphicsApi::name()`（`vulkan`、`d3d12`）。Vulkan 的参考图第一次用 `MARLIN_BLESS=1` 生成，人工看过再提交。

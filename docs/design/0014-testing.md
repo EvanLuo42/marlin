@@ -177,6 +177,7 @@ GPU 层的看门狗：xtask 监控测试进程，超时没有输出就报告卡�
 - `read_texture(device, texture) -> Image`：纹理回读（render、cook_texture、framework 都要）。
 - 测试 shader 查找：先保留按名字 + stage 查 DXIL；Marlin shader 编译器落地后换成 build.rs 生成的查找表（见 placeholder DXIL 清单）。
 - `require_feature!(device, ray_tracing)`：缺特性时 `skip!`。
+- `#[gpu_test(api = d3d12)]`（或 `api = vulkan | d3d12`）代替 `#[test]`：只对某些图形 API 有意义的测试，其他 API 上开头就 `skip!("D3D12 only")`。运行期判断 `marlin_rhi::GRAPHICS_API`（它是常量，不是 cfg）；平台仍用 `cfg(marlin_platform)`（§3），不进这个属性。
 - `assert_image!(name, &image)` / `assert_image!(name, &image, Tolerance { .. })`：§7.1。是宏，自动取调用 crate 的目录和包名；`Image::from_words` 从回读的 u32 构造。
 
 ### 6.3 crate 内的 `tests/support/`

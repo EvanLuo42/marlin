@@ -4,12 +4,12 @@ use marlin_gpu_test_support as support;
 
 use marlin_rhi::{
     BufferDesc, BufferUsage, BufferViewDesc, BufferViewKind, ClearValue, ColorTargetState,
-    ComputePipelineDesc, DepthState, DepthStencilViewDesc, ErrorKind, Format, GRAPHICS_API,
-    GraphicsApi, GraphicsPipelineDesc, MemoryLocation, PrimitiveTopology, RasterState,
-    RenderTargetViewDesc, SHADER_FORMAT, SamplerDesc, ShaderFormat, ShaderModule, TextureDesc,
-    TextureUsage, TextureViewDesc, TextureViewDimension, UNIFORM_ALIGNMENT,
+    ComputePipelineDesc, DepthState, DepthStencilViewDesc, ErrorKind, Format, GraphicsPipelineDesc,
+    MemoryLocation, PrimitiveTopology, RasterState, RenderTargetViewDesc, SHADER_FORMAT,
+    SamplerDesc, ShaderFormat, ShaderModule, TextureDesc, TextureUsage, TextureViewDesc,
+    TextureViewDimension, UNIFORM_ALIGNMENT,
 };
-use support::{Stage, hardware_device, shader, skip};
+use support::{Stage, gpu_test, hardware_device, shader, skip};
 
 #[test]
 fn baseline_features() {
@@ -18,20 +18,14 @@ fn baseline_features() {
     assert!(features.mesh_shader, "{features:?}");
 }
 
-#[test]
+#[gpu_test(api = d3d12)]
 fn d3d12_baseline_is_shader_model_6_6() {
-    if GRAPHICS_API != GraphicsApi::D3D12 {
-        skip!("D3D12 only: shader models are D3D12's");
-    }
     let features = hardware_device().features();
     assert!(features.shader_model >= (6, 6), "{features:?}");
 }
 
-#[test]
+#[gpu_test(api = vulkan)]
 fn vulkan_barriers_are_always_enhanced() {
-    if GRAPHICS_API != GraphicsApi::Vulkan {
-        skip!("Vulkan only: synchronization2 is part of its baseline");
-    }
     let features = hardware_device().features();
     assert!(features.enhanced_barriers, "{features:?}");
 }

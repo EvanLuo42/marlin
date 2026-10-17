@@ -560,6 +560,13 @@ pub fn solid_constants(color: [f32; 4], mode: u32, depth: f32, color1: [f32; 4])
 
 pub use marlin_test_support::{panic_message, skip};
 
+/// `#[gpu_test(api = d3d12)]` in place of `#[test]`: a test only one graphics API (or a few,
+/// `api = vulkan | d3d12`) makes sense on, `skip!`ped on the others (see the macro crate).
+pub use marlin_gpu_test_macros::gpu_test;
+
+#[doc(hidden)]
+pub use marlin_rhi as __rhi;
+
 /// Skips the rest of the test (see [`skip!`]) unless `device.features().$feature` is true.
 ///
 /// ```ignore
