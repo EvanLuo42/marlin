@@ -1,9 +1,9 @@
 use std::hint::black_box;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use marlin_thread::{Builder, CpuSet, ErrorKind, ThreadPriority, current, spawn};
+use marlin_thread::{Builder, CpuSet, ThreadPriority, current, spawn};
 
 #[test]
 fn join_returns_value() {
@@ -74,13 +74,16 @@ fn affinity_takes_effect() {
 #[cfg(not(target_vendor = "apple"))]
 #[test]
 fn failed_setup_skips_closure() {
-    let ran = Arc::new(AtomicBool::new(false));
+    let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let flag = ran.clone();
     // No machine has CPU 1023 available to this process.
     let result = Builder::new()
         .affinity(CpuSet::single(CpuSet::CAPACITY as u32 - 1))
         .spawn(move || flag.store(true, Ordering::SeqCst));
-    assert_eq!(result.unwrap_err().kind(), ErrorKind::InvalidInput);
+    assert_eq!(
+        result.unwrap_err().kind(),
+        marlin_thread::ErrorKind::InvalidInput
+    );
     assert!(!ran.load(Ordering::SeqCst));
     // The closure (and its capture) was dropped.
     assert_eq!(Arc::strong_count(&ran), 1);

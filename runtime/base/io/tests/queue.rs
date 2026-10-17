@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use common::{TempFile, pattern};
-use marlin_io::{Engine, ErrorKind, File, IoBuffer, IoQueue, OpKind, OpenOptions, RequestId};
+use marlin_io::{Engine, ErrorKind, File, IoBuffer, IoQueue, OpKind, RequestId};
 
 /// Both engines this platform has: the best one and the fallback.
 fn queues<'f>(capacity: u32) -> Vec<IoQueue<'f>> {
@@ -79,7 +79,8 @@ fn many_concurrent_reads() {
 fn unbuffered_aligned_reads() {
     let data = pattern((2 << 20) + 1000);
     let tmp = TempFile::with_data("queue-unbuffered", &data);
-    let file = File::with_options(tmp.path(), &OpenOptions::read().unbuffered(true)).unwrap();
+    let file =
+        File::with_options(tmp.path(), &marlin_io::OpenOptions::read().unbuffered(true)).unwrap();
     let align = file.alignment();
     assert!(align >= 512 && align.is_power_of_two(), "{align}");
 
