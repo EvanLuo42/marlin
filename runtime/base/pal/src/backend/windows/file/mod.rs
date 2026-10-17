@@ -15,8 +15,8 @@ use windows_sys::Win32::Storage::FileSystem::{
     CREATE_ALWAYS, CREATE_NEW, CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_END_OF_FILE_INFO,
     FILE_FLAG_NO_BUFFERING, FILE_FLAG_OVERLAPPED, FILE_SHARE_DELETE, FILE_SHARE_READ,
     FILE_SHARE_WRITE, FILE_STORAGE_INFO, FileEndOfFileInfo, FileStorageInfo,
-    GetFileInformationByHandleEx, GetFileSizeEx, GetFullPathNameW, OPEN_ALWAYS, OPEN_EXISTING,
-    ReadFile, SetFileInformationByHandle, WriteFile,
+    GetFileInformationByHandleEx, GetFileSizeEx, OPEN_ALWAYS, OPEN_EXISTING, ReadFile,
+    SetFileInformationByHandle, WriteFile,
 };
 use windows_sys::Win32::System::IO::{
     GetOverlappedResult, OVERLAPPED, OVERLAPPED_0, OVERLAPPED_0_0,
@@ -24,14 +24,14 @@ use windows_sys::Win32::System::IO::{
 use windows_sys::Win32::System::Threading::{CreateEventW, INFINITE};
 use windows_sys::core::HRESULT;
 
-use super::Backend;
 use super::error::{check, from_win32, last_error};
+use super::{Backend, with_wide_path};
 use crate::contract;
-use crate::file::{Completion, Disposition, Engine, MAX_PATH_LEN, Op, OpKind, OpenOptions};
+use crate::file::{Completion, Disposition, Engine, Op, OpKind, OpenOptions};
 use crate::{Error, ErrorKind, Result};
 
 pub(crate) struct File {
-    handle: HANDLE,
+    pub(crate) handle: HANDLE,
     alignment: u32,
     /// Id of the completion port the handle is bound to, or 0. Binding is for the handle's life.
     port: AtomicUsize,
@@ -101,7 +101,7 @@ unsafe impl contract::File for Backend {
         if options.unbuffered {
             flags |= FILE_FLAG_NO_BUFFERING;
         }
-        let handle = with_wide_path(path, |path| {
+        let handle = with_wide_path(path, "", |path| {
             // SAFETY: `path` is NUL-terminated; null security attributes and template are allowed.
             let handle = unsafe {
                 CreateFileW(
@@ -191,12 +191,28 @@ unsafe impl contract::File for Backend {
     }
 
     unsafe fn queue_push(queue: &mut Queue, request: NonNull<Request>, op: &Op<'_>) -> Result<()> {
-        // SAFETY: forwarded from the caller.
+        // SAFETY: forwarded from the caller; the request is not in flight, so it is ours to write.
         unsafe {
             match queue {
-                Queue::IoRing(ring) => ring.push(op),
+                Queue::IoRing(ring) => {
+                    // A cancel request names the file as well as the operation.
+                    (*request.as_ptr()).file = op.file.handle;
+                    ring.push(op)
+                }
                 Queue::Iocp(port) => port.push(request, op),
             }
+        }
+    }
+
+    unsafe fn queue_cancel(queue: &mut Queue, request: NonNull<Request>, tag: u64) -> Result<()> {
+        // SAFETY: the caller guarantees the request is in flight on this queue, so `file` was set
+        // by `queue_push` and the handle is still open.
+        let file = unsafe { (*request.as_ptr()).file };
+        match queue {
+            Queue::IoRing(ring) => ring.cancel(file, tag),
+            // SAFETY: as above; CancelIoEx only matches the OVERLAPPED against operations in
+            // flight on the handle.
+            Queue::Iocp(_) => unsafe { iocp::cancel(file, request) },
         }
     }
 
@@ -347,61 +363,4 @@ fn sector_size(handle: HANDLE) -> u32 {
         0
     };
     if size.is_power_of_two() { size } else { 4096 }
-}
-
-/// Converts `path` to a NUL-terminated `\\?\` path for `f`, on the stack.
-///
-/// `GetFullPathNameW` does what the Win32 layer would: resolves relative paths, `.` and `..`, and
-/// turns `/` into `\`. The prefix then lifts the 260-character limit, which `\\?\` paths are
-/// exempt from because they skip that normalization.
-fn with_wide_path<R>(path: &str, f: impl FnOnce(*const u16) -> Result<R>) -> Result<R> {
-    // UTF-16 never needs more units than UTF-8 needs bytes.
-    let mut wide = [0u16; MAX_PATH_LEN + 1];
-    let mut len = 0;
-    for unit in path.encode_utf16() {
-        wide[len] = unit;
-        len += 1;
-    }
-    wide[len] = 0;
-
-    // Room for the prefix in front and a cwd in front of relative paths.
-    const PREFIX: usize = 8;
-    let mut full = [0u16; PREFIX + 2 * MAX_PATH_LEN];
-    let room = (full.len() - PREFIX) as u32;
-    // SAFETY: `wide` is NUL-terminated; the output holds `room` units; a null file part is allowed.
-    let n = unsafe {
-        GetFullPathNameW(
-            wide.as_ptr(),
-            room,
-            full[PREFIX..].as_mut_ptr(),
-            ptr::null_mut(),
-        )
-    };
-    if n == 0 {
-        return Err(last_error());
-    }
-    if n >= room {
-        return Err(Error::from_kind(ErrorKind::InvalidInput));
-    }
-
-    let bs = u16::from(b'\\');
-    let resolved = &full[PREFIX..PREFIX + n as usize];
-    let start = if resolved.starts_with(&[bs, bs, u16::from(b'?'), bs])
-        || resolved.starts_with(&[bs, bs, u16::from(b'.'), bs])
-    {
-        // Already a device or verbatim path.
-        PREFIX
-    } else if resolved.starts_with(&[bs, bs]) {
-        // \\server\share -> \\?\UNC\server\share, overwriting the first backslash.
-        for (dst, &src) in full[PREFIX - 6..=PREFIX].iter_mut().zip(br"\\?\UNC") {
-            *dst = u16::from(src);
-        }
-        PREFIX - 6
-    } else {
-        for (dst, &src) in full[PREFIX - 4..PREFIX].iter_mut().zip(br"\\?\") {
-            *dst = u16::from(src);
-        }
-        PREFIX - 4
-    };
-    f(full[start..].as_ptr())
 }

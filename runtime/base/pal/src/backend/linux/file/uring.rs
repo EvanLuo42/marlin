@@ -13,7 +13,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use core::time::Duration;
 
 use crate::backend::unix::{errno, from_errno, last_error};
-use crate::file::{Completion, Deadline, Op, OpKind};
+use crate::file::{CANCEL_TAG, Completion, Deadline, Op, OpKind};
 use crate::{Error, ErrorKind, Result};
 
 const IORING_OFF_SQ_RING: i64 = 0;
@@ -29,6 +29,7 @@ const IORING_ENTER_EXT_ARG: c_uint = 1 << 3;
 
 const IORING_OP_READ: u8 = 22;
 const IORING_OP_WRITE: u8 = 23;
+const IORING_OP_ASYNC_CANCEL: u8 = 14;
 
 /// Not in every libc target module; the same on every Linux architecture we build for.
 const ETIME: c_int = 62;
@@ -197,6 +198,10 @@ pub(crate) struct Uring {
     local_tail: u32,
     /// Entries pushed but not yet consumed by `io_uring_enter`.
     to_submit: u32,
+    capacity: u32,
+    /// Cancel requests whose completions have not been reaped. Capped at `capacity`, so with one
+    /// ring entry per operation plus one per cancel the queues never overflow.
+    cancels: u32,
 }
 
 // SAFETY: the ring is owned by one thread at a time (`&mut self`), and the kernel side does not
@@ -211,7 +216,7 @@ impl Uring {
         let fd = unsafe {
             libc::syscall(
                 libc::SYS_io_uring_setup,
-                capacity as c_uint,
+                (capacity * 2) as c_uint,
                 &raw mut params,
             )
         };
@@ -265,6 +270,8 @@ impl Uring {
                 cqes: cq_map.at(cq.cqes),
                 local_tail: (*sq_ring.at::<AtomicU32>(sq.tail)).load(Ordering::Relaxed),
                 to_submit: 0,
+                capacity,
+                cancels: 0,
                 _sq_ring: sq_ring,
                 _cq_ring: cq_ring,
                 _sqes_map: sqes_map,
@@ -279,6 +286,54 @@ impl Uring {
     /// # Safety
     /// The buffer and the file stay valid until the completion is polled.
     pub(super) unsafe fn push(&mut self, op: &Op<'_>) -> Result<()> {
+        self.push_sqe(Sqe {
+            opcode: match op.kind {
+                OpKind::Read => IORING_OP_READ,
+                OpKind::Write => IORING_OP_WRITE,
+            },
+            flags: 0,
+            ioprio: 0,
+            fd: op.file.fd,
+            off: op.offset,
+            addr: op.buf as u64,
+            len: op.len,
+            rw_flags: 0,
+            user_data: op.tag,
+            buf_index: 0,
+            personality: 0,
+            splice_fd_in: 0,
+            addr3: 0,
+            pad: 0,
+        })
+    }
+
+    /// Queues a cancel request for the operation tagged `tag`; `submit` sends it.
+    pub(super) fn cancel(&mut self, tag: u64) -> Result<()> {
+        if self.cancels >= self.capacity {
+            return Err(Error::from_kind(ErrorKind::WouldBlock));
+        }
+        self.push_sqe(Sqe {
+            opcode: IORING_OP_ASYNC_CANCEL,
+            flags: 0,
+            ioprio: 0,
+            fd: -1,
+            off: 0,
+            // The operation to cancel, by its user data.
+            addr: tag,
+            len: 0,
+            rw_flags: 0,
+            user_data: CANCEL_TAG,
+            buf_index: 0,
+            personality: 0,
+            splice_fd_in: 0,
+            addr3: 0,
+            pad: 0,
+        })?;
+        self.cancels += 1;
+        Ok(())
+    }
+
+    fn push_sqe(&mut self, sqe: Sqe) -> Result<()> {
         // SAFETY: `sq_head` points into the live SQ ring.
         let head = unsafe { (*self.sq_head).load(Ordering::Acquire) };
         if self.local_tail.wrapping_sub(head) >= self.sq_entries {
@@ -288,25 +343,7 @@ impl Uring {
         // SAFETY: `index` is inside the SQE array and the SQ index array, and the kernel does not
         // read that slot until we publish the new tail below.
         unsafe {
-            self.sqes.add(index as usize).write(Sqe {
-                opcode: match op.kind {
-                    OpKind::Read => IORING_OP_READ,
-                    OpKind::Write => IORING_OP_WRITE,
-                },
-                flags: 0,
-                ioprio: 0,
-                fd: op.file.fd,
-                off: op.offset,
-                addr: op.buf as u64,
-                len: op.len,
-                rw_flags: 0,
-                user_data: op.tag,
-                buf_index: 0,
-                personality: 0,
-                splice_fd_in: 0,
-                addr3: 0,
-                pad: 0,
-            });
+            self.sqes.add(index as usize).write(sqe);
             *self.sq_array.add(index as usize) = index;
         }
         self.local_tail = self.local_tail.wrapping_add(1);
@@ -424,6 +461,12 @@ impl Uring {
         while head != tail && n < out.len() {
             // SAFETY: entries between head and tail are published by the kernel (acquire above).
             let cqe = unsafe { &*self.cqes.add((head & self.cq_mask) as usize) };
+            head = head.wrapping_add(1);
+            // Our own cancel requests: whether they found the operation shows in its result.
+            if cqe.user_data == CANCEL_TAG {
+                self.cancels -= 1;
+                continue;
+            }
             out[n] = Completion {
                 tag: cqe.user_data,
                 result: if cqe.res >= 0 {
@@ -432,7 +475,6 @@ impl Uring {
                     Err(from_errno(-cqe.res))
                 },
             };
-            head = head.wrapping_add(1);
             n += 1;
         }
         // SAFETY: as above; the release hands the consumed slots back to the kernel.

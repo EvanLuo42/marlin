@@ -20,9 +20,9 @@ use windows_sys::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
 use windows_sys::core::{BOOL, HRESULT};
 
 use super::{hresult_error, hresult_result, timeout_ms};
-use crate::Result;
 use crate::backend::windows::error::last_error;
-use crate::file::{Completion, Deadline, Op, OpKind};
+use crate::file::{CANCEL_TAG, Completion, Deadline, Op, OpKind};
+use crate::{Error, ErrorKind, Result};
 
 // Tags travel in the pointer-sized user data.
 const _: () = assert!(size_of::<usize>() == size_of::<u64>());
@@ -58,6 +58,7 @@ type BuildWriteFn = unsafe extern "system" fn(
     usize,
     IORING_SQE_FLAGS,
 ) -> HRESULT;
+type BuildCancelFn = unsafe extern "system" fn(HIORING, IORING_HANDLE_REF, usize, usize) -> HRESULT;
 type SubmitFn = unsafe extern "system" fn(HIORING, u32, u32, *mut u32) -> HRESULT;
 type PopFn = unsafe extern "system" fn(HIORING, *mut IORING_CQE) -> HRESULT;
 type CloseFn = unsafe extern "system" fn(HIORING) -> HRESULT;
@@ -69,6 +70,7 @@ struct Api {
     set_event: SetEventFn,
     build_read: BuildReadFn,
     build_write: BuildWriteFn,
+    build_cancel: BuildCancelFn,
     submit: SubmitFn,
     pop: PopFn,
     close: CloseFn,
@@ -116,6 +118,9 @@ impl Api {
                 set_event: mem::transmute::<Proc, SetEventFn>(find(c"SetIoRingCompletionEvent")?),
                 build_read: mem::transmute::<Proc, BuildReadFn>(find(c"BuildIoRingReadFile")?),
                 build_write: mem::transmute::<Proc, BuildWriteFn>(find(c"BuildIoRingWriteFile")?),
+                build_cancel: mem::transmute::<Proc, BuildCancelFn>(find(
+                    c"BuildIoRingCancelRequest",
+                )?),
                 submit: mem::transmute::<Proc, SubmitFn>(find(c"SubmitIoRing")?),
                 pop: mem::transmute::<Proc, PopFn>(find(c"PopIoRingCompletion")?),
                 close: mem::transmute::<Proc, CloseFn>(find(c"CloseIoRing")?),
@@ -130,6 +135,10 @@ pub(crate) struct Ring {
     /// Auto-reset event the ring signals when it posts completions; lets `poll` wait with a
     /// timeout.
     event: HANDLE,
+    capacity: u32,
+    /// Cancel requests whose completions have not been popped. Capped at `capacity`, so the
+    /// completion queue (twice that) never overflows.
+    cancels: u32,
 }
 
 // SAFETY: an IoRing may be used from any thread, one at a time (`&mut self`).
@@ -148,18 +157,20 @@ impl Ring {
         {
             return None;
         }
-        // Completions never outnumber operations in flight, which never exceed `capacity`.
-        let cq_size = capacity
-            .saturating_mul(2)
-            .min(caps.MaxCompletionQueueSize)
-            .max(capacity);
+        // Room for one cancel request per operation, in both queues: completions never outnumber
+        // operations in flight plus pending cancels, each at most `capacity`.
+        let sq_size = capacity.saturating_mul(2).min(caps.MaxSubmissionQueueSize);
+        let cq_size = capacity.saturating_mul(2);
+        if cq_size > caps.MaxCompletionQueueSize {
+            return None;
+        }
         let mut ring = ptr::null_mut();
         // SAFETY: `ring` is a valid out pointer.
         let hr = unsafe {
             (api.create)(
                 IORING_VERSION_3,
                 IORING_CREATE_FLAGS::default(),
-                capacity,
+                sq_size,
                 cq_size,
                 &mut ring,
             )
@@ -172,6 +183,8 @@ impl Ring {
             api,
             ring,
             event: ptr::null_mut(),
+            capacity,
+            cancels: 0,
         };
         // SAFETY: the ring is live.
         let ops_supported = unsafe {
@@ -239,6 +252,25 @@ impl Ring {
         }
     }
 
+    /// Queues a cancel request for the operation tagged `tag` on `file`; `submit` sends it.
+    pub(super) fn cancel(&mut self, file: HANDLE, tag: u64) -> Result<()> {
+        if self.cancels >= self.capacity {
+            return Err(Error::from_kind(ErrorKind::WouldBlock));
+        }
+        let file = IORING_HANDLE_REF {
+            Kind: IORING_REF_RAW,
+            Handle: IORING_HANDLE_REF_0 { Handle: file },
+        };
+        // SAFETY: the ring is live; the request refers to the operation only by its user data.
+        let hr =
+            unsafe { (self.api.build_cancel)(self.ring, file, tag as usize, CANCEL_TAG as usize) };
+        if hr < 0 {
+            return Err(hresult_error(hr));
+        }
+        self.cancels += 1;
+        Ok(())
+    }
+
     pub(super) fn submit(&mut self) -> Result<()> {
         let mut submitted = 0;
         // SAFETY: the ring is live; waiting for 0 operations returns at once.
@@ -287,6 +319,11 @@ impl Ring {
             }
             if hr < 0 {
                 return Err(hresult_error(hr));
+            }
+            // Our own cancel requests: whether they found the operation shows in its result.
+            if cqe.UserData == CANCEL_TAG as usize {
+                self.cancels -= 1;
+                continue;
             }
             out[n] = Completion {
                 tag: cqe.UserData as u64,

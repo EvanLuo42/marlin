@@ -5,12 +5,13 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_IO_PENDING, GetLastError, HANDLE, INVALID_HANDLE_VALUE, WAIT_TIMEOUT,
+    CloseHandle, ERROR_IO_PENDING, ERROR_NOT_FOUND, GetLastError, HANDLE, INVALID_HANDLE_VALUE,
+    WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Storage::FileSystem::{ReadFile, WriteFile};
 use windows_sys::Win32::System::IO::{
-    CreateIoCompletionPort, GetOverlappedResult, GetQueuedCompletionStatusEx, OVERLAPPED_ENTRY,
-    PostQueuedCompletionStatus,
+    CancelIoEx, CreateIoCompletionPort, GetOverlappedResult, GetQueuedCompletionStatusEx,
+    OVERLAPPED_ENTRY, PostQueuedCompletionStatus,
 };
 
 use super::{File, Request, io_result, overlapped_at, timeout_ms};
@@ -177,5 +178,20 @@ impl Drop for Port {
     fn drop(&mut self) {
         // SAFETY: we own the handle and do not use it again.
         unsafe { CloseHandle(self.handle) };
+    }
+}
+
+/// Cancels the operation whose OVERLAPPED is `request`'s. Finished operations are left alone.
+///
+/// # Safety
+/// `file` is the open handle the request was pushed on.
+pub(super) unsafe fn cancel(file: HANDLE, request: NonNull<Request>) -> Result<()> {
+    // SAFETY: the handle is open; CancelIoEx only compares the pointer with operations in flight.
+    let ok = unsafe { CancelIoEx(file, &raw const (*request.as_ptr()).ov) };
+    // SAFETY: no preconditions.
+    if ok != 0 || unsafe { GetLastError() } == ERROR_NOT_FOUND {
+        Ok(())
+    } else {
+        Err(last_error())
     }
 }

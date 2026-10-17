@@ -4,6 +4,7 @@ mod debug;
 pub(crate) mod error;
 mod fiber;
 mod file;
+mod fs;
 mod futex;
 #[cfg(marlin_ext = "hybrid_cores")]
 mod hybrid_cores;
@@ -15,6 +16,10 @@ mod thread;
 mod time;
 mod tls;
 mod vmem;
+
+use core::ptr;
+
+use windows_sys::Win32::Storage::FileSystem::GetFullPathNameW;
 
 use crate::file::MAX_PATH_LEN;
 use crate::{Error, ErrorKind, Result};
@@ -38,6 +43,83 @@ fn with_wide<R>(s: &str, f: impl FnOnce(*const u16) -> Result<R>) -> Result<R> {
     }
     wide[len] = 0;
     f(wide.as_ptr())
+}
+
+/// Converts `path`, followed by `suffix`, to a NUL-terminated `\\?\` path for `f`, on the stack.
+/// The caller has checked `path` (non-empty, at most `MAX_PATH_LEN` bytes, no NUL).
+///
+/// `GetFullPathNameW` does what the Win32 layer would: resolves relative paths, `.` and `..`, and
+/// turns `/` into `\`. The prefix then lifts the 260-character limit, which `\\?\` paths are
+/// exempt from because they skip that normalization.
+fn with_wide_path<R>(
+    path: &str,
+    suffix: &str,
+    f: impl FnOnce(*const u16) -> Result<R>,
+) -> Result<R> {
+    // UTF-16 never needs more units than UTF-8 needs bytes.
+    let mut wide = [0u16; MAX_PATH_LEN + 1];
+    let mut len = 0;
+    for unit in path.encode_utf16() {
+        wide[len] = unit;
+        len += 1;
+    }
+    wide[len] = 0;
+
+    // Room for the prefix in front, a cwd in front of relative paths, and the suffix.
+    const PREFIX: usize = 8;
+    const SUFFIX: usize = 8;
+    let mut full = [0u16; PREFIX + 2 * MAX_PATH_LEN + SUFFIX];
+    let room = (full.len() - PREFIX - SUFFIX) as u32;
+    // SAFETY: `wide` is NUL-terminated; the output holds `room` units; a null file part is allowed.
+    let n = unsafe {
+        GetFullPathNameW(
+            wide.as_ptr(),
+            room,
+            full[PREFIX..].as_mut_ptr(),
+            ptr::null_mut(),
+        )
+    };
+    if n == 0 {
+        return Err(error::last_error());
+    }
+    if n >= room {
+        return Err(Error::from_kind(ErrorKind::InvalidInput));
+    }
+    let mut end = PREFIX + n as usize;
+    // Verbatim paths are not normalized, so never double a separator (`C:\` + `\*`).
+    let suffix = match suffix.strip_prefix('\\') {
+        Some(rest) if full[end - 1] == u16::from(b'\\') => rest,
+        _ => suffix,
+    };
+    if suffix.encode_utf16().count() >= SUFFIX {
+        return Err(Error::from_kind(ErrorKind::InvalidInput));
+    }
+    for unit in suffix.encode_utf16() {
+        full[end] = unit;
+        end += 1;
+    }
+    full[end] = 0;
+
+    let bs = u16::from(b'\\');
+    let resolved = &full[PREFIX..end];
+    let start = if resolved.starts_with(&[bs, bs, u16::from(b'?'), bs])
+        || resolved.starts_with(&[bs, bs, u16::from(b'.'), bs])
+    {
+        // Already a device or verbatim path.
+        PREFIX
+    } else if resolved.starts_with(&[bs, bs]) {
+        // \\server\share -> \\?\UNC\server\share, overwriting the first backslash.
+        for (dst, &src) in full[PREFIX - 6..=PREFIX].iter_mut().zip(br"\\?\UNC") {
+            *dst = u16::from(src);
+        }
+        PREFIX - 6
+    } else {
+        for (dst, &src) in full[PREFIX - 4..PREFIX].iter_mut().zip(br"\\?\") {
+            *dst = u16::from(src);
+        }
+        PREFIX - 4
+    };
+    f(full[start..].as_ptr())
 }
 
 /// Converts UTF-16 from the OS to UTF-8 in `out`, returning the full UTF-8 length; `out` holds the

@@ -42,6 +42,18 @@ pub(crate) unsafe trait File {
         request: NonNull<Self::Request>,
         op: &Op<'_>,
     ) -> Result<()>;
+    /// Asks the OS to stop the operation pushed with `request` and `tag`. It still completes
+    /// exactly once: with `Cancelled` if stopped in time, otherwise with its own result. Engines
+    /// that queue a cancel request of their own tag it [`CANCEL_TAG`](crate::file::CANCEL_TAG)
+    /// and never report its completion.
+    ///
+    /// # Safety
+    /// `request` was pushed to this queue with `tag`, and its completion has not been polled.
+    unsafe fn queue_cancel(
+        queue: &mut Self::Queue,
+        request: NonNull<Self::Request>,
+        tag: u64,
+    ) -> Result<()>;
     /// Hands prepared operations to the OS.
     fn queue_submit(queue: &mut Self::Queue) -> Result<()>;
     /// Submits, then writes up to `out.len()` (at least 1) completions, waiting up to `timeout`

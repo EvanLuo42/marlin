@@ -4,14 +4,16 @@
 mod debug;
 mod fiber;
 pub(super) mod file;
+mod fs;
 pub(super) mod process;
 mod thread;
 mod time;
 mod tls;
 mod vmem;
 
-use core::ffi::c_int;
+use core::ffi::{c_char, c_int};
 
+use crate::file::MAX_PATH_LEN;
 use crate::{Error, ErrorKind, Result};
 
 pub(crate) struct Backend;
@@ -52,6 +54,28 @@ pub(super) fn from_errno(code: c_int) -> Error {
 /// The calling thread's `errno`.
 pub(super) fn last_error() -> Error {
     from_errno(errno())
+}
+
+/// Sets `errno`, for calls that report errors only through it.
+pub(super) fn set_errno(code: c_int) {
+    // SAFETY: the errno location is valid for the lifetime of the calling thread.
+    #[cfg(target_os = "linux")]
+    unsafe {
+        *libc::__errno_location() = code
+    };
+    // SAFETY: as above.
+    #[cfg(target_vendor = "apple")]
+    unsafe {
+        *libc::__error() = code
+    };
+}
+
+/// Copies `path` to a NUL-terminated buffer on the stack for `f`. The caller has checked it (at
+/// most `MAX_PATH_LEN` bytes, no NUL).
+pub(super) fn with_c_path<R>(path: &str, f: impl FnOnce(*const c_char) -> Result<R>) -> Result<R> {
+    let mut c_path = [0u8; MAX_PATH_LEN + 1];
+    c_path[..path.len()].copy_from_slice(path.as_bytes());
+    f(c_path.as_ptr().cast())
 }
 
 /// Converts the result of a pthread function, which returns the error code instead of setting

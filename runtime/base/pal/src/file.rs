@@ -50,6 +50,8 @@ pub const MAX_PATH_LEN: usize = 1024;
 pub const MAX_IO_LEN: usize = 0x7FFF_F000;
 /// Most operations a [`Queue`] may have in flight.
 pub const MAX_QUEUE_CAPACITY: u32 = 4096;
+/// The one tag operations may not use: engines tag their own cancel requests with it.
+pub const CANCEL_TAG: u64 = u64::MAX;
 
 /// What to do when the file does or does not exist.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -152,6 +154,11 @@ impl File {
         let len = buf.len().min(MAX_IO_LEN);
         self.check_aligned(buf.as_ptr(), len, offset)?;
         Backend::write_at(&self.0, &buf[..len], offset)
+    }
+
+    #[inline]
+    pub(crate) fn raw(&self) -> &<Backend as Contract>::File {
+        &self.0
     }
 
     fn check_aligned(&self, buf: *const u8, len: usize, offset: u64) -> Result<()> {
@@ -289,8 +296,8 @@ impl Queue {
 
     /// Queues a read of `len` bytes at `offset` into `buf`. It starts at the next [`submit`] or
     /// [`poll`] (IOCP starts it immediately). `WouldBlock` if `capacity` operations are in flight;
-    /// `InvalidInput` if `len > MAX_IO_LEN` or an unbuffered file's alignment is not met. IO errors
-    /// arrive as the completion's result.
+    /// `InvalidInput` if `len > MAX_IO_LEN`, `tag` is [`CANCEL_TAG`] or an unbuffered file's
+    /// alignment is not met. IO errors arrive as the completion's result.
     ///
     /// # Safety
     ///
@@ -356,7 +363,7 @@ impl Queue {
         if self.in_flight >= self.capacity {
             return Err(Error::from_kind(ErrorKind::WouldBlock));
         }
-        if len > MAX_IO_LEN {
+        if len > MAX_IO_LEN || tag == CANCEL_TAG {
             return Err(Error::from_kind(ErrorKind::InvalidInput));
         }
         file.check_aligned(buf, len, offset)?;
@@ -374,6 +381,23 @@ impl Queue {
         unsafe { Backend::queue_push(&mut self.raw, request, &op) }?;
         self.in_flight += 1;
         Ok(())
+    }
+
+    /// Asks for the operation pushed with `request` and `tag` to be stopped. It still completes
+    /// exactly once, through [`poll`](Self::poll): with `Cancelled` if it was stopped in time,
+    /// otherwise with its normal result (operations that already finished are not undone). Takes
+    /// effect at the next submit on IoRing and io_uring, and at once elsewhere.
+    ///
+    /// `WouldBlock` when `capacity` cancellations are already pending.
+    ///
+    /// # Safety
+    ///
+    /// `request` must have been pushed to this queue with `tag`, and its completion must not have
+    /// been polled yet.
+    pub unsafe fn cancel(&mut self, request: NonNull<Request>, tag: u64) -> Result<()> {
+        let request = request.cast::<<Backend as Contract>::Request>();
+        // SAFETY: forwarded from the caller.
+        unsafe { Backend::queue_cancel(&mut self.raw, request, tag) }
     }
 
     /// Hands queued operations to the OS without waiting. [`poll`](Self::poll) does this too.

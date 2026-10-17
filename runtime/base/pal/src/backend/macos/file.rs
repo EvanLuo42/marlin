@@ -60,6 +60,16 @@ unsafe impl contract::File for Backend {
         Ok(())
     }
 
+    unsafe fn queue_cancel(
+        queue: &mut Blocking,
+        request: NonNull<Request>,
+        _tag: u64,
+    ) -> Result<()> {
+        // SAFETY: forwarded from the caller.
+        unsafe { queue.cancel(request) };
+        Ok(())
+    }
+
     fn queue_submit(queue: &mut Blocking) -> Result<()> {
         queue.submit();
         Ok(())

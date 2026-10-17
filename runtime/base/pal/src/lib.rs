@@ -25,6 +25,7 @@ mod error;
 pub mod ext;
 pub mod fiber;
 pub mod file;
+pub mod fs;
 pub mod futex;
 pub mod os;
 pub mod process;

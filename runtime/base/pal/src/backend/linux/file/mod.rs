@@ -76,6 +76,17 @@ unsafe impl contract::File for Backend {
         }
     }
 
+    unsafe fn queue_cancel(queue: &mut Queue, request: NonNull<Request>, tag: u64) -> Result<()> {
+        match queue {
+            Queue::Uring(ring) => ring.cancel(tag),
+            // SAFETY: forwarded from the caller.
+            Queue::Blocking(blocking) => unsafe {
+                blocking.cancel(request);
+                Ok(())
+            },
+        }
+    }
+
     fn queue_submit(queue: &mut Queue) -> Result<()> {
         match queue {
             Queue::Uring(ring) => ring.submit(),

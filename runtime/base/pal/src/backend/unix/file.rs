@@ -295,6 +295,39 @@ impl Blocking {
         }
     }
 
+    /// Completes `request` with `ECANCELED` if it has not run yet; operations already run keep
+    /// their result.
+    ///
+    /// # Safety
+    /// `request` was pushed to this queue and its completion has not been polled.
+    pub(crate) unsafe fn cancel(&mut self, request: NonNull<Request>) {
+        let target = request.as_ptr();
+        // SAFETY: pending requests stay valid until polled (push's contract), so walking and
+        // relinking them is sound.
+        unsafe {
+            let mut prev: *mut Request = ptr::null_mut();
+            let mut cur = self.pending.head;
+            while !cur.is_null() && cur != target {
+                prev = cur;
+                cur = (*cur).next;
+            }
+            if cur.is_null() {
+                return;
+            }
+            let next = (*cur).next;
+            if prev.is_null() {
+                self.pending.head = next;
+            } else {
+                (*prev).next = next;
+            }
+            if self.pending.tail == cur {
+                self.pending.tail = prev;
+            }
+            (*cur).result = -(libc::ECANCELED as isize);
+            self.done.push(cur);
+        }
+    }
+
     pub(crate) fn submit(&mut self) {
         while let Some(request) = self.pending.pop() {
             // SAFETY: pending requests, their buffers and files are valid (push's contract).
