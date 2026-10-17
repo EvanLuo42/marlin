@@ -60,7 +60,7 @@ fn rhi_format(format: Format) -> rhi::Format {
 }
 
 fn device() -> Device {
-    Instance::new(&InstanceDesc { validation: true })
+    Instance::new(&InstanceDesc { validation: true, ..InstanceDesc::default() })
         .unwrap()
         .create_device(&DeviceDesc {
             adapter: AdapterPreference::HighPerformance,
@@ -95,6 +95,7 @@ fn gpu_decode(device: &Device, texture: &EncodedTexture) -> Vec<Vec<[f32; 4]>> {
             clear_value: None,
             dimension: rhi::TextureDimension::D2,
             depth: 1,
+            sample_count: 1,
         })
         .unwrap();
     let view = device
@@ -138,7 +139,10 @@ fn gpu_decode(device: &Device, texture: &EncodedTexture) -> Vec<Vec<[f32; 4]>> {
         })
         .unwrap();
     let pipeline = device
-        .create_compute_pipeline(&ComputePipelineDesc { shader: shader() })
+        .create_compute_pipeline(&ComputePipelineDesc {
+            shader: shader(),
+            cache: None,
+        })
         .unwrap();
 
     let mut pool = device.create_command_pool().unwrap();

@@ -252,6 +252,7 @@ fn pipelines() {
     device
         .create_compute_pipeline(&ComputePipelineDesc {
             shader: shader("fill", Stage::Compute),
+            cache: None,
         })
         .unwrap();
     device
@@ -262,6 +263,9 @@ fn pipelines() {
             raster: RasterState::default(),
             depth: Some(DepthState::reverse_z(Format::D32Float)),
             color_targets: &[ColorTargetState::new(Format::Rgba8Unorm)],
+            multisample: marlin_rhi::MultisampleState::NONE,
+            primitive_restart: None,
+            cache: None,
         })
         .unwrap();
     // Not DXIL (a SPIR-V magic number).
@@ -272,6 +276,7 @@ fn pipelines() {
                 code: &spirv,
                 entry: "main",
             },
+            cache: None,
         })
         .unwrap_err();
     assert_eq!(error.kind(), ErrorKind::InvalidInput);

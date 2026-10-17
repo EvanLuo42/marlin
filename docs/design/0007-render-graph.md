@@ -207,7 +207,7 @@ let lum = g.add_compute("Luminance", |b| {
 - 按子资源跟踪状态：默认整个资源，用了 `mip`/`layer` 视图的按范围跟踪。
 - 每个 pass 之前需要的 barrier 合成一批，一次 `texture_barriers`/`buffer_barriers` 调用发出。
 - 导入资源的最终状态写回 §2.3 的状态表；历史和持久资源同样处理。
-- **legacy 路径的真实状态**：RHI 的 legacy 实现目前按录制顺序记录每个纹理上一次 barrier 的状态，用来替换 `Undefined`。并行录制时各段的录制顺序和执行顺序不一致，这个记录会出错。graph 知道每个物理资源在执行顺序上的真实状态，所以改为由 graph 提供（RHI 的改动见 §11.3）。
+- **legacy 路径的真实状态**：legacy D3D12 的 barrier 必须写出资源当前的真实状态，即使内容要丢弃。录制顺序在并行录制时和执行顺序不一致，所以 RHI 不再自己记录，由 graph 按执行顺序提供（`TextureBarrier::undefined_from` 和 `TextureBarrier::discard`，见 §11.3）。
 
 ### 4.7 分段
 
@@ -302,7 +302,7 @@ let probes = g.persistent("ProbeCache", PERSISTENT_SCOPE, BufferDesc::structured
 
 光追只用 inline ray query（0002 §1、0004 §12.4），没有 RT pipeline，所以 graph 不需要 RT 专用的 pass 类型：ray query 写在普通的 compute pass（或 raster pass 的 pixel shader）里。graph 要管的是**加速结构（AS）本身**：它的构建、它和构建输入之间的依赖，以及它被 ray query 读取时的同步。
 
-本节先把设计写全，实现排在 RHI 补齐加速结构之后（§11.3）。graph 第一版不等它。
+本节先把设计写全。RHI 的加速结构已经补齐，只差全局内存 barrier（§11.3）；graph 第一版不等它。
 
 ### 9.1 AS 作为资源
 
@@ -488,15 +488,21 @@ graph 的误用一律 panic，并给出 pass 名和资源名。RHI 本身返回�
 
 ### 11.3 RHI 需要的改动
 
-- **legacy barrier 的真实 before 状态由调用方提供**：去掉 backend 按录制顺序记录纹理状态的做法（并行录制下会出错，§4.6）。具体做法是在 `TextureBarrier` 上加一个"别名激活时资源的真实上一状态"字段，enhanced 路径忽略它。
-- 建议同时补上 R0 推迟的 `fill_buffer` 和 `clear_texture_uav`：graph 的清零（计数器、直方图）要用到。没有它们时用一个 compute pass 代替。
-- **加速结构**（§9，实现 RT 时再做）：
-  - `Accel` 类型：D3D12/Vulkan 是 buffer 上的 AS，Metal 是独立对象；可以 committed，也可以 placed 在 heap 里；
-  - prebuild 查询：AS 大小、构建 scratch、refit scratch；
-  - 命令：`build_blas`、`refit_blas`（允许原地）、`build_tlas`、`copy_accel_compact`、`emit_compacted_size`，可以录在 Graphics 和 Compute 队列的 list 上；
-  - AS 的 bindless 视图，以及 `Stage`/`Access` 里的 AS 构建、拷贝、postbuild 和读取；
-  - **全局内存 barrier**（`memory_barrier(before, after)`），AS 组要用（§9.4），别的地方也用得上；
-  - 实例描述的大小常量和 BLAS 引用值（D3D12/Vulkan 是 GPU 地址，Metal 是资源 ID）。
+已完成：
+
+- **legacy barrier 的真实 before 状态由调用方提供**：backend 不再按录制顺序记录纹理状态（并行录制下会出错，§4.6）。`TextureBarrier::undefined_from` 给出 `before.layout` 为 `Undefined` 时资源真实所在的 layout，enhanced 路径忽略它。`TextureBarrier::discard(texture, 上一个 TextureState, after)` 是 graph 要用的写法：等上一次访问的 stage 完成，丢弃内容，并把上一 layout 告诉 legacy 路径。
+- `CommandList::fill_buffer` 和 `CommandList::clear_storage_texture` 已经补上（D3D12 用 `ClearUnorderedAccessView*`），graph 的清零（计数器、直方图）直接用它们。
+- **加速结构**（§9）。RHI 里的 `AccelerationStructure` 就是本文的 `Accel`：
+  - committed 创建（`create_acceleration_structure`），D3D12 上是带加速结构标志的 buffer；
+  - prebuild 查询 `acceleration_structure_sizes`：AS 大小、构建 scratch、refit scratch；
+  - 命令 `build_acceleration_structure`（BLAS/TLAS 都用它，`update` 字段做 refit，可以原地）、`copy_acceleration_structure`（含 compact）、`write_compacted_sizes`，可以录在 Graphics 和 Compute 队列的 list 上；
+  - AS 的 bindless 槽位（`AccelerationStructure::index`），以及 `Stage`/`Access` 里的 AS 构建、拷贝、postbuild 和读取；
+  - 实例描述 `AccelerationStructureInstance`（64 字节，对齐 `INSTANCE_ALIGNMENT`）和 BLAS 引用值 `AccelerationStructure::instance_address`。
+
+还没做：
+
+- **全局内存 barrier**（`memory_barrier(before, after)`），AS 组要用（§9.4），别的地方也用得上；
+- AS placed 在 heap 里（目前只有 committed），§9.5 的别名需要它时再加。
 
 ## 12. 测试
 

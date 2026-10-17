@@ -9,7 +9,11 @@ use marlin_rhi::{
 };
 
 fn hardware_device() -> marlin_rhi::Device {
-    let instance = Instance::new(&InstanceDesc { validation: true }).unwrap();
+    let instance = Instance::new(&InstanceDesc {
+        validation: true,
+        ..InstanceDesc::default()
+    })
+    .unwrap();
     instance
         .create_device(&DeviceDesc {
             adapter: AdapterPreference::HighPerformance,

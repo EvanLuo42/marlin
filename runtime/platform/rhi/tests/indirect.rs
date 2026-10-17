@@ -63,8 +63,8 @@ fn expect_columns(target: &ColumnTarget, drawn: &[u32]) {
 #[test]
 fn draws_indirect_with_and_without_a_count() {
     for device in devices() {
-        let pipeline = columns_pipeline(&device, None);
-        let target = ColumnTarget::new(&device);
+        let pipeline = columns_pipeline(device, None);
+        let target = ColumnTarget::new(device);
         // Records for columns 1, 3, 5, 7 and 9; the count buffer runs the first 3.
         let records: Vec<DrawIndirectArgs> = [1, 3, 5, 7, 9]
             .map(|c| DrawIndirectArgs {
@@ -75,8 +75,8 @@ fn draws_indirect_with_and_without_a_count() {
                 first_instance: 0,
             })
             .to_vec();
-        let args = GpuBuffer::new(&device, &bytes_of(&records), BufferUsage::INDIRECT);
-        let count = GpuBuffer::new(&device, &words_to_bytes(&[3]), BufferUsage::INDIRECT);
+        let args = GpuBuffer::new(device, &bytes_of(&records), BufferUsage::INDIRECT);
+        let count = GpuBuffer::new(device, &words_to_bytes(&[3]), BufferUsage::INDIRECT);
         // Column 12 alone, from the record at byte offset 20 * 4 + 4 (a 4-aligned offset).
         let mut shifted = vec![0u8; 4];
         shifted.extend(bytes_of(&[DrawIndirectArgs {
@@ -86,10 +86,10 @@ fn draws_indirect_with_and_without_a_count() {
             first_vertex: 0,
             first_instance: 0,
         }]));
-        let offset_args = GpuBuffer::new(&device, &shifted, BufferUsage::INDIRECT);
+        let offset_args = GpuBuffer::new(device, &shifted, BufferUsage::INDIRECT);
 
         for with_count in [false, true] {
-            run(&device, |list| {
+            run(device, |list| {
                 args.copy(list, BufferState::INDIRECT);
                 count.copy(list, BufferState::INDIRECT);
                 offset_args.copy(list, BufferState::INDIRECT);
@@ -122,12 +122,12 @@ fn draws_indirect_with_and_without_a_count() {
 #[test]
 fn draws_indexed_indirect() {
     for device in devices() {
-        let pipeline = columns_pipeline(&device, None);
-        let target = ColumnTarget::new(&device);
+        let pipeline = columns_pipeline(device, None);
+        let target = ColumnTarget::new(device);
         // Six indices (0..6) after two unused ones; vertex offsets shift SV_VertexID by 6 (the
         // shader takes it modulo 6, so the quad is the same).
         let indices = GpuBuffer::new(
-            &device,
+            device,
             &words_to_bytes(&[99, 99, 0, 1, 2, 3, 4, 5]),
             BufferUsage::INDEX,
         );
@@ -158,10 +158,10 @@ fn draws_indexed_indirect() {
                 first_instance: 0,
             },
         ];
-        let args = GpuBuffer::new(&device, &bytes_of(&records), BufferUsage::INDIRECT);
-        let count = GpuBuffer::new(&device, &words_to_bytes(&[0, 100]), BufferUsage::INDIRECT);
+        let args = GpuBuffer::new(device, &bytes_of(&records), BufferUsage::INDIRECT);
+        let count = GpuBuffer::new(device, &words_to_bytes(&[0, 100]), BufferUsage::INDIRECT);
 
-        run(&device, |list| {
+        run(device, |list| {
             indices.copy(list, BufferState::INDEX);
             args.copy(list, BufferState::INDIRECT);
             count.copy(list, BufferState::INDIRECT);
@@ -189,6 +189,7 @@ fn dispatches_indirect_on_graphics_and_compute_lists() {
         let pipeline = device
             .create_compute_pipeline(&ComputePipelineDesc {
                 shader: shader("count", Stage::Compute),
+                cache: None,
             })
             .unwrap();
         // Dispatch c counts 64 * x * y * z threads into word c.
@@ -218,15 +219,15 @@ fn dispatches_indirect_on_graphics_and_compute_lists() {
                 z: 2,
             },
         ];
-        let args = GpuBuffer::new(&device, &bytes_of(&records), BufferUsage::INDIRECT);
-        let count = GpuBuffer::new(&device, &words_to_bytes(&[2]), BufferUsage::INDIRECT);
+        let args = GpuBuffer::new(device, &bytes_of(&records), BufferUsage::INDIRECT);
+        let count = GpuBuffer::new(device, &words_to_bytes(&[2]), BufferUsage::INDIRECT);
 
         for ty in [
             marlin_rhi::QueueType::Graphics,
             marlin_rhi::QueueType::Compute,
         ] {
             let counters = GpuBuffer::new(
-                &device,
+                device,
                 &[0; 16],
                 BufferUsage::SHADER_WRITE | BufferUsage::COPY_SRC,
             );
@@ -236,8 +237,8 @@ fn dispatches_indirect_on_graphics_and_compute_lists() {
                     &BufferViewDesc::whole(BufferViewKind::Raw, true),
                 )
                 .unwrap();
-            let out = readback(&device, 32);
-            support::run_on(&device, ty, |list| {
+            let out = readback(device, 32);
+            support::run_on(device, ty, |list| {
                 args.copy(list, BufferState::INDIRECT);
                 count.copy(list, BufferState::INDIRECT);
                 counters.copy(list, BufferState::COMPUTE_WRITE);
@@ -283,7 +284,7 @@ fn dispatches_indirect_on_graphics_and_compute_lists() {
 fn indirect_arguments_need_indirect_usage() {
     let device = support::hardware_device();
     let args = buffer(
-        &device,
+        device,
         64,
         BufferUsage::SHADER_READ,
         MemoryLocation::GpuOnly,
@@ -303,7 +304,7 @@ fn indirect_arguments_need_indirect_usage() {
 #[should_panic(expected = "indirect arguments past the end of the buffer")]
 fn indirect_arguments_stay_in_the_buffer() {
     let device = support::hardware_device();
-    let args = buffer(&device, 32, BufferUsage::INDIRECT, MemoryLocation::GpuOnly);
+    let args = buffer(device, 32, BufferUsage::INDIRECT, MemoryLocation::GpuOnly);
     let mut pool = device.create_command_pool().unwrap();
     let mut list = device.create_command_list(&pool).unwrap();
     list.begin(&mut pool).unwrap();

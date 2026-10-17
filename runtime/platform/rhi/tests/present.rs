@@ -7,8 +7,9 @@ use std::time::Duration;
 
 use marlin_app::{App, Surface, WindowDesc};
 use marlin_rhi::{
-    AdapterPreference, ColorAttachment, DeviceDesc, FramesInFlight, Instance, InstanceDesc, LoadOp,
-    RenderPassDesc, StoreOp, SurfaceHandle, SwapchainDesc, TextureBarrier, TextureState,
+    AdapterPreference, ColorAttachment, ColorSpace, DeviceDesc, ErrorKind, Format, FramesInFlight,
+    HdrMetadata, Instance, InstanceDesc, LoadOp, RenderPassDesc, StoreOp, SurfaceHandle,
+    SwapchainDesc, TextureBarrier, TextureState,
 };
 
 fn clear_and_present(disable_enhanced_barriers: bool) {
@@ -26,7 +27,11 @@ fn clear_and_present(disable_enhanced_barriers: bool) {
         unreachable!("Win32 window")
     };
 
-    let instance = Instance::new(&InstanceDesc { validation: true }).unwrap();
+    let instance = Instance::new(&InstanceDesc {
+        validation: true,
+        ..InstanceDesc::default()
+    })
+    .unwrap();
     let device = instance
         .create_device(&DeviceDesc {
             adapter: AdapterPreference::HighPerformance,
@@ -81,8 +86,50 @@ fn clear_and_present(disable_enhanced_barriers: bool) {
         swapchain.present().unwrap();
     }
     frames.wait_idle().unwrap();
+
+    // The display the window is on, and what it can do.
+    let output = swapchain.output().unwrap();
+    assert!(!output.name().is_empty(), "{output:?}");
+    // Statistics exist once presents reached the display (a hidden window may report none).
+    if let Some(stats) = swapchain.frame_statistics().unwrap() {
+        assert!(stats.present_count > 0, "{stats:?}");
+    }
+    // An 8-bit swapchain takes neither HDR color space.
+    assert_eq!(swapchain.color_space(), ColorSpace::Srgb);
+    assert!(!swapchain.supports_color_space(ColorSpace::Hdr10));
+    assert_eq!(
+        swapchain
+            .set_color_space(ColorSpace::ScRgb)
+            .unwrap_err()
+            .kind(),
+        ErrorKind::InvalidInput
+    );
     drop(frames);
     drop(swapchain);
+
+    // A 10-bit swapchain: HDR10 when the display does it, metadata either way.
+    // SAFETY: the window outlives the swapchain (dropped first, below).
+    let mut hdr = unsafe {
+        device.create_swapchain(
+            SurfaceHandle::Win32 { hwnd, hinstance },
+            &SwapchainDesc {
+                width: 64,
+                height: 64,
+                format: Format::Rgb10a2Unorm,
+                ..SwapchainDesc::default()
+            },
+        )
+    }
+    .unwrap();
+    hdr.set_hdr_metadata(Some(&HdrMetadata::rec2020(0.01, 1000.0)))
+        .unwrap();
+    if hdr.supports_color_space(ColorSpace::Hdr10) {
+        hdr.set_color_space(ColorSpace::Hdr10).unwrap();
+        assert_eq!(hdr.color_space(), ColorSpace::Hdr10);
+        hdr.set_color_space(ColorSpace::Srgb).unwrap();
+    }
+    hdr.set_hdr_metadata(None).unwrap();
+    drop(hdr);
     assert_eq!(device.validation_errors(), 0);
 }
 

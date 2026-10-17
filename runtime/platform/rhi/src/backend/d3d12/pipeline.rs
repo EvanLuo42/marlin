@@ -1,5 +1,5 @@
-//! The global root signature, the bindless tables, indirect command signatures and pipeline state
-//! objects.
+//! The global root signature, the bindless tables, indirect command signatures, pipeline state
+//! objects and the pipeline cache.
 //!
 //! Every pipeline shares one root signature: [`MAX_PUSH_CONSTANTS`] root constants at `b0,
 //! space0` (the push constants), with the CBV/SRV/UAV and sampler heaps directly indexed. Shaders
@@ -7,35 +7,46 @@
 //!
 //! Indirect commands run through command signatures that first set push-constant word
 //! [`INDIRECT_CONSTANT_WORD`] from each record, then draw or dispatch.
+//!
+//! Pipelines are built as pipeline state streams. A [`PipelineCache`] is a D3D12 pipeline
+//! library keyed by a 128-bit hash of the whole public description, shader bytecode included.
 
 use core::ffi::c_void;
+use core::hash::{Hash, Hasher};
 use core::ptr;
 
+use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
+
+use marlin_sync::Mutex;
 
 use super::com::{self, *};
 use super::ffi::*;
-use super::resource::{DescriptorHeap, compare_func, dxgi_format};
+use super::resource::{CpuDescriptors, DescriptorHeap, compare_func, dxgi_format};
 use super::{Device, error, unsupported};
 use crate::{
     BlendFactor, BlendOp, ColorTargetState, ComputePipelineDesc, CullMode, DepthState,
     DispatchIndirectArgs, DrawIndexedIndirectArgs, DrawIndirectArgs, Error, ErrorKind, FrontFace,
-    GraphicsPipelineDesc, INDIRECT_CONSTANT_WORD, MAX_BINDLESS_RESOURCES, MAX_BINDLESS_SAMPLERS,
-    MAX_PUSH_CONSTANTS, MeshPipelineDesc, PolygonMode, PrimitiveTopology, RasterState, Result,
-    ShaderModule, StencilFace, StencilOp,
+    GraphicsPipelineDesc, INDIRECT_CONSTANT_WORD, IndexFormat, MAX_BINDLESS_RESOURCES,
+    MAX_BINDLESS_SAMPLERS, MAX_PUSH_CONSTANTS, MeshPipelineDesc, MultisampleState, PolygonMode,
+    PrimitiveTopology, RasterState, Result, ShaderModule, StencilFace, StencilOp,
 };
 
-/// CPU-only render target and depth view heaps: enough for any frame's attachments.
-const RTV_CAPACITY: u32 = 1024;
-const DSV_CAPACITY: u32 = 256;
+/// Slots per chunk of the CPU-only render target, depth and clear view heaps.
+const RTV_CHUNK: u32 = 1024;
+const DSV_CHUNK: u32 = 256;
+const CLEAR_CHUNK: u32 = 1024;
 
 /// The device-wide binding state: descriptor heaps, the root signature and the command
 /// signatures that use it.
 pub(super) struct Bindless {
     pub(super) resources: Arc<DescriptorHeap>,
     pub(super) samplers: Arc<DescriptorHeap>,
-    pub(super) rtv: Arc<DescriptorHeap>,
-    pub(super) dsv: Arc<DescriptorHeap>,
+    pub(super) rtv: CpuDescriptors,
+    pub(super) dsv: CpuDescriptors,
+    /// CPU-only CBV/SRV/UAV slots: the CPU half of `ClearUnorderedAccessView*`.
+    pub(super) clear: CpuDescriptors,
     pub(super) root: Com<ID3D12RootSignature>,
     pub(super) signatures: Signatures,
 }
@@ -83,8 +94,9 @@ impl Bindless {
                 MAX_BINDLESS_SAMPLERS,
                 true,
             )?,
-            rtv: DescriptorHeap::new(device, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, RTV_CAPACITY, false)?,
-            dsv: DescriptorHeap::new(device, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, DSV_CAPACITY, false)?,
+            rtv: CpuDescriptors::new(device, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, RTV_CHUNK),
+            dsv: CpuDescriptors::new(device, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, DSV_CHUNK),
+            clear: CpuDescriptors::new(device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, CLEAR_CHUNK),
             root,
             signatures,
         }))
@@ -214,6 +226,13 @@ fn bytecode(module: &ShaderModule<'_>) -> Result<D3D12_SHADER_BYTECODE> {
     })
 }
 
+fn optional_bytecode(module: &Option<ShaderModule<'_>>) -> Result<D3D12_SHADER_BYTECODE> {
+    match module {
+        Some(module) => bytecode(module),
+        None => Ok(D3D12_SHADER_BYTECODE::NONE),
+    }
+}
+
 fn blend_factor(factor: BlendFactor) -> i32 {
     match factor {
         BlendFactor::Zero => 1,
@@ -226,6 +245,13 @@ fn blend_factor(factor: BlendFactor) -> i32 {
         BlendFactor::OneMinusDstAlpha => 8,
         BlendFactor::DstColor => 9,
         BlendFactor::OneMinusDstColor => 10,
+        BlendFactor::SrcAlphaSaturated => 11,
+        BlendFactor::Constant => 14,
+        BlendFactor::OneMinusConstant => 15,
+        BlendFactor::Src1Color => 16,
+        BlendFactor::OneMinusSrc1Color => 17,
+        BlendFactor::Src1Alpha => 18,
+        BlendFactor::OneMinusSrc1Alpha => 19,
     }
 }
 
@@ -239,15 +265,11 @@ fn blend_op(op: BlendOp) -> i32 {
     }
 }
 
-fn optional_bytecode(module: &Option<ShaderModule<'_>>) -> Result<D3D12_SHADER_BYTECODE> {
-    match module {
-        Some(module) => bytecode(module),
-        None => Ok(D3D12_SHADER_BYTECODE::NONE),
-    }
-}
-
 /// Blend state and render target formats.
-fn blend_desc(color_targets: &[ColorTargetState]) -> (D3D12_BLEND_DESC, D3D12_RT_FORMAT_ARRAY) {
+fn blend_desc(
+    color_targets: &[ColorTargetState],
+    multisample: &MultisampleState,
+) -> (D3D12_BLEND_DESC, D3D12_RT_FORMAT_ARRAY) {
     const NO_BLEND: D3D12_RENDER_TARGET_BLEND_DESC = D3D12_RENDER_TARGET_BLEND_DESC {
         BlendEnable: 0,
         LogicOpEnable: 0,
@@ -280,14 +302,14 @@ fn blend_desc(color_targets: &[ColorTargetState]) -> (D3D12_BLEND_DESC, D3D12_RT
         }
     }
     let blend = D3D12_BLEND_DESC {
-        AlphaToCoverageEnable: 0,
+        AlphaToCoverageEnable: multisample.alpha_to_coverage as i32,
         IndependentBlendEnable: 1,
         RenderTarget: targets,
     };
     (blend, formats)
 }
 
-fn rasterizer_desc(raster: &RasterState) -> D3D12_RASTERIZER_DESC {
+fn rasterizer_desc(raster: &RasterState, multisample: &MultisampleState) -> D3D12_RASTERIZER_DESC {
     D3D12_RASTERIZER_DESC {
         FillMode: match raster.polygon {
             PolygonMode::Fill => D3D12_FILL_MODE_SOLID,
@@ -303,10 +325,14 @@ fn rasterizer_desc(raster: &RasterState) -> D3D12_RASTERIZER_DESC {
         DepthBiasClamp: raster.depth_bias_clamp,
         SlopeScaledDepthBias: raster.depth_bias_slope,
         DepthClipEnable: raster.depth_clip as i32,
-        MultisampleEnable: 0,
+        // Only changes line rasterization: multisampled lines are quadrilaterals.
+        MultisampleEnable: (multisample.count > 1) as i32,
         AntialiasedLineEnable: 0,
         ForcedSampleCount: 0,
-        ConservativeRaster: 0,
+        ConservativeRaster: match raster.conservative {
+            true => D3D12_CONSERVATIVE_RASTERIZATION_MODE_ON,
+            false => 0,
+        },
     }
 }
 
@@ -333,9 +359,9 @@ fn stencil_face(face: &StencilFace) -> D3D12_DEPTH_STENCILOP_DESC {
 }
 
 /// Depth-stencil state and the depth view format.
-fn depth_stencil_desc(depth: &Option<DepthState>) -> (D3D12_DEPTH_STENCIL_DESC, u32) {
+fn depth_stencil_desc(depth: &Option<DepthState>) -> (D3D12_DEPTH_STENCIL_DESC1, u32) {
     let stencil = depth.and_then(|d| d.stencil).unwrap_or_default();
-    let desc = D3D12_DEPTH_STENCIL_DESC {
+    let desc = D3D12_DEPTH_STENCIL_DESC1 {
         DepthEnable: depth.is_some() as i32,
         DepthWriteMask: depth.is_some_and(|d| d.write) as i32,
         DepthFunc: depth.map_or(D3D12_COMPARISON_FUNC_ALWAYS, |d| compare_func(d.compare)),
@@ -344,15 +370,167 @@ fn depth_stencil_desc(depth: &Option<DepthState>) -> (D3D12_DEPTH_STENCIL_DESC, 
         StencilWriteMask: stencil.write_mask,
         FrontFace: stencil_face(&stencil.front),
         BackFace: stencil_face(&stencil.back),
+        DepthBoundsTestEnable: depth.is_some_and(|d| d.bounds_test) as i32,
     };
-    let format = depth.map_or(DXGI_FORMAT_UNKNOWN, |d| dxgi_format(d.format));
+    let format = depth.map_or(DXGI_FORMAT_UNKNOWN, |d| {
+        super::resource::depth_format(d.format)
+    });
     (desc, format)
 }
 
-const NO_CACHE: D3D12_CACHED_PIPELINE_STATE = D3D12_CACHED_PIPELINE_STATE {
-    pCachedBlob: ptr::null(),
-    CachedBlobSizeInBytes: 0,
-};
+// --- Pipeline state streams ---
+
+/// One pipeline state stream subobject: its type, then its payload, aligned to a pointer
+/// (`CD3DX12_PIPELINE_STATE_STREAM_SUBOBJECT`).
+#[repr(C, align(8))]
+struct Subobject<T> {
+    ty: u32,
+    inner: T,
+}
+
+/// A pipeline state stream under construction: pointer-aligned subobjects back to back.
+struct Stream {
+    words: Vec<u64>,
+}
+
+impl Stream {
+    fn new(root: &Com<ID3D12RootSignature>) -> Self {
+        let mut stream = Self {
+            words: Vec::with_capacity(128),
+        };
+        stream.push(
+            D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE,
+            root.as_raw(),
+        );
+        stream
+    }
+
+    fn push<T: Copy>(&mut self, ty: u32, inner: T) {
+        let subobject = Subobject { ty, inner };
+        let words = size_of::<Subobject<T>>() / 8;
+        let at = self.words.len();
+        self.words.resize(at + words, 0);
+        // SAFETY: the new words hold `size_of::<Subobject<T>>()` bytes, 8-aligned like the
+        // subobject; `T` is plain data.
+        unsafe {
+            ptr::write(
+                self.words.as_mut_ptr().add(at).cast::<Subobject<T>>(),
+                subobject,
+            )
+        };
+    }
+
+    fn desc(&mut self) -> D3D12_PIPELINE_STATE_STREAM_DESC {
+        D3D12_PIPELINE_STATE_STREAM_DESC {
+            SizeInBytes: self.words.len() * 8,
+            pPipelineStateSubobjectStream: self.words.as_mut_ptr().cast(),
+        }
+    }
+}
+
+/// The fixed-function subobjects graphics and mesh pipelines share.
+fn push_output_state(
+    stream: &mut Stream,
+    raster: &RasterState,
+    depth: &Option<DepthState>,
+    color_targets: &[ColorTargetState],
+    multisample: &MultisampleState,
+) {
+    let (blend, formats) = blend_desc(color_targets, multisample);
+    let (depth_stencil, dsv_format) = depth_stencil_desc(depth);
+    stream.push(D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_BLEND, blend);
+    stream.push(
+        D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_MASK,
+        multisample.mask,
+    );
+    stream.push(
+        D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RASTERIZER,
+        rasterizer_desc(raster, multisample),
+    );
+    stream.push(
+        D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL1,
+        depth_stencil,
+    );
+    stream.push(
+        D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RENDER_TARGET_FORMATS,
+        formats,
+    );
+    stream.push(
+        D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL_FORMAT,
+        dsv_format,
+    );
+    stream.push(
+        D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_DESC,
+        DXGI_SAMPLE_DESC {
+            Count: multisample.count,
+            Quality: 0,
+        },
+    );
+}
+
+/// Creates the pipeline `stream` describes, from `cache`'s compiled blob for `key` when it has
+/// one, storing the driver's blob there when it has not.
+fn create_pso(
+    device: &Device,
+    stream: &mut Stream,
+    cache: Option<&crate::PipelineCache>,
+    key: impl FnOnce() -> Key,
+) -> Result<Com<ID3D12PipelineState>> {
+    let d = &device.device5;
+    let create = |stream: &mut Stream| {
+        let desc = stream.desc();
+        // SAFETY: valid interface; the stream is pointer-aligned subobjects whose pointers
+        // outlive the call; valid IID and out pointer.
+        com::create::<ID3D12PipelineState>(|iid, out| unsafe {
+            (d.vtbl().CreatePipelineState)(d.as_raw(), &desc, iid, out)
+        })
+    };
+    let Some(cache) = cache.map(|c| &c.raw) else {
+        return create(stream).map_err(error);
+    };
+    let key = key().finish128();
+    if let Some(blob) = cache.get(&key) {
+        let mut cached = Stream {
+            words: stream.words.clone(),
+        };
+        cached.push(
+            D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_CACHED_PSO,
+            D3D12_CACHED_PIPELINE_STATE {
+                pCachedBlob: blob.as_ptr().cast(),
+                CachedBlobSizeInBytes: blob.len(),
+            },
+        );
+        match create(&mut cached) {
+            Ok(pso) => return Ok(pso),
+            // A blob the driver no longer takes: compile afresh and replace it.
+            Err(_) => cache.remove(&key),
+        }
+    }
+    let pso = create(stream).map_err(error)?;
+    if let Some(blob) = cached_blob(&pso) {
+        cache.insert(key, blob);
+    }
+    Ok(pso)
+}
+
+/// The driver's compiled form of `pso`.
+fn cached_blob(pso: &Com<ID3D12PipelineState>) -> Option<Arc<[u8]>> {
+    let mut blob = ptr::null_mut();
+    // SAFETY: valid interface and out pointer.
+    if unsafe { (pso.vtbl().GetCachedBlob)(pso.as_raw(), &mut blob) } < 0 {
+        return None;
+    }
+    // SAFETY: success returned an owned blob.
+    let blob = unsafe { Com::<ID3DBlob>::from_raw(blob) }?;
+    // SAFETY: valid blob; its pointer covers its size.
+    let bytes = unsafe {
+        core::slice::from_raw_parts(
+            (blob.vtbl().GetBufferPointer)(blob.as_raw()).cast::<u8>(),
+            (blob.vtbl().GetBufferSize)(blob.as_raw()),
+        )
+    };
+    Some(Arc::from(bytes))
+}
 
 pub(super) fn create_graphics_pipeline(
     device: &Device,
@@ -380,49 +558,47 @@ pub(super) fn create_graphics_pipeline(
             D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP,
         ),
     };
-    let (blend, formats) = blend_desc(desc.color_targets);
-    let (depth_stencil, dsv_format) = depth_stencil_desc(&desc.depth);
-    let pso_desc = D3D12_GRAPHICS_PIPELINE_STATE_DESC {
-        pRootSignature: device.bindless.root.as_raw(),
-        VS: bytecode(&desc.vertex)?,
-        PS: optional_bytecode(&desc.pixel)?,
-        DS: D3D12_SHADER_BYTECODE::NONE,
-        HS: D3D12_SHADER_BYTECODE::NONE,
-        GS: D3D12_SHADER_BYTECODE::NONE,
-        StreamOutput: D3D12_STREAM_OUTPUT_DESC {
-            pSODeclaration: ptr::null(),
-            NumEntries: 0,
-            pBufferStrides: ptr::null(),
-            NumStrides: 0,
-            RasterizedStream: 0,
-        },
-        BlendState: blend,
-        SampleMask: u32::MAX,
-        RasterizerState: rasterizer_desc(&desc.raster),
-        DepthStencilState: depth_stencil,
-        InputLayout: D3D12_INPUT_LAYOUT_DESC {
-            pInputElementDescs: ptr::null(),
-            NumElements: 0,
-        },
-        IBStripCutValue: 0,
-        PrimitiveTopologyType: topology_type,
-        NumRenderTargets: formats.NumRenderTargets,
-        RTVFormats: formats.RTFormats,
-        DSVFormat: dsv_format,
-        SampleDesc: DXGI_SAMPLE_DESC {
-            Count: 1,
-            Quality: 0,
-        },
-        NodeMask: 0,
-        CachedPSO: NO_CACHE,
-        Flags: 0,
+    let strip_cut = match desc.primitive_restart {
+        None => D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED,
+        Some(IndexFormat::U16) => D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_0XFFFF,
+        Some(IndexFormat::U32) => D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_0XFFFFFFFF,
     };
-    let d = &device.device;
-    // SAFETY: valid interface, description (its pointers outlive the call), IID and out pointer.
-    let pso = com::create(|iid, out| unsafe {
-        (d.vtbl().CreateGraphicsPipelineState)(d.as_raw(), &pso_desc, iid, out)
-    })
-    .map_err(error)?;
+    let mut stream = Stream::new(&device.bindless.root);
+    stream.push(
+        D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_VS,
+        bytecode(&desc.vertex)?,
+    );
+    stream.push(
+        D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS,
+        optional_bytecode(&desc.pixel)?,
+    );
+    stream.push(
+        D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_IB_STRIP_CUT_VALUE,
+        strip_cut,
+    );
+    stream.push(
+        D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PRIMITIVE_TOPOLOGY,
+        topology_type,
+    );
+    push_output_state(
+        &mut stream,
+        &desc.raster,
+        &desc.depth,
+        desc.color_targets,
+        &desc.multisample,
+    );
+    let pso = create_pso(device, &mut stream, desc.cache, || {
+        let mut key = Key::new(b'g');
+        desc.vertex.hash(&mut key);
+        desc.pixel.hash(&mut key);
+        desc.topology.hash(&mut key);
+        desc.primitive_restart.hash(&mut key);
+        desc.raster.hash(&mut key);
+        desc.depth.hash(&mut key);
+        desc.color_targets.hash(&mut key);
+        desc.multisample.hash(&mut key);
+        key
+    })?;
     Ok(GraphicsPipeline { pso, topology })
 }
 
@@ -430,117 +606,215 @@ pub(super) fn create_compute_pipeline(
     device: &Device,
     desc: &ComputePipelineDesc<'_>,
 ) -> Result<ComputePipeline> {
-    let pso_desc = D3D12_COMPUTE_PIPELINE_STATE_DESC {
-        pRootSignature: device.bindless.root.as_raw(),
-        CS: bytecode(&desc.shader)?,
-        NodeMask: 0,
-        CachedPSO: NO_CACHE,
-        Flags: 0,
-    };
-    let d = &device.device;
-    // SAFETY: valid interface, description, IID and out pointer.
-    let pso = com::create(|iid, out| unsafe {
-        (d.vtbl().CreateComputePipelineState)(d.as_raw(), &pso_desc, iid, out)
-    })
-    .map_err(error)?;
+    let mut stream = Stream::new(&device.bindless.root);
+    stream.push(
+        D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_CS,
+        bytecode(&desc.shader)?,
+    );
+    let pso = create_pso(device, &mut stream, desc.cache, || {
+        let mut key = Key::new(b'c');
+        desc.shader.hash(&mut key);
+        key
+    })?;
     Ok(ComputePipeline { pso })
-}
-
-/// One pipeline state stream subobject: its type, then its payload, aligned to a pointer
-/// (`CD3DX12_PIPELINE_STATE_STREAM_SUBOBJECT`).
-#[repr(C, align(8))]
-struct Subobject<T> {
-    ty: u32,
-    inner: T,
-}
-
-impl<T> Subobject<T> {
-    fn new(ty: u32, inner: T) -> Self {
-        Self { ty, inner }
-    }
-}
-
-/// A mesh pipeline as a state stream (`CD3DX12_PIPELINE_MESH_STATE_STREAM` without the
-/// subobjects left at their defaults).
-#[repr(C)]
-struct MeshStream {
-    root: Subobject<*mut c_void>,
-    amplification: Subobject<D3D12_SHADER_BYTECODE>,
-    mesh: Subobject<D3D12_SHADER_BYTECODE>,
-    pixel: Subobject<D3D12_SHADER_BYTECODE>,
-    blend: Subobject<D3D12_BLEND_DESC>,
-    sample_mask: Subobject<u32>,
-    raster: Subobject<D3D12_RASTERIZER_DESC>,
-    depth_stencil: Subobject<D3D12_DEPTH_STENCIL_DESC>,
-    render_targets: Subobject<D3D12_RT_FORMAT_ARRAY>,
-    depth_format: Subobject<u32>,
-    samples: Subobject<DXGI_SAMPLE_DESC>,
 }
 
 pub(super) fn create_mesh_pipeline(
     device: &Device,
     desc: &MeshPipelineDesc<'_>,
 ) -> Result<MeshPipeline> {
-    let (blend, formats) = blend_desc(desc.color_targets);
-    let (depth_stencil, dsv_format) = depth_stencil_desc(&desc.depth);
-    let mut stream = MeshStream {
-        root: Subobject::new(
-            D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE,
-            device.bindless.root.as_raw(),
-        ),
-        amplification: Subobject::new(
-            D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_AS,
-            optional_bytecode(&desc.amplification)?,
-        ),
-        mesh: Subobject::new(
-            D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_MS,
-            bytecode(&desc.mesh)?,
-        ),
-        pixel: Subobject::new(
-            D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS,
-            optional_bytecode(&desc.pixel)?,
-        ),
-        blend: Subobject::new(D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_BLEND, blend),
-        sample_mask: Subobject::new(D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_MASK, u32::MAX),
-        raster: Subobject::new(
-            D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RASTERIZER,
-            rasterizer_desc(&desc.raster),
-        ),
-        depth_stencil: Subobject::new(
-            D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL,
-            depth_stencil,
-        ),
-        render_targets: Subobject::new(
-            D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RENDER_TARGET_FORMATS,
-            formats,
-        ),
-        depth_format: Subobject::new(
-            D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL_FORMAT,
-            dsv_format,
-        ),
-        samples: Subobject::new(
-            D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_DESC,
-            DXGI_SAMPLE_DESC {
-                Count: 1,
-                Quality: 0,
-            },
-        ),
-    };
-    let stream_desc = D3D12_PIPELINE_STATE_STREAM_DESC {
-        SizeInBytes: size_of::<MeshStream>(),
-        pPipelineStateSubobjectStream: (&raw mut stream).cast(),
-    };
-    let d = &device.device2;
-    // SAFETY: valid interface; the stream is pointer-aligned subobjects whose pointers outlive
-    // the call; valid IID and out pointer.
-    let pso = com::create(|iid, out| unsafe {
-        (d.vtbl().CreatePipelineState)(d.as_raw(), &stream_desc, iid, out)
-    })
-    .map_err(error)?;
+    let mut stream = Stream::new(&device.bindless.root);
+    stream.push(
+        D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_AS,
+        optional_bytecode(&desc.amplification)?,
+    );
+    stream.push(
+        D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_MS,
+        bytecode(&desc.mesh)?,
+    );
+    stream.push(
+        D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS,
+        optional_bytecode(&desc.pixel)?,
+    );
+    push_output_state(
+        &mut stream,
+        &desc.raster,
+        &desc.depth,
+        desc.color_targets,
+        &desc.multisample,
+    );
+    let pso = create_pso(device, &mut stream, desc.cache, || {
+        let mut key = Key::new(b'm');
+        desc.amplification.hash(&mut key);
+        desc.mesh.hash(&mut key);
+        desc.pixel.hash(&mut key);
+        desc.raster.hash(&mut key);
+        desc.depth.hash(&mut key);
+        desc.color_targets.hash(&mut key);
+        desc.multisample.hash(&mut key);
+        key
+    })?;
     Ok(MeshPipeline { pso })
 }
 
 /// The raw pointers for `SetDescriptorHeaps`.
 pub(super) fn heaps(bindless: &Bindless) -> [*mut c_void; 2] {
     [bindless.resources.as_raw(), bindless.samplers.as_raw()]
+}
+
+// --- Pipeline cache ---
+
+/// Bumped when the key's contents or the stream layout change, so old entries are never
+/// mistaken for new ones.
+const KEY_VERSION: u64 = 1;
+
+/// A 128-bit pipeline key: two keyed SipHash-1-3 streams over the whole description.
+#[allow(
+    deprecated,
+    reason = "core's SipHasher is the only keyed hasher in core"
+)]
+struct Key {
+    a: core::hash::SipHasher,
+    b: core::hash::SipHasher,
+}
+
+#[allow(
+    deprecated,
+    reason = "core's SipHasher is the only keyed hasher in core"
+)]
+impl Key {
+    fn new(kind: u8) -> Self {
+        let mut key = Self {
+            a: core::hash::SipHasher::new_with_keys(0x6d61_726c_696e_0001, KEY_VERSION),
+            b: core::hash::SipHasher::new_with_keys(0x6d61_726c_696e_0002, !KEY_VERSION),
+        };
+        key.write_u8(kind);
+        key
+    }
+
+    fn finish128(&self) -> [u64; 2] {
+        [self.a.finish(), self.b.finish()]
+    }
+}
+
+#[allow(
+    deprecated,
+    reason = "core's SipHasher is the only keyed hasher in core"
+)]
+impl Hasher for Key {
+    fn write(&mut self, bytes: &[u8]) {
+        self.a.write(bytes);
+        self.b.write(bytes);
+    }
+
+    fn finish(&self) -> u64 {
+        self.a.finish()
+    }
+}
+
+/// Compiled pipelines by key: the driver's cached blobs (`GetCachedBlob`), fed back through
+/// `CachedPSO` when the same description is created again.
+///
+/// Per-pipeline blobs rather than an `ID3D12PipelineLibrary`: libraries deadlock in the driver
+/// when used while other threads work on the device, and pipelines loaded from one depend on
+/// memory the library does not own.
+///
+/// Serialized caches start with a header naming the adapter and driver they were built with and
+/// checksumming the entries, so a cache from another machine, a driver update or a damaged file
+/// is dropped before the driver sees it.
+pub(crate) struct PipelineCache {
+    entries: Mutex<BTreeMap<[u64; 2], Arc<[u8]>>>,
+    identity: [u64; 3],
+}
+
+const CACHE_MAGIC: [u8; 8] = *b"MRLNPSO2";
+/// Magic, adapter and driver identity, entry count, entries' checksum.
+const CACHE_HEADER: usize = 8 + 24 + 8 + 8;
+
+/// FNV-1a: a checksum against truncated or damaged files, not an adversary.
+fn checksum(data: &[u8]) -> u64 {
+    data.iter().fold(0xcbf2_9ce4_8422_2325, |h, &b| {
+        (h ^ b as u64).wrapping_mul(0x0100_0000_01b3)
+    })
+}
+
+/// The entries in `data` if its header matches this adapter and driver and nothing is damaged.
+fn parse_cache(data: &[u8], identity: &[u64; 3]) -> Option<BTreeMap<[u64; 2], Arc<[u8]>>> {
+    let word = |at: usize| -> Option<u64> {
+        Some(u64::from_le_bytes(data.get(at..at + 8)?.try_into().ok()?))
+    };
+    if data.get(..8)? != CACHE_MAGIC {
+        return None;
+    }
+    if [word(8)?, word(16)?, word(24)?] != *identity {
+        return None;
+    }
+    let (count, sum) = (word(32)?, word(40)?);
+    if checksum(&data[CACHE_HEADER..]) != sum {
+        return None;
+    }
+    let mut entries = BTreeMap::new();
+    let mut at = CACHE_HEADER;
+    for _ in 0..count {
+        let key = [word(at)?, word(at + 8)?];
+        let len = usize::try_from(word(at + 16)?).ok()?;
+        let blob = data.get(at + 24..at.checked_add(24 + len)?)?;
+        entries.insert(key, Arc::from(blob));
+        at += 24 + len.next_multiple_of(8);
+    }
+    (at == data.len()).then_some(entries)
+}
+
+impl PipelineCache {
+    pub(super) fn new(device: &Device, data: &[u8]) -> Result<Self> {
+        let identity = device.cache_identity;
+        let entries = match data.is_empty() {
+            true => BTreeMap::new(),
+            false => parse_cache(data, &identity).unwrap_or_else(|| {
+                marlin_diag::info!(
+                    "pipeline cache from another adapter or driver, or damaged: starting empty"
+                );
+                BTreeMap::new()
+            }),
+        };
+        Ok(Self {
+            entries: Mutex::new(entries),
+            identity,
+        })
+    }
+
+    fn get(&self, key: &[u64; 2]) -> Option<Arc<[u8]>> {
+        self.entries.lock().get(key).cloned()
+    }
+
+    fn insert(&self, key: [u64; 2], blob: Arc<[u8]>) {
+        self.entries.lock().insert(key, blob);
+    }
+
+    fn remove(&self, key: &[u64; 2]) {
+        self.entries.lock().remove(key);
+    }
+
+    pub(super) fn serialize(&self) -> Result<Vec<u8>> {
+        let entries = self.entries.lock();
+        let mut data = Vec::with_capacity(
+            CACHE_HEADER + entries.values().map(|b| 24 + b.len() + 8).sum::<usize>(),
+        );
+        data.extend_from_slice(&CACHE_MAGIC);
+        for word in self.identity {
+            data.extend_from_slice(&word.to_le_bytes());
+        }
+        data.extend_from_slice(&(entries.len() as u64).to_le_bytes());
+        data.extend_from_slice(&[0; 8]);
+        for (key, blob) in entries.iter() {
+            for word in [key[0], key[1], blob.len() as u64] {
+                data.extend_from_slice(&word.to_le_bytes());
+            }
+            data.extend_from_slice(blob);
+            data.resize(data.len().next_multiple_of(8), 0);
+        }
+        let sum = checksum(&data[CACHE_HEADER..]);
+        data[40..48].copy_from_slice(&sum.to_le_bytes());
+        Ok(data)
+    }
 }

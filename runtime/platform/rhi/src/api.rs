@@ -1,34 +1,49 @@
 //! Public types: thin wrappers forwarding to the selected backend.
 //!
-//! Descriptions are validated here, once for every backend: invalid ones return `InvalidInput`;
-//! out-of-range recording arguments (copies, push constants) panic, as slice indexing does.
+//! Descriptions are validated here, once for every backend: invalid ones return `InvalidInput`
+//! and missing optional features `Unsupported`; out-of-range recording arguments (copies, push
+//! constants) panic, as slice indexing does. Recording lives in `commands.rs`.
 
+use core::ffi::c_void;
 use core::ptr::NonNull;
 use core::time::Duration;
 
+use alloc::vec::Vec;
+
 use crate::backend::imp::Backend;
 use crate::contract::{
-    Commands, Device as _, Fences, Instance as _, Queue as _, Resources, Swapchain as _, Types,
+    Device as _, Fences, Handles, Instance as _, Object, Queue as _, Resources, Swapchain as _,
+    Types,
 };
 use crate::{
-    AdapterInfo, BufferBarrier, BufferDesc, BufferTextureCopy, BufferUsage, BufferViewDesc,
-    BufferViewKind, ClearValue, ComputePipelineDesc, DepthStencilViewDesc, DeviceDesc,
-    DispatchIndirectArgs, DrawIndexedIndirectArgs, DrawIndirectArgs, Error, ErrorKind, Features,
-    Format, GraphicsPipelineDesc, HeapDesc, HeapKind, IndexFormat, IndirectArgs, InstanceDesc,
-    MAX_COLOR_ATTACHMENTS, MAX_PUSH_CONSTANTS, MAX_UNIFORM_SIZE, MemoryLocation,
-    MemoryRequirements, MeshPipelineDesc, PresentMode, PresentStatus, QueryKind, QueryPoolDesc,
-    QueueType, Rect, RenderPassDesc, RenderTargetViewDesc, Result, SamplerDesc, SubmitDesc,
-    SubresourceRange, SurfaceHandle, SwapchainDesc, TEXTURE_OFFSET_ALIGNMENT,
-    TEXTURE_ROW_PITCH_ALIGNMENT, TextureBarrier, TextureCopy, TextureDesc, TextureDimension,
-    TextureUsage, TextureViewDesc, TextureViewDimension, UNIFORM_ALIGNMENT, Viewport,
+    AccelerationStructureGeometry, AccelerationStructureInputs, AccelerationStructureKind,
+    AccelerationStructureSizes, AdapterInfo, BufferDesc, BufferUsage, BufferViewDesc,
+    BufferViewKind, BuildFlags, ClearValue, ClockCalibration, ColorSpace, ColorTargetState,
+    ComputePipelineDesc, DepthState, DepthStencilViewDesc, DeviceDesc, Error, ErrorKind, Features,
+    FenceWait, Format, FormatFeatures, FormatSupport, FrameStatistics, GraphicsPipelineDesc,
+    HdrMetadata, HeapDesc, HeapKind, InstanceDesc, MAX_COLOR_ATTACHMENTS, MAX_UNIFORM_SIZE,
+    MemoryBudget, MemoryLocation, MemoryRequirements, MeshPipelineDesc, MultisampleState,
+    OutputInfo, Pageable, PresentMode, PresentStatus, PrimitiveTopology, QueryKind, QueryPoolDesc,
+    QueueType, RasterState, RenderTargetViewDesc, ResidencyPriority, Result, SPARSE_TILE_SIZE,
+    SamplerDesc, SamplerReduction, SparseBind, SparseTextureLayout, SparseTextureRegion,
+    SubmitDesc, SubresourceRange, SurfaceHandle, SwapchainDesc, TextureDesc, TextureDimension,
+    TextureUsage, TextureViewDesc, TextureViewDimension, UNIFORM_ALIGNMENT, VariableRateShading,
 };
 
-fn invalid() -> Error {
+pub(crate) fn invalid() -> Error {
     Error::from_kind(ErrorKind::InvalidInput)
 }
 
-fn ensure(condition: bool) -> Result<()> {
+pub(crate) fn unsupported() -> Error {
+    Error::from_kind(ErrorKind::Unsupported)
+}
+
+pub(crate) fn ensure(condition: bool) -> Result<()> {
     if condition { Ok(()) } else { Err(invalid()) }
+}
+
+fn require(feature: bool) -> Result<()> {
+    if feature { Ok(()) } else { Err(unsupported()) }
 }
 
 /// Largest texture dimension (D3D12's limit for 2D textures).
@@ -43,6 +58,7 @@ pub struct Instance {
 
 impl Instance {
     pub fn new(desc: &InstanceDesc) -> Result<Self> {
+        ensure(desc.validation || !desc.gpu_validation)?;
         Ok(Self {
             raw: Backend::create_instance(desc)?,
         })
@@ -51,6 +67,11 @@ impl Instance {
     /// Every adapter, highest performance first; software adapters last.
     pub fn adapters(&self) -> impl Iterator<Item = AdapterInfo> + '_ {
         (0..).map_while(|i| Backend::adapter(&self.raw, i))
+    }
+
+    /// The displays attached to adapter `adapter` ([`AdapterInfo::index`]).
+    pub fn outputs(&self, adapter: u32) -> impl Iterator<Item = OutputInfo> + '_ {
+        (0..).map_while(move |i| Backend::output(&self.raw, adapter, i))
     }
 
     /// Fails with `Unsupported` if the adapter lacks the baseline (D3D12: feature level 12_0,
@@ -73,14 +94,27 @@ impl Instance {
             raw,
         })
     }
+
+    /// The native object (D3D12: the `IDXGIFactory4*`), borrowed: valid while `self` lives.
+    pub fn as_raw(&self) -> *mut c_void {
+        Backend::native(Object::Instance(&self.raw))
+    }
 }
 
 /// A GPU. Owns its queues and the bindless tables. Dropping it waits for the queues to go idle.
+///
+/// # Losing the device
+///
+/// A GPU hang, crash, driver update or removal loses the device: calls start returning
+/// [`ErrorKind::DeviceLost`], and with [`InstanceDesc::crash_diagnostics`] the first of them logs
+/// what the GPU was doing. Every object of the device is then dead. Recover by dropping all of
+/// them (the device last), then creating a new device from the [`Instance`] and recreating the
+/// resources; [`status`](Self::status) checks without doing anything else.
 pub struct Device {
     queue: Queue,
     compute: Option<Queue>,
     copy: Option<Queue>,
-    raw: <Backend as Types>::Device,
+    pub(crate) raw: <Backend as Types>::Device,
 }
 
 impl Device {
@@ -92,6 +126,29 @@ impl Device {
     #[inline]
     pub fn features(&self) -> Features {
         Backend::features(&self.raw)
+    }
+
+    /// What the device can do with `format`.
+    pub fn format_support(&self, format: Format) -> FormatSupport {
+        Backend::format_support(&self.raw, format)
+    }
+
+    /// `Err(DeviceLost)` once the device is gone (see [`Device`]).
+    pub fn status(&self) -> Result<()> {
+        Backend::status(&self.raw)
+    }
+
+    /// Loses the device on purpose, to test the recovery path. Every later call reports
+    /// `DeviceLost`, here and (D3D12 shares one device per adapter in a process) in any other
+    /// `Device` of the same adapter.
+    pub fn force_device_lost(&self) {
+        Backend::force_device_lost(&self.raw);
+    }
+
+    /// Pins the GPU clocks so profiling runs compare (D3D12 needs Windows developer mode). Never
+    /// in shipping builds: it costs performance and power.
+    pub fn set_stable_power_state(&self, stable: bool) -> Result<()> {
+        Backend::set_stable_power_state(&self.raw, stable)
     }
 
     /// The graphics queue (also does compute and copies).
@@ -119,8 +176,27 @@ impl Device {
 
     pub fn create_fence(&self, initial_value: u64) -> Result<Fence> {
         Ok(Fence {
-            raw: Backend::create_fence(&self.raw, initial_value)?,
+            raw: Backend::create_fence(&self.raw, initial_value, false)?,
         })
+    }
+
+    /// A fence that [`export_fence`](Self::export_fence) can hand to another device or process.
+    pub fn create_shared_fence(&self, initial_value: u64) -> Result<Fence> {
+        Ok(Fence {
+            raw: Backend::create_fence(&self.raw, initial_value, true)?,
+        })
+    }
+
+    /// Blocks until every fence (or, with [`FenceWait::Any`], one of them) reaches its value.
+    /// `Ok(false)` if `timeout` passed first.
+    pub fn wait_for_fences(
+        &self,
+        fences: &[(&Fence, u64)],
+        mode: FenceWait,
+        timeout: Option<Duration>,
+    ) -> Result<bool> {
+        ensure(!fences.is_empty())?;
+        Backend::wait_for_fences(&self.raw, fences, mode, timeout)
     }
 
     /// A command pool for the graphics queue.
@@ -146,6 +222,7 @@ impl Device {
             raw: Backend::create_command_list(&self.raw, &pool.raw)?,
             ty: pool.ty,
             backend_ty: pool.backend_ty,
+            features: self.features(),
         })
     }
 
@@ -158,6 +235,7 @@ impl Device {
         surface: SurfaceHandle,
         desc: &SwapchainDesc,
     ) -> Result<Swapchain> {
+        validate_color_space(desc.format, desc.color_space)?;
         Ok(Swapchain {
             // SAFETY: forwarded from the caller.
             raw: unsafe { Backend::create_swapchain(&self.raw, &self.queue.raw, surface, desc)? },
@@ -175,18 +253,20 @@ impl Device {
     }
 
     pub fn create_buffer(&self, desc: &BufferDesc) -> Result<Buffer> {
-        validate_buffer(desc)?;
+        self.validate_buffer(desc)?;
         Ok(Buffer {
             raw: Backend::create_buffer(&self.raw, desc)?,
             desc: *desc,
+            kind: ResourceKind::Committed,
         })
     }
 
     pub fn create_texture(&self, desc: &TextureDesc) -> Result<Texture> {
-        validate_texture(desc)?;
+        self.validate_texture(desc)?;
         Ok(Texture {
             raw: Backend::create_texture(&self.raw, desc)?,
             desc: *desc,
+            kind: ResourceKind::Committed,
         })
     }
 
@@ -247,6 +327,7 @@ impl Device {
                 TextureViewDimension::D2 | TextureViewDimension::D3 => 1,
                 TextureViewDimension::D2Array => t.array_layers - r.base_layer,
                 TextureViewDimension::Cube => 6,
+                TextureViewDimension::CubeArray => (t.array_layers - r.base_layer) / 6 * 6,
             },
             n => n,
         };
@@ -254,25 +335,33 @@ impl Device {
         ensure(layer_count > 0 && r.base_layer + layer_count <= t.array_layers)?;
         ensure(!desc.writable || mip_count == 1)?;
         let volume = t.dimension == TextureDimension::D3;
+        let multisampled = t.sample_count > 1;
+        let cube = !volume && !desc.writable && !multisampled && t.width == t.height;
         match desc.dimension {
-            TextureViewDimension::D2 => ensure(layer_count == 1 && !volume)?,
+            TextureViewDimension::D2 => ensure(layer_count == 1 && r.base_layer == 0 && !volume)?,
             TextureViewDimension::D2Array => ensure(!volume)?,
-            TextureViewDimension::Cube => ensure(
-                !volume
-                    && !desc.writable
-                    && r.base_layer == 0
-                    && layer_count == 6
-                    && t.width == t.height,
-            )?,
+            TextureViewDimension::Cube => ensure(cube && layer_count == 6)?,
+            TextureViewDimension::CubeArray => {
+                ensure(cube && layer_count.is_multiple_of(6))?;
+            }
             TextureViewDimension::D3 => ensure(volume && layer_count == 1)?,
         }
         let format = match desc.format {
+            None => match t.format {
+                Format::D16Unorm => Format::R16Unorm,
+                Format::D32Float | Format::D32FloatS8 => Format::R32Float,
+                f => f,
+            },
             Some(f) => {
-                ensure(f.linear() == t.format.linear())?;
+                let plane = matches!(
+                    (t.format, f),
+                    (Format::D16Unorm, Format::R16Unorm)
+                        | (Format::D32Float | Format::D32FloatS8, Format::R32Float)
+                        | (Format::D32FloatS8, Format::R8Uint)
+                );
+                ensure(plane || f.linear() == t.format.linear())?;
                 f
             }
-            None if t.format.is_depth() => Format::R32Float,
-            None => t.format,
         };
         let desc = TextureViewDesc {
             format: Some(format),
@@ -329,25 +418,85 @@ impl Device {
     pub fn create_sampler(&self, desc: &SamplerDesc) -> Result<Sampler> {
         ensure((1..=16).contains(&desc.max_anisotropy))?;
         ensure(desc.min_lod <= desc.max_lod)?;
+        if desc.reduction != SamplerReduction::WeightedAverage {
+            require(self.features().sampler_min_max)?;
+            ensure(desc.compare.is_none())?;
+        }
         Ok(Sampler {
             raw: Backend::create_sampler(&self.raw, desc)?,
         })
+    }
+
+    fn validate_raster(
+        &self,
+        raster: &RasterState,
+        depth: &Option<DepthState>,
+        color_targets: &[ColorTargetState],
+        multisample: &MultisampleState,
+    ) -> Result<()> {
+        let features = self.features();
+        ensure(color_targets.len() <= MAX_COLOR_ATTACHMENTS)?;
+        ensure(depth.is_none_or(|d| {
+            d.format.is_depth() && (d.stencil.is_none() || d.format.has_stencil())
+        }))?;
+        if depth.is_some_and(|d| d.bounds_test) {
+            require(features.depth_bounds)?;
+        }
+        ensure(
+            color_targets
+                .iter()
+                .all(|t| !t.format.is_depth() && !t.format.is_compressed()),
+        )?;
+        let dual_source = color_targets.iter().any(|t| {
+            t.blend.is_some_and(|b| {
+                [b.color, b.alpha]
+                    .iter()
+                    .any(|c| c.src_factor.is_dual_source() || c.dst_factor.is_dual_source())
+            })
+        });
+        ensure(!dual_source || color_targets.len() == 1)?;
+        ensure(
+            color_targets
+                .iter()
+                .all(|t| t.blend.is_none() || !t.format.is_integer()),
+        )?;
+        if raster.conservative {
+            require(features.conservative_rasterization)?;
+        }
+        ensure(matches!(multisample.count, 1 | 2 | 4 | 8 | 16))?;
+        let formats = color_targets
+            .iter()
+            .map(|t| t.format)
+            .chain(depth.map(|d| d.format));
+        for format in formats {
+            if !self
+                .format_support(format)
+                .supports_samples(multisample.count)
+            {
+                return Err(unsupported());
+            }
+        }
+        Ok(())
     }
 
     pub fn create_graphics_pipeline(
         &self,
         desc: &GraphicsPipelineDesc<'_>,
     ) -> Result<GraphicsPipeline> {
-        ensure(desc.color_targets.len() <= MAX_COLOR_ATTACHMENTS)?;
-        ensure(desc.depth.is_none_or(|d| {
-            d.format.is_depth() && (d.stencil.is_none() || d.format.has_stencil())
-        }))?;
-        ensure(
-            desc.color_targets
-                .iter()
-                .all(|t| !t.format.is_depth() && !t.format.is_compressed()),
+        self.validate_raster(
+            &desc.raster,
+            &desc.depth,
+            desc.color_targets,
+            &desc.multisample,
         )?;
         ensure(!desc.vertex.code.is_empty() && desc.pixel.is_none_or(|p| !p.code.is_empty()))?;
+        ensure(
+            desc.primitive_restart.is_none()
+                || matches!(
+                    desc.topology,
+                    PrimitiveTopology::LineStrip | PrimitiveTopology::TriangleStrip
+                ),
+        )?;
         Ok(GraphicsPipeline {
             raw: Backend::create_graphics_pipeline(&self.raw, desc)?,
         })
@@ -365,17 +514,12 @@ impl Device {
 
     /// A mesh shader pipeline. `Unsupported` without [`Features::mesh_shader`].
     pub fn create_mesh_pipeline(&self, desc: &MeshPipelineDesc<'_>) -> Result<MeshPipeline> {
-        if !self.features().mesh_shader {
-            return Err(Error::from_kind(ErrorKind::Unsupported));
-        }
-        ensure(desc.color_targets.len() <= MAX_COLOR_ATTACHMENTS)?;
-        ensure(desc.depth.is_none_or(|d| {
-            d.format.is_depth() && (d.stencil.is_none() || d.format.has_stencil())
-        }))?;
-        ensure(
-            desc.color_targets
-                .iter()
-                .all(|t| !t.format.is_depth() && !t.format.is_compressed()),
+        require(self.features().mesh_shader)?;
+        self.validate_raster(
+            &desc.raster,
+            &desc.depth,
+            desc.color_targets,
+            &desc.multisample,
         )?;
         ensure(!desc.mesh.code.is_empty())?;
         ensure(desc.amplification.is_none_or(|a| !a.code.is_empty()))?;
@@ -385,11 +529,23 @@ impl Device {
         })
     }
 
+    /// A cache of compiled pipelines, seeded with what an earlier
+    /// [`PipelineCache::serialize`] returned (empty for a fresh one). Data from another driver
+    /// version or adapter is ignored: the cache starts empty and pipelines compile as usual.
+    pub fn create_pipeline_cache(&self, data: &[u8]) -> Result<PipelineCache> {
+        Ok(PipelineCache {
+            raw: Backend::create_pipeline_cache(&self.raw, data)?,
+        })
+    }
+
     /// `count` queries (1..=65536) of one kind.
     pub fn create_query_pool(&self, desc: &QueryPoolDesc) -> Result<QueryPool> {
         ensure((1..=65536).contains(&desc.count))?;
-        if desc.kind == QueryKind::CopyTimestamp && !self.features().copy_queue_timestamps {
-            return Err(Error::from_kind(ErrorKind::Unsupported));
+        let features = self.features();
+        match desc.kind {
+            QueryKind::CopyTimestamp => require(features.copy_queue_timestamps)?,
+            QueryKind::PipelineStatistics => require(features.pipeline_statistics)?,
+            _ => {}
         }
         Ok(QueryPool {
             raw: Backend::create_query_pool(&self.raw, desc)?,
@@ -398,8 +554,9 @@ impl Device {
     }
 
     /// Memory for placed resources ([`create_placed_buffer`](Self::create_placed_buffer),
-    /// [`create_placed_texture`](Self::create_placed_texture)): pools of streamed textures and
-    /// the render graph's transient resources, which alias each other.
+    /// [`create_placed_texture`](Self::create_placed_texture)) and for the tiles of sparse ones:
+    /// pools of streamed textures and the render graph's transient resources, which alias each
+    /// other.
     pub fn create_heap(&self, desc: &HeapDesc) -> Result<Heap> {
         ensure(desc.size > 0)?;
         ensure(desc.kind != HeapKind::Any || self.features().mixed_heaps)?;
@@ -407,6 +564,9 @@ impl Device {
             desc.memory == MemoryLocation::GpuOnly
                 || matches!(desc.kind, HeapKind::Any | HeapKind::Buffers),
         )?;
+        if desc.memory == MemoryLocation::GpuUpload {
+            require(self.features().gpu_upload_heap)?;
+        }
         Ok(Heap {
             raw: Backend::create_heap(&self.raw, desc)?,
             desc: *desc,
@@ -421,7 +581,7 @@ impl Device {
     /// The size and alignment `desc` takes in a heap. `desc` must be valid for
     /// [`create_texture`](Self::create_texture).
     pub fn texture_requirements(&self, desc: &TextureDesc) -> Result<MemoryRequirements> {
-        validate_texture(desc)?;
+        self.validate_texture(desc)?;
         Ok(Backend::texture_requirements(&self.raw, desc))
     }
 
@@ -438,7 +598,7 @@ impl Device {
         offset: u64,
         desc: &BufferDesc,
     ) -> Result<Buffer> {
-        validate_buffer(desc)?;
+        self.validate_buffer(desc)?;
         ensure(desc.memory == heap.desc.memory)?;
         ensure(matches!(heap.desc.kind, HeapKind::Any | HeapKind::Buffers))?;
         let req = self.buffer_requirements(desc);
@@ -451,6 +611,7 @@ impl Device {
         Ok(Buffer {
             raw: Backend::create_placed_buffer(&self.raw, &heap.raw, offset, desc)?,
             desc: *desc,
+            kind: ResourceKind::Placed,
         })
     }
 
@@ -463,14 +624,7 @@ impl Device {
     ) -> Result<Texture> {
         let req = self.texture_requirements(desc)?;
         ensure(heap.desc.memory == MemoryLocation::GpuOnly)?;
-        let target = desc.usage.contains(TextureUsage::RENDER_TARGET)
-            || desc.usage.contains(TextureUsage::DEPTH_STENCIL);
-        ensure(match heap.desc.kind {
-            HeapKind::Any => true,
-            HeapKind::Buffers => false,
-            HeapKind::Textures => !target,
-            HeapKind::Targets => target,
-        })?;
+        ensure(heap_takes_texture(heap.desc.kind, desc))?;
         ensure(offset.is_multiple_of(req.alignment))?;
         ensure(
             offset
@@ -480,15 +634,323 @@ impl Device {
         Ok(Texture {
             raw: Backend::create_placed_texture(&self.raw, &heap.raw, offset, desc)?,
             desc: *desc,
+            kind: ResourceKind::Placed,
         })
+    }
+
+    // --- Memory budget and residency ---
+
+    /// How much memory the OS lets this process use now, and how much it uses. Poll it (once a
+    /// frame is cheap) and shed streaming memory when [`MemoryUsage::headroom`] runs out: over
+    /// budget, the OS pages and frames stutter.
+    ///
+    /// [`MemoryUsage::headroom`]: crate::MemoryUsage::headroom
+    pub fn memory_budget(&self) -> Result<MemoryBudget> {
+        Backend::memory_budget(&self.raw)
+    }
+
+    /// Asks the OS to keep this much local and non-local memory for the process even under
+    /// pressure (at most [`MemoryUsage::available_for_reservation`](crate::MemoryUsage)).
+    pub fn set_memory_reservation(&self, local: u64, non_local: u64) -> Result<()> {
+        Backend::set_memory_reservation(&self.raw, local, non_local)
+    }
+
+    /// Brings evicted objects back into GPU memory; blocks until they are. Objects are resident
+    /// when created.
+    pub fn make_resident(&self, objects: &[Pageable<'_>]) -> Result<()> {
+        validate_pageables(objects)?;
+        Backend::make_resident(&self.raw, objects)
+    }
+
+    /// Lets the OS page objects out (unused streaming pools, inactive levels). The GPU must not
+    /// use them until [`make_resident`](Self::make_resident).
+    pub fn evict(&self, objects: &[Pageable<'_>]) -> Result<()> {
+        validate_pageables(objects)?;
+        Backend::evict(&self.raw, objects)
+    }
+
+    /// Which objects the OS pages out first when the process goes over budget.
+    pub fn set_residency_priority(
+        &self,
+        objects: &[Pageable<'_>],
+        priority: ResidencyPriority,
+    ) -> Result<()> {
+        validate_pageables(objects)?;
+        Backend::set_residency_priority(&self.raw, objects, priority)
+    }
+
+    // --- Acceleration structures ---
+
+    /// The memory a structure built from `inputs` with `flags` needs. Requires
+    /// [`Features::ray_query`].
+    pub fn acceleration_structure_sizes(
+        &self,
+        inputs: &AccelerationStructureInputs<'_>,
+        flags: BuildFlags,
+    ) -> Result<AccelerationStructureSizes> {
+        require(self.features().ray_query)?;
+        validate_inputs(inputs)?;
+        Ok(Backend::acceleration_structure_sizes(
+            &self.raw, inputs, flags,
+        ))
+    }
+
+    /// An acceleration structure of `size` bytes (from
+    /// [`acceleration_structure_sizes`](Self::acceleration_structure_sizes)), unbuilt. Its
+    /// [`index`](AccelerationStructure::index) is a bindless slot shaders open as a
+    /// `RaytracingAccelerationStructure` for ray queries (top-level structures).
+    pub fn create_acceleration_structure(
+        &self,
+        kind: AccelerationStructureKind,
+        size: u64,
+    ) -> Result<AccelerationStructure> {
+        require(self.features().ray_query)?;
+        ensure(size > 0)?;
+        let size = size.next_multiple_of(crate::ACCELERATION_STRUCTURE_ALIGNMENT);
+        let (buffer, raw) = Backend::create_acceleration_structure(&self.raw, kind, size)?;
+        Ok(AccelerationStructure {
+            raw,
+            buffer: Buffer {
+                raw: buffer,
+                desc: BufferDesc {
+                    size,
+                    usage: BufferUsage::SHADER_WRITE,
+                    memory: MemoryLocation::GpuOnly,
+                },
+                kind: ResourceKind::AccelerationStructure,
+            },
+            kind,
+        })
+    }
+
+    // --- Sparse resources ---
+
+    /// A buffer with address space but no memory: bind [`SPARSE_TILE_SIZE`] tiles of heap memory
+    /// to it with [`Queue::bind_sparse`]. Unbound tiles read zero and drop writes. Requires
+    /// [`Features::sparse_resources`]; [`MemoryLocation::GpuOnly`].
+    pub fn create_sparse_buffer(&self, desc: &BufferDesc) -> Result<Buffer> {
+        require(self.features().sparse_resources)?;
+        self.validate_buffer(desc)?;
+        ensure(desc.memory == MemoryLocation::GpuOnly)?;
+        Ok(Buffer {
+            raw: Backend::create_sparse_buffer(&self.raw, desc)?,
+            desc: *desc,
+            kind: ResourceKind::Sparse,
+        })
+    }
+
+    /// A texture with no memory, bound tile by tile ([`sparse_texture_layout`]): virtual
+    /// texturing, virtual shadow maps. Requires [`Features::sparse_resources`] (and
+    /// [`Features::sparse_volumes`] for volumes) and a format with [`FormatFeatures::SPARSE`];
+    /// single-sampled, no depth.
+    ///
+    /// [`sparse_texture_layout`]: Self::sparse_texture_layout
+    pub fn create_sparse_texture(&self, desc: &TextureDesc) -> Result<Texture> {
+        let features = self.features();
+        require(features.sparse_resources)?;
+        if desc.dimension == TextureDimension::D3 {
+            require(features.sparse_volumes)?;
+        }
+        self.validate_texture(desc)?;
+        ensure(desc.sample_count == 1 && !desc.format.is_depth())?;
+        require(
+            self.format_support(desc.format)
+                .features
+                .contains(FormatFeatures::SPARSE),
+        )?;
+        Ok(Texture {
+            raw: Backend::create_sparse_texture(&self.raw, desc)?,
+            desc: *desc,
+            kind: ResourceKind::Sparse,
+        })
+    }
+
+    /// How a sparse texture's mips divide into tiles. Panics for other textures.
+    pub fn sparse_texture_layout(&self, texture: &Texture) -> SparseTextureLayout {
+        assert!(texture.kind == ResourceKind::Sparse, "not a sparse texture");
+        Backend::sparse_texture_layout(&self.raw, texture)
+    }
+
+    // --- Sharing and native objects ---
+
+    /// An OS handle another device, API or process can open the buffer with. Requires
+    /// [`BufferUsage::SHARED`].
+    pub fn export_buffer(&self, buffer: &Buffer) -> Result<SharedHandle> {
+        ensure(buffer.desc.usage.contains(BufferUsage::SHARED))?;
+        Ok(SharedHandle {
+            raw: Backend::export(&self.raw, Object::Buffer(&buffer.raw))?,
+        })
+    }
+
+    /// As [`export_buffer`](Self::export_buffer), for a texture with [`TextureUsage::SHARED`].
+    pub fn export_texture(&self, texture: &Texture) -> Result<SharedHandle> {
+        ensure(texture.desc.usage.contains(TextureUsage::SHARED))?;
+        Ok(SharedHandle {
+            raw: Backend::export(&self.raw, Object::Texture(&texture.raw))?,
+        })
+    }
+
+    /// As [`export_buffer`](Self::export_buffer), for a fence made by
+    /// [`create_shared_fence`](Self::create_shared_fence).
+    pub fn export_fence(&self, fence: &Fence) -> Result<SharedHandle> {
+        Ok(SharedHandle {
+            raw: Backend::export(&self.raw, Object::Fence(&fence.raw))?,
+        })
+    }
+
+    /// Opens a texture another device or process exported.
+    ///
+    /// # Safety
+    /// `handle` names a texture that `desc` describes exactly.
+    pub unsafe fn import_texture(
+        &self,
+        handle: &SharedHandle,
+        desc: &TextureDesc,
+    ) -> Result<Texture> {
+        self.validate_texture(desc)?;
+        Ok(Texture {
+            // SAFETY: forwarded from the caller.
+            raw: unsafe { Backend::import_texture(&self.raw, &handle.raw, desc)? },
+            desc: *desc,
+            kind: ResourceKind::External,
+        })
+    }
+
+    /// Opens a buffer another device or process exported.
+    ///
+    /// # Safety
+    /// `handle` names a buffer that `desc` describes exactly.
+    pub unsafe fn import_buffer(&self, handle: &SharedHandle, desc: &BufferDesc) -> Result<Buffer> {
+        self.validate_buffer(desc)?;
+        Ok(Buffer {
+            // SAFETY: forwarded from the caller.
+            raw: unsafe { Backend::import_buffer(&self.raw, &handle.raw, desc)? },
+            desc: *desc,
+            kind: ResourceKind::External,
+        })
+    }
+
+    /// Opens a fence another device or process exported.
+    ///
+    /// # Safety
+    /// `handle` names a fence.
+    pub unsafe fn import_fence(&self, handle: &SharedHandle) -> Result<Fence> {
+        Ok(Fence {
+            // SAFETY: forwarded from the caller.
+            raw: unsafe { Backend::import_fence(&self.raw, &handle.raw)? },
+        })
+    }
+
+    /// Wraps a texture another library created on this device (an XR runtime's swapchain
+    /// image, an upscaler's output). The wrapper adds its own reference to it.
+    ///
+    /// # Safety
+    /// `raw` is a live native texture (D3D12: `ID3D12Resource*`) of this device, in the common
+    /// state, and `desc` describes it exactly.
+    pub unsafe fn texture_from_raw(&self, raw: *mut c_void, desc: &TextureDesc) -> Result<Texture> {
+        self.validate_texture(desc)?;
+        ensure(!raw.is_null())?;
+        Ok(Texture {
+            // SAFETY: forwarded from the caller.
+            raw: unsafe { Backend::texture_from_native(&self.raw, raw, desc)? },
+            desc: *desc,
+            kind: ResourceKind::External,
+        })
+    }
+
+    /// As [`texture_from_raw`](Self::texture_from_raw), for a buffer.
+    ///
+    /// # Safety
+    /// `raw` is a live native buffer of this device that `desc` describes exactly; mapped
+    /// memory locations must match its heap.
+    pub unsafe fn buffer_from_raw(&self, raw: *mut c_void, desc: &BufferDesc) -> Result<Buffer> {
+        self.validate_buffer(desc)?;
+        ensure(!raw.is_null())?;
+        Ok(Buffer {
+            // SAFETY: forwarded from the caller.
+            raw: unsafe { Backend::buffer_from_native(&self.raw, raw, desc)? },
+            desc: *desc,
+            kind: ResourceKind::External,
+        })
+    }
+
+    /// The native device (D3D12: `ID3D12Device*`), borrowed, for libraries that take one
+    /// (upscalers, XR runtimes, vendor SDKs).
+    pub fn as_raw(&self) -> *mut c_void {
+        Backend::native(Object::Device(&self.raw))
+    }
+
+    /// Names the device for debuggers.
+    pub fn set_name(&self, name: &str) {
+        Backend::set_name(Object::Device(&self.raw), name);
+    }
+
+    fn validate_buffer(&self, desc: &BufferDesc) -> Result<()> {
+        ensure(desc.size > 0)?;
+        let shader_write = desc.usage.contains(BufferUsage::SHADER_WRITE);
+        ensure(!shader_write || desc.memory == MemoryLocation::GpuOnly)?;
+        if desc.memory == MemoryLocation::GpuUpload {
+            require(self.features().gpu_upload_heap)?;
+        }
+        Ok(())
+    }
+
+    fn validate_texture(&self, d: &TextureDesc) -> Result<()> {
+        validate_texture(d)?;
+        let support = self.format_support(d.format);
+        if support.features.is_empty() {
+            return Err(unsupported());
+        }
+        if d.sample_count > 1 && !support.supports_samples(d.sample_count) {
+            return Err(unsupported());
+        }
+        if d.usage.contains(TextureUsage::SHADING_RATE) {
+            require(self.features().variable_rate_shading == VariableRateShading::Image)?;
+        }
+        Ok(())
     }
 }
 
-fn validate_buffer(desc: &BufferDesc) -> Result<()> {
-    ensure(desc.size > 0)?;
-    ensure(
-        !desc.usage.contains(BufferUsage::SHADER_WRITE) || desc.memory == MemoryLocation::GpuOnly,
-    )
+fn heap_takes_texture(kind: HeapKind, desc: &TextureDesc) -> bool {
+    let target = desc.usage.contains(TextureUsage::RENDER_TARGET)
+        || desc.usage.contains(TextureUsage::DEPTH_STENCIL);
+    match kind {
+        HeapKind::Any => true,
+        HeapKind::Buffers => false,
+        HeapKind::Textures => !target,
+        HeapKind::Targets => target,
+    }
+}
+
+fn validate_color_space(format: Format, color_space: ColorSpace) -> Result<()> {
+    ensure(match color_space {
+        ColorSpace::Srgb => true,
+        ColorSpace::Hdr10 => format == Format::Rgb10a2Unorm,
+        ColorSpace::ScRgb => format == Format::Rgba16Float,
+    })
+}
+
+fn validate_pageables(objects: &[Pageable<'_>]) -> Result<()> {
+    ensure(objects.iter().all(|o| match o {
+        Pageable::Buffer(b) => b.kind == ResourceKind::Committed,
+        Pageable::Texture(t) => t.kind == ResourceKind::Committed,
+        Pageable::Heap(_) | Pageable::AccelerationStructure(_) => true,
+    }))
+}
+
+pub(crate) fn validate_inputs(inputs: &AccelerationStructureInputs<'_>) -> Result<()> {
+    match inputs {
+        AccelerationStructureInputs::BottomLevel(geometries) => {
+            ensure(!geometries.is_empty())?;
+            let triangles = matches!(geometries[0], AccelerationStructureGeometry::Triangles(_));
+            ensure(
+                geometries
+                    .iter()
+                    .all(|g| matches!(g, AccelerationStructureGeometry::Triangles(_)) == triangles),
+            )
+        }
+        AccelerationStructureInputs::TopLevel { .. } => Ok(()),
+    }
 }
 
 fn validate_texture(d: &TextureDesc) -> Result<()> {
@@ -517,11 +979,28 @@ fn validate_texture(d: &TextureDesc) -> Result<()> {
         ensure(!d.usage.contains(TextureUsage::DEPTH_STENCIL))?;
     }
     if f.is_compressed() {
-        ensure(d.usage.bits() & attachment_or_storage.bits() == 0)?;
-        ensure(d.width.is_multiple_of(4) && d.height.is_multiple_of(4))?;
+        ensure(!d.usage.intersects(attachment_or_storage))?;
+        let block = f.block_extent();
+        ensure(d.width.is_multiple_of(block) && d.height.is_multiple_of(block))?;
     }
     if f.is_srgb() {
         ensure(!d.usage.contains(TextureUsage::STORAGE))?;
+    }
+    match d.sample_count {
+        1 => {}
+        2 | 4 | 8 | 16 => {
+            ensure(d.dimension == TextureDimension::D2 && d.mip_levels == 1)?;
+            ensure(!d.usage.contains(TextureUsage::STORAGE))?;
+            ensure(
+                d.usage
+                    .intersects(TextureUsage::RENDER_TARGET | TextureUsage::DEPTH_STENCIL),
+            )?;
+        }
+        _ => return Err(invalid()),
+    }
+    if d.usage.contains(TextureUsage::SHADING_RATE) {
+        ensure(f == Format::R8Uint && d.dimension == TextureDimension::D2)?;
+        ensure(d.sample_count == 1 && d.mip_levels == 1 && d.array_layers == 1)?;
     }
     match d.clear_value {
         None => Ok(()),
@@ -592,9 +1071,97 @@ impl Queue {
         Backend::timestamp_frequency(&self.raw)
     }
 
+    /// The queue's GPU clock and the CPU clock, read together, so profilers can put GPU
+    /// timestamps on the CPU timeline. Clocks drift: calibrate again every few seconds.
+    pub fn clock_calibration(&self) -> Result<ClockCalibration> {
+        Backend::clock_calibration(&self.raw)
+    }
+
     /// Blocks until everything submitted so far has finished.
     pub fn wait_idle(&self) -> Result<()> {
         Backend::wait_idle(&self.raw)
+    }
+
+    /// Binds (or unbinds) heap memory to tiles of sparse buffers and textures, in queue order
+    /// with this queue's submissions. Heaps must hold the tiles' kind of resource
+    /// ([`HeapKind`]); tiles bound twice alias the same memory. Panics if a region lies outside
+    /// its resource or heap.
+    ///
+    /// # Safety
+    /// Each heap outlives the bindings into it, and no submitted work uses a tile while it is
+    /// rebound.
+    pub unsafe fn bind_sparse(&self, binds: &[SparseBind<'_>]) -> Result<()> {
+        for bind in binds {
+            let (memory, kind) = match bind {
+                SparseBind::Buffer {
+                    buffer,
+                    tile_offset,
+                    tile_count,
+                    memory,
+                } => {
+                    assert!(buffer.kind == ResourceKind::Sparse, "not a sparse buffer");
+                    let tiles = buffer.desc.size.div_ceil(SPARSE_TILE_SIZE);
+                    assert!(
+                        *tile_count > 0 && (*tile_offset as u64 + *tile_count as u64) <= tiles,
+                        "sparse buffer tiles out of range"
+                    );
+                    (memory.map(|(h, t)| (h, t, *tile_count)), HeapKind::Buffers)
+                }
+                SparseBind::Texture {
+                    texture,
+                    region,
+                    memory,
+                } => {
+                    assert!(texture.kind == ResourceKind::Sparse, "not a sparse texture");
+                    let d = &texture.desc;
+                    let tiles = match region {
+                        SparseTextureRegion::Tiles {
+                            mip, layer, size, ..
+                        } => {
+                            assert!(*mip < d.mip_levels && *layer < d.array_layers);
+                            assert!(size.iter().all(|&s| s > 0), "empty sparse region");
+                            size[0] * size[1] * size[2]
+                        }
+                        SparseTextureRegion::PackedMips { layer } => {
+                            assert!(*layer < d.array_layers);
+                            0
+                        }
+                    };
+                    (memory.map(|(h, t)| (h, t, tiles)), {
+                        let target = d.usage.contains(TextureUsage::RENDER_TARGET);
+                        if target {
+                            HeapKind::Targets
+                        } else {
+                            HeapKind::Textures
+                        }
+                    })
+                }
+            };
+            if let Some((heap, first, count)) = memory {
+                assert!(
+                    heap.desc.memory == MemoryLocation::GpuOnly
+                        && (heap.desc.kind == HeapKind::Any || heap.desc.kind == kind),
+                    "heap cannot hold these tiles"
+                );
+                let heap_tiles = heap.desc.size / SPARSE_TILE_SIZE;
+                assert!(
+                    first as u64 + count as u64 <= heap_tiles,
+                    "heap tiles out of range"
+                );
+            }
+        }
+        // SAFETY: forwarded from the caller; the ranges were checked above.
+        unsafe { Backend::bind_sparse(&self.raw, binds) }
+    }
+
+    /// The native queue (D3D12: `ID3D12CommandQueue*`), borrowed.
+    pub fn as_raw(&self) -> *mut c_void {
+        Backend::native(Object::Queue(&self.raw))
+    }
+
+    /// Names the queue for debuggers and crash reports.
+    pub fn set_name(&self, name: &str) {
+        Backend::set_name(Object::Queue(&self.raw), name);
     }
 }
 
@@ -610,7 +1177,8 @@ impl Fence {
         Backend::completed_value(&self.raw)
     }
 
-    /// Blocks until the fence reaches `value`. Returns `false` if `timeout` passed first.
+    /// Blocks until the fence reaches `value`. Returns `false` if `timeout` passed first, and
+    /// `DeviceLost` if the device is gone (its fences never advance again).
     pub fn wait(&self, value: u64, timeout: Option<Duration>) -> Result<bool> {
         Backend::wait(&self.raw, value, timeout)
     }
@@ -619,475 +1187,36 @@ impl Fence {
     pub fn signal(&self, value: u64) -> Result<()> {
         Backend::signal(&self.raw, value)
     }
-}
 
-/// Memory that command lists record into (D3D12 command allocator, `VkCommandPool`). One list
-/// records from a pool at a time; reset it once the GPU is done with everything recorded.
-pub struct CommandPool {
-    raw: <Backend as Types>::CommandPool,
-    /// The work its lists record.
-    ty: QueueType,
-    /// The queue they run on (graphics where there is no dedicated queue of `ty`).
-    backend_ty: QueueType,
-}
-
-impl CommandPool {
-    #[inline]
-    pub fn queue_type(&self) -> QueueType {
-        self.ty
+    /// The native fence (D3D12: `ID3D12Fence*`), borrowed.
+    pub fn as_raw(&self) -> *mut c_void {
+        Backend::native(Object::Fence(&self.raw))
     }
 
-    /// Frees everything recorded from this pool for reuse.
-    ///
-    /// # Safety
-    /// The GPU has finished executing every command list recorded from this pool since the last
-    /// reset.
-    pub unsafe fn reset(&mut self) -> Result<()> {
-        // SAFETY: forwarded from the caller.
-        unsafe { Backend::reset_pool(&mut self.raw) }
+    pub fn set_name(&self, name: &str) {
+        Backend::set_name(Object::Fence(&self.raw), name);
     }
 }
 
-/// A command list. [`begin`](Self::begin) to record, [`end`](Self::end), then submit.
-///
-/// Each recording starts with the bindless tables bound and the push constants zeroed; pipelines,
-/// viewports, scissors and index buffers must be set before drawing.
-///
-/// A list records the commands of its pool's [`QueueType`]: copy lists copy (and barrier,
-/// time and mark), compute lists also dispatch, graphics lists do everything. Recording a
-/// command the type does not allow panics.
-pub struct CommandList {
-    pub(crate) raw: <Backend as Types>::CommandList,
-    ty: QueueType,
-    backend_ty: QueueType,
-}
-
-impl CommandList {
-    #[inline]
-    pub fn queue_type(&self) -> QueueType {
-        self.ty
-    }
-
-    fn graphics(&self, what: &str) {
-        assert!(
-            self.ty == QueueType::Graphics,
-            "{what} needs a graphics list, not {:?}",
-            self.ty
-        );
-    }
-
-    fn compute(&self, what: &str) {
-        assert!(
-            self.ty != QueueType::Copy,
-            "{what} needs a graphics or compute list, not a copy list"
-        );
-    }
-
-    /// Starts recording into `pool` (of the list's queue type), discarding what was recorded
-    /// before. The previous recording must not be pending on the GPU.
-    pub fn begin(&mut self, pool: &mut CommandPool) -> Result<()> {
-        ensure(pool.ty == self.ty)?;
-        Backend::begin(&mut self.raw, &mut pool.raw)
-    }
-
-    /// Finishes recording. Reports errors the API detected while recording.
-    pub fn end(&mut self) -> Result<()> {
-        Backend::end(&mut self.raw)
-    }
-
-    pub fn texture_barriers(&mut self, barriers: &[TextureBarrier<'_>]) {
-        Backend::texture_barriers(&mut self.raw, barriers);
-    }
-
-    pub fn buffer_barriers(&mut self, barriers: &[BufferBarrier<'_>]) {
-        Backend::buffer_barriers(&mut self.raw, barriers);
-    }
-
-    /// Binds render targets and applies their load ops. No barriers or copies are allowed until
-    /// [`end_render_pass`](Self::end_render_pass).
-    pub fn begin_render_pass(&mut self, desc: &RenderPassDesc<'_>) {
-        self.graphics("a render pass");
-        assert!(desc.color.len() <= MAX_COLOR_ATTACHMENTS);
-        Backend::begin_render_pass(&mut self.raw, desc);
-    }
-
-    pub fn end_render_pass(&mut self) {
-        Backend::end_render_pass(&mut self.raw);
-    }
-
-    /// Copies `size` bytes. Panics if a range is out of bounds or a usage is missing.
-    pub fn copy_buffer(
-        &mut self,
-        src: &Buffer,
-        src_offset: u64,
-        dst: &Buffer,
-        dst_offset: u64,
-        size: u64,
-    ) {
-        assert!(src.desc.usage.contains(BufferUsage::COPY_SRC));
-        assert!(dst.desc.usage.contains(BufferUsage::COPY_DST));
-        assert!(
-            src_offset
-                .checked_add(size)
-                .is_some_and(|e| e <= src.desc.size)
-        );
-        assert!(
-            dst_offset
-                .checked_add(size)
-                .is_some_and(|e| e <= dst.desc.size)
-        );
-        Backend::copy_buffer(&mut self.raw, src, src_offset, dst, dst_offset, size);
-    }
-
-    /// Copies buffer rows into a texture region. Panics if the region is invalid (see
-    /// [`BufferTextureCopy`]) or a usage is missing.
-    pub fn copy_buffer_to_texture(
-        &mut self,
-        src: &Buffer,
-        dst: &Texture,
-        region: &BufferTextureCopy,
-    ) {
-        assert!(src.desc.usage.contains(BufferUsage::COPY_SRC));
-        assert!(dst.desc.usage.contains(TextureUsage::COPY_DST));
-        check_copy(src, dst, region);
-        Backend::copy_buffer_to_texture(&mut self.raw, src, dst, region);
-    }
-
-    /// Copies a texture region into buffer rows. Panics like
-    /// [`copy_buffer_to_texture`](Self::copy_buffer_to_texture).
-    pub fn copy_texture_to_buffer(
-        &mut self,
-        src: &Texture,
-        dst: &Buffer,
-        region: &BufferTextureCopy,
-    ) {
-        assert!(src.desc.usage.contains(TextureUsage::COPY_SRC));
-        assert!(dst.desc.usage.contains(BufferUsage::COPY_DST));
-        check_copy(dst, src, region);
-        Backend::copy_texture_to_buffer(&mut self.raw, src, dst, region);
-    }
-
-    pub fn set_graphics_pipeline(&mut self, pipeline: &GraphicsPipeline) {
-        self.graphics("a graphics pipeline");
-        Backend::set_graphics_pipeline(&mut self.raw, &pipeline.raw);
-    }
-
-    pub fn set_compute_pipeline(&mut self, pipeline: &ComputePipeline) {
-        self.compute("a compute pipeline");
-        Backend::set_compute_pipeline(&mut self.raw, &pipeline.raw);
-    }
-
-    /// Writes `data` at word `offset` of the push constants of the pipeline kind bound last
-    /// (graphics if none). Panics past [`MAX_PUSH_CONSTANTS`] words.
-    pub fn push_constants(&mut self, offset: u32, data: &[u32]) {
-        self.compute("push constants");
-        assert!(
-            (offset as usize)
-                .checked_add(data.len())
-                .is_some_and(|end| end <= MAX_PUSH_CONSTANTS as usize)
-        );
-        Backend::push_constants(&mut self.raw, offset, data);
-    }
-
-    pub fn set_viewport(&mut self, viewport: &Viewport) {
-        self.graphics("a viewport");
-        Backend::set_viewport(&mut self.raw, viewport);
-    }
-
-    pub fn set_scissor(&mut self, rect: &Rect) {
-        self.graphics("a scissor");
-        Backend::set_scissor(&mut self.raw, rect);
-    }
-
-    /// The reference value of stencil tests and [`StencilOp::Replace`](crate::StencilOp::Replace)
-    /// (0 at the start of each recording).
-    pub fn set_stencil_reference(&mut self, reference: u8) {
-        self.graphics("a stencil reference");
-        Backend::set_stencil_reference(&mut self.raw, reference);
-    }
-
-    /// Panics without [`BufferUsage::INDEX`] or with an offset past the end or misaligned.
-    pub fn set_index_buffer(&mut self, buffer: &Buffer, offset: u64, format: IndexFormat) {
-        self.graphics("an index buffer");
-        assert!(buffer.desc.usage.contains(BufferUsage::INDEX));
-        let size = match format {
-            IndexFormat::U16 => 2,
-            IndexFormat::U32 => 4,
-        };
-        assert!(offset < buffer.desc.size && offset.is_multiple_of(size));
-        Backend::set_index_buffer(&mut self.raw, buffer, offset, format);
-    }
-
-    /// Shaders see vertex indices `first_vertex..` and instance indices from 0: the instance
-    /// offset is not visible to D3D12 shaders, so pass it in push constants when needed.
-    pub fn draw(
-        &mut self,
-        vertex_count: u32,
-        instance_count: u32,
-        first_vertex: u32,
-        first_instance: u32,
-    ) {
-        self.graphics("a draw");
-        Backend::draw(
-            &mut self.raw,
-            vertex_count,
-            instance_count,
-            first_vertex,
-            first_instance,
-        );
-    }
-
-    /// Shaders see vertex index `index + vertex_offset`; instances as in [`draw`](Self::draw).
-    pub fn draw_indexed(
-        &mut self,
-        index_count: u32,
-        instance_count: u32,
-        first_index: u32,
-        vertex_offset: i32,
-        first_instance: u32,
-    ) {
-        self.graphics("a draw");
-        Backend::draw_indexed(
-            &mut self.raw,
-            index_count,
-            instance_count,
-            first_index,
-            vertex_offset,
-            first_instance,
-        );
-    }
-
-    pub fn dispatch(&mut self, x: u32, y: u32, z: u32) {
-        self.compute("a dispatch");
-        Backend::dispatch(&mut self.raw, x, y, z);
-    }
-
-    /// Binds a mesh pipeline; push constants then go to it, as for a graphics pipeline.
-    pub fn set_mesh_pipeline(&mut self, pipeline: &MeshPipeline) {
-        self.graphics("a mesh pipeline");
-        Backend::set_mesh_pipeline(&mut self.raw, &pipeline.raw);
-    }
-
-    /// Launches `x * y * z` amplification (or, without one, mesh) shader groups.
-    pub fn dispatch_mesh(&mut self, x: u32, y: u32, z: u32) {
-        self.graphics("a mesh dispatch");
-        Backend::dispatch_mesh(&mut self.raw, x, y, z);
-    }
-
-    fn check_indirect(args: &IndirectArgs<'_>, stride: u64) {
-        let b = &args.buffer.desc;
-        assert!(
-            b.usage.contains(BufferUsage::INDIRECT),
-            "argument buffer without INDIRECT usage"
-        );
-        assert!(
-            args.offset.is_multiple_of(4),
-            "argument offset not a multiple of 4"
-        );
-        assert!(
-            (args.max_count as u64)
-                .checked_mul(stride)
-                .and_then(|n| n.checked_add(args.offset))
-                .is_some_and(|e| e <= b.size),
-            "indirect arguments past the end of the buffer"
-        );
-        if let Some((count, offset)) = args.count {
-            assert!(
-                count.desc.usage.contains(BufferUsage::INDIRECT),
-                "count buffer without INDIRECT usage"
-            );
-            assert!(
-                offset.is_multiple_of(4) && offset + 4 <= count.desc.size,
-                "count out of range"
-            );
-        }
-    }
-
-    /// Draws as [`draw`](Self::draw) does, once per [`DrawIndirectArgs`] record.
-    pub fn draw_indirect(&mut self, args: &IndirectArgs<'_>) {
-        self.graphics("a draw");
-        Self::check_indirect(args, size_of::<DrawIndirectArgs>() as u64);
-        Backend::draw_indirect(&mut self.raw, args);
-    }
-
-    /// Draws as [`draw_indexed`](Self::draw_indexed) does, once per [`DrawIndexedIndirectArgs`]
-    /// record.
-    pub fn draw_indexed_indirect(&mut self, args: &IndirectArgs<'_>) {
-        self.graphics("a draw");
-        Self::check_indirect(args, size_of::<DrawIndexedIndirectArgs>() as u64);
-        Backend::draw_indexed_indirect(&mut self.raw, args);
-    }
-
-    /// Dispatches once per [`DispatchIndirectArgs`] record.
-    pub fn dispatch_indirect(&mut self, args: &IndirectArgs<'_>) {
-        self.compute("a dispatch");
-        Self::check_indirect(args, size_of::<DispatchIndirectArgs>() as u64);
-        Backend::dispatch_indirect(&mut self.raw, args);
-    }
-
-    /// Mesh-dispatches once per [`DispatchIndirectArgs`] record.
-    pub fn dispatch_mesh_indirect(&mut self, args: &IndirectArgs<'_>) {
-        self.graphics("a mesh dispatch");
-        Self::check_indirect(args, size_of::<DispatchIndirectArgs>() as u64);
-        Backend::dispatch_mesh_indirect(&mut self.raw, args);
-    }
-
-    /// Writes the GPU clock into timestamp query `index` once the work before it has finished.
-    pub fn write_timestamp(&mut self, pool: &QueryPool, index: u32) {
-        let copy = pool.desc.kind == QueryKind::CopyTimestamp;
-        assert!(
-            copy == (self.ty == QueueType::Copy),
-            "copy lists write CopyTimestamp queries, other lists Timestamp queries"
-        );
-        assert!(index < pool.desc.count, "query index out of range");
-        Backend::write_timestamp(&mut self.raw, &pool.raw, index);
-    }
-
-    /// Writes queries `first..first + count` as little-endian `u64`s at `offset` (a multiple of
-    /// 8) of `dst` ([`BufferUsage::COPY_DST`], in [`Access::COPY_DST`](crate::Access::COPY_DST)).
-    pub fn resolve_queries(
-        &mut self,
-        pool: &QueryPool,
-        first: u32,
-        count: u32,
-        dst: &Buffer,
-        offset: u64,
-    ) {
-        assert!(
-            first
-                .checked_add(count)
-                .is_some_and(|e| e <= pool.desc.count)
-                && count > 0,
-            "query range out of bounds"
-        );
-        assert!(dst.desc.usage.contains(BufferUsage::COPY_DST));
-        assert!(
-            offset.is_multiple_of(8) && offset + count as u64 * 8 <= dst.desc.size,
-            "query results out of range"
-        );
-        Backend::resolve_queries(&mut self.raw, &pool.raw, first, count, dst, offset);
-    }
-
-    /// Opens a named region for GPU debuggers and profilers (PIX, RenderDoc). Regions nest;
-    /// close each with [`end_event`](Self::end_event) in the same list.
-    pub fn begin_event(&mut self, name: &str) {
-        Backend::begin_event(&mut self.raw, name);
-    }
-
-    pub fn end_event(&mut self) {
-        Backend::end_event(&mut self.raw);
-    }
-
-    /// A named point in the GPU timeline, for debuggers.
-    pub fn set_marker(&mut self, name: &str) {
-        Backend::set_marker(&mut self.raw, name);
-    }
-
-    /// Copies a box between textures of the same format (or its sRGB / linear twin). Panics if
-    /// either side is out of range, misaligned to blocks, or lacks its copy usage. Depth-stencil
-    /// copies move both planes.
-    pub fn copy_texture(&mut self, src: &Texture, dst: &Texture, region: &TextureCopy) {
-        assert!(src.desc.usage.contains(TextureUsage::COPY_SRC));
-        assert!(dst.desc.usage.contains(TextureUsage::COPY_DST));
-        let (sf, df) = (src.desc.format, dst.desc.format);
-        assert!(
-            sf.linear() == df.linear(),
-            "copy between incompatible formats"
-        );
-        let fits = |t: &TextureDesc, mip: u32, layer: u32, offset: [u32; 3]| {
-            let (w, h) = t.mip_size(mip);
-            let block = t.format.block_extent();
-            let (w, h) = (w.next_multiple_of(block), h.next_multiple_of(block));
-            let d = t.mip_depth(mip);
-            mip < t.mip_levels
-                && layer < t.array_layers
-                && [w, h, d].iter().zip(offset.iter().zip(&region.size)).all(
-                    |(&extent, (&o, &s))| s > 0 && o.checked_add(s).is_some_and(|e| e <= extent),
-                )
-                && [offset[0], offset[1], region.size[0], region.size[1]]
-                    .iter()
-                    .all(|v| v.is_multiple_of(block))
-        };
-        assert!(
-            fits(
-                &src.desc,
-                region.src_mip,
-                region.src_layer,
-                region.src_offset
-            ),
-            "copy source out of range"
-        );
-        assert!(
-            fits(
-                &dst.desc,
-                region.dst_mip,
-                region.dst_layer,
-                region.dst_offset
-            ),
-            "copy destination out of range"
-        );
-        if sf.is_depth() {
-            assert!(
-                region.src_offset == [0; 3]
-                    && region.dst_offset == [0; 3]
-                    && (region.size[0], region.size[1]) == src.desc.mip_size(region.src_mip),
-                "depth copies cover the whole subresource"
-            );
-        }
-        Backend::copy_texture(&mut self.raw, src, dst, region);
-    }
-}
-
-fn check_copy(buffer: &Buffer, texture: &Texture, r: &BufferTextureCopy) {
-    let d = &texture.desc;
-    assert!(
-        r.mip < d.mip_levels && r.layer < d.array_layers,
-        "copy subresource out of range"
-    );
-    let (w, h) = d.mip_size(r.mip);
-    let block = d.format.block_extent();
-    // Block-compressed mips are stored whole blocks wide, even below 4 texels.
-    let (w, h) = (w.next_multiple_of(block), h.next_multiple_of(block));
-    assert!(
-        r.x.checked_add(r.width).is_some_and(|e| e <= w)
-            && r.y.checked_add(r.height).is_some_and(|e| e <= h)
-            && r.z
-                .checked_add(r.depth)
-                .is_some_and(|e| e <= d.mip_depth(r.mip))
-            && r.width > 0
-            && r.height > 0
-            && r.depth > 0,
-        "copy region outside the subresource"
-    );
-    assert!(
-        [r.x, r.y, r.width, r.height]
-            .iter()
-            .all(|v| v.is_multiple_of(block)),
-        "copy region not block-aligned"
-    );
-    if d.format.is_depth() {
-        assert!(
-            r.x == 0 && r.y == 0 && (r.width, r.height) == (w, h),
-            "depth copies cover the whole subresource"
-        );
-    }
-    assert!(
-        r.bytes_per_row.is_multiple_of(TEXTURE_ROW_PITCH_ALIGNMENT)
-            && r.buffer_offset.is_multiple_of(TEXTURE_OFFSET_ALIGNMENT),
-        "copy rows misaligned"
-    );
-    let row = (r.width / block) as u64 * d.format.copy_block_size() as u64;
-    assert!(r.bytes_per_row as u64 >= row, "copy rows overlap");
-    // Slices follow each other, `height / block` rows apart.
-    let rows = (r.height / block) as u64 * r.depth as u64;
-    let end = r.buffer_offset + (rows - 1) * r.bytes_per_row as u64 + row;
-    assert!(end <= buffer.desc.size, "copy past the end of the buffer");
+/// How a buffer's or texture's memory came to be.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum ResourceKind {
+    Committed,
+    Placed,
+    Sparse,
+    /// Imported or wrapped from a native object.
+    External,
+    /// The storage of an acceleration structure.
+    AccelerationStructure,
+    /// A swapchain image.
+    Swapchain,
 }
 
 /// A linear GPU buffer.
 pub struct Buffer {
     pub(crate) raw: <Backend as Types>::Buffer,
     pub(crate) desc: BufferDesc,
+    pub(crate) kind: ResourceKind,
 }
 
 impl Buffer {
@@ -1101,8 +1230,9 @@ impl Buffer {
         self.desc.size
     }
 
-    /// The CPU address of an [`Upload`](MemoryLocation::Upload) or
-    /// [`Readback`](MemoryLocation::Readback) buffer, valid for the buffer's life.
+    /// The CPU address of an [`Upload`](MemoryLocation::Upload),
+    /// [`Readback`](MemoryLocation::Readback) or [`GpuUpload`](MemoryLocation::GpuUpload)
+    /// buffer, valid for the buffer's life.
     #[inline]
     pub fn mapped(&self) -> Option<NonNull<u8>> {
         Backend::buffer_mapped(&self.raw)
@@ -1149,22 +1279,61 @@ impl Buffer {
             );
         }
     }
+
+    /// Created by [`Device::create_sparse_buffer`].
+    pub fn is_sparse(&self) -> bool {
+        self.kind == ResourceKind::Sparse
+    }
+
+    /// The native resource (D3D12: `ID3D12Resource*`), borrowed.
+    pub fn as_raw(&self) -> *mut c_void {
+        Backend::native(Object::Buffer(&self.raw))
+    }
+
+    /// Names the buffer for debuggers and crash reports (page faults name the resource).
+    pub fn set_name(&self, name: &str) {
+        Backend::set_name(Object::Buffer(&self.raw), name);
+    }
 }
 
 /// A GPU texture.
 pub struct Texture {
-    #[cfg_attr(
-        any(marlin_platform = "linux", marlin_platform = "macos"),
-        expect(dead_code, reason = "the stub backend has no textures")
-    )]
     pub(crate) raw: <Backend as Types>::Texture,
     pub(crate) desc: TextureDesc,
+    pub(crate) kind: ResourceKind,
 }
 
 impl Texture {
+    #[cfg_attr(
+        any(marlin_platform = "linux", marlin_platform = "macos"),
+        expect(dead_code, reason = "the stub backend has no swapchains")
+    )]
+    pub(crate) fn swapchain_image(raw: <Backend as Types>::Texture, desc: TextureDesc) -> Self {
+        Self {
+            raw,
+            desc,
+            kind: ResourceKind::Swapchain,
+        }
+    }
+
     #[inline]
     pub fn desc(&self) -> &TextureDesc {
         &self.desc
+    }
+
+    /// Created by [`Device::create_sparse_texture`].
+    pub fn is_sparse(&self) -> bool {
+        self.kind == ResourceKind::Sparse
+    }
+
+    /// The native resource (D3D12: `ID3D12Resource*`), borrowed.
+    pub fn as_raw(&self) -> *mut c_void {
+        Backend::native(Object::Texture(&self.raw))
+    }
+
+    /// Names the texture for debuggers and crash reports.
+    pub fn set_name(&self, name: &str) {
+        Backend::set_name(Object::Texture(&self.raw), name);
     }
 }
 
@@ -1215,23 +1384,62 @@ impl Sampler {
 
 /// Compiled shaders plus fixed-function state, for draws.
 pub struct GraphicsPipeline {
-    raw: <Backend as Types>::GraphicsPipeline,
+    pub(crate) raw: <Backend as Types>::GraphicsPipeline,
 }
 
 /// A compiled compute shader, for dispatches.
 pub struct ComputePipeline {
-    raw: <Backend as Types>::ComputePipeline,
+    pub(crate) raw: <Backend as Types>::ComputePipeline,
 }
 
 /// Compiled amplification, mesh and pixel shaders plus fixed-function state, for mesh dispatches.
 pub struct MeshPipeline {
-    raw: <Backend as Types>::MeshPipeline,
+    pub(crate) raw: <Backend as Types>::MeshPipeline,
 }
 
-/// GPU queries of one kind (timestamps).
+macro_rules! named {
+    ($($ty:ident => $variant:ident),*) => {$(
+        impl $ty {
+            /// Names it for debuggers (PIX, RenderDoc) and crash reports.
+            pub fn set_name(&self, name: &str) {
+                Backend::set_name(Object::$variant(&self.raw), name);
+            }
+        }
+    )*};
+}
+
+named!(
+    GraphicsPipeline => GraphicsPipeline,
+    ComputePipeline => ComputePipeline,
+    MeshPipeline => MeshPipeline,
+    QueryPool => QueryPool,
+    Heap => Heap,
+    AccelerationStructure => AccelerationStructure
+);
+
+/// Compiled pipelines kept between runs (D3D12 pipeline library, `VkPipelineCache`), so a
+/// pipeline the driver compiled once loads instead of compiling again: the difference between a
+/// smooth first frame and a stutter per new material.
+///
+/// Pass it in a pipeline description's `cache`; pipelines are looked up by their whole
+/// description and stored when missing. Save [`serialize`](Self::serialize)'s bytes at exit (or
+/// after loading screens) and feed them to [`Device::create_pipeline_cache`] next run. Safe to
+/// use from several threads at once.
+pub struct PipelineCache {
+    pub(crate) raw: <Backend as Types>::PipelineCache,
+}
+
+impl PipelineCache {
+    /// Everything stored so far, for [`Device::create_pipeline_cache`] on a later run.
+    pub fn serialize(&self) -> Result<Vec<u8>> {
+        Backend::serialize_pipeline_cache(&self.raw)
+    }
+}
+
+/// GPU queries of one kind.
 pub struct QueryPool {
-    raw: <Backend as Types>::QueryPool,
-    desc: QueryPoolDesc,
+    pub(crate) raw: <Backend as Types>::QueryPool,
+    pub(crate) desc: QueryPoolDesc,
 }
 
 impl QueryPool {
@@ -1243,8 +1451,8 @@ impl QueryPool {
 
 /// GPU memory that placed resources are created in.
 pub struct Heap {
-    raw: <Backend as Types>::Heap,
-    desc: HeapDesc,
+    pub(crate) raw: <Backend as Types>::Heap,
+    pub(crate) desc: HeapDesc,
 }
 
 impl Heap {
@@ -1254,11 +1462,84 @@ impl Heap {
     }
 }
 
+/// A bounding volume hierarchy ray queries traverse: bottom-level over triangles or boxes,
+/// top-level over instances of bottom-level ones. Built on the GPU by
+/// [`CommandList::build_acceleration_structure`]; synchronized through barriers on its
+/// [`buffer`](Self::buffer) ([`BufferState::ACCELERATION_STRUCTURE_WRITE`] /
+/// [`ACCELERATION_STRUCTURE_READ`](crate::BufferState::ACCELERATION_STRUCTURE_READ)).
+///
+/// [`BufferState::ACCELERATION_STRUCTURE_WRITE`]: crate::BufferState::ACCELERATION_STRUCTURE_WRITE
+pub struct AccelerationStructure {
+    pub(crate) raw: <Backend as Types>::AccelerationStructure,
+    buffer: Buffer,
+    kind: AccelerationStructureKind,
+}
+
+impl AccelerationStructure {
+    #[inline]
+    pub fn kind(&self) -> AccelerationStructureKind {
+        self.kind
+    }
+
+    /// Bytes of storage.
+    #[inline]
+    pub fn size(&self) -> u64 {
+        self.buffer.desc.size
+    }
+
+    /// The memory holding it: for barriers and residency.
+    #[inline]
+    pub fn buffer(&self) -> &Buffer {
+        &self.buffer
+    }
+
+    /// Its slot in the bindless resource table: `ResourceDescriptorHeap[index]` is a
+    /// `RaytracingAccelerationStructure`.
+    #[inline]
+    pub fn index(&self) -> u32 {
+        Backend::acceleration_structure_index(&self.raw)
+    }
+
+    /// What [`AccelerationStructureInstance`](crate::AccelerationStructureInstance) records
+    /// name a bottom-level structure by (its GPU address).
+    #[inline]
+    pub fn instance_address(&self) -> u64 {
+        Backend::acceleration_structure_address(&self.raw)
+    }
+}
+
+/// An OS handle to a buffer, texture or fence another device, API or process can open
+/// (Windows: an NT handle). Closed on drop.
+pub struct SharedHandle {
+    raw: <Backend as Types>::SharedHandle,
+}
+
+impl SharedHandle {
+    /// The handle, still owned by `self`.
+    pub fn as_raw(&self) -> *mut c_void {
+        Backend::shared_handle_raw(&self.raw)
+    }
+
+    /// Takes ownership of a handle another process duplicated into this one.
+    ///
+    /// # Safety
+    /// `raw` is an owned handle of the kind the export functions return.
+    pub unsafe fn from_raw(raw: *mut c_void) -> Self {
+        Self {
+            // SAFETY: forwarded from the caller.
+            raw: unsafe { Backend::shared_handle_from_raw(raw) },
+        }
+    }
+}
+
 /// The images a window presents, rotated by the presentation engine.
 ///
 /// Per frame: [`acquire`](Self::acquire) an image, record work that moves it from
 /// [`TextureState::PRESENT`](crate::TextureState::PRESENT) to a render target and back, submit,
 /// then [`present`](Self::present). Dropping the swapchain waits for its queue to go idle.
+///
+/// Flip-model presentation with a borderless window gets independent flip (exclusive
+/// fullscreen's latency) without an exclusive mode, so there is none.
 pub struct Swapchain {
     raw: <Backend as Types>::Swapchain,
 }
@@ -1287,6 +1568,42 @@ impl Swapchain {
         Backend::set_present_mode(&mut self.raw, mode);
     }
 
+    /// The display can show `color_space` from this swapchain's format.
+    pub fn supports_color_space(&self, color_space: ColorSpace) -> bool {
+        validate_color_space(self.format(), color_space).is_ok()
+            && Backend::supports_color_space(&self.raw, color_space)
+    }
+
+    /// Switches how the display reads the images (HDR on or off). `Unsupported` unless
+    /// [`supports_color_space`](Self::supports_color_space).
+    pub fn set_color_space(&mut self, color_space: ColorSpace) -> Result<()> {
+        validate_color_space(self.format(), color_space)?;
+        require(Backend::supports_color_space(&self.raw, color_space))?;
+        Backend::set_color_space(&mut self.raw, color_space)
+    }
+
+    /// The HDR10 mastering metadata the display tone-maps with; `None` clears it.
+    pub fn set_hdr_metadata(&mut self, metadata: Option<&HdrMetadata>) -> Result<()> {
+        Backend::set_hdr_metadata(&mut self.raw, metadata)
+    }
+
+    #[inline]
+    pub fn color_space(&self) -> ColorSpace {
+        Backend::color_space(&self.raw)
+    }
+
+    /// The display the window is mostly on: whether it is in HDR, and its luminance range for
+    /// tone mapping.
+    pub fn output(&self) -> Result<OutputInfo> {
+        Backend::containing_output(&self.raw)
+    }
+
+    /// When recent presents reached the display, for frame pacing. `None` before the first
+    /// present reaches the display, or after a mode change resets the counters.
+    pub fn frame_statistics(&self) -> Result<Option<FrameStatistics>> {
+        Backend::frame_statistics(&self.raw)
+    }
+
     #[inline]
     pub fn size(&self) -> (u32, u32) {
         Backend::size(&self.raw)
@@ -1313,6 +1630,57 @@ impl Swapchain {
     pub fn view(&self, index: u32) -> &RenderTargetView {
         &Backend::views(&self.raw)[index as usize]
     }
+
+    /// The native swapchain (D3D12: `IDXGISwapChain3*`), borrowed.
+    pub fn as_raw(&self) -> *mut c_void {
+        Backend::native(Object::Swapchain(&self.raw))
+    }
+}
+
+/// Memory that command lists record into (D3D12 command allocator, `VkCommandPool`). One list
+/// records from a pool at a time; reset it once the GPU is done with everything recorded.
+pub struct CommandPool {
+    pub(crate) raw: <Backend as Types>::CommandPool,
+    /// The work its lists record.
+    pub(crate) ty: QueueType,
+    /// The queue they run on (graphics where there is no dedicated queue of `ty`).
+    pub(crate) backend_ty: QueueType,
+}
+
+impl CommandPool {
+    #[inline]
+    pub fn queue_type(&self) -> QueueType {
+        self.ty
+    }
+
+    /// Frees everything recorded from this pool for reuse.
+    ///
+    /// # Safety
+    /// The GPU has finished executing every command list recorded from this pool since the last
+    /// reset.
+    pub unsafe fn reset(&mut self) -> Result<()> {
+        // SAFETY: forwarded from the caller.
+        unsafe { <Backend as crate::contract::Commands>::reset_pool(&mut self.raw) }
+    }
+
+    pub fn set_name(&self, name: &str) {
+        Backend::set_name(Object::CommandPool(&self.raw), name);
+    }
+}
+
+/// A command list. [`begin`](Self::begin) to record, [`end`](Self::end), then submit.
+///
+/// Each recording starts with the bindless tables bound and the push constants zeroed; pipelines,
+/// viewports, scissors and index buffers must be set before drawing.
+///
+/// A list records the commands of its pool's [`QueueType`]: copy lists copy (and barrier,
+/// time and mark), compute lists also dispatch, graphics lists do everything. Recording a
+/// command the type does not allow panics.
+pub struct CommandList {
+    pub(crate) raw: <Backend as Types>::CommandList,
+    pub(crate) ty: QueueType,
+    pub(crate) backend_ty: QueueType,
+    pub(crate) features: Features,
 }
 
 macro_rules! opaque_debug {
@@ -1336,6 +1704,8 @@ opaque_debug!(
     GraphicsPipeline,
     ComputePipeline,
     MeshPipeline,
+    PipelineCache,
+    SharedHandle,
     Swapchain
 );
 
@@ -1371,6 +1741,15 @@ impl core::fmt::Debug for Buffer {
 impl core::fmt::Debug for Texture {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Texture").field("desc", &self.desc).finish()
+    }
+}
+
+impl core::fmt::Debug for AccelerationStructure {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("AccelerationStructure")
+            .field("kind", &self.kind)
+            .field("size", &self.size())
+            .finish()
     }
 }
 

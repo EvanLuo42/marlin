@@ -1,19 +1,29 @@
 //! Placeholder for platforms whose backend is not written yet: [`Instance`] creation fails with
 //! `Unsupported`, so no other object can exist.
 
+use core::ffi::c_void;
 use core::ptr::NonNull;
 use core::time::Duration;
 
+use alloc::vec::Vec;
+
 use crate::contract::{
-    Commands, Device, Fences, Instance, Queue, Queues, Resources, Rhi, Swapchain, Types,
+    Commands, Device, Fences, Handles, Instance, Object, Queue, Queues, Resources, Rhi, Swapchain,
+    Types,
 };
 use crate::{
-    AdapterInfo, Buffer, BufferBarrier, BufferDesc, BufferTextureCopy, BufferViewDesc,
-    ComputePipelineDesc, DepthStencilViewDesc, DeviceDesc, Error, ErrorKind, Features, Format,
-    GraphicsPipelineDesc, HeapDesc, IndexFormat, IndirectArgs, InstanceDesc, MemoryRequirements,
-    MeshPipelineDesc, PresentMode, PresentStatus, QueryPoolDesc, QueueType, Rect, RenderPassDesc,
-    RenderTargetView, RenderTargetViewDesc, Result, SamplerDesc, SubmitDesc, SurfaceHandle,
-    SwapchainDesc, Texture, TextureBarrier, TextureCopy, TextureDesc, TextureViewDesc, Viewport,
+    AccelerationStructure, AccelerationStructureCopy, AccelerationStructureInputs,
+    AccelerationStructureKind, AccelerationStructureSizes, AdapterInfo, Buffer, BufferBarrier,
+    BufferDesc, BufferTextureCopy, BufferViewDesc, BuildAccelerationStructure, BuildFlags,
+    ClearColor, ClockCalibration, ColorSpace, ComputePipelineDesc, DepthStencilViewDesc,
+    DeviceDesc, Error, ErrorKind, Features, Fence, FenceWait, Format, FormatSupport,
+    FrameStatistics, GraphicsPipelineDesc, HdrMetadata, HeapDesc, IndexFormat, IndirectArgs,
+    InstanceDesc, MarkerPoint, MemoryBudget, MemoryRequirements, MeshPipelineDesc, OutputInfo,
+    Pageable, PredicateSkip, PresentMode, PresentStatus, QueryPoolDesc, QueueType, Rect,
+    RenderPassDesc, RenderTargetView, RenderTargetViewDesc, ResidencyPriority, Result, SamplerDesc,
+    ShadingRate, ShadingRateCombiner, SparseBind, SparseTextureLayout, SubmitDesc,
+    SubresourceRange, SurfaceHandle, SwapchainDesc, Texture, TextureBarrier, TextureCopy,
+    TextureDesc, TextureResolve, TextureViewDesc, Viewport,
 };
 
 pub(crate) struct Backend;
@@ -44,9 +54,33 @@ impl Types for Backend {
     type MeshPipeline = Never;
     type QueryPool = Never;
     type Heap = Never;
+    type PipelineCache = Never;
+    type AccelerationStructure = Never;
+    type SharedHandle = Never;
 }
 
 impl Rhi for Backend {}
+
+/// Every object holds a `Never`, so no object can be passed in.
+fn never(object: Object<'_, Backend>) -> ! {
+    match object {
+        Object::Instance(n)
+        | Object::Device(n)
+        | Object::Queue(n)
+        | Object::Fence(n)
+        | Object::CommandPool(n)
+        | Object::CommandList(n)
+        | Object::Swapchain(n)
+        | Object::Buffer(n)
+        | Object::Texture(n)
+        | Object::GraphicsPipeline(n)
+        | Object::ComputePipeline(n)
+        | Object::MeshPipeline(n)
+        | Object::QueryPool(n)
+        | Object::Heap(n)
+        | Object::AccelerationStructure(n) => match *n {},
+    }
+}
 
 impl Instance for Backend {
     fn create_instance(_: &InstanceDesc) -> Result<Never> {
@@ -57,30 +91,66 @@ impl Instance for Backend {
         match *instance {}
     }
 
+    fn output(instance: &Never, _: u32, _: u32) -> Option<OutputInfo> {
+        match *instance {}
+    }
+
     fn create_device(instance: &Never, _: &DeviceDesc) -> Result<(Never, Queues<Never>)> {
         match *instance {}
     }
 }
 
+/// Device functions: the first argument is always a `Never`.
+macro_rules! unreachable_device {
+    ($($(unsafe)? fn $name:ident($first:ident: $first_ty:ty $(, $arg:ident: $ty:ty)*) -> $ret:ty;)*) => {
+        $(fn $name($first: $first_ty $(, $arg: $ty)*) -> $ret {
+            $(let _ = $arg;)*
+            match *$first {}
+        })*
+    };
+}
+
 impl Device for Backend {
-    fn adapter_info(device: &Never) -> &AdapterInfo {
-        match *device {}
-    }
-
-    fn features(device: &Never) -> Features {
-        match *device {}
-    }
-
-    fn create_fence(device: &Never, _: u64) -> Result<Never> {
-        match *device {}
-    }
-
-    fn create_command_pool(device: &Never, _: QueueType) -> Result<Never> {
-        match *device {}
-    }
-
-    fn create_command_list(device: &Never, _: &Never) -> Result<Never> {
-        match *device {}
+    unreachable_device! {
+        fn adapter_info(device: &Never) -> &AdapterInfo;
+        fn features(device: &Never) -> Features;
+        fn format_support(device: &Never, format: Format) -> FormatSupport;
+        fn status(device: &Never) -> Result<()>;
+        fn force_device_lost(device: &Never) -> ();
+        fn set_stable_power_state(device: &Never, stable: bool) -> Result<()>;
+        fn create_fence(device: &Never, initial: u64, shared: bool) -> Result<Never>;
+        fn wait_for_fences(device: &Never, fences: &[(&Fence, u64)], mode: FenceWait, timeout: Option<Duration>) -> Result<bool>;
+        fn create_command_pool(device: &Never, ty: QueueType) -> Result<Never>;
+        fn create_command_list(device: &Never, pool: &Never) -> Result<Never>;
+        fn validation_errors(device: &Never) -> u64;
+        fn create_buffer(device: &Never, desc: &BufferDesc) -> Result<Never>;
+        fn create_texture(device: &Never, desc: &TextureDesc) -> Result<Never>;
+        fn create_render_target_view(device: &Never, texture: &Texture, desc: &RenderTargetViewDesc) -> Result<Never>;
+        fn create_depth_stencil_view(device: &Never, texture: &Texture, desc: &DepthStencilViewDesc) -> Result<Never>;
+        fn create_texture_view(device: &Never, texture: &Texture, desc: &TextureViewDesc) -> Result<Never>;
+        fn create_buffer_view(device: &Never, buffer: &Buffer, desc: &BufferViewDesc) -> Result<Never>;
+        fn create_sampler(device: &Never, desc: &SamplerDesc) -> Result<Never>;
+        fn create_graphics_pipeline(device: &Never, desc: &GraphicsPipelineDesc<'_>) -> Result<Never>;
+        fn create_compute_pipeline(device: &Never, desc: &ComputePipelineDesc<'_>) -> Result<Never>;
+        fn create_mesh_pipeline(device: &Never, desc: &MeshPipelineDesc<'_>) -> Result<Never>;
+        fn create_pipeline_cache(device: &Never, data: &[u8]) -> Result<Never>;
+        fn serialize_pipeline_cache(cache: &Never) -> Result<Vec<u8>>;
+        fn create_query_pool(device: &Never, desc: &QueryPoolDesc) -> Result<Never>;
+        fn create_heap(device: &Never, desc: &HeapDesc) -> Result<Never>;
+        fn buffer_requirements(device: &Never, desc: &BufferDesc) -> MemoryRequirements;
+        fn texture_requirements(device: &Never, desc: &TextureDesc) -> MemoryRequirements;
+        fn create_placed_buffer(device: &Never, heap: &Never, offset: u64, desc: &BufferDesc) -> Result<Never>;
+        fn create_placed_texture(device: &Never, heap: &Never, offset: u64, desc: &TextureDesc) -> Result<Never>;
+        fn memory_budget(device: &Never) -> Result<MemoryBudget>;
+        fn set_memory_reservation(device: &Never, local: u64, non_local: u64) -> Result<()>;
+        fn make_resident(device: &Never, objects: &[Pageable<'_>]) -> Result<()>;
+        fn evict(device: &Never, objects: &[Pageable<'_>]) -> Result<()>;
+        fn set_residency_priority(device: &Never, objects: &[Pageable<'_>], priority: ResidencyPriority) -> Result<()>;
+        fn acceleration_structure_sizes(device: &Never, inputs: &AccelerationStructureInputs<'_>, flags: BuildFlags) -> AccelerationStructureSizes;
+        fn create_acceleration_structure(device: &Never, kind: AccelerationStructureKind, size: u64) -> Result<(Never, Never)>;
+        fn create_sparse_buffer(device: &Never, desc: &BufferDesc) -> Result<Never>;
+        fn create_sparse_texture(device: &Never, desc: &TextureDesc) -> Result<Never>;
+        fn sparse_texture_layout(device: &Never, texture: &Texture) -> SparseTextureLayout;
     }
 
     unsafe fn create_swapchain(
@@ -92,80 +162,50 @@ impl Device for Backend {
         match *device {}
     }
 
-    fn validation_errors(device: &Never) -> u64 {
+    fn export(device: &Never, _: Object<'_, Self>) -> Result<Never> {
         match *device {}
     }
 
-    fn create_buffer(device: &Never, _: &BufferDesc) -> Result<Never> {
+    unsafe fn import_texture(device: &Never, _: &Never, _: &TextureDesc) -> Result<Never> {
         match *device {}
     }
 
-    fn create_texture(device: &Never, _: &TextureDesc) -> Result<Never> {
+    unsafe fn import_buffer(device: &Never, _: &Never, _: &BufferDesc) -> Result<Never> {
         match *device {}
     }
 
-    fn create_render_target_view(
+    unsafe fn import_fence(device: &Never, _: &Never) -> Result<Never> {
+        match *device {}
+    }
+
+    unsafe fn texture_from_native(
         device: &Never,
-        _: &Texture,
-        _: &RenderTargetViewDesc,
+        _: *mut c_void,
+        _: &TextureDesc,
     ) -> Result<Never> {
         match *device {}
     }
 
-    fn create_depth_stencil_view(
-        device: &Never,
-        _: &Texture,
-        _: &DepthStencilViewDesc,
-    ) -> Result<Never> {
+    unsafe fn buffer_from_native(device: &Never, _: *mut c_void, _: &BufferDesc) -> Result<Never> {
         match *device {}
     }
+}
 
-    fn create_texture_view(device: &Never, _: &Texture, _: &TextureViewDesc) -> Result<Never> {
-        match *device {}
+impl Handles for Backend {
+    fn set_name(object: Object<'_, Self>, _: &str) {
+        never(object)
     }
 
-    fn create_buffer_view(device: &Never, _: &Buffer, _: &BufferViewDesc) -> Result<Never> {
-        match *device {}
+    fn native(object: Object<'_, Self>) -> *mut c_void {
+        never(object)
     }
 
-    fn create_sampler(device: &Never, _: &SamplerDesc) -> Result<Never> {
-        match *device {}
+    fn shared_handle_raw(handle: &Never) -> *mut c_void {
+        match *handle {}
     }
 
-    fn create_graphics_pipeline(device: &Never, _: &GraphicsPipelineDesc<'_>) -> Result<Never> {
-        match *device {}
-    }
-
-    fn create_compute_pipeline(device: &Never, _: &ComputePipelineDesc<'_>) -> Result<Never> {
-        match *device {}
-    }
-
-    fn create_mesh_pipeline(device: &Never, _: &MeshPipelineDesc<'_>) -> Result<Never> {
-        match *device {}
-    }
-
-    fn create_query_pool(device: &Never, _: &QueryPoolDesc) -> Result<Never> {
-        match *device {}
-    }
-
-    fn create_heap(device: &Never, _: &HeapDesc) -> Result<Never> {
-        match *device {}
-    }
-
-    fn buffer_requirements(device: &Never, _: &BufferDesc) -> MemoryRequirements {
-        match *device {}
-    }
-
-    fn texture_requirements(device: &Never, _: &TextureDesc) -> MemoryRequirements {
-        match *device {}
-    }
-
-    fn create_placed_buffer(device: &Never, _: &Never, _: u64, _: &BufferDesc) -> Result<Never> {
-        match *device {}
-    }
-
-    fn create_placed_texture(device: &Never, _: &Never, _: u64, _: &TextureDesc) -> Result<Never> {
-        match *device {}
+    unsafe fn shared_handle_from_raw(_: *mut c_void) -> Never {
+        panic!("this platform's RHI backend is not written yet: no shared handles")
     }
 }
 
@@ -181,6 +221,14 @@ impl Resources for Backend {
     fn sampler_index(sampler: &Never) -> u32 {
         match *sampler {}
     }
+
+    fn acceleration_structure_index(structure: &Never) -> u32 {
+        match *structure {}
+    }
+
+    fn acceleration_structure_address(structure: &Never) -> u64 {
+        match *structure {}
+    }
 }
 
 impl Queue for Backend {
@@ -192,7 +240,15 @@ impl Queue for Backend {
         match *queue {}
     }
 
+    fn clock_calibration(queue: &Never) -> Result<ClockCalibration> {
+        match *queue {}
+    }
+
     fn wait_idle(queue: &Never) -> Result<()> {
+        match *queue {}
+    }
+
+    unsafe fn bind_sparse(queue: &Never, _: &[SparseBind<'_>]) -> Result<()> {
         match *queue {}
     }
 }
@@ -211,6 +267,16 @@ impl Fences for Backend {
     }
 }
 
+/// Recording functions: the list is always a `Never`.
+macro_rules! unreachable_commands {
+    ($($(unsafe)? fn $name:ident($list:ident: $list_ty:ty $(, $arg:ident: $ty:ty)*);)*) => {
+        $(fn $name($list: $list_ty $(, $arg: $ty)*) {
+            $(let _ = $arg;)*
+            match *$list {}
+        })*
+    };
+}
+
 impl Commands for Backend {
     unsafe fn reset_pool(pool: &mut Never) -> Result<()> {
         match *pool {}
@@ -224,120 +290,50 @@ impl Commands for Backend {
         match *list {}
     }
 
-    fn texture_barriers(list: &mut Never, _: &[TextureBarrier<'_>]) {
-        match *list {}
-    }
-
-    fn buffer_barriers(list: &mut Never, _: &[BufferBarrier<'_>]) {
-        match *list {}
-    }
-
-    fn begin_render_pass(list: &mut Never, _: &RenderPassDesc<'_>) {
-        match *list {}
-    }
-
-    fn end_render_pass(list: &mut Never) {
-        match *list {}
-    }
-
-    fn copy_buffer(list: &mut Never, _: &Buffer, _: u64, _: &Buffer, _: u64, _: u64) {
-        match *list {}
-    }
-
-    fn copy_buffer_to_texture(list: &mut Never, _: &Buffer, _: &Texture, _: &BufferTextureCopy) {
-        match *list {}
-    }
-
-    fn copy_texture_to_buffer(list: &mut Never, _: &Texture, _: &Buffer, _: &BufferTextureCopy) {
-        match *list {}
-    }
-
-    fn set_graphics_pipeline(list: &mut Never, _: &Never) {
-        match *list {}
-    }
-
-    fn set_compute_pipeline(list: &mut Never, _: &Never) {
-        match *list {}
-    }
-
-    fn push_constants(list: &mut Never, _: u32, _: &[u32]) {
-        match *list {}
-    }
-
-    fn set_viewport(list: &mut Never, _: &Viewport) {
-        match *list {}
-    }
-
-    fn set_scissor(list: &mut Never, _: &Rect) {
-        match *list {}
-    }
-
-    fn set_stencil_reference(list: &mut Never, _: u8) {
-        match *list {}
-    }
-
-    fn set_index_buffer(list: &mut Never, _: &Buffer, _: u64, _: IndexFormat) {
-        match *list {}
-    }
-
-    fn draw(list: &mut Never, _: u32, _: u32, _: u32, _: u32) {
-        match *list {}
-    }
-
-    fn draw_indexed(list: &mut Never, _: u32, _: u32, _: u32, _: i32, _: u32) {
-        match *list {}
-    }
-
-    fn dispatch(list: &mut Never, _: u32, _: u32, _: u32) {
-        match *list {}
-    }
-
-    fn set_mesh_pipeline(list: &mut Never, _: &Never) {
-        match *list {}
-    }
-
-    fn dispatch_mesh(list: &mut Never, _: u32, _: u32, _: u32) {
-        match *list {}
-    }
-
-    fn draw_indirect(list: &mut Never, _: &IndirectArgs<'_>) {
-        match *list {}
-    }
-
-    fn draw_indexed_indirect(list: &mut Never, _: &IndirectArgs<'_>) {
-        match *list {}
-    }
-
-    fn dispatch_indirect(list: &mut Never, _: &IndirectArgs<'_>) {
-        match *list {}
-    }
-
-    fn dispatch_mesh_indirect(list: &mut Never, _: &IndirectArgs<'_>) {
-        match *list {}
-    }
-
-    fn write_timestamp(list: &mut Never, _: &Never, _: u32) {
-        match *list {}
-    }
-
-    fn resolve_queries(list: &mut Never, _: &Never, _: u32, _: u32, _: &Buffer, _: u64) {
-        match *list {}
-    }
-
-    fn begin_event(list: &mut Never, _: &str) {
-        match *list {}
-    }
-
-    fn end_event(list: &mut Never) {
-        match *list {}
-    }
-
-    fn set_marker(list: &mut Never, _: &str) {
-        match *list {}
-    }
-
-    fn copy_texture(list: &mut Never, _: &Texture, _: &Texture, _: &TextureCopy) {
-        match *list {}
+    unreachable_commands! {
+        fn texture_barriers(list: &mut Never, barriers: &[TextureBarrier<'_>]);
+        fn buffer_barriers(list: &mut Never, barriers: &[BufferBarrier<'_>]);
+        fn begin_render_pass(list: &mut Never, desc: &RenderPassDesc<'_>);
+        fn end_render_pass(list: &mut Never);
+        fn copy_buffer(list: &mut Never, src: &Buffer, src_offset: u64, dst: &Buffer, dst_offset: u64, size: u64);
+        fn copy_buffer_to_texture(list: &mut Never, src: &Buffer, dst: &Texture, region: &BufferTextureCopy);
+        fn copy_texture_to_buffer(list: &mut Never, src: &Texture, dst: &Buffer, region: &BufferTextureCopy);
+        fn copy_texture(list: &mut Never, src: &Texture, dst: &Texture, region: &TextureCopy);
+        fn resolve_texture(list: &mut Never, src: &Texture, dst: &Texture, resolve: &TextureResolve);
+        fn fill_buffer(list: &mut Never, buffer: &Buffer, offset: u64, size: u64, value: u32);
+        fn clear_storage_texture(list: &mut Never, texture: &Texture, range: &SubresourceRange, value: ClearColor);
+        fn write_marker(list: &mut Never, buffer: &Buffer, offset: u64, value: u32, point: MarkerPoint);
+        fn set_graphics_pipeline(list: &mut Never, pipeline: &Never);
+        fn set_compute_pipeline(list: &mut Never, pipeline: &Never);
+        fn set_mesh_pipeline(list: &mut Never, pipeline: &Never);
+        fn push_constants(list: &mut Never, offset: u32, data: &[u32]);
+        fn set_viewports(list: &mut Never, viewports: &[Viewport]);
+        fn set_scissors(list: &mut Never, rects: &[Rect]);
+        fn set_stencil_reference(list: &mut Never, reference: u8);
+        fn set_blend_constants(list: &mut Never, constants: [f32; 4]);
+        fn set_depth_bounds(list: &mut Never, min: f32, max: f32);
+        fn set_shading_rate(list: &mut Never, rate: ShadingRate, combiners: [ShadingRateCombiner; 2]);
+        fn set_shading_rate_image(list: &mut Never, image: Option<&Texture>);
+        fn set_index_buffer(list: &mut Never, buffer: &Buffer, offset: u64, format: IndexFormat);
+        fn draw(list: &mut Never, vertex_count: u32, instance_count: u32, first_vertex: u32, first_instance: u32);
+        fn draw_indexed(list: &mut Never, index_count: u32, instance_count: u32, first_index: u32, vertex_offset: i32, first_instance: u32);
+        fn dispatch(list: &mut Never, x: u32, y: u32, z: u32);
+        fn dispatch_mesh(list: &mut Never, x: u32, y: u32, z: u32);
+        fn draw_indirect(list: &mut Never, args: &IndirectArgs<'_>);
+        fn draw_indexed_indirect(list: &mut Never, args: &IndirectArgs<'_>);
+        fn dispatch_indirect(list: &mut Never, args: &IndirectArgs<'_>);
+        fn dispatch_mesh_indirect(list: &mut Never, args: &IndirectArgs<'_>);
+        fn write_timestamp(list: &mut Never, pool: &Never, index: u32);
+        fn begin_query(list: &mut Never, pool: &Never, index: u32);
+        fn end_query(list: &mut Never, pool: &Never, index: u32);
+        fn resolve_queries(list: &mut Never, pool: &Never, first: u32, count: u32, dst: &Buffer, offset: u64);
+        fn set_predication(list: &mut Never, predicate: Option<(&Buffer, u64, PredicateSkip)>);
+        fn build_acceleration_structure(list: &mut Never, build: &BuildAccelerationStructure<'_>);
+        fn copy_acceleration_structure(list: &mut Never, src: &AccelerationStructure, dst: &AccelerationStructure, mode: AccelerationStructureCopy);
+        fn write_compacted_sizes(list: &mut Never, structures: &[&AccelerationStructure], dst: &Buffer, offset: u64);
+        fn begin_event(list: &mut Never, name: &str);
+        fn end_event(list: &mut Never);
+        fn set_marker(list: &mut Never, name: &str);
     }
 }
 
@@ -358,11 +354,35 @@ impl Swapchain for Backend {
         match *swapchain {}
     }
 
+    fn supports_color_space(swapchain: &Never, _: ColorSpace) -> bool {
+        match *swapchain {}
+    }
+
+    fn set_color_space(swapchain: &mut Never, _: ColorSpace) -> Result<()> {
+        match *swapchain {}
+    }
+
+    fn set_hdr_metadata(swapchain: &mut Never, _: Option<&HdrMetadata>) -> Result<()> {
+        match *swapchain {}
+    }
+
+    fn containing_output(swapchain: &Never) -> Result<OutputInfo> {
+        match *swapchain {}
+    }
+
+    fn frame_statistics(swapchain: &Never) -> Result<Option<FrameStatistics>> {
+        match *swapchain {}
+    }
+
     fn size(swapchain: &Never) -> (u32, u32) {
         match *swapchain {}
     }
 
     fn format(swapchain: &Never) -> Format {
+        match *swapchain {}
+    }
+
+    fn color_space(swapchain: &Never) -> ColorSpace {
         match *swapchain {}
     }
 

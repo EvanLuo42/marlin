@@ -13,8 +13,9 @@
 | 主机 | 各平台格式 | 随各平台 backend 定义 |
 
 - `entry` 是入口名。SPIR-V 模块和 DXIL library 可以有多个入口；单入口 DXIL 在 D3D12 下会忽略它。
-- 每个 stage 一个 module：vertex、pixel、compute。其他 stage（mesh、amplification、光追）等需要时再加。
-  - 已确定：mesh 和 amplification 成为**必需的基线**。光追只用 inline ray query（在 compute 和 pixel 中使用），不引入 RT pipeline stage。
+- 每个 stage 一个 module：vertex、pixel、compute、mesh、amplification。
+  - mesh 和 amplification 是**必需的基线**。
+  - 光追只用 inline ray query（`RayQuery`），任何 stage 都能用，不引入 RT pipeline stage（没有 raygen/miss/hit shader，也没有 shader table）。需要 `Features::ray_query`。
 
 ## 2. 绑定模型：只有 bindless
 
@@ -34,6 +35,8 @@
 | 资源表（`MAX_BINDLESS_RESOURCES` = 262144 槽） | buffer 与 texture 视图 | `ResourceDescriptorHeap[i]` | `ShaderView::index()` |
 | 采样器表（`MAX_BINDLESS_SAMPLERS` = 2048 槽） | sampler | `SamplerDescriptorHeap[i]` | `Sampler::index()` |
 
+加速结构也占资源表的槽：`AccelerationStructure::index()` 处是一个 `RaytracingAccelerationStructure`（top-level 结构给 ray query 用）。
+
 - 视图 drop 时槽位回收，随即可能被复用。shader 只能访问在 GPU 执行期间仍然存活的视图（`Queue::submit` 的 safety 条款）。
 - 下标是普通 `u32`，可以放在 push constants 里，也可以放在 buffer 里（材质表、实例数据）。
 - 跨 wave 不一致的下标要加 `NonUniformResourceIndex`，由编译器或作者负责。
@@ -48,10 +51,22 @@
 | `TextureViewDimension::D2` | `Texture2D<T>` | `RWTexture2D<T>`（单个 mip） |
 | `TextureViewDimension::D2Array` | `Texture2DArray<T>` | `RWTexture2DArray<T>` |
 | `TextureViewDimension::Cube` | `TextureCube<T>` | — |
-| `Sampler` | `SamplerState` / `SamplerComparisonState`（`compare` 有值时） | — |
-| 加速结构视图（RHI 补齐 AS 之后，见 0007 §9） | `RaytracingAccelerationStructure` | — |
+| `TextureViewDimension::CubeArray` | `TextureCubeArray<T>` | — |
+| 多重采样纹理的 `D2` / `D2Array` | `Texture2DMS<T>` / `Texture2DMSArray<T>` | — |
+| `AccelerationStructure`（graph 里的用法见 0007 §9） | `RaytracingAccelerationStructure` | — |
+| `Sampler` | `SamplerState`（`reduction` 为 min/max 时也是它）/ `SamplerComparisonState`（`compare` 有值时） | — |
 
-深度纹理的只读视图按 `R32Float` 读。
+- 深度纹理的只读视图按深度平面读：`D32Float`、`D32FloatS8` 读成 `R32Float`，`D16Unorm` 读成 `R16Unorm`（都是 `float`）。
+- `D32FloatS8` 用 `Format::R8Uint` 建的视图读 stencil 平面：`Texture2D<uint>`，值在 **r** 通道（D3D12 的 stencil 本来在 g，backend 用 component mapping 搬到 r，和 Vulkan 的 stencil aspect 一致）。
+- `D2` 视图只能看 layer 0；数组的其他单层用一层的 `D2Array`。
+
+### 2.4 输出与光栅状态相关的语义
+
+- pixel shader 输出 `SV_Target0..7`，对应 `color_targets` 的顺序。
+- dual-source blending（`BlendFactor::Src1*`）：只有一个 color target，`SV_Target1` 是第二个源。
+- alpha to coverage（`MultisampleState::alpha_to_coverage`）取 `SV_Target0` 的 alpha。
+- 每图元着色率：mesh/vertex shader 输出 `SV_ShadingRate`（`VariableRateShading::Image` 级别）；它和 draw 的速率、shading-rate image 怎么合并由 `set_shading_rate` 的两个 combiner 决定。
+- shading-rate image 是 `R8Uint` 纹理，每个 texel 管 `Features::shading_rate_tile_size`² 个像素，值是 `ShadingRate::encoded()`：`log2(宽) << 2 | log2(高)`，D3D12 和 Vulkan 编码相同。
 
 ## 3. 顶点与实例
 
@@ -74,7 +89,7 @@
 
 | 位置 | 用途 |
 |---|---|
-| `runtime/platform/rhi/tests/shaders/` | RHI 测试：compute 写 bindless UAV；绘制测试覆盖 vertex pulling、uniform、纹理、采样器和 reverse-Z |
+| `runtime/platform/rhi/tests/shaders/` | RHI 测试：compute 写 bindless UAV；绘制测试覆盖 vertex pulling、uniform、纹理、采样器和 reverse-Z；`solid` 覆盖多重采样、混合、保守光栅、深度范围、VRS 和查询；`sample` 覆盖 min/max 采样、stencil 视图、多重采样读取和 cube array；`rayquery` 覆盖加速结构和 inline ray query |
 | `runtime/engine/render/shaders/` | marlin-render 前向 pass |
 
 测试通过 `tests/support/mod.rs` 的 `shader(name, stage)` 查找 shader。等编译器就绪，计划换成一个测试支持 crate：
@@ -93,4 +108,4 @@
   - push constants 映射为 `push_constant` block。
   - 另一个候选是 `VK_EXT_descriptor_buffer`。
 - 主机平台的对应方式。
-- mesh shader、光追、wave 相关能力的特性查询。
+- （mesh shader、ray query、wave 大小、16 位与 64 位运算、重心坐标等能力已经在 `Features` 里报告。）

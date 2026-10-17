@@ -46,41 +46,42 @@ fn queues_wait_for_each_other_on_the_gpu() {
     for device in devices() {
         const COUNT: u32 = 128;
         let data: Vec<u32> = (0..COUNT).map(|i| i * 7 + 1).collect();
-        let staging = upload(&device, &words_to_bytes(&data), BufferUsage::default());
+        let staging = upload(device, &words_to_bytes(&data), BufferUsage::default());
         let copied = buffer(
-            &device,
+            device,
             COUNT as u64 * 4,
             BufferUsage::COPY_DST | BufferUsage::COPY_SRC,
             MemoryLocation::GpuOnly,
         );
         let filled = buffer(
-            &device,
+            device,
             COUNT as u64 * 4,
             BufferUsage::SHADER_WRITE | BufferUsage::COPY_SRC,
             MemoryLocation::GpuOnly,
         );
         let moved = buffer(
-            &device,
+            device,
             COUNT as u64 * 4,
             BufferUsage::COPY_DST | BufferUsage::COPY_SRC,
             MemoryLocation::GpuOnly,
         );
-        let out = readback(&device, COUNT as u64 * 8);
+        let out = readback(device, COUNT as u64 * 8);
         let view = device
             .create_buffer_view(&filled, &BufferViewDesc::whole(BufferViewKind::Raw, true))
             .unwrap();
         let fill = device
             .create_compute_pipeline(&ComputePipelineDesc {
                 shader: shader("fill", Stage::Compute),
+                cache: None,
             })
             .unwrap();
 
         // Copy queue: upload. Compute queue: fill, and move the upload along. Graphics queue:
         // read both back, but only once the CPU says so.
-        let (_copy_pool, copy_list) = record(&device, QueueType::Copy, |list| {
+        let (_copy_pool, copy_list) = record(device, QueueType::Copy, |list| {
             list.copy_buffer(&staging, 0, &copied, 0, COUNT as u64 * 4);
         });
-        let (_compute_pool, compute_list) = record(&device, QueueType::Compute, |list| {
+        let (_compute_pool, compute_list) = record(device, QueueType::Compute, |list| {
             list.set_compute_pipeline(&fill);
             list.push_constants(0, &[view.index(), 5]);
             list.dispatch(COUNT / 64, 1, 1);
@@ -91,7 +92,7 @@ fn queues_wait_for_each_other_on_the_gpu() {
                 after: BufferState::COPY_SRC,
             }]);
         });
-        let (_graphics_pool, graphics_list) = record(&device, QueueType::Graphics, |list| {
+        let (_graphics_pool, graphics_list) = record(device, QueueType::Graphics, |list| {
             list.copy_buffer(&filled, 0, &out, 0, COUNT as u64 * 4);
             list.copy_buffer(&moved, 0, &out, COUNT as u64 * 4, COUNT as u64 * 4);
         });
@@ -147,7 +148,7 @@ fn queues_wait_for_each_other_on_the_gpu() {
 #[test]
 fn lists_run_only_on_their_queue_type() {
     let device = support::hardware_device();
-    let (_pool, list) = record(&device, QueueType::Compute, |_| {});
+    let (_pool, list) = record(device, QueueType::Compute, |_| {});
     // SAFETY: rejected before anything is submitted.
     let err = unsafe { device.queue().submit(&[&list], None) }.unwrap_err();
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
@@ -188,16 +189,17 @@ fn timestamps_on_every_queue() {
         let fill = device
             .create_compute_pipeline(&ComputePipelineDesc {
                 shader: shader("fill", Stage::Compute),
+                cache: None,
             })
             .unwrap();
         let scratch = buffer(
-            &device,
+            device,
             1 << 20,
             BufferUsage::SHADER_WRITE | BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
             MemoryLocation::GpuOnly,
         );
         let scratch2 = buffer(
-            &device,
+            device,
             1 << 20,
             BufferUsage::COPY_DST,
             MemoryLocation::GpuOnly,
@@ -218,8 +220,8 @@ fn timestamps_on_every_queue() {
             }
             let pool = device.create_query_pool(&desc).unwrap();
             assert_eq!(pool.desc(), &desc);
-            let out = readback(&device, 64);
-            run_on(&device, ty, |list| {
+            let out = readback(device, 64);
+            run_on(device, ty, |list| {
                 list.write_timestamp(&pool, 1);
                 if ty == QueueType::Copy {
                     list.copy_buffer(&scratch, 0, &scratch2, 0, 1 << 20);
@@ -283,7 +285,7 @@ fn query_pools_hold_1_to_65536_queries() {
 fn debug_markers_on_every_list_type() {
     for device in devices() {
         for ty in [QueueType::Graphics, QueueType::Compute, QueueType::Copy] {
-            run_on(&device, ty, |list| {
+            run_on(device, ty, |list| {
                 list.begin_event("Frame");
                 list.begin_event("Nested pass with a long name that PIX shows in its timeline");
                 list.set_marker("halfway");

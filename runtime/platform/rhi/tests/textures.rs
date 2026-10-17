@@ -74,7 +74,7 @@ fn volume_textures_are_written_read_and_copied() {
             .unwrap();
         let count = (VOLUME * VOLUME * VOLUME) as u64;
         let loaded = buffer(
-            &device,
+            device,
             count * 4,
             BufferUsage::SHADER_WRITE | BufferUsage::COPY_SRC,
             MemoryLocation::GpuOnly,
@@ -85,16 +85,18 @@ fn volume_textures_are_written_read_and_copied() {
         let write = device
             .create_compute_pipeline(&ComputePipelineDesc {
                 shader: shader("volume.write", Stage::Compute),
+                cache: None,
             })
             .unwrap();
         let read = device
             .create_compute_pipeline(&ComputePipelineDesc {
                 shader: shader("volume.read", Stage::Compute),
+                cache: None,
             })
             .unwrap();
         // Slices 2..5 straight to a buffer: 8 rows of 32 bytes, 256 apart, per slice.
-        let slices = readback(&device, 256 * VOLUME as u64 * 3);
-        let shader_out = readback(&device, count * 4);
+        let slices = readback(device, 256 * VOLUME as u64 * 3);
+        let shader_out = readback(device, count * 4);
         // A second volume gets a box of the first.
         let other = device
             .create_texture(&TextureDesc::new_3d(
@@ -105,8 +107,8 @@ fn volume_textures_are_written_read_and_copied() {
                 TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
             ))
             .unwrap();
-        let other_out = readback(&device, 256 * VOLUME as u64 * VOLUME as u64);
-        run(&device, |list| {
+        let other_out = readback(device, 256 * VOLUME as u64 * VOLUME as u64);
+        run(device, |list| {
             barrier(
                 list,
                 &volume,
@@ -230,9 +232,9 @@ fn volume_mips_round_trip() {
         let texels: Vec<u32> = (0..size as u32 / 4)
             .map(|i| i.wrapping_mul(2654435761))
             .collect();
-        let staging = upload(&device, &words_to_bytes(&texels), BufferUsage::default());
-        let out = readback(&device, size);
-        run(&device, |list| {
+        let staging = upload(device, &words_to_bytes(&texels), BufferUsage::default());
+        let out = readback(device, size);
+        run(device, |list| {
             barrier(
                 list,
                 &volume,
@@ -421,11 +423,7 @@ fn new_formats_render_and_read_back() {
         ];
         for (format, color, expected) in cases {
             assert_eq!(expected.len(), format.block_size() as usize, "{format:?}");
-            assert_eq!(
-                cleared_texel(&device, format, color),
-                expected,
-                "{format:?}"
-            );
+            assert_eq!(cleared_texel(device, format, color), expected, "{format:?}");
         }
         assert_eq!(device.validation_errors(), 0);
     }
@@ -469,10 +467,10 @@ fn bc6h_signed_blocks_round_trip() {
             .unwrap();
         // Two arbitrary 16-byte blocks: copies move blocks verbatim.
         let blocks: Vec<u8> = (0..32u8).map(|i| i.wrapping_mul(37) ^ 0x5a).collect();
-        let staging = upload(&device, &blocks, BufferUsage::default());
-        let out = readback(&device, 32);
+        let staging = upload(device, &blocks, BufferUsage::default());
+        let out = readback(device, 32);
         let region = BufferTextureCopy::whole_mip(&desc, 0, 0, 0);
-        run(&device, |list| {
+        run(device, |list| {
             barrier(
                 list,
                 &texture,
@@ -525,12 +523,12 @@ fn copies_boxes_between_textures() {
             }
         }
         let staging = upload(
-            &device,
+            device,
             &words_to_bytes(&staging_words),
             BufferUsage::default(),
         );
-        let out = readback(&device, 4096);
-        run(&device, |list| {
+        let out = readback(device, 4096);
+        run(device, |list| {
             barrier(list, &src, TextureState::UNDEFINED, TextureState::COPY_DST);
             barrier(list, &dst, TextureState::UNDEFINED, TextureState::COPY_DST);
             for (s, (l, m)) in [(0, 0), (0, 1), (1, 0), (1, 1)].into_iter().enumerate() {
@@ -612,10 +610,10 @@ fn copies_compressed_blocks_between_textures() {
                 *b = i as u8 ^ 0xc3;
             }
         }
-        let staging = upload(&device, &bytes, BufferUsage::default());
-        let out = readback(&device, 512);
+        let staging = upload(device, &bytes, BufferUsage::default());
+        let out = readback(device, 512);
         let region = BufferTextureCopy::whole_mip(&desc, 0, 0, 0);
-        run(&device, |list| {
+        run(device, |list| {
             barrier(list, &src, TextureState::UNDEFINED, TextureState::COPY_DST);
             barrier(list, &dst, TextureState::UNDEFINED, TextureState::COPY_DST);
             list.copy_buffer_to_texture(&staging, &src, &region);
@@ -664,7 +662,7 @@ fn texture_copies_keep_the_format() {
     let b = device
         .create_texture(&TextureDesc::new_2d(4, 4, Format::R32Uint, usage))
         .unwrap();
-    let (_pool, mut list) = copy_list(&device);
+    let (_pool, mut list) = copy_list(device);
     list.copy_texture(
         &a,
         &b,
@@ -688,7 +686,7 @@ fn compressed_copies_are_block_aligned() {
     let desc = TextureDesc::new_2d(8, 8, Format::Bc7Unorm, usage);
     let a = device.create_texture(&desc).unwrap();
     let b = device.create_texture(&desc).unwrap();
-    let (_pool, mut list) = copy_list(&device);
+    let (_pool, mut list) = copy_list(device);
     list.copy_texture(
         &a,
         &b,
@@ -735,6 +733,7 @@ fn stencil(compare: CompareOp, pass: StencilOp) -> DepthState {
             back: face,
             ..StencilState::default()
         }),
+        bounds_test: false,
     }
 }
 
@@ -783,12 +782,9 @@ fn columns(list: &mut marlin_rhi::CommandList, first: u32, span: u32, offset: u3
 #[test]
 fn stencil_masks_draws_and_copies_with_the_depth() {
     for device in devices() {
-        let mark = columns_pipeline(
-            &device,
-            Some(stencil(CompareOp::Always, StencilOp::Replace)),
-        );
-        let masked = columns_pipeline(&device, Some(stencil(CompareOp::Equal, StencilOp::Keep)));
-        let depth = depth_stencil_texture(&device, TextureUsage::COPY_SRC | TextureUsage::SAMPLED);
+        let mark = columns_pipeline(device, Some(stencil(CompareOp::Always, StencilOp::Replace)));
+        let masked = columns_pipeline(device, Some(stencil(CompareOp::Equal, StencilOp::Keep)));
+        let depth = depth_stencil_texture(device, TextureUsage::COPY_SRC | TextureUsage::SAMPLED);
         let depth_view = device
             .create_depth_stencil_view(&depth, &DepthStencilViewDesc::default())
             .unwrap();
@@ -796,15 +792,15 @@ fn stencil_masks_draws_and_copies_with_the_depth() {
         device
             .create_texture_view(&depth, &TextureViewDesc::SAMPLED)
             .unwrap();
-        let copy = depth_stencil_texture(&device, TextureUsage::COPY_DST);
+        let copy = depth_stencil_texture(device, TextureUsage::COPY_DST);
         let copy_view = device
             .create_depth_stencil_view(&copy, &DepthStencilViewDesc::default())
             .unwrap();
-        let first = ColumnTarget::new(&device);
-        let second = ColumnTarget::new(&device);
-        let depth_out = readback(&device, 512 * COLUMN_HEIGHT as u64);
+        let first = ColumnTarget::new(device);
+        let second = ColumnTarget::new(device);
+        let depth_out = readback(device, 512 * COLUMN_HEIGHT as u64);
 
-        run(&device, |list| {
+        run(device, |list| {
             barrier(
                 list,
                 &first.texture,
@@ -913,6 +909,9 @@ fn stencil_needs_a_stencil_format() {
             raster: marlin_rhi::RasterState::default(),
             depth: Some(state),
             color_targets: &ColumnTarget::color_targets(),
+            multisample: marlin_rhi::MultisampleState::NONE,
+            primitive_restart: None,
+            cache: None,
         })
         .unwrap_err();
     assert_eq!(err.kind(), ErrorKind::InvalidInput);

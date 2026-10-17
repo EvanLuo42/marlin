@@ -18,7 +18,11 @@ use support::{Stage, run, shader};
 
 /// The hardware adapter with validation, through enhanced barriers (where supported), then legacy ones.
 fn devices() -> [Device; 2] {
-    let instance = Instance::new(&InstanceDesc { validation: true }).unwrap();
+    let instance = Instance::new(&InstanceDesc {
+        validation: true,
+        ..InstanceDesc::default()
+    })
+    .unwrap();
     [false, true].map(|legacy| {
         instance
             .create_device(&DeviceDesc {
@@ -73,6 +77,7 @@ fn compute_writes_through_bindless_view() {
         let pipeline = device
             .create_compute_pipeline(&ComputePipelineDesc {
                 shader: shader("fill", Stage::Compute),
+                cache: None,
             })
             .unwrap();
 
@@ -219,6 +224,9 @@ fn draws_with_vertex_pulling_textures_and_depth() {
                 raster: RasterState::default(),
                 depth: Some(DepthState::reverse_z(Format::D32Float)),
                 color_targets: &[ColorTargetState::new(Format::Rgba8Unorm)],
+                multisample: marlin_rhi::MultisampleState::NONE,
+                primitive_restart: None,
+                cache: None,
             })
             .unwrap();
 

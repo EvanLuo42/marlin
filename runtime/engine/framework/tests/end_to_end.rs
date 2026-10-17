@@ -73,7 +73,7 @@ fn package(root: &Path) -> String {
 }
 
 fn device() -> Device {
-    Instance::new(&InstanceDesc { validation: true })
+    Instance::new(&InstanceDesc { validation: true, ..InstanceDesc::default() })
         .unwrap()
         .create_device(&DeviceDesc {
             adapter: AdapterPreference::HighPerformance,

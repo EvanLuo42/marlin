@@ -8,7 +8,8 @@ use marlin_rhi::{
     Buffer, BufferBarrier, BufferDesc, BufferState, BufferUsage, BufferViewDesc, BufferViewKind,
     ClearValue, ColorAttachment, ColorTargetState, CommandList, DepthAttachment, DepthState,
     DepthStencilView, DepthStencilViewDesc, Device, Error, ErrorKind, Format, GraphicsPipeline,
-    GraphicsPipelineDesc, IndexFormat, LoadOp, MemoryLocation, PrimitiveTopology, RasterState,
+    GraphicsPipelineDesc, IndexFormat, LoadOp, MemoryLocation, MultisampleState, PrimitiveTopology,
+    RasterState,
     Rect, RenderPassDesc, RenderTargetView, Result, ShaderView, StoreOp, Texture, TextureBarrier,
     TextureDesc, TextureState, TextureUsage, Viewport,
 };
@@ -197,6 +198,9 @@ impl Renderer {
             raster: RasterState::default(),
             depth: Some(DepthState::reverse_z(DEPTH_FORMAT)),
             color_targets: &[ColorTargetState::new(desc.color_format)],
+            multisample: MultisampleState::NONE,
+            primitive_restart: None,
+            cache: None,
         })?;
         Ok(Self {
             pipeline,

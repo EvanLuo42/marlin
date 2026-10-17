@@ -18,6 +18,15 @@
 //! dxc -HV 2021 -Qstrip_debug -Qstrip_reflect -T cs_6_6 -E main         -Fo count.cs.dxil count.hlsl
 //! dxc -HV 2021 -Qstrip_debug -Qstrip_reflect -T cs_6_6 -E write_main   -Fo volume.write.cs.dxil volume.hlsl
 //! dxc -HV 2021 -Qstrip_debug -Qstrip_reflect -T cs_6_6 -E read_main    -Fo volume.read.cs.dxil volume.hlsl
+//! dxc -HV 2021 -Qstrip_debug -Qstrip_reflect -T vs_6_6 -E vs_main      -Fo solid.vs.dxil solid.hlsl
+//! dxc -HV 2021 -Qstrip_debug -Qstrip_reflect -T ps_6_6 -E ps_main      -Fo solid.ps.dxil solid.hlsl
+//! dxc -HV 2021 -Qstrip_debug -Qstrip_reflect -T ps_6_6 -E ps_dual      -Fo solid.dual.ps.dxil solid.hlsl
+//! dxc -HV 2021 -Qstrip_debug -Qstrip_reflect -T ps_6_6 -E ps_coord     -Fo solid.coord.ps.dxil solid.hlsl
+//! dxc -HV 2021 -Qstrip_debug -Qstrip_reflect -T cs_6_6 -E sample_main  -Fo sample.sample.cs.dxil sample.hlsl
+//! dxc -HV 2021 -Qstrip_debug -Qstrip_reflect -T cs_6_6 -E stencil_main -Fo sample.stencil.cs.dxil sample.hlsl
+//! dxc -HV 2021 -Qstrip_debug -Qstrip_reflect -T cs_6_6 -E ms_main      -Fo sample.ms.cs.dxil sample.hlsl
+//! dxc -HV 2021 -Qstrip_debug -Qstrip_reflect -T cs_6_6 -E cube_main    -Fo sample.cube.cs.dxil sample.hlsl
+//! dxc -HV 2021 -Qstrip_debug -Qstrip_reflect -T cs_6_6 -E main         -Fo rayquery.cs.dxil rayquery.hlsl
 //! ```
 #![allow(dead_code, reason = "each test file uses a subset")]
 
@@ -59,35 +68,64 @@ pub fn shader(name: &str, stage: Stage) -> ShaderModule<'static> {
             include_bytes!("../shaders/volume.read.cs.dxil"),
             "read_main",
         ),
+        ("solid", Stage::Vertex) => (include_bytes!("../shaders/solid.vs.dxil"), "vs_main"),
+        ("solid", Stage::Pixel) => (include_bytes!("../shaders/solid.ps.dxil"), "ps_main"),
+        ("solid.dual", Stage::Pixel) => {
+            (include_bytes!("../shaders/solid.dual.ps.dxil"), "ps_dual")
+        }
+        ("solid.coord", Stage::Pixel) => {
+            (include_bytes!("../shaders/solid.coord.ps.dxil"), "ps_coord")
+        }
+        ("sample", Stage::Compute) => (
+            include_bytes!("../shaders/sample.sample.cs.dxil"),
+            "sample_main",
+        ),
+        ("sample.stencil", Stage::Compute) => (
+            include_bytes!("../shaders/sample.stencil.cs.dxil"),
+            "stencil_main",
+        ),
+        ("sample.ms", Stage::Compute) => {
+            (include_bytes!("../shaders/sample.ms.cs.dxil"), "ms_main")
+        }
+        ("sample.cube", Stage::Compute) => (
+            include_bytes!("../shaders/sample.cube.cs.dxil"),
+            "cube_main",
+        ),
+        ("rayquery", Stage::Compute) => (include_bytes!("../shaders/rayquery.cs.dxil"), "main"),
         _ => panic!("no test shader {name} for {stage:?}"),
     };
     ShaderModule { code, entry }
 }
 
-/// A device on the highest-performance hardware adapter, with validation on. GPU tests run on
-/// real hardware, never on a software rasterizer.
-pub fn hardware_device() -> Device {
-    let instance = Instance::new(&InstanceDesc { validation: true }).unwrap();
-    instance
-        .create_device(&DeviceDesc {
-            adapter: AdapterPreference::HighPerformance,
-            ..DeviceDesc::default()
+/// The hardware adapter with validation on, through enhanced barriers (where supported), then
+/// legacy ones. GPU tests run on real hardware, never on a software rasterizer.
+///
+/// One pair per test binary, shared by its tests and never dropped, as an application keeps its
+/// device: D3D12 has one device per adapter in a process anyway, and tearing down `Device`s
+/// while other threads use the same adapter is not what engines do (it can deadlock the NVIDIA
+/// driver when another thread creates pipelines from cached blobs).
+pub fn devices() -> &'static [Device; 2] {
+    static DEVICES: std::sync::OnceLock<[Device; 2]> = std::sync::OnceLock::new();
+    DEVICES.get_or_init(|| {
+        let instance = Instance::new(&InstanceDesc {
+            validation: true,
+            ..InstanceDesc::default()
         })
-        .unwrap()
+        .unwrap();
+        [false, true].map(|legacy| {
+            instance
+                .create_device(&DeviceDesc {
+                    adapter: AdapterPreference::HighPerformance,
+                    disable_enhanced_barriers: legacy,
+                })
+                .unwrap()
+        })
+    })
 }
 
-/// The hardware adapter with validation, through enhanced barriers (where supported), then
-/// legacy ones.
-pub fn devices() -> [Device; 2] {
-    let instance = Instance::new(&InstanceDesc { validation: true }).unwrap();
-    [false, true].map(|legacy| {
-        instance
-            .create_device(&DeviceDesc {
-                adapter: AdapterPreference::HighPerformance,
-                disable_enhanced_barriers: legacy,
-            })
-            .unwrap()
-    })
+/// The shared device through enhanced barriers (see [`devices`]).
+pub fn hardware_device() -> &'static Device {
+    &devices()[0]
 }
 
 /// Records with `record`, submits, and waits for the GPU.
@@ -183,6 +221,9 @@ pub struct ColumnTarget {
     pub texture: marlin_rhi::Texture,
     pub view: marlin_rhi::RenderTargetView,
     pub readback: Buffer,
+    /// The state the last recorded `finish` left the texture in: what a discard comes from (the
+    /// render graph's job in the engine). Undefined while the texture is new.
+    last: core::cell::Cell<marlin_rhi::TextureState>,
 }
 
 impl ColumnTarget {
@@ -215,6 +256,10 @@ impl ColumnTarget {
             texture,
             view,
             readback,
+            last: core::cell::Cell::new(marlin_rhi::TextureState {
+                layout: marlin_rhi::Layout::Common,
+                ..marlin_rhi::TextureState::UNDEFINED
+            }),
         }
     }
 
@@ -230,9 +275,9 @@ impl ColumnTarget {
             ColorAttachment, LoadOp, Rect, RenderPassDesc, StoreOp, TextureBarrier, TextureState,
             Viewport,
         };
-        list.texture_barriers(&[TextureBarrier::new(
+        list.texture_barriers(&[TextureBarrier::discard(
             &self.texture,
-            TextureState::UNDEFINED,
+            self.last.get(),
             TextureState::RENDER_TARGET,
         )]);
         list.begin_render_pass(&RenderPassDesc {
@@ -262,6 +307,7 @@ impl ColumnTarget {
             TextureState::RENDER_TARGET,
             TextureState::COPY_SRC,
         )]);
+        self.last.set(TextureState::COPY_SRC);
         list.copy_texture_to_buffer(
             &self.texture,
             &self.readback,
@@ -295,6 +341,170 @@ pub fn columns_pipeline(
             },
             depth,
             color_targets: &ColumnTarget::color_targets(),
+            multisample: marlin_rhi::MultisampleState::NONE,
+            primitive_restart: None,
+            cache: None,
         })
         .unwrap()
+}
+
+/// The compute shader `name` as a pipeline.
+pub fn compute_pipeline(device: &Device, name: &str) -> marlin_rhi::ComputePipeline {
+    device
+        .create_compute_pipeline(&marlin_rhi::ComputePipelineDesc {
+            shader: shader(name, Stage::Compute),
+            cache: None,
+        })
+        .unwrap()
+}
+
+/// A device-local buffer of `words` u32 that shaders write through the returned raw view, and
+/// that copies read from.
+pub fn storage(device: &Device, words: u64) -> (Buffer, marlin_rhi::ShaderView) {
+    use marlin_rhi::{BufferViewDesc, BufferViewKind};
+    let b = buffer(
+        device,
+        words * 4,
+        BufferUsage::SHADER_WRITE | BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+        MemoryLocation::GpuOnly,
+    );
+    let view = device
+        .create_buffer_view(&b, &BufferViewDesc::whole(BufferViewKind::Raw, true))
+        .unwrap();
+    (b, view)
+}
+
+/// After compute shaders wrote `buffer`, copies its first `words` into `readback`.
+pub fn copy_out(list: &mut CommandList, buffer: &Buffer, readback: &Buffer, words: u64) {
+    use marlin_rhi::{BufferBarrier, BufferState};
+    list.buffer_barriers(&[BufferBarrier {
+        buffer,
+        before: BufferState::COMPUTE_WRITE,
+        after: BufferState::COPY_SRC,
+    }]);
+    list.copy_buffer(buffer, 0, readback, 0, words * 4);
+}
+
+/// A small `Rgba8Unorm` (or other 4-byte format) render target, single- or multisampled, with a
+/// readback buffer for mip 0 of its single-sampled form.
+pub struct ColorTarget {
+    pub texture: marlin_rhi::Texture,
+    pub view: marlin_rhi::RenderTargetView,
+    pub readback: Buffer,
+    pub size: u32,
+}
+
+impl ColorTarget {
+    pub fn new(device: &Device, size: u32, format: marlin_rhi::Format, samples: u32) -> Self {
+        use marlin_rhi::{RenderTargetViewDesc, TextureDesc, TextureUsage};
+        let usage = match samples {
+            1 => TextureUsage::RENDER_TARGET | TextureUsage::COPY_SRC,
+            _ => TextureUsage::RENDER_TARGET | TextureUsage::SAMPLED,
+        };
+        let texture = device
+            .create_texture(&TextureDesc {
+                sample_count: samples,
+                ..TextureDesc::new_2d(size, size, format, usage)
+            })
+            .unwrap();
+        let view = device
+            .create_render_target_view(&texture, &RenderTargetViewDesc::default())
+            .unwrap();
+        Self {
+            texture,
+            view,
+            readback: readback(device, 256 * size as u64),
+            size,
+        }
+    }
+
+    /// Moves the target to render target layout (from a new texture's), opens a pass clearing
+    /// it to `clear`, and sets the viewport and scissor.
+    pub fn begin(&self, list: &mut CommandList, clear: [f32; 4]) {
+        use marlin_rhi::{
+            ColorAttachment, LoadOp, Rect, RenderPassDesc, StoreOp, TextureBarrier, TextureState,
+            Viewport,
+        };
+        list.texture_barriers(&[TextureBarrier::new(
+            &self.texture,
+            TextureState::UNDEFINED,
+            TextureState::RENDER_TARGET,
+        )]);
+        list.begin_render_pass(&RenderPassDesc {
+            color: &[ColorAttachment {
+                view: &self.view,
+                load: LoadOp::Clear(clear),
+                store: StoreOp::Store,
+            }],
+            depth: None,
+        });
+        list.set_viewport(&Viewport::full(self.size, self.size));
+        list.set_scissor(&Rect {
+            x: 0,
+            y: 0,
+            width: self.size,
+            height: self.size,
+        });
+    }
+
+    /// Ends the pass and copies the (single-sampled) target into the readback buffer.
+    pub fn finish(&self, list: &mut CommandList) {
+        use marlin_rhi::{BufferTextureCopy, TextureBarrier, TextureState};
+        list.end_render_pass();
+        list.texture_barriers(&[TextureBarrier::new(
+            &self.texture,
+            TextureState::RENDER_TARGET,
+            TextureState::COPY_SRC,
+        )]);
+        list.copy_texture_to_buffer(
+            &self.texture,
+            &self.readback,
+            &BufferTextureCopy::whole_mip(self.texture.desc(), 0, 0, 0),
+        );
+    }
+
+    /// Texel (x, y) as little-endian bytes packed in a `u32` (after `finish` ran).
+    pub fn texel(&self, x: u32, y: u32) -> u32 {
+        read_words(&self.readback, y as u64 * 256 + x as u64 * 4, 1)[0]
+    }
+}
+
+/// The `solid` vertex shader with pixel shader `pixel` (`solid`, `solid.dual`, `solid.coord`)
+/// into one color target, no culling; `tweak` adjusts the description.
+pub fn solid_pipeline(
+    device: &Device,
+    pixel: &str,
+    target: marlin_rhi::ColorTargetState,
+    tweak: impl FnOnce(&mut marlin_rhi::GraphicsPipelineDesc<'_>),
+) -> marlin_rhi::Result<marlin_rhi::GraphicsPipeline> {
+    use marlin_rhi::{CullMode, GraphicsPipelineDesc, PrimitiveTopology, RasterState};
+    let targets = [target];
+    let mut desc = GraphicsPipelineDesc {
+        vertex: shader("solid", Stage::Vertex),
+        pixel: Some(shader(pixel, Stage::Pixel)),
+        topology: PrimitiveTopology::TriangleList,
+        primitive_restart: None,
+        raster: RasterState {
+            cull: CullMode::None,
+            ..RasterState::default()
+        },
+        depth: None,
+        color_targets: &targets,
+        multisample: marlin_rhi::MultisampleState::NONE,
+        cache: None,
+    };
+    tweak(&mut desc);
+    device.create_graphics_pipeline(&desc)
+}
+
+/// Push constants of the `solid` shaders.
+pub fn solid_constants(color: [f32; 4], mode: u32, depth: f32, color1: [f32; 4]) -> [u32; 12] {
+    let mut words = [0u32; 12];
+    for i in 0..4 {
+        words[i] = color[i].to_bits();
+        words[8 + i] = color1[i].to_bits();
+    }
+    words[4] = mode;
+    words[5] = depth.to_bits();
+    words
 }

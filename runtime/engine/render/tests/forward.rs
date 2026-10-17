@@ -18,7 +18,7 @@ const SIZE: u32 = 64;
 const BLACK: u32 = 0xff00_0000;
 
 fn hardware_device() -> Device {
-    let instance = Instance::new(&InstanceDesc { validation: true }).unwrap();
+    let instance = Instance::new(&InstanceDesc { validation: true, ..InstanceDesc::default() }).unwrap();
     instance
         .create_device(&DeviceDesc {
             adapter: AdapterPreference::HighPerformance,

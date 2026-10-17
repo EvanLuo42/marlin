@@ -26,6 +26,8 @@ fn mesh_pipeline(device: &Device, amplified: bool) -> MeshPipeline {
             },
             depth: None,
             color_targets: &ColumnTarget::color_targets(),
+            multisample: marlin_rhi::MultisampleState::NONE,
+            cache: None,
         })
         .unwrap()
 }
@@ -48,9 +50,9 @@ fn mesh_shaders_are_baseline() {
 #[test]
 fn dispatches_mesh_groups() {
     for device in devices() {
-        let pipeline = mesh_pipeline(&device, false);
-        let target = ColumnTarget::new(&device);
-        run(&device, |list| {
+        let pipeline = mesh_pipeline(device, false);
+        let target = ColumnTarget::new(device);
+        run(device, |list| {
             target.begin(list);
             list.set_mesh_pipeline(&pipeline);
             list.push_constants(0, &[COLUMNS]);
@@ -66,9 +68,9 @@ fn dispatches_mesh_groups() {
 #[test]
 fn amplification_launches_mesh_groups() {
     for device in devices() {
-        let pipeline = mesh_pipeline(&device, true);
-        let target = ColumnTarget::new(&device);
-        run(&device, |list| {
+        let pipeline = mesh_pipeline(device, true);
+        let target = ColumnTarget::new(device);
+        run(device, |list| {
             target.begin(list);
             list.set_mesh_pipeline(&pipeline);
             list.push_constants(0, &[COLUMNS]);
@@ -85,8 +87,8 @@ fn amplification_launches_mesh_groups() {
 #[test]
 fn dispatches_mesh_indirect_with_a_count() {
     for device in devices() {
-        let pipeline = mesh_pipeline(&device, false);
-        let target = ColumnTarget::new(&device);
+        let pipeline = mesh_pipeline(device, false);
+        let target = ColumnTarget::new(device);
         let records = [
             DispatchIndirectArgs {
                 constant: 10,
@@ -107,21 +109,21 @@ fn dispatches_mesh_indirect_with_a_count() {
                 z: 1,
             },
         ];
-        let staging = upload(&device, &bytes_of(&records), BufferUsage::default());
-        let count_staging = upload(&device, &2u32.to_le_bytes(), BufferUsage::default());
+        let staging = upload(device, &bytes_of(&records), BufferUsage::default());
+        let count_staging = upload(device, &2u32.to_le_bytes(), BufferUsage::default());
         let args = buffer(
-            &device,
+            device,
             staging.desc().size,
             BufferUsage::INDIRECT | BufferUsage::COPY_DST,
             MemoryLocation::GpuOnly,
         );
         let count = buffer(
-            &device,
+            device,
             4,
             BufferUsage::INDIRECT | BufferUsage::COPY_DST,
             MemoryLocation::GpuOnly,
         );
-        run(&device, |list| {
+        run(device, |list| {
             list.copy_buffer(&staging, 0, &args, 0, staging.desc().size);
             list.copy_buffer(&count_staging, 0, &count, 0, 4);
             list.buffer_barriers(&[&args, &count].map(|buffer| BufferBarrier {

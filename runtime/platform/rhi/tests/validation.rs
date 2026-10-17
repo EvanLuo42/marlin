@@ -6,7 +6,11 @@ use marlin_rhi::{AdapterPreference, DeviceDesc, Instance, InstanceDesc};
 
 #[test]
 fn validation_reports_errors() {
-    let instance = Instance::new(&InstanceDesc { validation: true }).unwrap();
+    let instance = Instance::new(&InstanceDesc {
+        validation: true,
+        ..InstanceDesc::default()
+    })
+    .unwrap();
     let device = instance
         .create_device(&DeviceDesc {
             adapter: AdapterPreference::HighPerformance,

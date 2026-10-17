@@ -79,13 +79,8 @@ fn memory_requirements() {
 #[test]
 fn placement_rules() {
     let device = support::hardware_device();
-    let buffers = heap(&device, 1 << 20, MemoryLocation::GpuOnly, HeapKind::Buffers);
-    let textures = heap(
-        &device,
-        1 << 20,
-        MemoryLocation::GpuOnly,
-        HeapKind::Textures,
-    );
+    let buffers = heap(device, 1 << 20, MemoryLocation::GpuOnly, HeapKind::Buffers);
+    let textures = heap(device, 1 << 20, MemoryLocation::GpuOnly, HeapKind::Textures);
     let gpu = buffer_desc(1024, BufferUsage::SHADER_READ, MemoryLocation::GpuOnly);
     let invalid =
         |r: marlin_rhi::Result<_>| assert_eq!(r.unwrap_err().kind(), ErrorKind::InvalidInput);
@@ -165,7 +160,7 @@ fn placement_rules() {
 #[test]
 fn placed_buffers_alias() {
     for device in devices() {
-        let heap = heap(&device, 1 << 16, MemoryLocation::GpuOnly, HeapKind::Buffers);
+        let heap = heap(device, 1 << 16, MemoryLocation::GpuOnly, HeapKind::Buffers);
         let desc = buffer_desc(
             256,
             BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
@@ -174,17 +169,17 @@ fn placed_buffers_alias() {
         let a = device.create_placed_buffer(&heap, 0, &desc).unwrap();
         let b = device.create_placed_buffer(&heap, 0, &desc).unwrap();
         let first = upload(
-            &device,
+            device,
             &words_to_bytes(&[1, 2, 3, 4]),
             BufferUsage::default(),
         );
         let second = upload(
-            &device,
+            device,
             &words_to_bytes(&[9, 8, 7, 6]),
             BufferUsage::default(),
         );
-        let out = readback(&device, 32);
-        run(&device, |list| {
+        let out = readback(device, 32);
+        run(device, |list| {
             for (buffer, src, at) in [(&a, &first, 0), (&b, &second, 16)] {
                 // Taking over the memory: nothing before.
                 list.buffer_barriers(&[BufferBarrier {
@@ -203,7 +198,7 @@ fn placed_buffers_alias() {
         });
         assert_eq!(read_words(&out, 0, 8), [1, 2, 3, 4, 9, 8, 7, 6]);
         // Both name the same memory: `a` now reads what `b` wrote.
-        run(&device, |list| list.copy_buffer(&a, 0, &out, 0, 16));
+        run(device, |list| list.copy_buffer(&a, 0, &out, 0, 16));
         assert_eq!(read_words(&out, 0, 4), [9, 8, 7, 6]);
         assert_eq!(device.validation_errors(), 0);
     }
@@ -212,7 +207,7 @@ fn placed_buffers_alias() {
 #[test]
 fn placed_upload_buffers_map() {
     let device = support::hardware_device();
-    let heap = heap(&device, 1 << 16, MemoryLocation::Upload, HeapKind::Buffers);
+    let heap = heap(device, 1 << 16, MemoryLocation::Upload, HeapKind::Buffers);
     let staging = device
         .create_placed_buffer(
             &heap,
@@ -222,8 +217,8 @@ fn placed_upload_buffers_map() {
         .unwrap();
     // SAFETY: no GPU work uses it yet.
     unsafe { staging.write(0, &words_to_bytes(&[5, 6, 7])) };
-    let out = readback(&device, 16);
-    run(&device, |list| list.copy_buffer(&staging, 0, &out, 0, 12));
+    let out = readback(device, 16);
+    run(device, |list| list.copy_buffer(&staging, 0, &out, 0, 12));
     assert_eq!(read_words(&out, 0, 3), [5, 6, 7]);
     assert_eq!(device.validation_errors(), 0);
 }
@@ -231,7 +226,7 @@ fn placed_upload_buffers_map() {
 #[test]
 fn placed_resources_keep_their_heap_alive() {
     let device = support::hardware_device();
-    let heap = heap(&device, 1 << 16, MemoryLocation::GpuOnly, HeapKind::Buffers);
+    let heap = heap(device, 1 << 16, MemoryLocation::GpuOnly, HeapKind::Buffers);
     let placed = device
         .create_placed_buffer(
             &heap,
@@ -244,9 +239,9 @@ fn placed_resources_keep_their_heap_alive() {
         )
         .unwrap();
     drop(heap);
-    let src = upload(&device, &words_to_bytes(&[42]), BufferUsage::default());
-    let out = readback(&device, 4);
-    run(&device, |list| {
+    let src = upload(device, &words_to_bytes(&[42]), BufferUsage::default());
+    let out = readback(device, 4);
+    run(device, |list| {
         list.copy_buffer(&src, 0, &placed, 0, 4);
         list.buffer_barriers(&[BufferBarrier {
             buffer: &placed,
@@ -264,15 +259,15 @@ fn placed_resources_keep_their_heap_alive() {
 #[test]
 fn placed_targets_alias() {
     for device in devices() {
-        let heap = heap(&device, 1 << 20, MemoryLocation::GpuOnly, HeapKind::Targets);
+        let heap = heap(device, 1 << 20, MemoryLocation::GpuOnly, HeapKind::Targets);
         let a = ColumnTarget::with_texture(
-            &device,
+            device,
             device
                 .create_placed_texture(&heap, 0, &ColumnTarget::desc())
                 .unwrap(),
         );
         let b = ColumnTarget::with_texture(
-            &device,
+            device,
             device
                 .create_placed_texture(&heap, 0, &ColumnTarget::desc())
                 .unwrap(),
@@ -290,11 +285,11 @@ fn placed_targets_alias() {
         let depth_view = device
             .create_depth_stencil_view(&depth, &DepthStencilViewDesc::default())
             .unwrap();
-        let depth_out = readback(&device, 256 * 64);
-        let pipeline = columns_pipeline(&device, None);
+        let depth_out = readback(device, 256 * 64);
+        let pipeline = columns_pipeline(device, None);
 
         let draw = |target: &ColumnTarget, column: u32| {
-            run(&device, |list| {
+            run(device, |list| {
                 target.begin(list);
                 list.set_graphics_pipeline(&pipeline);
                 list.push_constants(0, &[COLUMNS, 1, 0]);
@@ -311,7 +306,7 @@ fn placed_targets_alias() {
         };
         assert_eq!(draw(&a, 1), only(1));
         assert_eq!(draw(&b, 2), only(2));
-        run(&device, |list| {
+        run(device, |list| {
             list.texture_barriers(&[TextureBarrier::new(
                 &depth,
                 TextureState::UNDEFINED,
@@ -350,12 +345,7 @@ fn placed_targets_alias() {
 #[test]
 fn placed_sampled_textures_round_trip() {
     for device in devices() {
-        let heap = heap(
-            &device,
-            1 << 20,
-            MemoryLocation::GpuOnly,
-            HeapKind::Textures,
-        );
+        let heap = heap(device, 1 << 20, MemoryLocation::GpuOnly, HeapKind::Textures);
         let desc = TextureDesc::new_2d(
             16,
             16,
@@ -372,7 +362,7 @@ fn placed_sampled_textures_round_trip() {
             .collect();
         let pixels: Vec<u32> = (0..256).collect();
         let staging = buffer(
-            &device,
+            device,
             4096 * 2,
             BufferUsage::COPY_SRC,
             MemoryLocation::Upload,
@@ -386,8 +376,8 @@ fn placed_sampled_textures_round_trip() {
             // SAFETY: as above.
             unsafe { staging.write(4096 + row * 256, &words_to_bytes(&inverted)) };
         }
-        let out = readback(&device, 4096 * 2);
-        run(&device, |list| {
+        let out = readback(device, 4096 * 2);
+        run(device, |list| {
             for (i, texture) in textures.iter().enumerate() {
                 let region = BufferTextureCopy::whole_mip(texture.desc(), 0, 0, i as u64 * 4096);
                 list.texture_barriers(&[TextureBarrier::new(

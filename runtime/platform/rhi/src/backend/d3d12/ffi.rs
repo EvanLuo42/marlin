@@ -88,6 +88,7 @@ pub(super) struct DXGI_ADAPTER_DESC1 {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub(super) struct DXGI_SAMPLE_DESC {
     pub Count: u32,
     pub Quality: u32,
@@ -463,15 +464,6 @@ impl D3D12_SHADER_BYTECODE {
 }
 
 #[repr(C)]
-pub(super) struct D3D12_STREAM_OUTPUT_DESC {
-    pub pSODeclaration: *const c_void,
-    pub NumEntries: u32,
-    pub pBufferStrides: *const u32,
-    pub NumStrides: u32,
-    pub RasterizedStream: u32,
-}
-
-#[repr(C)]
 #[derive(Clone, Copy)]
 pub(super) struct D3D12_RENDER_TARGET_BLEND_DESC {
     pub BlendEnable: BOOL,
@@ -487,6 +479,7 @@ pub(super) struct D3D12_RENDER_TARGET_BLEND_DESC {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub(super) struct D3D12_BLEND_DESC {
     pub AlphaToCoverageEnable: BOOL,
     pub IndependentBlendEnable: BOOL,
@@ -494,6 +487,7 @@ pub(super) struct D3D12_BLEND_DESC {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub(super) struct D3D12_RASTERIZER_DESC {
     pub FillMode: i32,
     pub CullMode: i32,
@@ -517,8 +511,10 @@ pub(super) struct D3D12_DEPTH_STENCILOP_DESC {
     pub StencilFunc: i32,
 }
 
+/// `D3D12_DEPTH_STENCIL_DESC1`: the classic description plus the depth bounds test.
 #[repr(C)]
-pub(super) struct D3D12_DEPTH_STENCIL_DESC {
+#[derive(Clone, Copy)]
+pub(super) struct D3D12_DEPTH_STENCIL_DESC1 {
     pub DepthEnable: BOOL,
     pub DepthWriteMask: i32,
     pub DepthFunc: i32,
@@ -527,52 +523,7 @@ pub(super) struct D3D12_DEPTH_STENCIL_DESC {
     pub StencilWriteMask: u8,
     pub FrontFace: D3D12_DEPTH_STENCILOP_DESC,
     pub BackFace: D3D12_DEPTH_STENCILOP_DESC,
-}
-
-#[repr(C)]
-pub(super) struct D3D12_INPUT_LAYOUT_DESC {
-    pub pInputElementDescs: *const c_void,
-    pub NumElements: u32,
-}
-
-#[repr(C)]
-pub(super) struct D3D12_CACHED_PIPELINE_STATE {
-    pub pCachedBlob: *const c_void,
-    pub CachedBlobSizeInBytes: usize,
-}
-
-#[repr(C)]
-pub(super) struct D3D12_GRAPHICS_PIPELINE_STATE_DESC {
-    pub pRootSignature: *mut c_void,
-    pub VS: D3D12_SHADER_BYTECODE,
-    pub PS: D3D12_SHADER_BYTECODE,
-    pub DS: D3D12_SHADER_BYTECODE,
-    pub HS: D3D12_SHADER_BYTECODE,
-    pub GS: D3D12_SHADER_BYTECODE,
-    pub StreamOutput: D3D12_STREAM_OUTPUT_DESC,
-    pub BlendState: D3D12_BLEND_DESC,
-    pub SampleMask: u32,
-    pub RasterizerState: D3D12_RASTERIZER_DESC,
-    pub DepthStencilState: D3D12_DEPTH_STENCIL_DESC,
-    pub InputLayout: D3D12_INPUT_LAYOUT_DESC,
-    pub IBStripCutValue: i32,
-    pub PrimitiveTopologyType: i32,
-    pub NumRenderTargets: u32,
-    pub RTVFormats: [u32; 8],
-    pub DSVFormat: u32,
-    pub SampleDesc: DXGI_SAMPLE_DESC,
-    pub NodeMask: u32,
-    pub CachedPSO: D3D12_CACHED_PIPELINE_STATE,
-    pub Flags: u32,
-}
-
-#[repr(C)]
-pub(super) struct D3D12_COMPUTE_PIPELINE_STATE_DESC {
-    pub pRootSignature: *mut c_void,
-    pub CS: D3D12_SHADER_BYTECODE,
-    pub NodeMask: u32,
-    pub CachedPSO: D3D12_CACHED_PIPELINE_STATE,
-    pub Flags: u32,
+    pub DepthBoundsTestEnable: BOOL,
 }
 
 #[repr(C)]
@@ -646,7 +597,6 @@ pub(super) struct D3D12_FEATURE_DATA_D3D12_OPTIONS12 {
     pub RelaxedFormatCastingSupported: BOOL,
 }
 
-/// The leading fields of `D3D12_FEATURE_DATA_D3D12_OPTIONS` (15 words in all).
 #[repr(C)]
 #[derive(Default)]
 pub(super) struct D3D12_FEATURE_DATA_D3D12_OPTIONS {
@@ -655,7 +605,15 @@ pub(super) struct D3D12_FEATURE_DATA_D3D12_OPTIONS {
     pub MinPrecisionSupport: i32,
     pub TiledResourcesTier: i32,
     pub ResourceBindingTier: i32,
-    pub _5_13: [u32; 9],
+    pub PSSpecifiedStencilRefSupported: BOOL,
+    pub TypedUAVLoadAdditionalFormats: BOOL,
+    pub ROVsSupported: BOOL,
+    pub ConservativeRasterizationTier: i32,
+    pub MaxGPUVirtualAddressBitsPerResource: u32,
+    pub StandardSwizzle64KBSupported: BOOL,
+    pub CrossNodeSharingTier: i32,
+    pub CrossAdapterRowMajorTextureSupported: BOOL,
+    pub VPAndRTArrayIndexFromAnyShaderFeedingRasterizerSupportedWithoutGSEmulation: BOOL,
     pub ResourceHeapTier: i32,
 }
 
@@ -890,7 +848,6 @@ pub(super) const D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS: u32 = 2;
 pub(super) const D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_BLEND: u32 = 8;
 pub(super) const D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_MASK: u32 = 9;
 pub(super) const D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RASTERIZER: u32 = 10;
-pub(super) const D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL: u32 = 11;
 pub(super) const D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RENDER_TARGET_FORMATS: u32 = 15;
 pub(super) const D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL_FORMAT: u32 = 16;
 pub(super) const D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_DESC: u32 = 17;
@@ -928,3 +885,475 @@ pub(super) const D3D12_DSV_FLAG_READ_ONLY_STENCIL: u32 = 2;
 pub(super) const D3D12_HEAP_FLAG_CREATE_NOT_ZEROED: u32 = 0x1000;
 pub(super) const D3D12_SMALL_RESOURCE_PLACEMENT_ALIGNMENT: u64 = 4096;
 pub(super) const D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT: u64 = 65536;
+
+// --- Production features: formats, MSAA, views, queries, ray queries, sparse, VRS, DRED,
+// presentation (from d3d12.h, dxgiformat.h, dxgi1_6.h, winerror.h) ---
+
+pub(super) const DXGI_ERROR_FRAME_STATISTICS_DISJOINT: HRESULT = 0x887A_000B_u32 as i32;
+
+pub(super) const DXGI_FORMAT_R32G32B32A32_SINT: u32 = 4;
+pub(super) const DXGI_FORMAT_R32G32B32_FLOAT: u32 = 6;
+pub(super) const DXGI_FORMAT_R16G16B16A16_SNORM: u32 = 13;
+pub(super) const DXGI_FORMAT_R16G16B16A16_SINT: u32 = 14;
+pub(super) const DXGI_FORMAT_R32G32_SINT: u32 = 18;
+pub(super) const DXGI_FORMAT_X32_TYPELESS_G8X24_UINT: u32 = 22;
+pub(super) const DXGI_FORMAT_R10G10B10A2_UINT: u32 = 25;
+pub(super) const DXGI_FORMAT_R8G8B8A8_UINT: u32 = 30;
+pub(super) const DXGI_FORMAT_R8G8B8A8_SNORM: u32 = 31;
+pub(super) const DXGI_FORMAT_R8G8B8A8_SINT: u32 = 32;
+pub(super) const DXGI_FORMAT_R16G16_UNORM: u32 = 35;
+pub(super) const DXGI_FORMAT_R16G16_SNORM: u32 = 37;
+pub(super) const DXGI_FORMAT_R16G16_SINT: u32 = 38;
+pub(super) const DXGI_FORMAT_R32_SINT: u32 = 43;
+pub(super) const DXGI_FORMAT_R8G8_UINT: u32 = 50;
+pub(super) const DXGI_FORMAT_R8G8_SNORM: u32 = 51;
+pub(super) const DXGI_FORMAT_R8G8_SINT: u32 = 52;
+pub(super) const DXGI_FORMAT_R16_TYPELESS: u32 = 53;
+pub(super) const DXGI_FORMAT_D16_UNORM: u32 = 55;
+pub(super) const DXGI_FORMAT_R16_SNORM: u32 = 58;
+pub(super) const DXGI_FORMAT_R16_SINT: u32 = 59;
+pub(super) const DXGI_FORMAT_R8_SNORM: u32 = 63;
+pub(super) const DXGI_FORMAT_R8_SINT: u32 = 64;
+pub(super) const DXGI_FORMAT_R9G9B9E5_SHAREDEXP: u32 = 67;
+pub(super) const DXGI_FORMAT_BC2_UNORM: u32 = 74;
+pub(super) const DXGI_FORMAT_BC2_UNORM_SRGB: u32 = 75;
+pub(super) const DXGI_FORMAT_BC4_SNORM: u32 = 81;
+pub(super) const DXGI_FORMAT_BC5_SNORM: u32 = 84;
+
+pub(super) const D3D12_FEATURE_FORMAT_SUPPORT: i32 = 3;
+pub(super) const D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS: i32 = 4;
+pub(super) const D3D12_FEATURE_D3D12_OPTIONS2: i32 = 18;
+pub(super) const D3D12_FEATURE_D3D12_OPTIONS4: i32 = 23;
+pub(super) const D3D12_FEATURE_D3D12_OPTIONS6: i32 = 30;
+pub(super) const D3D12_FEATURE_D3D12_OPTIONS16: i32 = 45;
+
+#[repr(C)]
+#[derive(Default)]
+pub(super) struct D3D12_FEATURE_DATA_FORMAT_SUPPORT {
+    pub Format: u32,
+    pub Support1: u32,
+    pub Support2: u32,
+}
+
+pub(super) const D3D12_FORMAT_SUPPORT1_TEXTURE2D: u32 = 0x20;
+pub(super) const D3D12_FORMAT_SUPPORT1_TEXTURE3D: u32 = 0x40;
+pub(super) const D3D12_FORMAT_SUPPORT1_SHADER_LOAD: u32 = 0x100;
+pub(super) const D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE: u32 = 0x200;
+pub(super) const D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE_COMPARISON: u32 = 0x400;
+pub(super) const D3D12_FORMAT_SUPPORT1_RENDER_TARGET: u32 = 0x4000;
+pub(super) const D3D12_FORMAT_SUPPORT1_BLENDABLE: u32 = 0x8000;
+pub(super) const D3D12_FORMAT_SUPPORT1_DEPTH_STENCIL: u32 = 0x1_0000;
+pub(super) const D3D12_FORMAT_SUPPORT1_MULTISAMPLE_RESOLVE: u32 = 0x4_0000;
+pub(super) const D3D12_FORMAT_SUPPORT1_MULTISAMPLE_LOAD: u32 = 0x40_0000;
+pub(super) const D3D12_FORMAT_SUPPORT1_TYPED_UNORDERED_ACCESS_VIEW: u32 = 0x200_0000;
+pub(super) const D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_ADD: u32 = 0x1;
+pub(super) const D3D12_FORMAT_SUPPORT2_UAV_TYPED_LOAD: u32 = 0x40;
+pub(super) const D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE: u32 = 0x80;
+pub(super) const D3D12_FORMAT_SUPPORT2_TILED: u32 = 0x200;
+
+#[repr(C)]
+#[derive(Default)]
+pub(super) struct D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS {
+    pub Format: u32,
+    pub SampleCount: u32,
+    pub Flags: u32,
+    pub NumQualityLevels: u32,
+}
+
+#[repr(C)]
+#[derive(Default)]
+pub(super) struct D3D12_FEATURE_DATA_D3D12_OPTIONS2 {
+    pub DepthBoundsTestSupported: BOOL,
+    pub ProgrammableSamplePositionsTier: i32,
+}
+
+#[repr(C)]
+#[derive(Default)]
+pub(super) struct D3D12_FEATURE_DATA_D3D12_OPTIONS4 {
+    pub MSAA64KBAlignedTextureSupported: BOOL,
+    pub SharedResourceCompatibilityTier: i32,
+    pub Native16BitShaderOpsSupported: BOOL,
+}
+
+#[repr(C)]
+#[derive(Default)]
+pub(super) struct D3D12_FEATURE_DATA_D3D12_OPTIONS6 {
+    pub AdditionalShadingRatesSupported: BOOL,
+    pub PerPrimitiveShadingRateSupportedWithViewportIndexing: BOOL,
+    pub VariableShadingRateTier: i32,
+    pub ShadingRateImageTileSize: u32,
+    pub BackgroundProcessingSupported: BOOL,
+}
+
+#[repr(C)]
+#[derive(Default)]
+pub(super) struct D3D12_FEATURE_DATA_D3D12_OPTIONS16 {
+    pub DynamicDepthBiasSupported: BOOL,
+    pub GPUUploadHeapSupported: BOOL,
+}
+
+pub(super) const D3D12_TILED_RESOURCES_TIER_2: i32 = 2;
+pub(super) const D3D12_TILED_RESOURCES_TIER_3: i32 = 3;
+
+// Views.
+pub(super) const D3D12_RTV_DIMENSION_TEXTURE2DMS: i32 = 6;
+pub(super) const D3D12_RTV_DIMENSION_TEXTURE2DMSARRAY: i32 = 7;
+pub(super) const D3D12_DSV_DIMENSION_TEXTURE2DMS: i32 = 5;
+pub(super) const D3D12_DSV_DIMENSION_TEXTURE2DMSARRAY: i32 = 6;
+pub(super) const D3D12_SRV_DIMENSION_TEXTURE2DMS: i32 = 6;
+pub(super) const D3D12_SRV_DIMENSION_TEXTURE2DMSARRAY: i32 = 7;
+pub(super) const D3D12_SRV_DIMENSION_TEXTURECUBEARRAY: i32 = 10;
+pub(super) const D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE: i32 = 11;
+
+/// `D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(1, 0, 0, 1)` with forced zeros and one: the stencil
+/// plane (in green for `X32_TYPELESS_G8X24_UINT`) read as red.
+pub(super) const STENCIL_IN_RED_COMPONENT_MAPPING: u32 =
+    1 | (4 << 3) | (4 << 6) | (5 << 9) | (1 << 12);
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub(super) struct D3D12_GPU_DESCRIPTOR_HANDLE {
+    pub ptr: u64,
+}
+
+// Resource states and layouts.
+pub(super) const D3D12_RESOURCE_STATE_PREDICATION: u32 = 0x200;
+pub(super) const D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE: u32 = 0x40_0000;
+pub(super) const D3D12_RESOURCE_STATE_SHADING_RATE_SOURCE: u32 = 0x100_0000;
+pub(super) const D3D12_BARRIER_LAYOUT_SHADING_RATE_SOURCE: u32 = 11;
+
+// Heaps and sharing.
+pub(super) const D3D12_HEAP_TYPE_GPU_UPLOAD: i32 = 5;
+pub(super) const D3D12_HEAP_FLAG_SHARED: u32 = 0x1;
+pub(super) const D3D12_FENCE_FLAG_SHARED: i32 = 0x1;
+/// `GENERIC_ALL`, the access shared handles are created with.
+pub(super) const GENERIC_ALL: u32 = 0x1000_0000;
+pub(super) const D3D12_MULTIPLE_FENCE_WAIT_FLAG_ANY: i32 = 0x1;
+
+// Queries and predication.
+pub(super) const D3D12_QUERY_HEAP_TYPE_OCCLUSION: i32 = 0;
+pub(super) const D3D12_QUERY_HEAP_TYPE_PIPELINE_STATISTICS1: i32 = 7;
+pub(super) const D3D12_QUERY_TYPE_OCCLUSION: i32 = 0;
+pub(super) const D3D12_QUERY_TYPE_BINARY_OCCLUSION: i32 = 1;
+pub(super) const D3D12_QUERY_TYPE_PIPELINE_STATISTICS1: i32 = 10;
+pub(super) const D3D12_PREDICATION_OP_EQUAL_ZERO: i32 = 0;
+pub(super) const D3D12_PREDICATION_OP_NOT_EQUAL_ZERO: i32 = 1;
+
+// Markers.
+pub(super) const D3D12_WRITEBUFFERIMMEDIATE_MODE_MARKER_IN: i32 = 0x1;
+pub(super) const D3D12_WRITEBUFFERIMMEDIATE_MODE_MARKER_OUT: i32 = 0x2;
+pub(super) const D3D12_COMMAND_LIST_SUPPORT_FLAG_DIRECT: u32 = 0x1;
+pub(super) const D3D12_COMMAND_LIST_SUPPORT_FLAG_COMPUTE: u32 = 0x4;
+pub(super) const D3D12_COMMAND_LIST_SUPPORT_FLAG_COPY: u32 = 0x8;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(super) struct D3D12_WRITEBUFFERIMMEDIATE_PARAMETER {
+    pub Dest: u64,
+    pub Value: u32,
+}
+
+// Pipelines.
+pub(super) const D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_VS: u32 = 1;
+pub(super) const D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_CS: u32 = 6;
+pub(super) const D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_IB_STRIP_CUT_VALUE: u32 = 13;
+pub(super) const D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PRIMITIVE_TOPOLOGY: u32 = 14;
+pub(super) const D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL1: u32 = 21;
+pub(super) const D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED: i32 = 0;
+pub(super) const D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_0XFFFF: i32 = 1;
+pub(super) const D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_0XFFFFFFFF: i32 = 2;
+pub(super) const D3D12_CONSERVATIVE_RASTERIZATION_MODE_ON: i32 = 1;
+pub(super) const D3D12_FILTER_REDUCTION_TYPE_MINIMUM: i32 = 2;
+pub(super) const D3D12_FILTER_REDUCTION_TYPE_MAXIMUM: i32 = 3;
+
+// Residency.
+pub(super) const D3D12_RESIDENCY_PRIORITY_MINIMUM: i32 = 0x2800_0000;
+pub(super) const D3D12_RESIDENCY_PRIORITY_LOW: i32 = 0x5000_0000;
+pub(super) const D3D12_RESIDENCY_PRIORITY_NORMAL: i32 = 0x7800_0000;
+pub(super) const D3D12_RESIDENCY_PRIORITY_HIGH: i32 = 0xa001_0000_u32 as i32;
+pub(super) const D3D12_RESIDENCY_PRIORITY_MAXIMUM: i32 = 0xc800_0000_u32 as i32;
+
+// Variable-rate shading.
+pub(super) const D3D12_VARIABLE_SHADING_RATE_TIER_1: i32 = 1;
+pub(super) const D3D12_VARIABLE_SHADING_RATE_TIER_2: i32 = 2;
+
+// Sparse (tiled) resources.
+pub(super) const D3D12_TILE_RANGE_FLAG_NULL: i32 = 1;
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub(super) struct D3D12_TILED_RESOURCE_COORDINATE {
+    pub X: u32,
+    pub Y: u32,
+    pub Z: u32,
+    pub Subresource: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub(super) struct D3D12_TILE_REGION_SIZE {
+    pub NumTiles: u32,
+    pub UseBox: BOOL,
+    pub Width: u32,
+    pub Height: u16,
+    pub Depth: u16,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub(super) struct D3D12_TILE_SHAPE {
+    pub WidthInTexels: u32,
+    pub HeightInTexels: u32,
+    pub DepthInTexels: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub(super) struct D3D12_PACKED_MIP_INFO {
+    pub NumStandardMips: u8,
+    pub NumPackedMips: u8,
+    pub NumTilesForPackedMips: u32,
+    pub StartTileIndexInOverallResource: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub(super) struct D3D12_SUBRESOURCE_TILING {
+    pub WidthInTiles: u32,
+    pub HeightInTiles: u16,
+    pub DepthInTiles: u16,
+    pub StartTileIndexInOverallResource: u32,
+}
+
+// Acceleration structures.
+pub(super) const D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL: i32 = 0;
+pub(super) const D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL: i32 = 1;
+pub(super) const D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES: i32 = 0;
+pub(super) const D3D12_RAYTRACING_GEOMETRY_TYPE_PROCEDURAL_PRIMITIVE_AABBS: i32 = 1;
+pub(super) const D3D12_ELEMENTS_LAYOUT_ARRAY: i32 = 0;
+pub(super) const D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PERFORM_UPDATE: u32 = 0x20;
+pub(super) const D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE_CLONE: i32 = 0;
+pub(super) const D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE_COMPACT: i32 = 1;
+pub(super) const D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_COMPACTED_SIZE: i32 = 0;
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub(super) struct D3D12_GPU_VIRTUAL_ADDRESS_AND_STRIDE {
+    pub StartAddress: u64,
+    pub StrideInBytes: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub(super) struct D3D12_RAYTRACING_GEOMETRY_TRIANGLES_DESC {
+    pub Transform3x4: u64,
+    pub IndexFormat: u32,
+    pub VertexFormat: u32,
+    pub IndexCount: u32,
+    pub VertexCount: u32,
+    pub IndexBuffer: u64,
+    pub VertexBuffer: D3D12_GPU_VIRTUAL_ADDRESS_AND_STRIDE,
+}
+
+/// The union's AABB member overlays the triangles member's first 24 bytes: `AABBCount` on
+/// `Transform3x4`, the address-and-stride on the next four words.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub(super) struct D3D12_RAYTRACING_GEOMETRY_AABBS_DESC {
+    pub AABBCount: u64,
+    pub AABBs: D3D12_GPU_VIRTUAL_ADDRESS_AND_STRIDE,
+}
+
+/// `Triangles` is the union's largest member (48 bytes); `aabbs` reinterprets it.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub(super) struct D3D12_RAYTRACING_GEOMETRY_DESC {
+    pub Type: i32,
+    pub Flags: u32,
+    pub Triangles: D3D12_RAYTRACING_GEOMETRY_TRIANGLES_DESC,
+}
+
+impl D3D12_RAYTRACING_GEOMETRY_DESC {
+    pub fn aabbs(flags: u32, aabbs: D3D12_RAYTRACING_GEOMETRY_AABBS_DESC) -> Self {
+        let mut desc = Self {
+            Type: D3D12_RAYTRACING_GEOMETRY_TYPE_PROCEDURAL_PRIMITIVE_AABBS,
+            Flags: flags,
+            ..Default::default()
+        };
+        // SAFETY: the AABB description is smaller than the triangles one and both are plain
+        // data in the same union slot.
+        unsafe {
+            core::ptr::write(
+                (&raw mut desc.Triangles).cast::<D3D12_RAYTRACING_GEOMETRY_AABBS_DESC>(),
+                aabbs,
+            )
+        };
+        desc
+    }
+}
+
+/// The union holds `InstanceDescs` (a GPU address) or `pGeometryDescs` (a pointer): one 8-byte
+/// word.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(super) struct D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS {
+    pub Type: i32,
+    pub Flags: u32,
+    pub NumDescs: u32,
+    pub DescsLayout: i32,
+    pub Descs: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(super) struct D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC {
+    pub DestAccelerationStructureData: u64,
+    pub Inputs: D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS,
+    pub SourceAccelerationStructureData: u64,
+    pub ScratchAccelerationStructureData: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub(super) struct D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO {
+    pub ResultDataMaxSizeInBytes: u64,
+    pub ScratchDataSizeInBytes: u64,
+    pub UpdateScratchDataSizeInBytes: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(super) struct D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC {
+    pub DestBuffer: u64,
+    pub InfoType: i32,
+}
+
+// Device removed extended data (DRED).
+pub(super) const D3D12_DRED_ENABLEMENT_FORCED_ON: i32 = 2;
+
+#[repr(C)]
+pub(super) struct D3D12_AUTO_BREADCRUMB_NODE {
+    pub pCommandListDebugNameA: *const u8,
+    pub pCommandListDebugNameW: *const u16,
+    pub pCommandQueueDebugNameA: *const u8,
+    pub pCommandQueueDebugNameW: *const u16,
+    pub pCommandList: *mut c_void,
+    pub pCommandQueue: *mut c_void,
+    pub BreadcrumbCount: u32,
+    pub pLastBreadcrumbValue: *const u32,
+    pub pCommandHistory: *const i32,
+    pub pNext: *const D3D12_AUTO_BREADCRUMB_NODE,
+}
+
+#[repr(C)]
+pub(super) struct D3D12_DRED_ALLOCATION_NODE {
+    pub ObjectNameA: *const u8,
+    pub ObjectNameW: *const u16,
+    pub AllocationType: i32,
+    pub pNext: *const D3D12_DRED_ALLOCATION_NODE,
+}
+
+#[repr(C)]
+pub(super) struct D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT {
+    pub pHeadAutoBreadcrumbNode: *const D3D12_AUTO_BREADCRUMB_NODE,
+}
+
+#[repr(C)]
+pub(super) struct D3D12_DRED_PAGE_FAULT_OUTPUT {
+    pub PageFaultVA: u64,
+    pub pHeadExistingAllocationNode: *const D3D12_DRED_ALLOCATION_NODE,
+    pub pHeadRecentFreedAllocationNode: *const D3D12_DRED_ALLOCATION_NODE,
+}
+
+// DXGI: memory budget, outputs, presentation statistics, HDR.
+pub(super) const DXGI_MEMORY_SEGMENT_GROUP_LOCAL: i32 = 0;
+pub(super) const DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL: i32 = 1;
+pub(super) const DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709: i32 = 0;
+pub(super) const DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709: i32 = 1;
+pub(super) const DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020: i32 = 12;
+pub(super) const DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT: u32 = 0x1;
+pub(super) const DXGI_HDR_METADATA_TYPE_NONE: i32 = 0;
+pub(super) const DXGI_HDR_METADATA_TYPE_HDR10: i32 = 1;
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub(super) struct DXGI_QUERY_VIDEO_MEMORY_INFO {
+    pub Budget: u64,
+    pub CurrentUsage: u64,
+    pub AvailableForReservation: u64,
+    pub CurrentReservation: u64,
+}
+
+#[repr(C)]
+pub(super) struct DXGI_OUTPUT_DESC1 {
+    pub DeviceName: [u16; 32],
+    pub DesktopCoordinates: windows_sys::Win32::Foundation::RECT,
+    pub AttachedToDesktop: BOOL,
+    pub Rotation: i32,
+    pub Monitor: *mut c_void,
+    pub BitsPerColor: u32,
+    pub ColorSpace: i32,
+    pub RedPrimary: [f32; 2],
+    pub GreenPrimary: [f32; 2],
+    pub BluePrimary: [f32; 2],
+    pub WhitePoint: [f32; 2],
+    pub MinLuminance: f32,
+    pub MaxLuminance: f32,
+    pub MaxFullFrameLuminance: f32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub(super) struct DXGI_FRAME_STATISTICS {
+    pub PresentCount: u32,
+    pub PresentRefreshCount: u32,
+    pub SyncRefreshCount: u32,
+    pub SyncQPCTime: i64,
+    pub SyncGPUTime: i64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub(super) struct DXGI_HDR_METADATA_HDR10 {
+    pub RedPrimary: [u16; 2],
+    pub GreenPrimary: [u16; 2],
+    pub BluePrimary: [u16; 2],
+    pub WhitePoint: [u16; 2],
+    pub MaxMasteringLuminance: u32,
+    pub MinMasteringLuminance: u32,
+    pub MaxContentLightLevel: u16,
+    pub MaxFrameAverageLightLevel: u16,
+}
+
+// Cached pipeline blobs.
+pub(super) const D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_CACHED_PSO: u32 = 19;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(super) struct D3D12_CACHED_PIPELINE_STATE {
+    pub pCachedBlob: *const c_void,
+    pub CachedBlobSizeInBytes: usize,
+}
+
+// Resources created with barrier layouts (ID3D12Device10).
+pub(super) const D3D12_RESOURCE_FLAG_RAYTRACING_ACCELERATION_STRUCTURE: u32 = 0x100;
+
+/// `D3D12_RESOURCE_DESC` with `D3D12_MIP_REGION` appended in place (flat: a nested struct would
+/// add tail padding before it).
+#[repr(C)]
+pub(super) struct D3D12_RESOURCE_DESC1 {
+    pub Dimension: i32,
+    pub Alignment: u64,
+    pub Width: u64,
+    pub Height: u32,
+    pub DepthOrArraySize: u16,
+    pub MipLevels: u16,
+    pub Format: u32,
+    pub SampleDesc: DXGI_SAMPLE_DESC,
+    pub Layout: i32,
+    pub Flags: u32,
+    /// Width, height, depth; 0 without sampler feedback.
+    pub SamplerFeedbackMipRegion: [u32; 3],
+}
+
+const _: () = assert!(size_of::<D3D12_RESOURCE_DESC1>() == 64);
