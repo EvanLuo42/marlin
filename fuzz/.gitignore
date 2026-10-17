@@ -1,0 +1,5 @@
+# `cargo xtask test --tier fuzz` builds into the root target/fuzz/; these are for running
+# cargo-fuzz or cargo directly from here.
+/target/
+/artifacts/
+/coverage/

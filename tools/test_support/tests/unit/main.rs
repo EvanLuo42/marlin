@@ -4,4 +4,5 @@
 mod drop;
 mod golden;
 mod panic;
+mod regress;
 mod time;

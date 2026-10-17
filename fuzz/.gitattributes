@@ -1,0 +1,2 @@
+# Fuzz inputs are bytes: never touch line endings.
+corpus/** binary

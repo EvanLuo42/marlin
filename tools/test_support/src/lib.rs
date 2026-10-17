@@ -15,6 +15,7 @@ mod git;
 pub mod golden;
 pub mod isolated;
 mod panic;
+pub mod regress;
 mod server;
 mod service;
 mod time;

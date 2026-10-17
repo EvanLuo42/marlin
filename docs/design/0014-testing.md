@@ -16,7 +16,7 @@
 | 共享 helper | `marlin-test-support`（std、零依赖，扩充）＋ 新的 `marlin-gpu-test-support`（依赖 marlin-rhi，只做 dev-dependency）＋ 自研 bench harness `marlin-bench` | 6 |
 | 渲染回归 | golden image：离屏渲染回读，与 Git LFS 中的参考 PNG 按容差比较，`MARLIN_BLESS=1` 重写 | 7.1 |
 | 性能 | `benches/*.rs` + `harness = false`，自研 harness，结果 JSON 写到 `target/`，xtask 与基线比较 | 7.2 |
-| Fuzz | 两层：日常测试里用固定种子的 `Rng` 做有上限的随机/属性测试；长跑用 cargo-fuzz，崩溃用例进 corpus 并转成回归测试 | 7.3 |
+| Fuzz | 两层：日常测试里用固定种子的 `Rng` 做有上限的随机/属性测试；长跑用 libFuzzer + ASan（cargo-fuzz 的目录布局，由 xtask 构建和运行），崩溃用例进 corpus 并转成回归测试 | 7.3 |
 | 覆盖率 | `cargo xtask coverage`：xtask 直接调 llvm-tools（`-C instrument-coverage` → llvm-profdata → llvm-cov），统计 quick + gpu + desktop 层；按 crate 出行/区域覆盖率和 HTML 报告；不设绝对门槛，和本地基线比较、下降就提示 | 7.4 |
 | 运行环境 | 暂时只在本机（Windows + NVIDIA）跑，不接 CI；层级设计要能直接映射到以后的 CI 矩阵 | 4 |
 
@@ -100,7 +100,7 @@
 | `stress` | `stress` 二进制，`MARLIN_TEST_SCALE` 默认放大到 10 | 可很长，必须有上限 |
 | `manual` | 加 `--ignored`，只跑手动测试 | |
 | `bench` | `benches/`，release，和基线比较 | |
-| `fuzz` | cargo-fuzz 目标，每个目标限时 | |
+| `fuzz` | `fuzz/` 的 libFuzzer 目标，每个目标限时、限内存 | 默认每个目标 60 秒 |
 | `all` | quick + gpu + desktop + stress | 提交前 |
 
 其他选项：`-p <crate>` 限定 crate；`--seed N` 设 `MARLIN_TEST_SEED`；`--bless` 设 `MARLIN_BLESS=1`。
@@ -136,7 +136,7 @@ GPU 层的看门狗：xtask 监控测试进程，超时没有输出就报告卡�
 - 一个 crate 只剩一个测试文件时也放进 `tests/unit/`，保持统一。
 - 二进制按层分，所以 GPU 测试天然只在 `gpu` 二进制里共享一个设备，不再有"每个文件各建一个 `OnceLock<Device>`"。
 - 链接次数从 223 个二进制降到约 60 个，`cargo test` 明显变快。
-- cargo-fuzz 目标集中在仓库根的 `fuzz/`（不进 workspace），目标名 `<crate>_<what>`，corpus 在 `fuzz/corpus/<target>/`。
+- fuzz 目标集中在仓库根的 `fuzz/`（自成一个 workspace，`cargo test --workspace` 不会构建它），目标名 `<crate>_<what>`，种子 corpus 在 `fuzz/corpus/<target>/`。
 
 ## 6. 共享 helper
 
@@ -164,6 +164,7 @@ GPU 层的看门狗：xtask 监控测试进程，超时没有输出就报告卡�
 | `test_uuid(n) -> u128`（调用方包成自己的 `Uuid`） | 5 处 `uuid(n)` |
 | `golden::assert_bytes/text(path, actual)`：`MARLIN_BLESS=1` 时重写 | 将来的参考向量文件 |
 | `data_path(env!("CARGO_MANIFEST_DIR"), rel)`：`<crate>/tests/data/rel` | 各处 `env!("CARGO_MANIFEST_DIR")` 拼路径 |
+| `regress::for_each(manifest_dir, target, |bytes| …)`：回放 `tests/data/regress/<target>/*`，全部跑完再报出失败的输入 | fuzz 找到的崩溃用例（§7.3） |
 
 ### 6.2 `marlin-gpu-test-support`（新 crate，`tools/gpu_test_support`）
 
@@ -210,8 +211,12 @@ GPU 层的看门狗：xtask 监控测试进程，超时没有输出就报告卡�
 ### 7.3 Fuzz 与属性测试
 
 - **日常层**：在 `unit` 二进制里，用 `Rng::new(seed())` 生成输入，迭代次数 `N * scale()`，全局分配器套 `MemCap`（测试二进制可以设全局分配器）。失败输出种子，用 `--seed` 复现。
-- **长跑层**：根目录 `fuzz/`，cargo-fuzz 目标覆盖所有解析器和反序列化入口（text、serial、cooked 格式、compress、net 帧、config/TOML、shader 前端、glTF/图片导入的我方处理部分）。`xtask test --tier fuzz --time 60` 每个目标限时。
-- 找到的崩溃输入复制到对应 crate 的 `tests/data/regress/`，再加一个 `unit` 测试遍历这个目录。这样修复以后 `quick` 层就能防止回退。
+- **长跑层**：根目录 `fuzz/`，libFuzzer 目标最终要覆盖所有解析器和反序列化入口（text、serial、cooked 格式、compress、net 帧、config/TOML、shader 前端、glTF/图片导入的我方处理部分）。
+  - 现有 12 个：`asset_package`、`asset_unit`、`asset_wire`、`compress_gdeflate`、`compress_lz4_block`、`compress_lz4_frame`、`compress_zstd`、`serial_cooked`、`serial_read`、`text_locale`、`text_message`、`text_string_table`。2026-10-17 各跑 60 秒，没有发现问题。
+  - `cargo xtask test --tier fuzz [--target <name>] [--time <secs>] [--seed <n>] [-- <libFuzzer flags>]`，每次运行限 2048 MB 内存、单个输入 10 秒。
+  - 不用 cargo-fuzz 本身：它的 `RUSTFLAGS` 会替换掉 gen-cfg 的 `marlin_platform` 等 flag。xtask 用和 cargo-fuzz 相同的 flag 加上 gen-cfg 自己构建。Windows MSVC 上要额外处理：链接加 `/include:main`；用 vswhere 找到 MSVC 的 `clang_rt.asan_dynamic-x86_64.dll` 放进 PATH；`marlin_fuzz::init()` 装一个调 C 运行时 `abort()` 的 panic hook（Rust 自己的 abort 会在 libFuzzer 保存输入之前结束进程）；检出路径太深时 `cl.exe` 会因 260 字符限制报 C1083。
+  - 新发现的 corpus 留在 `target/fuzz/corpus/`，还没有合回 `fuzz/corpus/` 的步骤。
+- 找到的崩溃输入经最小化后复制到对应 crate 的 `tests/data/regress/<target>/`，xtask 打印要加的回放测试：在 `unit` 里用 `marlin_test_support::regress::for_each` 遍历这个目录。这样修复以后 `quick` 层就能防止回退。
 
 ### 7.4 覆盖率
 
@@ -259,7 +264,7 @@ GPU 层的看门狗：xtask 监控测试进程，超时没有输出就报告卡�
    - 顺带修掉一个真 bug：config 的注册测试按大小写敏感过滤 cvar，链接顺序不同时会失败。
 5. ✅ `marlin-bench` 和 `--tier bench`；compress、ecs、net、asset_db、cook_texture 的基准已迁到 `benches/`。
 6. ✅ Git LFS + golden image：render 3 张、framework 1 张（2026-10-17）。
-7. `fuzz/` 和 `--tier fuzz`，先覆盖 text、serial、compress、cooked 格式。
+7. ✅ `fuzz/` 和 `--tier fuzz`，先覆盖 text、serial、compress、cooked 格式（2026-10-17，12 个目标）。
 8. ✅ 0001 §11 的"约定"一条改成指向本文档。
 
 迁移后留下的后续：
@@ -267,10 +272,13 @@ GPU 层的看门狗：xtask 监控测试进程，超时没有输出就报告卡�
 - pal/thread 里有一个没有上限的 `while !job.ran` 循环，改成 `wait_until`；diag 里几个有界的自旋等待可以顺手换掉。
 - pal 的 `windows_command_line_quoting` 需要精确的原始命令行，`isolated::run` 传不了，仍自己重入。
 - app 的窗口测试和 input 的触摸/原始输入注入测试并行时偶尔失败，现在靠 `one_at_a_time()` 串行；app 那部分也可能是多个 `App` 在不同线程上的真 bug，还没查。
-- fuzz 找到的崩溃输入进 `tests/data/regress/` 后，各 crate 的 `unit` 里要加回放测试。
+- 每个 fuzz 目标在所属 crate 的 `unit` 里加一个 `regress::for_each` 回放测试（text 3 个、serial 2 个、compress 4 个、asset 3 个；serial 的要把 `fuzz/src/lib.rs` 里的测试类型也复制过去），这样 `tests/data/regress/` 一有用例就会被跑到。
+- 读代码发现、fuzz 还没打到的两个疑似问题：`PackageIndex::check` 里 `c.unit_offset + c.raw_size as u64` 可能溢出；`Package::finish` 按 `record.size` 分配，没有上限，一个很小的恶意包就能要求分配巨量内存。
+- `asset_package`、`asset_unit` 基本过不了包的校验和：加一个 `cfg(fuzzing)` 下跳过校验和的开关，或写一个会重算校验和的目标，才能测得更深。
+- 补齐 §7.3 剩下的目标：net 帧、config/TOML、shader 前端、glTF/图片导入；再加一步把 `target/fuzz/corpus/` 的新发现合回 `fuzz/corpus/`。
 
 ## 10. 待定
 
 1. ~~cook 系列共用的 `Project` helper 放哪~~ **已定**：留在 asset_db / cook_core 的 `tests/support/`，用 `#[path]` 共享（§6.3）。
-2. cargo-fuzz 在 Windows MSVC 上依赖 ASan 支持，可用性要先验证；不行就先在 Linux 上跑长跑层，或自研一个无覆盖引导的随机输入循环。
+2. ~~cargo-fuzz 在 Windows MSVC 上是否可用~~ **已定**：libFuzzer + `-Zsanitizer=address` 在 x86_64-pc-windows-msvc 上可用，由 xtask 驱动（§7.3）。
 3. 基线是否入库：多台机器以后，按机器名存在仓库里还是只放本地。

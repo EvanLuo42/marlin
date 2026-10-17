@@ -1,0 +1,121 @@
+[package]
+name = "marlin-fuzz"
+description = "libFuzzer targets for the runtime's parsers and decoders (docs/design/0014-testing.md §7.3)."
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+# Its own workspace, not a member of the root one: `cargo test --workspace` never builds it, and
+# it is only built by `cargo xtask test --tier fuzz` with the sanitizer flags.
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+marlin-asset = { path = "../runtime/engine/asset" }
+marlin-compress = { path = "../runtime/core/compress", features = ["encode"] }
+marlin-hash = { path = "../runtime/core/hash" }
+marlin-reflect = { path = "../runtime/core/reflect" }
+marlin-serial = { path = "../runtime/core/serial" }
+marlin-text = { path = "../runtime/core/text" }
+
+[profile.release]
+# Symbolized stacks in crash reports.
+debug = 1
+
+# Targets are named `<crate>_<what>`; `cargo xtask test --tier fuzz` copies a crash to that
+# crate's tests/data/regress/<target>/.
+
+[[bin]]
+name = "text_message"
+path = "fuzz_targets/text_message.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "text_locale"
+path = "fuzz_targets/text_locale.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "text_string_table"
+path = "fuzz_targets/text_string_table.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "serial_read"
+path = "fuzz_targets/serial_read.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "serial_cooked"
+path = "fuzz_targets/serial_cooked.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "compress_zstd"
+path = "fuzz_targets/compress_zstd.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "compress_lz4_block"
+path = "fuzz_targets/compress_lz4_block.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "compress_lz4_frame"
+path = "fuzz_targets/compress_lz4_frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "compress_gdeflate"
+path = "fuzz_targets/compress_gdeflate.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "asset_unit"
+path = "fuzz_targets/asset_unit.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "asset_package"
+path = "fuzz_targets/asset_package.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "asset_wire"
+path = "fuzz_targets/asset_wire.rs"
+test = false
+doc = false
+bench = false
+
+# Writes the seed corpora (fuzz/corpus/<target>/) for the formats without reference fixtures.
+[[bin]]
+name = "seed-corpus"
+path = "seed/main.rs"
+test = false
+doc = false
+bench = false

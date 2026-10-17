@@ -5,6 +5,7 @@ mod build;
 mod cfg;
 mod check;
 mod coverage;
+mod fuzz;
 mod platform;
 mod test;
 mod unicode;
@@ -28,7 +29,7 @@ Commands:
                     -- <args>...        passed through to cargo build
   check-layers    Check crate layering and that runtime crates are no_std
   test            Run the tests by tier (docs/design/0014-testing.md §4)
-                    --tier <tier>       quick | gpu | desktop | stress | manual | bench | all
+                    --tier <tier>       quick | gpu | desktop | stress | manual | bench | fuzz | all
                                         (default: quick)
                     -p <crate>          only this package (repeatable)
                     --seed <n>          MARLIN_TEST_SEED for randomized tests
@@ -41,6 +42,12 @@ Commands:
                     --baseline <tag>    compare with a saved baseline, flag slower medians
                     --threshold <pct>   how much slower gets flagged (default: 5)
                     -- [filter]... [--quick]  bench name filters; --quick: fewer, shorter samples
+                  --tier fuzz: the libFuzzer targets in fuzz/ (0014 §7.3), built with ASan; each run
+                  capped at 2048 MB; a find is minimized and copied to <crate>/tests/data/regress/<target>/
+                    --target <name>     only this target (repeatable; -p <crate> also filters)
+                    --time <secs>       per target (default: 60)
+                    --seed <n>          libFuzzer -seed
+                    -- <args>...        more libFuzzer flags
   coverage        Source coverage of src/ from the test tiers (0014 §7.4)
                     --tier <tier>       quick | gpu | desktop | all (default: all = the three)
                     -p, --seed, --stall, --  as for test

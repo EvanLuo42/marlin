@@ -33,7 +33,10 @@ pub fn run(root: &Path, args: &[String]) -> Result {
         }
         Ok(true)
     })?;
-    if matches!(options.tier, Tier::Stress | Tier::Manual | Tier::Bench) {
+    if matches!(
+        options.tier,
+        Tier::Stress | Tier::Manual | Tier::Bench | Tier::Fuzz
+    ) {
         return Err("coverage counts the quick, gpu and desktop tiers (or all of them)".into());
     }
     // `all` here means every automated tier the report counts, not stress.
@@ -208,7 +211,7 @@ pub fn run(root: &Path, args: &[String]) -> Result {
 }
 
 /// The host triple and the toolchain's sysroot.
-fn rustc_host() -> Result<(String, PathBuf)> {
+pub fn rustc_host() -> Result<(String, PathBuf)> {
     let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
     let version = Command::new(&rustc).arg("-vV").output()?;
     let host = String::from_utf8_lossy(&version.stdout)

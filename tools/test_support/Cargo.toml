@@ -1,6 +1,6 @@
 [package]
 name = "marlin-test-support"
-description = "Shared helpers for the workspace's integration tests: temp files, waits, timeouts, drop tracking, child processes, memory caps, golden files and Git repositories."
+description = "Shared helpers for the workspace's integration tests: temp files, waits, timeouts, drop tracking, child processes, memory caps, golden files, fuzz regressions and Git repositories."
 version.workspace = true
 edition.workspace = true
 publish.workspace = true

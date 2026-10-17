@@ -48,6 +48,8 @@ pub enum Tier {
     Manual,
     /// `benches/`, run by bench.rs rather than as test binaries.
     Bench,
+    /// The fuzz targets in fuzz/, not test binaries: see `fuzz.rs`.
+    Fuzz,
     All,
 }
 
@@ -61,10 +63,10 @@ impl Tier {
             "manual" => Self::Manual,
             "all" => Self::All,
             "bench" => Self::Bench,
-            "fuzz" => return Err("`--tier fuzz` arrives with fuzz/ (0014 §7.3)".into()),
+            "fuzz" => Self::Fuzz,
             _ => {
                 return Err(format!(
-                    "unknown tier `{s}` (quick, gpu, desktop, stress, manual, bench, all)"
+                    "unknown tier `{s}` (quick, gpu, desktop, stress, manual, bench, fuzz, all)"
                 )
                 .into());
             }
@@ -78,7 +80,7 @@ impl Tier {
             Self::Desktop => class == Class::Desktop,
             Self::Stress => class == Class::Stress,
             Self::Manual | Self::All => true,
-            Self::Bench => false,
+            Self::Bench | Self::Fuzz => false,
         }
     }
 
@@ -166,7 +168,19 @@ impl Options {
 
 pub fn run(root: &Path, args: &[String]) -> Result {
     let mut bench = crate::bench::Flags::default();
-    let options = Options::parse(args, Tier::Quick, |arg, it| bench.parse(arg, it))?;
+    let mut fuzz = crate::fuzz::Args::default();
+    let options = Options::parse(args, Tier::Quick, |arg, it| {
+        Ok(bench.parse(arg, it)? || fuzz.take(arg, it)?)
+    })?;
+    if options.tier == Tier::Fuzz {
+        if bench.given() {
+            return Err(
+                "--save-baseline, --baseline and --threshold are options of --tier bench".into(),
+            );
+        }
+        return crate::fuzz::run(root, &options, &fuzz);
+    }
+    fuzz.reject()?;
     if options.tier == Tier::Bench || bench.given() {
         return crate::bench::run(root, &options, &bench);
     }
