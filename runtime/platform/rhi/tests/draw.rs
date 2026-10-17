@@ -6,67 +6,27 @@
 mod support;
 
 use marlin_rhi::{
-    AdapterPreference, Buffer, BufferBarrier, BufferDesc, BufferState, BufferTextureCopy,
-    BufferUsage, BufferViewDesc, BufferViewKind, ColorAttachment, ColorTargetState,
-    ComputePipelineDesc, DepthAttachment, DepthState, DepthStencilViewDesc, Device, DeviceDesc,
-    Filter, Format, GraphicsPipelineDesc, IndexFormat, Instance, InstanceDesc, LoadOp,
+    BufferBarrier, BufferState, BufferTextureCopy, BufferUsage, BufferViewDesc, BufferViewKind,
+    ColorAttachment, ColorTargetState, ComputePipelineDesc, DepthAttachment, DepthState,
+    DepthStencilViewDesc, Filter, Format, GraphicsPipelineDesc, IndexFormat, LoadOp,
     MemoryLocation, PrimitiveTopology, RasterState, Rect, RenderPassDesc, RenderTargetViewDesc,
     SamplerDesc, StoreOp, TextureBarrier, TextureDesc, TextureState, TextureUsage, TextureViewDesc,
     Viewport,
 };
-use support::{Stage, run, shader};
-
-/// The hardware adapter with validation, through enhanced barriers (where supported), then legacy ones.
-fn devices() -> [Device; 2] {
-    let instance = Instance::new(&InstanceDesc {
-        validation: true,
-        ..InstanceDesc::default()
-    })
-    .unwrap();
-    [false, true].map(|legacy| {
-        instance
-            .create_device(&DeviceDesc {
-                adapter: AdapterPreference::HighPerformance,
-                disable_enhanced_barriers: legacy,
-            })
-            .unwrap()
-    })
-}
-
-fn buffer(device: &Device, size: u64, usage: BufferUsage, memory: MemoryLocation) -> Buffer {
-    device
-        .create_buffer(&BufferDesc {
-            size,
-            usage,
-            memory,
-        })
-        .unwrap()
-}
-
-fn read_words(buffer: &Buffer, count: usize) -> Vec<u32> {
-    let mut bytes = vec![0; count * 4];
-    // SAFETY: the GPU work that wrote it has finished (`run` waits).
-    unsafe { buffer.read(0, &mut bytes) };
-    bytes
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .map(|&w| u32::from_le_bytes(w))
-        .collect()
-}
+use support::{Stage, buffer, devices, read_words, run, shader};
 
 #[test]
 fn compute_writes_through_bindless_view() {
     for device in devices() {
         const COUNT: u32 = 256;
         let output = buffer(
-            &device,
+            device,
             COUNT as u64 * 4,
             BufferUsage::SHADER_WRITE | BufferUsage::COPY_SRC,
             MemoryLocation::GpuOnly,
         );
         let readback = buffer(
-            &device,
+            device,
             COUNT as u64 * 4,
             BufferUsage::COPY_DST,
             MemoryLocation::Readback,
@@ -81,7 +41,7 @@ fn compute_writes_through_bindless_view() {
             })
             .unwrap();
 
-        run(&device, |list| {
+        run(device, |list| {
             list.set_compute_pipeline(&pipeline);
             list.push_constants(0, &[view.index(), 1000]);
             list.dispatch(COUNT / 64, 1, 1);
@@ -93,7 +53,7 @@ fn compute_writes_through_bindless_view() {
             list.copy_buffer(&output, 0, &readback, 0, COUNT as u64 * 4);
         });
 
-        let words = read_words(&readback, COUNT as usize);
+        let words = read_words(&readback, 0, COUNT as usize);
         for (i, &w) in words.iter().enumerate() {
             assert_eq!(w, 1000 + 3 * i as u32, "word {i}");
         }
@@ -111,7 +71,7 @@ fn draws_with_vertex_pulling_textures_and_depth() {
     for device in devices() {
         // Staging: vertices at 0, indices at 64, two tints at 256 and 512, texels at 1024.
         let staging = buffer(
-            &device,
+            device,
             2048,
             BufferUsage::COPY_SRC | BufferUsage::UNIFORM,
             MemoryLocation::Upload,
@@ -135,13 +95,13 @@ fn draws_with_vertex_pulling_textures_and_depth() {
         }
 
         let vertex_buffer = buffer(
-            &device,
+            device,
             32,
             BufferUsage::SHADER_READ | BufferUsage::COPY_DST,
             MemoryLocation::GpuOnly,
         );
         let index_buffer = buffer(
-            &device,
+            device,
             12,
             BufferUsage::INDEX | BufferUsage::COPY_DST,
             MemoryLocation::GpuOnly,
@@ -210,7 +170,7 @@ fn draws_with_vertex_pulling_textures_and_depth() {
             .create_depth_stencil_view(&depth, &DepthStencilViewDesc::default())
             .unwrap();
         let readback = buffer(
-            &device,
+            device,
             (SIZE * 256) as u64,
             BufferUsage::COPY_DST,
             MemoryLocation::Readback,
@@ -230,7 +190,7 @@ fn draws_with_vertex_pulling_textures_and_depth() {
             })
             .unwrap();
 
-        run(&device, |list| {
+        run(device, |list| {
             list.copy_buffer(&staging, 0, &vertex_buffer, 0, 32);
             list.copy_buffer(&staging, 64, &index_buffer, 0, 12);
             list.texture_barriers(&[
@@ -318,7 +278,7 @@ fn draws_with_vertex_pulling_textures_and_depth() {
             );
         });
 
-        let pixels = read_words(&readback, (SIZE * 64) as usize);
+        let pixels = read_words(&readback, 0, (SIZE * 64) as usize);
         let pixel = |x: u32, y: u32| pixels[(y * 64 + x) as usize];
         assert_eq!(pixel(2, 2), BLACK, "outside the quad");
         assert_eq!(

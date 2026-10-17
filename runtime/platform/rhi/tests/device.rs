@@ -2,25 +2,14 @@
 //! and require it to report no errors.
 #![cfg(marlin_platform = "windows")]
 
+mod support;
+
 use std::time::Duration;
 
 use marlin_rhi::{
     AdapterKind, AdapterPreference, DeviceDesc, ErrorKind, FramesInFlight, Instance, InstanceDesc,
 };
-
-fn hardware_device() -> marlin_rhi::Device {
-    let instance = Instance::new(&InstanceDesc {
-        validation: true,
-        ..InstanceDesc::default()
-    })
-    .unwrap();
-    instance
-        .create_device(&DeviceDesc {
-            adapter: AdapterPreference::HighPerformance,
-            ..DeviceDesc::default()
-        })
-        .unwrap()
-}
+use support::hardware_device;
 
 #[test]
 fn enumerates_adapters() {
@@ -113,7 +102,7 @@ fn queue_signals_fence_after_submit() {
 #[test]
 fn frames_in_flight_cycle() {
     let device = hardware_device();
-    let mut frames = FramesInFlight::new(&device, 2).unwrap();
+    let mut frames = FramesInFlight::new(device, 2).unwrap();
     assert_eq!(frames.count(), 2);
     for frame in 0..6 {
         assert_eq!(frames.index(), frame % 2);

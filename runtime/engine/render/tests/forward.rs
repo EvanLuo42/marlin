@@ -2,6 +2,8 @@
 //! and read back.
 #![cfg(marlin_platform = "windows")]
 
+use std::sync::OnceLock;
+
 use marlin_ecs::World;
 use marlin_math::{Quat, Transform, Vec3};
 use marlin_render::{
@@ -17,14 +19,23 @@ use marlin_rhi::{
 const SIZE: u32 = 64;
 const BLACK: u32 = 0xff00_0000;
 
-fn hardware_device() -> Device {
-    let instance = Instance::new(&InstanceDesc { validation: true, ..InstanceDesc::default() }).unwrap();
-    instance
+/// The hardware adapter with validation on, shared by every test in this binary and never
+/// dropped: tearing down `Device`s while other threads use the same adapter can deadlock the
+/// NVIDIA driver (see the RHI tests' `support::devices`).
+fn hardware_device() -> &'static Device {
+    static DEVICE: OnceLock<Device> = OnceLock::new();
+    DEVICE.get_or_init(|| {
+        Instance::new(&InstanceDesc {
+            validation: true,
+            ..InstanceDesc::default()
+        })
+        .unwrap()
         .create_device(&DeviceDesc {
             adapter: AdapterPreference::HighPerformance,
             ..DeviceDesc::default()
         })
         .unwrap()
+    })
 }
 
 /// Lit straight on with no ambient and a black background, so faces facing the camera come out
@@ -39,7 +50,7 @@ fn flat_environment() -> Environment {
 }
 
 struct Harness {
-    device: Device,
+    device: &'static Device,
     renderer: Renderer,
     cube: MeshHandle,
     target: Texture,
@@ -50,7 +61,7 @@ impl Harness {
     fn new() -> Self {
         let device = hardware_device();
         let mut renderer = Renderer::new(
-            &device,
+            device,
             &RendererDesc {
                 color_format: Format::Rgba8Unorm,
                 frames_in_flight: 2,
@@ -63,7 +74,7 @@ impl Harness {
         let (vertices, indices) = cube();
         let cube = renderer
             .upload_mesh(
-                &device,
+                device,
                 &MeshData {
                     vertices: &vertices,
                     indices: &indices,
@@ -99,7 +110,7 @@ impl Harness {
 
     /// Renders `world` and returns the pixels (RGBA8 as little-endian u32) and stats.
     fn render(&mut self, world: &World) -> (Vec<u32>, RenderStats) {
-        let device = &self.device;
+        let device = self.device;
         let view = device
             .create_render_target_view(&self.target, &RenderTargetViewDesc::default())
             .unwrap();

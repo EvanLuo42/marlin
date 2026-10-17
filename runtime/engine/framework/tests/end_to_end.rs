@@ -3,8 +3,8 @@
 #![cfg(marlin_platform = "windows")]
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use marlin_asset::Uuid;
@@ -72,18 +72,27 @@ fn package(root: &Path) -> String {
     out.to_string_lossy().into_owned()
 }
 
-fn device() -> Device {
-    Instance::new(&InstanceDesc { validation: true, ..InstanceDesc::default() })
+/// The hardware adapter with validation on, shared by every test in this binary and never
+/// dropped: tearing down `Device`s while other threads use the same adapter can deadlock the
+/// NVIDIA driver (see the RHI tests' `support::devices`).
+fn device() -> &'static Device {
+    static DEVICE: OnceLock<Device> = OnceLock::new();
+    DEVICE.get_or_init(|| {
+        Instance::new(&InstanceDesc {
+            validation: true,
+            ..InstanceDesc::default()
+        })
         .unwrap()
         .create_device(&DeviceDesc {
             adapter: AdapterPreference::HighPerformance,
             ..DeviceDesc::default()
         })
         .unwrap()
+    })
 }
 
 struct Viewer {
-    device: Device,
+    device: &'static Device,
     render: RenderSide,
     offscreen: Offscreen,
 }
@@ -92,7 +101,7 @@ impl Viewer {
     fn new() -> Self {
         let device = device();
         let renderer = Renderer::new(
-            &device,
+            device,
             &RendererDesc {
                 color_format: OFFSCREEN_FORMAT,
                 frames_in_flight: 2,
@@ -101,7 +110,7 @@ impl Viewer {
             },
         )
         .unwrap();
-        let offscreen = Offscreen::new(&device, WIDTH, HEIGHT).unwrap();
+        let offscreen = Offscreen::new(device, WIDTH, HEIGHT).unwrap();
         Self {
             render: RenderSide::new(renderer, 2),
             offscreen,
@@ -113,7 +122,7 @@ impl Viewer {
     fn frame(&mut self, engine: &mut Engine<'_>) -> Vec<u32> {
         let delta = engine.frame(0.0, None, None);
         self.offscreen
-            .render(&self.device, &mut self.render, &delta)
+            .render(self.device, &mut self.render, &delta)
             .unwrap()
     }
 }
