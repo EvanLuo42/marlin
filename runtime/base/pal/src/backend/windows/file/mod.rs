@@ -282,7 +282,7 @@ fn hresult_result(hr: HRESULT, bytes: usize) -> Result<usize> {
 }
 
 /// Milliseconds for a Win32 wait, rounded up so short timeouts do not become non-blocking.
-fn timeout_ms(timeout: Option<Duration>) -> u32 {
+pub(super) fn timeout_ms(timeout: Option<Duration>) -> u32 {
     timeout.map_or(INFINITE, |t| {
         t.as_nanos()
             .div_ceil(1_000_000)

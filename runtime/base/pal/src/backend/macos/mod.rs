@@ -6,6 +6,7 @@ mod futex;
 mod process;
 mod sysinfo;
 mod thread;
+mod watch;
 
 use core::ptr;
 

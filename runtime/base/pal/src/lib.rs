@@ -35,6 +35,7 @@ pub mod time;
 pub mod tls;
 mod types;
 pub mod vmem;
+pub mod watch;
 
 pub use error::{Error, ErrorKind, Result};
 pub use types::{CpuSet, Protection, ThreadPriority};

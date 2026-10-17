@@ -16,6 +16,7 @@ mod thread;
 mod time;
 mod tls;
 mod vmem;
+mod watch;
 
 pub(crate) use debug::Debug;
 pub(crate) use fiber::Fiber;
@@ -28,9 +29,10 @@ pub(crate) use thread::Thread;
 pub(crate) use time::Time;
 pub(crate) use tls::Tls;
 pub(crate) use vmem::VMem;
+pub(crate) use watch::Watch;
 
 /// The whole contract. Grows with each subsystem.
 pub(crate) trait Platform:
-    VMem + Process + Debug + Time + Thread + Futex + Tls + SysInfo + Fiber + File + Fs
+    VMem + Process + Debug + Time + Thread + Futex + Tls + SysInfo + Fiber + File + Fs + Watch
 {
 }

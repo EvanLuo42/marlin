@@ -6,6 +6,7 @@ mod futex;
 mod process;
 mod sysinfo;
 mod thread;
+mod watch;
 
 pub(crate) use super::unix::Backend;
 pub(super) use process::{argv, current_exe};

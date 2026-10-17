@@ -3,7 +3,7 @@
 mod debug;
 pub(crate) mod error;
 mod fiber;
-mod file;
+pub(super) mod file;
 mod fs;
 mod futex;
 #[cfg(marlin_ext = "hybrid_cores")]
@@ -16,6 +16,7 @@ mod thread;
 mod time;
 mod tls;
 mod vmem;
+mod watch;
 
 use core::ptr;
 
