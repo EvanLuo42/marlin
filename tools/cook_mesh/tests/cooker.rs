@@ -381,3 +381,57 @@ fn import_errors() {
         "{errors}"
     );
 }
+
+/// Armature (not a joint, 1 along Z) → Root → Socket (not a joint, 2 along X) → Tip (1 up),
+/// with Root and Tip keyed at their rest translation.
+fn rig_with_a_socket() -> marlin_cook_mesh::import::Document {
+    let mut g = Gltf::default();
+    g.nodes
+        .push(r#"{"name":"Armature","translation":[0.0,0.0,1.0],"children":[1]}"#.into());
+    g.nodes.push(r#"{"name":"Root","children":[2]}"#.into());
+    g.nodes
+        .push(r#"{"name":"Socket","translation":[2.0,0.0,0.0],"children":[3]}"#.into());
+    g.nodes
+        .push(r#"{"name":"Tip","translation":[0.0,1.0,0.0]}"#.into());
+    g.scene_nodes.push(0);
+    g.skins.push(r#"{"name":"Rig","joints":[1,3]}"#.into());
+    let times = g.scalars(&[0.0, 1.0]);
+    let root = g.vec3(&[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]);
+    let tip = g.vec3(&[[0.0, 1.0, 0.0], [0.0, 1.0, 0.0]]);
+    g.animations.push(format!(
+        r#"{{"name":"Rest","samplers":[{{"input":{times},"output":{root}}},{{"input":{times},"output":{tip}}}],"channels":[{{"sampler":0,"target":{{"node":1,"path":"translation"}}}},{{"sampler":1,"target":{{"node":3,"path":"translation"}}}}]}}"#
+    ));
+    let (glb, _) = g.finish(Container::Glb);
+    marlin_cook_mesh::import::open(&glb, "rig.glb", &mut |p| Err(format!("no {p}"))).unwrap()
+}
+
+#[test]
+fn clips_and_skeletons_agree_on_non_joint_nodes_between_joints() {
+    use marlin_cook_mesh::import::{import_animation, import_skeleton};
+    let doc = rig_with_a_socket();
+    let skeleton = import_skeleton(&doc, "", 1.0).unwrap();
+    let names: Vec<&str> = skeleton.iter().map(|j| j.name.as_str()).collect();
+    assert_eq!(names, ["Root", "Tip"]);
+    assert_eq!(
+        skeleton[0].translation,
+        [0.0, 0.0, 1.0],
+        "Armature folded in"
+    );
+    assert_eq!(
+        skeleton[1].translation,
+        [2.0, 1.0, 0.0],
+        "Socket folded in, Root not"
+    );
+
+    // Keyed at rest, every frame is the skeleton's rest pose: the clip folds in exactly the
+    // nodes the skeleton does, no more (Root's transform comes from Root's own track).
+    let (clip, _) = import_animation(&doc, "", 4.0, 1.0).unwrap();
+    for joint in &skeleton {
+        let track = clip.tracks.iter().find(|t| t.name == joint.name).unwrap();
+        for t in &track.translations {
+            for (got, want) in t.iter().zip(joint.translation) {
+                assert!((got - want).abs() < 1e-6, "{}: {t:?}", joint.name);
+            }
+        }
+    }
+}

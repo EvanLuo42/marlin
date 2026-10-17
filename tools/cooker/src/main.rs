@@ -298,6 +298,19 @@ fn cook(args: &[String]) -> ExitCode {
     for error in &report.errors {
         eprintln!("error: {}", marlin_error_chain(error));
     }
+    let summary = format!(
+        "{}: {} units ({} cooked, {} cached), {} failed",
+        options.platform,
+        report.units.len(),
+        report.cooked(),
+        report.cached(),
+        report.errors.len(),
+    );
+    if !report.errors.is_empty() {
+        // A partial build must not replace the last good manifest `package` builds from.
+        println!("{summary}; manifest not published; {:.2?}", start.elapsed());
+        return ExitCode::FAILURE;
+    }
     let key = match publish_manifest(Path::new(root), ddc.as_ref(), &manifest) {
         Ok(key) => key,
         Err(e) => {
@@ -305,20 +318,8 @@ fn cook(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    println!(
-        "{}: {} units ({} cooked, {} cached), {} failed; build {key:032x}; {:.2?}",
-        options.platform,
-        report.units.len(),
-        report.cooked(),
-        report.cached(),
-        report.errors.len(),
-        start.elapsed()
-    );
-    if report.errors.is_empty() {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::FAILURE
-    }
+    println!("{summary}; build {key:032x}; {:.2?}", start.elapsed());
+    ExitCode::SUCCESS
 }
 
 fn codec(name: &str) -> Option<marlin_compress::Codec> {

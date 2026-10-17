@@ -103,3 +103,49 @@ fn concurrent_puts() {
     drop(ddc);
     assert_eq!(LocalDdc::open(&d).unwrap().len(), 1600);
 }
+
+/// Two caches over one directory, as the cook service and a command-line cook have: each its
+/// own handles, so they coordinate only through the directory's lock file.
+#[test]
+fn two_openers_share_a_directory() {
+    let tmp = TempDir::new("ddc-shared");
+    let d = tmp.join("ddc");
+    let value = |key: u128| key.to_le_bytes().repeat((key % 5 + 1) as usize);
+    let (one, two) = (LocalDdc::open(&d).unwrap(), LocalDdc::open(&d).unwrap());
+    std::thread::scope(|s| {
+        for t in 0..4u128 {
+            let ddc = if t % 2 == 0 { &one } else { &two };
+            s.spawn(move || {
+                for i in 0..150u128 {
+                    // Half the keys are stored by both.
+                    let key = if i % 2 == 0 { i } else { t * 1000 + i };
+                    ddc.put(key, &value(key)).unwrap();
+                }
+            });
+        }
+    });
+    // One's records are found by two once it appends: it catches up first.
+    two.put(1_000_000, b"last").unwrap();
+    assert_eq!(two.get(1001).unwrap().unwrap(), value(1001));
+    assert_eq!(two.get(2001).unwrap().unwrap(), value(2001));
+    drop((one, two));
+
+    let ddc = LocalDdc::open(&d).unwrap();
+    let mut expected = std::collections::HashSet::new();
+    for t in 0..4u128 {
+        for i in 0..150u128 {
+            expected.insert(if i % 2 == 0 { i } else { t * 1000 + i });
+        }
+    }
+    assert_eq!(ddc.len(), expected.len() + 1, "no record lost or clobbered");
+    for &key in &expected {
+        assert_eq!(ddc.get(key).unwrap().unwrap(), value(key), "key {key}");
+    }
+    let records: u64 = expected
+        .iter()
+        .map(|&k| 36 + value(k).len() as u64)
+        .sum::<u64>()
+        + 36
+        + 4;
+    assert_eq!(ddc.size(), records, "keys stored by both are stored once");
+}

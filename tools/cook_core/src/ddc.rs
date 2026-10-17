@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, RwLock};
 
@@ -41,26 +41,65 @@ struct Location {
 /// bottleneck (opening a file costs far more than reading it); pack files keep it to one open
 /// file per pack. Opening scans the record headers to rebuild the index; a record cut off by a
 /// crash is dropped by truncating the pack there. Every read verifies its checksum.
+///
+/// Several processes may share one directory (the cook service and command-line cooks both use
+/// `<project>/.marlin/ddc`). Every change to the pack files — the repair on open and each append
+/// — happens under an OS lock on `<dir>/lock`, and an append first catches up with the records
+/// other processes appended since, so it writes at the true end and skips keys already stored.
+/// Records another process adds are otherwise unseen until then: a miss, never a wrong result.
 pub struct LocalDdc {
     dir: PathBuf,
     index: RwLock<HashMap<u128, Location>>,
     packs: RwLock<Vec<File>>,
-    /// The pack being appended to and its length.
+    /// The pack being appended to and the end of its records known to this process.
     writer: Mutex<(u32, u64)>,
+    /// Locked around changes to the packs; shared with the other processes using `dir`.
+    lock: File,
 }
 
 fn pack_path(dir: &Path, pack: u32) -> PathBuf {
     dir.join(format!("pack-{pack:04}.ddc"))
 }
 
-/// Reads every whole record of a pack; returns the length of the valid prefix.
-fn scan(file: &mut File, pack: u32, index: &mut HashMap<u128, Location>) -> io::Result<u64> {
+fn open_pack(dir: &Path, pack: u32) -> io::Result<File> {
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(pack_path(dir, pack))
+}
+
+/// Holds the directory's lock file locked until dropped.
+struct DirLock<'a>(&'a File);
+
+impl<'a> DirLock<'a> {
+    fn take(file: &'a File) -> io::Result<Self> {
+        file.lock()?;
+        Ok(Self(file))
+    }
+}
+
+impl Drop for DirLock<'_> {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
+}
+
+/// Reads every whole record of a pack from `start` (a record boundary); returns the end of the
+/// valid records. Bytes beyond are a record cut off by a crash: only call this holding the
+/// directory lock, so they are not one another process is still writing.
+fn scan(
+    file: &File,
+    pack: u32,
+    start: u64,
+    index: &mut HashMap<u128, Location>,
+) -> io::Result<u64> {
     let len = file.metadata()?.len();
-    let mut at = 0;
+    let mut at = start;
     let mut header = [0u8; RECORD_HEADER as usize];
     while at + RECORD_HEADER <= len {
-        file.seek(SeekFrom::Start(at))?;
-        file.read_exact(&mut header)?;
+        read_at(file, at, &mut header)?;
         let magic = u32::from_le_bytes(header[0..4].try_into().unwrap_or_default());
         let key = u128::from_le_bytes(header[4..20].try_into().unwrap_or_default());
         let size = u64::from_le_bytes(header[20..28].try_into().unwrap_or_default());
@@ -104,43 +143,79 @@ fn read_at(file: &File, offset: u64, buf: &mut [u8]) -> io::Result<()> {
     }
 }
 
+/// Positional, like [`read_at`]: never moves a cursor a concurrent reader could move too.
+fn write_at(file: &File, offset: u64, buf: &[u8]) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileExt;
+        let mut done = 0;
+        while done < buf.len() {
+            let n = file.seek_write(&buf[done..], offset + done as u64)?;
+            if n == 0 {
+                return Err(io::ErrorKind::WriteZero.into());
+            }
+            done += n;
+        }
+        Ok(())
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileExt;
+        file.write_all_at(buf, offset)
+    }
+}
+
 impl LocalDdc {
     /// Opens (creating) the cache in `dir`.
     pub fn open(dir: impl Into<PathBuf>) -> io::Result<Self> {
         let dir = dir.into();
         fs::create_dir_all(&dir)?;
+        let lock = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(dir.join("lock"))?;
         let mut index = HashMap::new();
         let mut packs = Vec::new();
         let mut writer = (0, 0);
-        for pack in 0u32.. {
-            let path = pack_path(&dir, pack);
-            if !path.exists() {
-                break;
-            }
-            let mut file = OpenOptions::new().read(true).write(true).open(&path)?;
-            let valid = scan(&mut file, pack, &mut index)?;
-            if valid < file.metadata()?.len() {
-                file.set_len(valid)?;
-            }
-            packs.push(file);
-            writer = (pack, valid);
-        }
-        if packs.is_empty() {
-            packs.push(
-                OpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .create(true)
-                    .truncate(false)
-                    .open(pack_path(&dir, 0))?,
-            );
+        {
+            let _locked = DirLock::take(&lock)?;
+            packs.push(open_pack(&dir, 0)?);
+            Self::catch_up(&dir, &mut packs, &mut writer, &mut index)?;
         }
         Ok(Self {
             dir,
             index: RwLock::new(index),
             packs: RwLock::new(packs),
             writer: Mutex::new(writer),
+            lock,
         })
+    }
+
+    /// Reads the records appended to the packs after `writer` (by this process before it opened
+    /// them, or by others since), opening packs started meanwhile, and drops a record cut off by
+    /// a crash at the end. Call holding the directory lock; `packs` ends at `writer.0`.
+    fn catch_up(
+        dir: &Path,
+        packs: &mut Vec<File>,
+        writer: &mut (u32, u64),
+        index: &mut HashMap<u128, Location>,
+    ) -> io::Result<()> {
+        loop {
+            let (pack, start) = *writer;
+            let file = &packs[pack as usize];
+            let valid = scan(file, pack, start, index)?;
+            if valid < file.metadata()?.len() {
+                file.set_len(valid)?;
+            }
+            *writer = (pack, valid);
+            if !pack_path(dir, pack + 1).exists() {
+                return Ok(());
+            }
+            packs.push(open_pack(dir, pack + 1)?);
+            *writer = (pack + 1, 0);
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -209,17 +284,23 @@ impl Ddc for LocalDdc {
         }
         let checksum = xxh3_64(data);
         let mut writer = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+        let _locked = DirLock::take(&self.lock)?;
+        {
+            let mut found = HashMap::new();
+            let mut packs = self.packs.write().unwrap_or_else(|e| e.into_inner());
+            Self::catch_up(&self.dir, &mut packs, &mut writer, &mut found)?;
+            self.index
+                .write()
+                .unwrap_or_else(|e| e.into_inner())
+                .extend(found);
+        }
         if self.contains(key) {
             return Ok(());
         }
         if writer.1 > 0 && writer.1 + RECORD_HEADER + data.len() as u64 > PACK_LIMIT {
+            // Caught up: no pack beyond this one exists.
             let pack = writer.0 + 1;
-            let file = OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open(pack_path(&self.dir, pack))?;
+            let file = open_pack(&self.dir, pack)?;
             self.packs
                 .write()
                 .unwrap_or_else(|e| e.into_inner())
@@ -235,9 +316,7 @@ impl Ddc for LocalDdc {
         record.extend_from_slice(data);
         {
             let packs = self.packs.read().unwrap_or_else(|e| e.into_inner());
-            let mut file = &packs[pack as usize];
-            file.seek(SeekFrom::Start(offset))?;
-            file.write_all(&record)?;
+            write_at(&packs[pack as usize], offset, &record)?;
         }
         writer.1 += record.len() as u64;
         self.index

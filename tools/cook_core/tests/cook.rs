@@ -352,3 +352,64 @@ fn errors_stay_with_their_unit() {
         "the manifest holds only what cooked"
     );
 }
+
+#[test]
+fn a_source_saved_after_indexing_is_not_cached_under_the_old_key() {
+    let p = Project::new("stale-source");
+    standard(&p);
+    let db = p.db();
+    // Saved after the index read it: the key covers the old bytes, the cooker would read new.
+    p.write("pic.bin", "new pixels");
+    let ddc = p.ddc("ddc");
+    let (report, manifest) = cook_all(&db, &cookers(), &ddc, &CookOptions::default());
+    let messages: Vec<String> = report.errors.iter().map(|e| e.to_string()).collect();
+    assert_eq!(messages.len(), 1, "{messages:#?}");
+    assert!(
+        messages[0].contains("img.masset: Picture: `pic.bin` changed since it was indexed"),
+        "{messages:#?}"
+    );
+    assert!(report.units.iter().all(|u| u.path != "img"));
+    assert_eq!(ddc.len(), 2, "nothing stored for the image");
+    assert_eq!(manifest.units.len(), 2);
+}
+
+/// Panics: a bug in a cooker.
+#[derive(Clone, PartialEq, Debug, Default, Reflect)]
+struct Bomb {
+    value: u32,
+}
+
+struct BombCooker;
+
+impl Cooker for BombCooker {
+    fn version(&self) -> u32 {
+        0
+    }
+
+    fn cook(&self, _: &SourceObject<'_>, _: &mut CookContext<'_>) -> Result<Cooked, String> {
+        panic!("cooker bug")
+    }
+}
+
+#[test]
+fn a_cooker_panic_is_not_swallowed() {
+    let p = Project::new("panic");
+    standard(&p);
+    p.write(
+        "bomb.masset",
+        "!Version 1\nBomb { !Uuid = \"01990000-0000-7000-8000-000000000200\" !Name = \"B\" }\n",
+    );
+    let db = p.db();
+    let mut cookers = cookers();
+    cookers.register::<Bomb>(BombCooker).unwrap();
+    let ddc = p.ddc("ddc");
+    let options = CookOptions {
+        threads: 2,
+        ..CookOptions::default()
+    };
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        cook_all(&db, &cookers, &ddc, &options)
+    }));
+    let panic = result.expect_err("the panic reaches the caller");
+    assert_eq!(panic.downcast_ref::<&str>(), Some(&"cooker bug"));
+}

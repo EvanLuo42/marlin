@@ -52,6 +52,7 @@ fn cooks_then_hits_the_cache_then_reports_failures() {
     let (ok, text) = run(&["package", r, "--bulk-codec", "brotli"]);
     assert!(!ok && text.contains("usage"), "{text}");
 
+    let manifest = std::fs::read(root.join(".marlin/build/windows.manifest")).unwrap();
     root.write(
         "tex/broken.masset",
         "!Version 1\nTexture { !Uuid = \"01990000-0000-7000-8000-000000000002\" !Name = \"Broken\" Source = `source:tex/missing.png` }\n",
@@ -62,7 +63,12 @@ fn cooks_then_hits_the_cache_then_reports_failures() {
         text.contains("error: tex/broken") && text.contains("missing.png"),
         "{text}"
     );
-    assert!(text.contains("1 failed"), "{text}");
+    assert!(text.contains("1 failed; manifest not published"), "{text}");
+    assert_eq!(
+        std::fs::read(root.join(".marlin/build/windows.manifest")).unwrap(),
+        manifest,
+        "a failed cook keeps the last good manifest"
+    );
 
     let (ok, text) = run(&["cook", r, "--platform"]);
     assert!(!ok && text.contains("usage"), "{text}");

@@ -266,7 +266,9 @@ impl Reader<'_> {
             },
             TypeKind::List(_) => match &node.kind {
                 NodeKind::List(items) => {
-                    if !m.resize(items.len()) {
+                    // Every item starts from the element type's default, as the writer assumes,
+                    // not from what the enclosing default held at that index.
+                    if !(m.clear() && m.resize(items.len())) {
                         self.diagnostics.push(Diagnostic::error(
                             node.span,
                             "list items cannot be default-constructed",

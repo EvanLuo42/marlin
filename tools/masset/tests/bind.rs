@@ -535,3 +535,66 @@ fn nil_links_are_none_and_unknown_targets_are_marked() {
         "nil link is the default"
     );
 }
+
+#[derive(Clone, PartialEq, Debug, Default, Reflect)]
+struct Layer {
+    opacity: f32,
+    name: String,
+}
+
+#[derive(Clone, PartialEq, Debug, Reflect)]
+#[reflect(default)]
+struct Stack {
+    layers: Vec<Layer>,
+}
+
+impl Default for Stack {
+    fn default() -> Self {
+        let layer = Layer {
+            opacity: 0.5,
+            name: "base".into(),
+        };
+        Self {
+            layers: vec![layer.clone(), layer],
+        }
+    }
+}
+
+#[test]
+fn list_items_reset_to_the_element_default_round_trip() {
+    let mut schema = Schema::new();
+    schema.register::<Stack>().unwrap();
+    // Item 0 is back at the element default (which the writer leaves out entirely), item 1
+    // equals the enclosing default's item, item 2 is past its end.
+    let stack = Stack {
+        layers: vec![
+            Layer::default(),
+            Layer {
+                opacity: 0.5,
+                name: "base".into(),
+            },
+            Layer {
+                opacity: 0.0,
+                name: "top".into(),
+            },
+        ],
+    };
+    let object = schema
+        .write_object(
+            Ref::new(&stack),
+            PROBE_UUID.parse().unwrap(),
+            "S",
+            &[],
+            &NoLinks,
+            "",
+        )
+        .unwrap();
+    let text = write(&Document {
+        version: 1,
+        objects: vec![object],
+    });
+    let doc = parse(&text).unwrap();
+    let read = schema.read_object(&doc.objects[0], &NoLinks).unwrap();
+    assert!(read.diagnostics.is_empty(), "{:?}", read.diagnostics);
+    assert_eq!(read.value.downcast::<Stack>().ok(), Some(stack), "{text}");
+}

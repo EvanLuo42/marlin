@@ -224,6 +224,11 @@ impl AssetDb {
         &self.root
     }
 
+    /// The options it was opened with.
+    pub fn options(&self) -> &Options {
+        &self.options
+    }
+
     pub fn index_dir(&self) -> PathBuf {
         self.options
             .index_dir
@@ -320,7 +325,7 @@ impl AssetDb {
                 .collect();
             handles
                 .into_iter()
-                .flat_map(|h| h.join().unwrap_or_default())
+                .flat_map(|h| h.join().unwrap_or_else(|p| std::panic::resume_unwind(p)))
                 .collect()
         });
         let mut by_path: HashMap<&str, u64> = HashMap::new();
@@ -692,7 +697,7 @@ impl AssetDb {
                 .collect();
             handles
                 .into_iter()
-                .flat_map(|h| h.join().unwrap_or_default())
+                .flat_map(|h| h.join().unwrap_or_else(|p| std::panic::resume_unwind(p)))
                 .collect()
         })
     }

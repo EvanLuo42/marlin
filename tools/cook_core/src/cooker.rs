@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use marlin_asset::Uuid;
 use marlin_asset::cooked::{BulkKind, Encoding};
-use marlin_hash::xxh3_64;
+use marlin_hash::{xxh3_64, xxh3_128};
 use marlin_masset::{Schema, SchemaError};
 use marlin_reflect::{Reflect, TypeId, TypeInfo, TypeKind, Value, type_info};
 
@@ -30,8 +30,9 @@ pub struct Cooked {
 pub struct CookContext<'a> {
     pub(crate) platform: &'a str,
     pub(crate) root: &'a Path,
-    /// Source files the object links to: the only files it may read.
-    pub(crate) sources: &'a HashSet<String>,
+    /// Source files the object links to (the only files it may read), each with the content
+    /// hash the cook key was computed from.
+    pub(crate) sources: &'a HashMap<String, u128>,
     pub(crate) bulk: Vec<(BulkKind, Vec<u8>)>,
     pub(crate) warnings: Vec<String>,
 }
@@ -45,13 +46,23 @@ impl CookContext<'_> {
     /// The contents of a source file the object links to (`` `source:path` ``). Files reached
     /// any other way would be invisible to dependency tracking and the cook key ("string
     /// magic"), so they are refused.
+    ///
+    /// The bytes must be the ones the cook key hashed: a file saved after it was indexed would
+    /// otherwise be cooked into a result stored under the stale key, so that is refused too.
     pub fn read_source(&mut self, path: &str) -> Result<Vec<u8>, String> {
-        if !self.sources.contains(path) {
+        let Some(&indexed) = self.sources.get(path) else {
             return Err(format!(
                 "`{path}` is not a source file this object links to; add a `source:` link"
             ));
+        };
+        let bytes =
+            std::fs::read(self.root.join(path)).map_err(|e| format!("reading `{path}`: {e}"))?;
+        if xxh3_128(&bytes) != indexed {
+            return Err(format!(
+                "`{path}` changed since it was indexed; update the index first"
+            ));
         }
-        std::fs::read(self.root.join(path)).map_err(|e| format!("reading `{path}`: {e}"))
+        Ok(bytes)
     }
 
     /// Adds a bulk blob (GPU data); returns its index among this object's blobs.

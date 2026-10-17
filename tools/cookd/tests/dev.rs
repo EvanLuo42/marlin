@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use marlin_asset::cooked::{BulkKind, Encoding};
 use marlin_asset::{
@@ -69,8 +69,14 @@ fn loaders() -> Loaders {
         [(_, data)] => Ok(Pixels(data.to_vec())),
         _ => Err("expected one blob".into()),
     });
+    l.register::<LoadedSlow>(type_info::<Slow>().id.0, |ctx| {
+        let s: Slow = marlin_serial::from_bytes(ctx.payload).map_err(|e| format!("{e:?}"))?;
+        Ok(LoadedSlow(s.value))
+    });
     l
 }
+
+struct LoadedSlow(u32);
 
 const A: u128 = 0x0199_0000_0000_7000_8000_0000_0000_000a;
 const B: u128 = 0x0199_0000_0000_7000_8000_0000_0000_000b;
@@ -89,6 +95,59 @@ fn thing_a(value: u32) -> String {
     )
 }
 
+/// Cooks slowly: until [`GATE_OPEN`] is set (or a while passes, so a failing test cannot hang).
+#[derive(Clone, PartialEq, Debug, Default, Reflect)]
+struct Slow {
+    value: u32,
+}
+
+static GATE_ENTERED: AtomicBool = AtomicBool::new(false);
+static GATE_OPEN: AtomicBool = AtomicBool::new(false);
+
+struct SlowCooker;
+
+impl Cooker for SlowCooker {
+    fn version(&self) -> u32 {
+        0
+    }
+
+    fn cook(&self, object: &SourceObject<'_>, _: &mut CookContext<'_>) -> Result<Cooked, String> {
+        GATE_ENTERED.store(true, Ordering::Relaxed);
+        let start = Instant::now();
+        while !GATE_OPEN.load(Ordering::Relaxed) && start.elapsed() < Duration::from_secs(20) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let mut payload = Vec::new();
+        marlin_serial::write(object.value.as_ref(), &mut payload).map_err(|e| format!("{e:?}"))?;
+        Ok(Cooked {
+            type_id: type_info::<Slow>().id,
+            encoding: Encoding::Serial,
+            payload,
+        })
+    }
+}
+
+/// Panics: a bug in a cooker.
+#[derive(Clone, PartialEq, Debug, Default, Reflect)]
+struct Bomb {
+    value: u32,
+}
+
+struct BombCooker;
+
+impl Cooker for BombCooker {
+    fn version(&self) -> u32 {
+        0
+    }
+
+    fn cook(&self, _: &SourceObject<'_>, _: &mut CookContext<'_>) -> Result<Cooked, String> {
+        panic!("cooker bug")
+    }
+}
+
+const SLOW: u128 = 0x0199_0000_0000_7000_8000_0000_0000_00cc;
+const BOMB: u128 = 0x0199_0000_0000_7000_8000_0000_0000_00dd;
+
 /// A cookd on a free port over a fresh project, stopped on drop.
 struct Running {
     root: TempDir,
@@ -99,7 +158,15 @@ struct Running {
 
 impl Running {
     fn start(name: &str) -> Self {
+        Self::start_with(name, &[])
+    }
+
+    /// With `extra` (path, text) files besides the standard ones.
+    fn start_with(name: &str, extra: &[(&str, String)]) -> Self {
         let root = TempDir::new(&format!("cookd-{name}"));
+        for (path, text) in extra {
+            root.write(path, text.as_bytes());
+        }
         root.write("a.masset", thing_a(1).as_bytes());
         root.write(
             "b.masset",
@@ -136,6 +203,8 @@ impl Running {
             let mut cookers = Cookers::new();
             cookers.register_generic::<Thing>().unwrap();
             cookers.register::<Image>(ImageCooker).unwrap();
+            cookers.register::<Slow>(SlowCooker).unwrap();
+            cookers.register::<Bomb>(BombCooker).unwrap();
             let ddc = Box::new(LocalDdc::open(r.join(".marlin/ddc")).unwrap());
             let options = CookdOptions {
                 workers: 2,
@@ -280,4 +349,61 @@ fn clients_share_the_cook() {
     b.update_blocking(&two, None);
     assert_eq!(a.get(&ha).unwrap().0, b"first pixels");
     assert_eq!(b.get(&hb).unwrap().0, b"first pixels");
+}
+
+#[test]
+fn a_long_cook_does_not_stall_the_service() {
+    let cookd = Running::start_with(
+        "stall",
+        &[(
+            "slow.masset",
+            format!(
+                "!Version 1\nSlow {{ !Uuid = \"{}\" !Name = \"Slow\" Value = 3 }}\n",
+                id(SLOW)
+            ),
+        )],
+    );
+    let vfs = cookd.connect();
+    let mut assets = AssetServer::new(loaders());
+    let slow: Handle<LoadedSlow> = assets.load(id(SLOW));
+    assets.update(&vfs, &mut marlin_io::IoQueue::new(4).unwrap(), None);
+    wait_until(Duration::from_secs(20), "the cook to start", || {
+        GATE_ENTERED.load(Ordering::Relaxed)
+    });
+    // A worker holds the project for the whole cook, and the watch runs every 30 ms meanwhile:
+    // with nothing changed it must not wait for the project, so a new client is still served.
+    std::thread::sleep(Duration::from_millis(100));
+    let connected = DevSource::connect(cookd.addr, "windows", Duration::from_secs(3));
+    GATE_OPEN.store(true, Ordering::Relaxed);
+    assert!(
+        connected.is_ok(),
+        "a new client was not served during the cook"
+    );
+    assets.update_blocking(&vfs, None);
+    assert_eq!(assets.get(&slow).unwrap().0, 3);
+}
+
+#[test]
+fn a_cooker_panic_takes_the_service_down() {
+    let mut cookd = Running::start_with(
+        "panic",
+        &[(
+            "bomb.masset",
+            format!(
+                "!Version 1\nBomb {{ !Uuid = \"{}\" !Name = \"Bomb\" }}\n",
+                id(BOMB)
+            ),
+        )],
+    );
+    let vfs = cookd.connect();
+    let mut assets = AssetServer::new(loaders());
+    let _bomb: Handle<LoadedSlow> = assets.load(id(BOMB));
+    assets.update(&vfs, &mut marlin_io::IoQueue::new(4).unwrap(), None);
+    // Not a request left waiting forever: the panic reaches the thread serving.
+    let thread = cookd.thread.take().unwrap();
+    wait_until(Duration::from_secs(20), "the service to stop", || {
+        thread.is_finished()
+    });
+    let panic = thread.join().expect_err("the service thread panicked");
+    assert_eq!(panic.downcast_ref::<&str>(), Some(&"cooker bug"));
 }

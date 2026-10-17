@@ -589,6 +589,38 @@ fn relative(
     m
 }
 
+/// A joint's parent in the skeleton: its nearest ancestor that is a joint.
+fn joint_parent(
+    parent: &[Option<usize>],
+    is_joint: impl Fn(usize) -> bool,
+    node: usize,
+) -> Option<usize> {
+    let mut at = parent[node];
+    while let Some(p) = at {
+        if is_joint(p) {
+            return Some(p);
+        }
+        at = parent[p];
+    }
+    None
+}
+
+/// The rest transform of the non-joint nodes between a joint and its joint parent (or the scene
+/// root for `None`), which the skeleton has no joints for: the skeleton folds it into the
+/// joint's rest pose and clips into its keys, so both put the joint in the same space. `None`
+/// when there are no such nodes.
+fn joint_offset(
+    doc: &Document,
+    parent: &[Option<usize>],
+    node: usize,
+    joint_parent: Option<usize>,
+) -> Option<Mat4> {
+    match parent[node] {
+        Some(p) if Some(p) != joint_parent => Some(relative(doc, parent, p, joint_parent)),
+        _ => None,
+    }
+}
+
 /// Imports the skin named `skin` (or the first) as a skeleton.
 pub fn import_skeleton(doc: &Document, skin: &str, scale: f32) -> Result<Vec<Joint>, String> {
     let g = &doc.gltf;
@@ -611,19 +643,9 @@ pub fn import_skeleton(doc: &Document, skin: &str, scale: f32) -> Result<Vec<Joi
         .enumerate()
         .map(|(i, j)| (j.index(), i))
         .collect();
-    // Nearest joint ancestor of each joint.
     let joint_parent: Vec<Option<usize>> = joints
         .iter()
-        .map(|j| {
-            let mut at = parent[j.index()];
-            while let Some(p) = at {
-                if index_of.contains_key(&p) {
-                    return Some(p);
-                }
-                at = parent[p];
-            }
-            None
-        })
+        .map(|j| joint_parent(&parent, |n| index_of.contains_key(&n), j.index()))
         .collect();
     let depth = |mut i: usize| {
         let mut d = 0;
@@ -650,7 +672,10 @@ pub fn import_skeleton(doc: &Document, skin: &str, scale: f32) -> Result<Vec<Joi
                 "two joints are named `{name}`; joints bind by name"
             ));
         }
-        let m = relative(doc, &parent, j.index(), joint_parent[i]);
+        let m = match joint_offset(doc, &parent, j.index(), joint_parent[i]) {
+            Some(offset) => math::mul(&offset, &local(j)),
+            None => local(j),
+        };
         let (mut translation, rotation, s) = math::decompose(&m);
         translation = translation.map(|c| c * scale);
         let mut ibm = ibms.get(i).copied().unwrap_or(math::IDENTITY);
@@ -748,8 +773,9 @@ fn sample_channel(times: &[f32], keys: &Keys, interpolation: Interpolation, t: f
 }
 
 /// Imports the animation named `name` (or the first), resampled at `rate` frames per second.
-/// Root joints (whose parent is no joint of any skin) take their parent's rest transform into
-/// their keys, as the skeleton does into their rest pose.
+/// A joint (of any skin) takes the rest transform of the non-joint nodes between it and its
+/// nearest joint ancestor (or the scene root) into its keys, as the skeleton does into its rest
+/// pose.
 pub fn import_animation(
     doc: &Document,
     name: &str,
@@ -825,18 +851,12 @@ pub fn import_animation(
     for node in node_ids {
         let slots = &channels[&node];
         let (rest_t, rest_r, rest_s) = nodes[node].transform().decomposed();
-        // A root joint's keys are relative to its non-joint ancestors' rest transform.
-        let root_parent = match parent[node] {
-            Some(p) if joint_nodes.contains(&node) && !joint_nodes.contains(&p) => {
-                let mut m = local(&nodes[p]);
-                let mut at = parent[p];
-                while let Some(a) = at {
-                    m = math::mul(&local(&nodes[a]), &m);
-                    at = parent[a];
-                }
-                Some(m)
-            }
-            _ => None,
+        // A joint's keys take in the non-joint nodes above it, as its rest pose does.
+        let offset = if joint_nodes.contains(&node) {
+            let up = joint_parent(&parent, |n| joint_nodes.contains(&n), node);
+            joint_offset(doc, &parent, node, up)
+        } else {
+            None
         };
         let mut track = Track {
             name: node_name(&nodes[node]),
@@ -858,7 +878,7 @@ pub fn import_animation(
                 math::quat_normalize(ro),
                 [sc[0], sc[1], sc[2]],
             );
-            let (tr2, ro2, sc2) = match &root_parent {
+            let (tr2, ro2, sc2) = match &offset {
                 Some(p) => math::decompose(&math::mul(p, &math::compose(tr, ro, sc))),
                 None => (tr, ro, sc),
             };

@@ -272,10 +272,7 @@ pub(crate) fn read_all(root: &Path, stats: &[Stat], threads: usize) -> io::Resul
             .collect();
         handles
             .into_iter()
-            .map(|h| {
-                h.join()
-                    .unwrap_or_else(|_| Err(io::Error::other("scan thread panicked")))
-            })
+            .map(|h| h.join().unwrap_or_else(|p| std::panic::resume_unwind(p)))
             .collect()
     });
     let mut records = Vec::with_capacity(stats.len());

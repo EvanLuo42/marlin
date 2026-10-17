@@ -116,12 +116,21 @@ pub struct Cookd {
     clients: HashMap<ConnId, Client>,
     /// (unit, platform) being cooked → who waits for it.
     in_flight: HashMap<(u64, String), Vec<(ConnId, u32)>>,
+    /// A second index of the project, owned by the network thread: the watch updates it outside
+    /// any lock and swaps it in only when it changed (see [`watch`](Self::watch)). `None` when
+    /// it could not be opened; the watch then updates the served index in place.
+    spare: Option<AssetDb>,
+    /// The spare saw changes the served index has not: swap at the next check regardless.
+    spare_ahead: bool,
     watch_interval: Duration,
     last_watch: Instant,
 }
 
 impl Cookd {
     pub fn new(db: AssetDb, cookers: Cookers, ddc: Box<dyn Ddc>, options: &CookdOptions) -> Self {
+        let spare = AssetDb::open(db.root(), db.options().clone())
+            .ok()
+            .map(|(spare, _)| spare);
         let shared = Arc::new(Shared {
             project: RwLock::new(Project::new(db)),
             cookers,
@@ -150,6 +159,8 @@ impl Cookd {
             workers,
             clients: HashMap::new(),
             in_flight: HashMap::new(),
+            spare,
+            spare_ahead: false,
             watch_interval: options.watch_interval,
             last_watch: Instant::now(),
         }
@@ -170,23 +181,57 @@ impl Cookd {
     }
 
     /// Checks the project for changes now and tells clients about units that changed.
+    ///
+    /// Workers hold the project's read lock for whole cooks, so taking the write lock waits for
+    /// them, stalling the network loop meanwhile. So the check runs on the spare index, outside
+    /// the lock, and only a change takes the write lock, just to swap the indexes. The index
+    /// swapped out is then brought up to date, again outside the lock; if that saw changes made
+    /// since (it now differs from the served one), the next check swaps again.
     fn watch(&mut self, out: &mut Outbox) {
-        let changed = {
-            let mut project = self
-                .shared
-                .project
-                .write()
-                .unwrap_or_else(|e| e.into_inner());
-            match project.db.update() {
-                Ok(report) if report.added + report.changed + report.removed > 0 => {
-                    let old = std::mem::take(&mut project.objects);
-                    project.reindex();
-                    Some(old != project.objects)
+        fn changed(update: marlin_asset_db::Result<marlin_asset_db::UpdateReport>) -> bool {
+            update.is_ok_and(|r| r.added + r.changed + r.removed > 0)
+        }
+        let objects_moved = match self.spare.take() {
+            Some(mut spare) => {
+                if !changed(spare.update()) && !self.spare_ahead {
+                    self.spare = Some(spare);
+                    return;
                 }
-                _ => None,
+                let mut next = Project::new(spare);
+                let mut project = self
+                    .shared
+                    .project
+                    .write()
+                    .unwrap_or_else(|e| e.into_inner());
+                let moved = next.objects != project.objects;
+                std::mem::swap(&mut *project, &mut next);
+                drop(project);
+                let mut old = next.db;
+                let _ = old.update();
+                let project = self
+                    .shared
+                    .project
+                    .read()
+                    .unwrap_or_else(|e| e.into_inner());
+                self.spare_ahead = !same_files(&old, &project.db);
+                drop(project);
+                self.spare = Some(old);
+                moved
+            }
+            None => {
+                let mut project = self
+                    .shared
+                    .project
+                    .write()
+                    .unwrap_or_else(|e| e.into_inner());
+                if !changed(project.db.update()) {
+                    return;
+                }
+                let old = std::mem::take(&mut project.objects);
+                project.reindex();
+                old != project.objects
             }
         };
-        let Some(objects_moved) = changed else { return };
         let project = self
             .shared
             .project
@@ -221,6 +266,16 @@ impl Cookd {
             out.send(conn, CHANGED, 0, &changed_payload(&stale, table));
         }
     }
+}
+
+/// Whether two indexes of a project saw the same files, by path and contents.
+fn same_files(a: &AssetDb, b: &AssetDb) -> bool {
+    a.files().count() == b.files().count()
+        && a.files().all(|f| {
+            let info = a.file_info(f);
+            b.file(&info.path)
+                .is_some_and(|g| b.file_info(g).hash == info.hash)
+        })
 }
 
 fn worker(shared: &Shared, jobs: &Mutex<Receiver<Job>>, done: &Sender<Done>) {
@@ -327,6 +382,13 @@ impl Service for Cookd {
     }
 
     fn tick(&mut self, out: &mut Outbox) {
+        // Workers only return once the service is gone: one that finished panicked, and its
+        // job's waiters would wait forever. A cooker bug takes the service down with it.
+        if let Some(i) = self.workers.iter().position(JoinHandle::is_finished)
+            && let Err(panic) = self.workers.swap_remove(i).join()
+        {
+            std::panic::resume_unwind(panic);
+        }
         while let Ok(done) = self.done.try_recv() {
             let waiters = self
                 .in_flight
@@ -360,7 +422,11 @@ impl Drop for Cookd {
         // Closing the job channel ends the workers.
         self.jobs = None;
         for w in self.workers.drain(..) {
-            let _ = w.join();
+            if let Err(panic) = w.join()
+                && !std::thread::panicking()
+            {
+                std::panic::resume_unwind(panic);
+            }
         }
     }
 }

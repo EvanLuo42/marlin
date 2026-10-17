@@ -1,6 +1,6 @@
 //! Cooking units: keys, assembly and the parallel driver.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
 use marlin_asset::Uuid;
@@ -262,9 +262,14 @@ pub fn cook_unit(
             })?;
             imports.insert(link.target, target);
         }
-        let sources: HashSet<String> = db
+        // With the hashes `unit_key` used: `read_source` checks the bytes it reads against them.
+        let sources: HashMap<String, u128> = db
             .object(object.uuid)
-            .map(|o| db.source_links(o).map(|s| s.path.to_owned()).collect())
+            .map(|o| {
+                db.source_links(o)
+                    .filter_map(|s| Some((s.path.to_owned(), db.file_info(db.file(s.path)?).hash)))
+                    .collect()
+            })
             .unwrap_or_default();
         let mut ctx = CookContext {
             platform,
@@ -337,7 +342,8 @@ pub fn cook(
             .collect();
         handles
             .into_iter()
-            .flat_map(|h| h.join().unwrap_or_default())
+            // A cooker that panicked is a bug: re-raise it rather than drop the chunk's units.
+            .flat_map(|h| h.join().unwrap_or_else(|p| std::panic::resume_unwind(p)))
             .collect()
     });
     let mut report = CookReport::default();
