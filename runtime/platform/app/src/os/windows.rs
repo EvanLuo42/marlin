@@ -34,11 +34,22 @@ pub trait AppExt {
     /// Registers `hook` for every current and future window. Held weakly: dropping the last `Rc`
     /// unregisters it. Fails with `OutOfMemory` when all slots hold live hooks.
     fn add_message_hook(&self, hook: Weak<dyn MessageHook>) -> Result<()>;
+
+    /// The app's hidden top-level window. It receives the power, session and display broadcasts
+    /// behind [`Event::Suspended`](crate::Event::Suspended),
+    /// [`Event::Constrained`](crate::Event::Constrained) and
+    /// [`Event::DisplaysChanged`](crate::Event::DisplaysChanged), and owns the clipboard while the
+    /// app uses it. Never shown; hooks do not see its messages.
+    fn message_window(&self) -> HWND;
 }
 
 impl AppExt for App {
     fn add_message_hook(&self, hook: Weak<dyn MessageHook>) -> Result<()> {
         self.inner.add_message_hook(hook)
+    }
+
+    fn message_window(&self) -> HWND {
+        self.inner.message_window()
     }
 }
 

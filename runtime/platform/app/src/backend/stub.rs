@@ -3,8 +3,12 @@
 
 use core::time::Duration;
 
+use alloc::string::String;
+use alloc::vec::Vec;
+
 use crate::{
-    Error, ErrorKind, EventQueue, Result, Size, Surface, WindowDesc, WindowId, WindowMode,
+    CursorGrab, CursorIcon, Display, DisplayId, Error, ErrorKind, EventQueue, Lifecycle, Point,
+    Result, Size, Surface, WindowDesc, WindowId, WindowMode,
 };
 
 pub(crate) enum App {}
@@ -24,6 +28,22 @@ impl crate::contract::App for App {
     fn pump(&mut self, _: Option<Duration>, _: &mut EventQueue) {
         match *self {}
     }
+
+    fn lifecycle(&self) -> Lifecycle {
+        match *self {}
+    }
+
+    fn displays(&self, _: &mut Vec<Display>) {
+        match *self {}
+    }
+
+    fn clipboard_text(&self) -> Result<Option<String>> {
+        match *self {}
+    }
+
+    fn set_clipboard_text(&self, _: &str) -> Result<()> {
+        match *self {}
+    }
 }
 
 impl crate::contract::Window for Window {
@@ -39,7 +59,35 @@ impl crate::contract::Window for Window {
         match *self {}
     }
 
+    fn set_size(&self, _: Size) {
+        match *self {}
+    }
+
+    fn position(&self) -> Point {
+        match *self {}
+    }
+
+    fn set_position(&self, _: Point) {
+        match *self {}
+    }
+
+    fn set_min_size(&self, _: Option<Size>) {
+        match *self {}
+    }
+
+    fn set_max_size(&self, _: Option<Size>) {
+        match *self {}
+    }
+
     fn dpi(&self) -> u32 {
+        match *self {}
+    }
+
+    fn display(&self) -> Result<Display> {
+        match *self {}
+    }
+
+    fn set_display(&self, _: DisplayId) -> Result<()> {
         match *self {}
     }
 
@@ -59,11 +107,39 @@ impl crate::contract::Window for Window {
         match *self {}
     }
 
+    fn is_visible(&self) -> bool {
+        match *self {}
+    }
+
     fn is_minimized(&self) -> bool {
         match *self {}
     }
 
     fn is_focused(&self) -> bool {
+        match *self {}
+    }
+
+    fn set_cursor_visible(&self, _: bool) {
+        match *self {}
+    }
+
+    fn set_cursor_icon(&self, _: CursorIcon) {
+        match *self {}
+    }
+
+    fn set_cursor_grab(&self, _: CursorGrab) {
+        match *self {}
+    }
+
+    fn cursor_grab(&self) -> CursorGrab {
+        match *self {}
+    }
+
+    fn set_cursor_position(&self, _: Point) -> Result<()> {
+        match *self {}
+    }
+
+    fn take_dropped_files(&self) -> Vec<String> {
         match *self {}
     }
 }

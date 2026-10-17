@@ -1,7 +1,7 @@
 use core::mem::MaybeUninit;
 use core::{fmt, slice};
 
-use crate::Size;
+use crate::{Point, Size};
 
 /// Identifies a [`Window`](crate::Window) in [`Event`]s. Unique for the life of its [`App`](crate::App).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
@@ -45,16 +45,59 @@ pub enum Event {
         window: WindowId,
         focused: bool,
     },
+    /// The client area's top-left corner moved, in virtual-desktop pixels. Consecutive moves of
+    /// one window coalesce.
+    Moved {
+        window: WindowId,
+        position: Point,
+    },
     /// The window was minimized; skip rendering to it until [`Event::Restored`].
     Minimized(WindowId),
     Restored(WindowId),
+    /// The window was shown or hidden ([`Window::set_visible`](crate::Window::set_visible), or
+    /// along with its owner).
+    VisibilityChanged {
+        window: WindowId,
+        visible: bool,
+    },
+    /// Files were dropped on a window that accepts them (see
+    /// [`WindowDesc::accept_files`](crate::WindowDesc::accept_files)). Take the paths with
+    /// [`Window::take_dropped_files`](crate::Window::take_dropped_files); `position` is the drop
+    /// point in client pixels.
+    FilesDropped {
+        window: WindowId,
+        count: u32,
+        position: Point,
+    },
+    /// A display was connected, removed or reconfigured (resolution, arrangement, refresh rate,
+    /// HDR). Enumerate [`App::displays`](crate::App::displays) again.
+    DisplaysChanged,
     /// The system is about to sleep (desktop) or the title is being suspended (console). Stop
     /// audio and GPU work and save what must survive.
     Suspended,
     /// The system or title woke up after [`Event::Suspended`].
     Resumed,
+    /// The application keeps running but nobody can see it: the session is locked, the remote
+    /// session disconnected or the display turned off (desktop), or system UI covers the title
+    /// (console). Drop to minimal work: stop rendering, keep networking alive.
+    Constrained,
+    /// Back to full operation after [`Event::Constrained`].
+    Unconstrained,
+    /// The system is low on physical memory: release caches. Sent each time memory becomes low.
+    LowMemory,
     /// Something asked the whole application to quit (`WM_QUIT` on Windows).
     Quit,
+}
+
+/// Where the application is in its lifecycle; see [`App::lifecycle`](crate::App::lifecycle).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub enum Lifecycle {
+    #[default]
+    Running,
+    /// Between [`Event::Constrained`] and [`Event::Unconstrained`].
+    Constrained,
+    /// Between [`Event::Suspended`] and [`Event::Resumed`]; takes precedence over `Constrained`.
+    Suspended,
 }
 
 impl Event {
@@ -65,9 +108,18 @@ impl Event {
             | Self::Resized { window, .. }
             | Self::DpiChanged { window, .. }
             | Self::Focused { window, .. }
+            | Self::Moved { window, .. }
             | Self::Minimized(window)
-            | Self::Restored(window) => Some(window),
-            Self::Suspended | Self::Resumed | Self::Quit => None,
+            | Self::Restored(window)
+            | Self::VisibilityChanged { window, .. }
+            | Self::FilesDropped { window, .. } => Some(window),
+            Self::DisplaysChanged
+            | Self::Suspended
+            | Self::Resumed
+            | Self::Constrained
+            | Self::Unconstrained
+            | Self::LowMemory
+            | Self::Quit => None,
         }
     }
 }
@@ -79,8 +131,8 @@ pub const EVENT_CAPACITY: usize = 128;
 /// A fixed-capacity event buffer: filled during a pump, read and cleared once per frame. Never
 /// allocates.
 ///
-/// [`push`](Self::push) coalesces a resize (or DPI change) with the newest queued one for the
-/// same window, so a live resize produces one event. When full, new events are dropped and
+/// [`push`](Self::push) coalesces a resize, move, DPI or display change with the newest queued one of the
+/// same kind for the same window, so a live resize produces one event. When full, new events are dropped and
 /// counted in [`dropped`](Self::dropped).
 pub struct EventQueue<const N: usize = EVENT_CAPACITY> {
     events: [MaybeUninit<Event>; N],
@@ -103,9 +155,9 @@ impl<const N: usize> EventQueue<N> {
         if let Some(last) = self.as_mut_slice().last_mut() {
             let merge = match (*last, event) {
                 (Event::Resized { window: a, .. }, Event::Resized { window: b, .. })
-                | (Event::DpiChanged { window: a, .. }, Event::DpiChanged { window: b, .. }) => {
-                    a == b
-                }
+                | (Event::DpiChanged { window: a, .. }, Event::DpiChanged { window: b, .. })
+                | (Event::Moved { window: a, .. }, Event::Moved { window: b, .. }) => a == b,
+                (Event::DisplaysChanged, Event::DisplaysChanged) => true,
                 _ => false,
             };
             if merge {

@@ -15,9 +15,14 @@
 //! }
 //! ```
 //!
-//! Keyboard, mouse and gamepad state lives in `marlin-input`, which observes the OS messages
-//! through [`os`] hooks instead of this crate's event queue: high-rate input (raw mouse motion at
-//! 8 kHz) is accumulated, not queued.
+//! Besides windows the app reports the lifecycle ([`Lifecycle`]: suspended, constrained, low
+//! memory), enumerates [`Display`]s (work area, DPI, refresh rate, HDR) to choose where windows
+//! and fullscreen go, controls the cursor ([`CursorGrab`], [`CursorIcon`]), and owns the system
+//! clipboard and file drops.
+//!
+//! Keyboard, mouse, touch, pen and gamepad state lives in `marlin-input`, which observes the OS
+//! messages through [`os`] hooks instead of this crate's event queue: high-rate input (raw mouse
+//! motion at 8 kHz) is accumulated, not queued.
 //!
 //! # Structure
 //!
@@ -31,14 +36,16 @@ extern crate alloc;
 mod app;
 mod backend;
 mod contract;
+mod display;
 mod event;
 pub mod os;
 mod window;
 
 pub use app::App;
-pub use event::{EVENT_CAPACITY, Event, EventQueue, WindowId};
+pub use display::{DISPLAY_NAME_CAPACITY, Display, DisplayId, Hdr, Point, Rect};
+pub use event::{EVENT_CAPACITY, Event, EventQueue, Lifecycle, WindowId};
 pub use marlin_pal::{Error, ErrorKind, Result};
-pub use window::{Size, Surface, Window, WindowDesc, WindowMode};
+pub use window::{CursorGrab, CursorIcon, Size, Surface, Window, WindowDesc, WindowMode};
 
 // The selected backend must implement the whole contract.
 const _: () = {

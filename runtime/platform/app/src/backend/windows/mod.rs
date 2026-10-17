@@ -1,6 +1,10 @@
-//! Win32 backend: one window class, a `PeekMessageW` pump, and per-window state reached from the
-//! window procedure through `GWLP_USERDATA`.
+//! Win32 backend: one window class for game windows, a hidden helper window for system-wide
+//! notifications, a `PeekMessageW` pump, and per-window state reached from the window procedure
+//! through `GWLP_USERDATA`.
 
+mod clipboard;
+mod display;
+mod helper;
 mod window;
 
 use core::cell::{Cell, RefCell};
@@ -10,11 +14,19 @@ use core::sync::atomic::{AtomicU8, Ordering};
 use core::time::Duration;
 
 use alloc::rc::{Rc, Weak};
+use alloc::string::String;
+use alloc::vec::Vec;
 
 use marlin_pal::os::windows::last_error;
-use windows_sys::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
+use windows_sys::Win32::Foundation::{
+    CloseHandle, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM,
+};
 use windows_sys::Win32::Graphics::Gdi::{BLACK_BRUSH, GetStockObject};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::System::Memory::{
+    CreateMemoryResourceNotification, LowMemoryResourceNotification,
+    QueryMemoryResourceNotification,
+};
 use windows_sys::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
 };
@@ -22,7 +34,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, DefWindowProcW, DispatchMessageW, GWLP_USERDATA,
     GetWindowLongPtrW, IDC_ARROW, LoadCursorW, MSG, MWMO_INPUTAVAILABLE,
     MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW, QS_ALLINPUT, RegisterClassExW,
-    SetWindowLongPtrW, TranslateMessage, WM_NCCREATE, WM_NCDESTROY, WM_QUIT, WNDCLASSEXW,
+    SetWindowLongPtrW, TranslateMessage, WM_NCCREATE, WM_NCDESTROY, WM_QUIT, WNDCLASSEXW, WNDPROC,
 };
 use windows_sys::w;
 
@@ -30,7 +42,7 @@ pub(crate) use window::Window;
 use window::WindowState;
 
 use crate::os::windows::{Message, MessageHook};
-use crate::{Error, ErrorKind, Event, EventQueue, Result, WindowDesc};
+use crate::{Display, Error, ErrorKind, Event, EventQueue, Lifecycle, Result, WindowDesc};
 
 const CLASS_NAME: *const u16 = w!("MarlinWindow");
 const INFINITE: u32 = u32::MAX;
@@ -38,7 +50,13 @@ const INFINITE: u32 = u32::MAX;
 /// Hooks per [`App`]; one per input system is the expected use.
 const MAX_HOOKS: usize = 8;
 
-/// State shared by the [`App`] and the window procedure of each of its windows.
+/// Reasons for [`Lifecycle::Constrained`], as bits of [`Shared::constrained`].
+const CONSTRAINED_LOCKED: u8 = 1;
+const CONSTRAINED_DISCONNECTED: u8 = 2;
+const CONSTRAINED_DISPLAY_OFF: u8 = 4;
+
+/// State shared by the [`App`], its helper window and the window procedure of each of its
+/// windows.
 pub(crate) struct Shared {
     hinstance: HINSTANCE,
     /// Filled by window procedures, moved out by `pump`. Borrowed only briefly, never across a
@@ -47,6 +65,8 @@ pub(crate) struct Shared {
     hooks: RefCell<[Option<Weak<dyn MessageHook>>; MAX_HOOKS]>,
     next_window_id: Cell<u32>,
     suspended: Cell<bool>,
+    /// `CONSTRAINED_*` bits; the app is constrained while any is set.
+    constrained: Cell<u8>,
 }
 
 impl Shared {
@@ -54,13 +74,32 @@ impl Shared {
         self.incoming.borrow_mut().push(event);
     }
 
-    /// Records a system sleep or wake once, although every top-level window is told.
+    /// Records a system sleep or wake once, however often it is reported.
     fn set_suspended(&self, suspended: bool) {
         if self.suspended.replace(suspended) != suspended {
             self.push(if suspended {
                 Event::Suspended
             } else {
                 Event::Resumed
+            });
+        }
+    }
+
+    /// Sets or clears one reason for being constrained; reports only the transitions between
+    /// none and some.
+    fn set_constrained(&self, reason: u8, on: bool) {
+        let before = self.constrained.get();
+        let after = if on {
+            before | reason
+        } else {
+            before & !reason
+        };
+        self.constrained.set(after);
+        if (before == 0) != (after == 0) {
+            self.push(if after != 0 {
+                Event::Constrained
+            } else {
+                Event::Unconstrained
             });
         }
     }
@@ -82,6 +121,10 @@ impl Shared {
 
 pub(crate) struct App {
     shared: Rc<Shared>,
+    helper: helper::Helper,
+    /// Signaled while physical memory is low; null if unavailable.
+    low_memory: HANDLE,
+    memory_low: bool,
 }
 
 impl App {
@@ -93,6 +136,36 @@ impl App {
             .ok_or(Error::from_kind(ErrorKind::OutOfMemory))?;
         *slot = Some(hook);
         Ok(())
+    }
+
+    pub(crate) fn message_window(&self) -> HWND {
+        self.helper.hwnd()
+    }
+
+    /// Reports [`Event::LowMemory`] when memory becomes low.
+    fn poll_memory(&mut self) {
+        if self.low_memory.is_null() {
+            return;
+        }
+        let mut low = 0;
+        // SAFETY: a live notification handle and a valid out pointer.
+        if unsafe { QueryMemoryResourceNotification(self.low_memory, &mut low) } == 0 {
+            return;
+        }
+        let low = low != 0;
+        if low && !self.memory_low {
+            self.shared.push(Event::LowMemory);
+        }
+        self.memory_low = low;
+    }
+}
+
+impl Drop for App {
+    fn drop(&mut self) {
+        if !self.low_memory.is_null() {
+            // SAFETY: owned handle, closed once.
+            unsafe { CloseHandle(self.low_memory) };
+        }
     }
 }
 
@@ -107,15 +180,29 @@ impl crate::contract::App for App {
 
         // SAFETY: a null name returns the executable's module, which outlives the process' use.
         let hinstance = unsafe { GetModuleHandleW(ptr::null()) };
-        register_class(hinstance)?;
+        register_class(
+            &WINDOW_CLASS,
+            hinstance,
+            CLASS_NAME,
+            Some(window_proc),
+            true,
+        )?;
+        let shared = Rc::new(Shared {
+            hinstance,
+            incoming: RefCell::new(EventQueue::new()),
+            hooks: RefCell::new([const { None }; MAX_HOOKS]),
+            next_window_id: Cell::new(1),
+            suspended: Cell::new(false),
+            constrained: Cell::new(0),
+        });
+        let helper = helper::Helper::new(&shared)?;
+        // SAFETY: no preconditions; null on failure, which disables low-memory events.
+        let low_memory = unsafe { CreateMemoryResourceNotification(LowMemoryResourceNotification) };
         Ok(Self {
-            shared: Rc::new(Shared {
-                hinstance,
-                incoming: RefCell::new(EventQueue::new()),
-                hooks: RefCell::new([const { None }; MAX_HOOKS]),
-                next_window_id: Cell::new(1),
-                suspended: Cell::new(false),
-            }),
+            shared,
+            helper,
+            low_memory,
+            memory_low: false,
         })
     }
 
@@ -150,18 +237,47 @@ impl crate::contract::App for App {
                 DispatchMessageW(msg);
             }
         }
+        self.poll_memory();
 
         out.append(&mut self.shared.incoming.borrow_mut());
     }
+
+    fn lifecycle(&self) -> Lifecycle {
+        if self.shared.suspended.get() {
+            Lifecycle::Suspended
+        } else if self.shared.constrained.get() != 0 {
+            Lifecycle::Constrained
+        } else {
+            Lifecycle::Running
+        }
+    }
+
+    fn displays(&self, out: &mut Vec<Display>) {
+        display::enumerate(out);
+    }
+
+    fn clipboard_text(&self) -> Result<Option<String>> {
+        clipboard::text(self.helper.hwnd())
+    }
+
+    fn set_clipboard_text(&self, text: &str) -> Result<()> {
+        clipboard::set_text(self.helper.hwnd(), text)
+    }
 }
 
-/// 0 = unregistered, 1 = registering, 2 = registered. The class lives until the process exits:
-/// unregistering would race with other threads' Apps.
-static CLASS_STATE: AtomicU8 = AtomicU8::new(0);
+/// Registration state of a window class: 0 = unregistered, 1 = registering, 2 = registered. A
+/// class lives until the process exits: unregistering would race with other threads' Apps.
+static WINDOW_CLASS: AtomicU8 = AtomicU8::new(0);
 
-fn register_class(hinstance: HINSTANCE) -> Result<()> {
+fn register_class(
+    state: &AtomicU8,
+    hinstance: HINSTANCE,
+    name: *const u16,
+    proc: WNDPROC,
+    visible: bool,
+) -> Result<()> {
     loop {
-        match CLASS_STATE.compare_exchange(0, 1, Ordering::Acquire, Ordering::Acquire) {
+        match state.compare_exchange(0, 1, Ordering::Acquire, Ordering::Acquire) {
             Ok(_) => break,
             Err(2) => return Ok(()),
             Err(_) => core::hint::spin_loop(),
@@ -171,8 +287,8 @@ fn register_class(hinstance: HINSTANCE) -> Result<()> {
         cbSize: size_of::<WNDCLASSEXW>() as u32,
         // Redraw (with the black brush) when resized, so new areas are not left garbage while a
         // swapchain catches up.
-        style: CS_HREDRAW | CS_VREDRAW,
-        lpfnWndProc: Some(window_proc),
+        style: if visible { CS_HREDRAW | CS_VREDRAW } else { 0 },
+        lpfnWndProc: proc,
         cbClsExtra: 0,
         cbWndExtra: 0,
         hInstance: hinstance,
@@ -182,16 +298,16 @@ fn register_class(hinstance: HINSTANCE) -> Result<()> {
         // SAFETY: stock objects need no cleanup.
         hbrBackground: unsafe { GetStockObject(BLACK_BRUSH) },
         lpszMenuName: ptr::null(),
-        lpszClassName: CLASS_NAME,
+        lpszClassName: name,
         hIconSm: ptr::null_mut(),
     };
     // SAFETY: `class` is fully initialized and its strings are static.
     if unsafe { RegisterClassExW(&class) } == 0 {
         let error = last_error();
-        CLASS_STATE.store(0, Ordering::Release);
+        state.store(0, Ordering::Release);
         return Err(error);
     }
-    CLASS_STATE.store(2, Ordering::Release);
+    state.store(2, Ordering::Release);
     Ok(())
 }
 
@@ -228,4 +344,11 @@ unsafe extern "system" fn window_proc(
         // SAFETY: forwarding the unmodified message of a live window.
         None => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
     }
+}
+
+/// UTF-16 up to the first NUL (or the whole slice), as chars.
+fn wide_chars(wide: &[u16]) -> impl Iterator<Item = char> + '_ {
+    let len = wide.iter().position(|&c| c == 0).unwrap_or(wide.len());
+    char::decode_utf16(wide[..len].iter().copied())
+        .map(|c| c.unwrap_or(char::REPLACEMENT_CHARACTER))
 }

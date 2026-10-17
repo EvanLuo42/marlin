@@ -2,10 +2,12 @@ use core::marker::PhantomData;
 use core::time::Duration;
 
 use alloc::boxed::Box;
+use alloc::string::String;
+use alloc::vec::Vec;
 
 use crate::backend::imp;
 use crate::contract::App as _;
-use crate::{Event, EventQueue, Result, Window, WindowDesc};
+use crate::{Display, Event, EventQueue, Lifecycle, Result, Window, WindowDesc};
 
 /// The application: owns the main thread's message pump and creates windows.
 ///
@@ -60,5 +62,36 @@ impl App {
     #[inline]
     pub fn dropped_events(&self) -> u64 {
         self.dropped
+    }
+
+    /// Where the application is in its lifecycle, as of the last pump.
+    #[inline]
+    pub fn lifecycle(&self) -> Lifecycle {
+        self.inner.lifecycle()
+    }
+
+    /// Every connected display, the primary one first. Enumerate again after
+    /// [`Event::DisplaysChanged`].
+    pub fn displays(&self) -> Vec<Display> {
+        let mut out = Vec::new();
+        self.inner.displays(&mut out);
+        out
+    }
+
+    /// The display holding the desktop's origin, where the taskbar and new windows go by default.
+    pub fn primary_display(&self) -> Option<Display> {
+        self.displays().into_iter().find(|d| d.primary)
+    }
+
+    /// The text on the system clipboard, or `None` if it holds no text.
+    #[inline]
+    pub fn clipboard_text(&self) -> Result<Option<String>> {
+        self.inner.clipboard_text()
+    }
+
+    /// Replaces the system clipboard's contents with `text`.
+    #[inline]
+    pub fn set_clipboard_text(&self, text: &str) -> Result<()> {
+        self.inner.set_clipboard_text(text)
     }
 }
