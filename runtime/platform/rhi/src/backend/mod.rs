@@ -1,17 +1,21 @@
 //! Backend selection: the only place in the crate that dispatches on `marlin_platform`.
 //!
 //! Console backends live in `platforms/<name>/rhi/` (see marlin-pal's `backend/mod.rs` for why
-//! they are `#[path]` modules marked `#[rustfmt::skip]`). Xbox reuses most of `d3d12`.
+//! they are `#[path]` modules marked `#[rustfmt::skip]`). Xbox reuses most of `d3d12`; the
+//! desktop platforms use Vulkan (docs/design/0016-rhi-vulkan.md).
 
-#[cfg(any(marlin_platform = "windows", marlin_platform = "xbox"))]
+#[cfg(any(marlin_platform = "windows", marlin_platform = "linux"))]
+pub(crate) mod vulkan;
+#[cfg(any(marlin_platform = "windows", marlin_platform = "linux"))]
+pub(crate) use vulkan as imp;
+
+#[cfg(marlin_platform = "xbox")]
 pub(crate) mod d3d12;
-#[cfg(marlin_platform = "windows")]
-pub(crate) use d3d12 as imp;
 
-// Vulkan (Linux) and Metal (macOS) are not written yet.
-#[cfg(any(marlin_platform = "linux", marlin_platform = "macos"))]
+// Metal (macOS) is not written yet.
+#[cfg(marlin_platform = "macos")]
 pub(crate) mod stub;
-#[cfg(any(marlin_platform = "linux", marlin_platform = "macos"))]
+#[cfg(marlin_platform = "macos")]
 pub(crate) use stub as imp;
 
 #[cfg(marlin_platform = "ps5")]

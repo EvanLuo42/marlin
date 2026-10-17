@@ -32,6 +32,7 @@ use crate::{
 
 pub(crate) trait Types {
     const SHADER_FORMAT: ShaderFormat;
+    const GRAPHICS_API: crate::GraphicsApi;
     type Instance: Send + Sync;
     type Device: Send + Sync;
     type Queue: Send + Sync;

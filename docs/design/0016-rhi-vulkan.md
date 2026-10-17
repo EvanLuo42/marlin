@@ -1,0 +1,183 @@
+# 0016 — RHI Vulkan backend
+
+状态：草案 · 2026-10-17
+
+前置：
+- [0002](0002-shader-interface.md)：shader 接口契约（本文 §4 定下它 §6 的 SPIR-V 部分）
+- [0014](0014-testing.md)：测试体系
+
+## 0. 决定摘要
+
+| 问题 | 决定 | § |
+|---|---|---|
+| 哪些平台用 Vulkan | Windows 和 Linux **立刻**切到 Vulkan；D3D12 只留给 Xbox（代码暂留，之后删掉，有 Xbox 时再加回） | 1 |
+| API 绑定 | 手写 FFI（同 d3d12/ffi.rs），只绑用到的部分；运行时用 `marlin_pal::ext::Dylib` 加载 `vulkan-1.dll` / `libvulkan.so.1`，缺了就是 `Unsupported`；no_std，无第三方依赖 | 2 |
+| 基线 | Vulkan **1.4** instance/device ＋ 必需扩展 `VK_EXT_descriptor_heap`、`VK_EXT_mesh_shader`、`VK_EXT_device_generated_commands`；其余能力按 `Features` 可选 | 3 |
+| bindless | **descriptor heap，不用 descriptor set 和 pipeline layout**：一个资源 heap、一个 sampler heap，每个 command list 开头绑定一次；push constants 走 push data | 4 |
+| shader 侧绑定 | 原生 `SPV_EXT_descriptor_heap`（自研编译器以后直接产出）或 set 0 的固定映射（binding 0 资源、1 sampler、2 push data），后者给占位 HLSL 用 | 4.2 |
+| 屏障 | synchronization2，`Stage`/`Access`/`Layout` 一一映射；`Features::enhanced_barriers = true` | 5 |
+| 交换链依赖 | 不改 API：acquire 的信号量挂到 swapchain 所在队列，下一次 `submit` 自动等待；present 前空提交一次发信号 | 7 |
+| 测试 | 同一套 RHI 测试；只对某个图形 API 有意义的 case 保留，按 `marlin_rhi::GRAPHICS_API` 跳过；golden 目录按 API 名 | 9 |
+
+## 1. 平台与 backend
+
+- `backend/mod.rs` 是唯一按平台选 backend 的地方：`windows`、`linux` → `vulkan`；`xbox` → `d3d12`（+ `platforms/xbox/rhi`）；`macos` 仍是 stub（以后 Metal）。
+- 平台名不决定任何 backend 事实。需要知道 backend 的代码用 `marlin_rhi::GRAPHICS_API`（`GraphicsApi::Vulkan` 等）和 `marlin_rhi::SHADER_FORMAT`。
+- D3D12 代码在桌面上不再编译。不再为它投入；删除时一并删掉只为它存在的公共 API（见 §10）。
+
+## 2. 代码结构
+
+`runtime/platform/rhi/src/backend/vulkan/`：
+
+| 文件 | 内容 | 负责 |
+|---|---|---|
+| `mod.rs` | `Backend`、`Types`、contract 的各个 `impl`（多数只转发到下面的文件）、错误映射 | 核心 |
+| `ffi.rs` | 类型、常量、结构体、函数指针表（`Entry` / `InstanceFns` / `DeviceFns`） | 各自往里加自己用到的部分（按区块追加，减少冲突） |
+| `loader.rs` | 加载 loader 库，取 `vkGetInstanceProcAddr`，填函数表 | 核心 |
+| `instance.rs` | instance、validation（debug utils messenger → `marlin_diag`）、adapter 枚举、输出 | 核心 |
+| `device.rs` | 选 adapter、查特性、建 device 与队列、`Features`、`format_support` | 核心（`format_support` 归资源） |
+| `memory.rs` | memory type 选择、committed 分配、`Heap`、预算 | 核心 |
+| `descriptor.rs` | 资源/sampler heap、槽位分配、写描述符 | 核心 |
+| `queue.rs` | 队列、timeline 信号量 fence、`submit`、`wait_idle`、待等待信号量 | 核心 |
+| `command.rs` | pool、list、begin/end（绑定 heap、清零 push data）、屏障、push constants | 核心 |
+| `resource.rs` | buffer、texture、视图、sampler、placed、sparse、`format_support` | A 资源 |
+| `copy.rs` | 拷贝、resolve、fill、clear、marker | A 资源 |
+| `pipeline.rs` | compute（核心）、graphics、mesh pipeline，pipeline cache | 核心 + B |
+| `draw.rs` | render pass（dynamic rendering）、动态状态、draw/dispatch、indirect（DGC） | B 管线与绘制 |
+| `query.rs` | query pool、timestamp、occlusion、pipeline statistics、predication、时钟校准 | C 查询与光追 |
+| `raytracing.rs` | 加速结构 | C |
+| `diag.rs` | validation 计数、device lost、crash 诊断（device fault、checkpoint/marker）、调试名、事件 | 核心 + C |
+| `swapchain.rs` | surface、交换链、present、HDR、输出 | D 交换链与互操作 |
+| `share.rs` | 外部内存/信号量导出导入、native 包装 | D |
+
+骨架里每个转发函数都已存在，函数体返回 `Unsupported`（或 `unreachable!`，当参数类型还造不出来时），负责人只改自己的文件。
+
+## 3. 基线与特性
+
+**必需**（缺了 `create_device` 返回 `Unsupported`）：
+- `apiVersion >= 1.4`。1.4 核心里用到：timeline semaphore、synchronization2、dynamic rendering、buffer device address、maintenance4–6、`shaderDrawParameters`、`hostQueryReset`、`descriptorIndexing` 系列（运行时数组、non-uniform 下标）。
+- `VK_EXT_descriptor_heap`（§4）。
+- `VK_EXT_mesh_shader`：`taskShader` + `meshShader`。
+- `VK_EXT_device_generated_commands`：indirect 命令写 `INDIRECT_CONSTANT_WORD`（§6）。
+- 有 surface 时 `VK_KHR_swapchain`。
+
+**可选**（查到就开，写进 `Features`）：
+
+| `Features` | Vulkan |
+|---|---|
+| `ray_query` | `VK_KHR_acceleration_structure` + `VK_KHR_ray_query` |
+| `variable_rate_shading` / `shading_rate_tile_size` | `VK_KHR_fragment_shading_rate`（pipeline/primitive/attachment 三级） |
+| `conservative_rasterization` | `VK_EXT_conservative_rasterization` |
+| `depth_bounds` | `depthBounds` |
+| `barycentrics` | `VK_KHR_fragment_shader_barycentric` |
+| `sampler_min_max` | 1.2 `samplerFilterMinmax` |
+| `shader_float16_int16` / `shader_int64` / `atomic_int64` | 核心特性位 |
+| `sparse_resources` / `sparse_volumes` | `sparseBinding` + `sparseResidencyBuffer` + `sparseResidencyImage2D` / `Image3D` |
+| `buffer_markers` | `VK_AMD_buffer_marker`（NVIDIA 也有） |
+| `pipeline_statistics` | `pipelineStatisticsQuery` |
+| `gpu_upload_heap` | 有 `DEVICE_LOCAL | HOST_VISIBLE` 且覆盖大部分显存的 memory type（resizable BAR） |
+| `copy_queue_timestamps` | 传输队列 `timestampValidBits > 0` |
+| `mixed_heaps` | 恒为 true（Vulkan 内存不分 buffer/texture heap 类型） |
+| `wave_size_range` | subgroup size control 的 min/max |
+| `tearing` | surface 支持 `IMMEDIATE` |
+| 其他扩展 | `VK_EXT_memory_budget`、`VK_EXT_pageable_device_local_memory`、`VK_EXT_calibrated_timestamps`/`KHR`、`VK_EXT_device_fault`、`VK_NV_device_diagnostic_checkpoints`、`VK_EXT_conditional_rendering`、`VK_EXT_hdr_metadata`、`VK_EXT_swapchain_colorspace`、外部内存/信号量（`_win32` / `_fd`） |
+
+adapter：`AdapterPreference::HighPerformance` 选独显优先、然后显存最大；`Software` 选 `CPU` 类型（lavapipe），测试不用它。adapter 不满足基线就跳过（例如本机 AMD 核显只有 1.3）。
+
+## 4. Bindless：descriptor heap
+
+### 4.1 heap
+
+- **资源 heap**：一个 device-local、host 可写的 buffer（`DESCRIPTOR_HEAP` usage + device address），`MAX_BINDLESS_RESOURCES` 个槽。槽宽 `stride = max(imageDescriptorSize, bufferDescriptorSize)` 向上对齐到两者对齐的较大值，之后是驱动要的 reserved range（`minResourceHeapReservedRange`）。
+- **sampler heap**：同样，`MAX_BINDLESS_SAMPLERS` 个槽，槽宽 `samplerDescriptorSize`（对齐后），加 `minSamplerHeapReservedRange`。
+- 视图、sampler、加速结构创建时从空闲表拿槽，用 `vkWriteResourceDescriptorsEXT` / `vkWriteSamplerDescriptorsEXT` 直接写进映射内存；drop 时归还。`ShaderView::index()` 就是槽号。
+- 每个 command list `begin` 时 `vkCmdBindResourceHeapEXT` + `vkCmdBindSamplerHeapEXT`，之后不再变。
+- Vulkan 的 image 描述符带 layout：可写视图用 `GENERAL`，只读视图用 `SHADER_READ_ONLY_OPTIMAL`（深度只读用 `DEPTH_STENCIL_READ_ONLY_OPTIMAL`）；`Layout` 到 Vulkan 的映射（§5）要保证 shader 访问时布局和描述符一致。
+
+### 4.2 shader 侧
+
+两种 shader 都接受，backend 每次建 pipeline 都附上同一份映射（`VkShaderDescriptorSetAndBindingMappingInfoEXT`），原生 heap 的 shader 不受它影响：
+
+1. **原生 `SPV_EXT_descriptor_heap`**：shader 直接用 `ResourceHeapEXT` / `SamplerHeapEXT`，下标即槽号（字节偏移 = 槽号 × 槽宽，槽宽由 backend 在 device 上报告——自研编译器以后要知道它怎么取，待定，见 §11）；push constants 用 `PushConstant` 存储类，读的是 push data。
+2. **set 0 映射**（占位 HLSL，dxc 默认的"emulated heap"）：
+
+| SPIR-V | 映射到 | `VkDescriptorMappingSourceEXT` |
+|---|---|---|
+| set 0 binding 0（所有资源类型的运行时数组，互相 alias） | 资源 heap，偏移 0，数组步长 = 槽宽 | `HEAP_WITH_CONSTANT_OFFSET` |
+| set 0 binding 1（sampler 数组） | sampler heap，偏移 0，步长 = sampler 槽宽 | `HEAP_WITH_CONSTANT_OFFSET` |
+| set 0 binding 2（uniform block） | push data 偏移 0 | `PUSH_DATA` |
+
+占位 SPIR-V 的编译命令（只用 SDK 的 dxc，离线手工跑一次，不进任何构建）：
+
+```text
+dxc -spirv -fspv-target-env=vulkan1.3 -HV 2021 -fvk-bind-resource-heap 0 0 -fvk-bind-sampler-heap 1 0 -fvk-bind-register b0 0 2 0 -T <stage>_6_6 -E <entry> -Fo <name>.<stage>.spv <name>.hlsl
+```
+
+dxc 的 `-fspv-use-descriptor-heap`（原生）目前不支持 UAV，所以占位品用映射方式。
+
+### 4.3 push constants
+
+- `MAX_PUSH_CONSTANTS` = 32 字 = 128 字节（`maxPushDataSize` 至少 128）。`push_constants` → `vkCmdPushDataEXT`；graphics 和 compute 共用一份 push data，所以"写进最近绑定的那类 pipeline"在 Vulkan 上自然成立。`begin` 时清零。
+- pipeline 不建 `VkPipelineLayout`，创建时带 `VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT`。
+
+## 5. 屏障与布局
+
+- `Stage` → `VkPipelineStageFlags2`、`Access` → `VkAccessFlags2`、`Layout` → `VkImageLayout`，查表一一对应；`vkCmdPipelineBarrier2`。
+- `Layout::Common` → `GENERAL`；`Present` → `PRESENT_SRC_KHR`；`Undefined` → `UNDEFINED`。`TextureBarrier::undefined_from` 在 Vulkan 上就是 `oldLayout = UNDEFINED`（不需要真实布局）。
+- buffer 屏障直接映射；`memory_barrier` 是全局 `VkMemoryBarrier2`。
+- 队列族所有权：资源一律 `CONCURRENT` 共享模式（graphics/compute/transfer 三个族），不做 ownership transfer。
+
+## 6. 命令
+
+- render pass → dynamic rendering（`vkCmdBeginRendering`），load/store op 直接映射；viewport 用负高度翻转（0002 §4）。
+- 管线状态大部分静态，viewport/scissor/stencil ref/blend constants/depth bounds/shading rate 为动态状态。
+- `draw*_indirect` / `dispatch*_indirect`：indirect 参数结构的第一个字是 `constant`。用 DGC（`VK_EXT_device_generated_commands`）：indirect commands layout = push data token（写 `INDIRECT_CONSTANT_WORD`）+ draw/dispatch token；有 count buffer 的用 `maxSequenceCount` + count。preprocess buffer 由 backend 按需分配并缓存。
+- 查询：timestamp / occlusion / pipeline statistics 映射到 `VkQueryPool`；pipeline statistics 结果按 `PipelineStatistics` 字段顺序写出（Vulkan 位序与它几乎一致，mesh 图元数要额外的 `MESH_PRIMITIVES_GENERATED` 查询）。
+- predication → `VK_EXT_conditional_rendering`（可选）。
+- 调试事件/标记 → `VK_EXT_debug_utils` 的 label；`write_marker` → `vkCmdWriteBufferMarker2AMD`，没有就 fill。
+
+## 7. 队列、fence、交换链
+
+- fence = timeline semaphore（可导出）。`wait_for_fences` = `vkWaitSemaphores`（ANY / ALL）。
+- 队列：graphics 族；有"只 compute"族就是 compute 队列，有"只 transfer"族就是 copy 队列；没有就是 `None`。
+- `submit` = `vkQueueSubmit2`；队列对象上有一个"待等待的二进制信号量"列表，`submit` 取走并等待（交换链 acquire 用，§7.1）。
+- `wait_idle` = `vkQueueWaitIdle`。
+
+### 7.1 交换链
+
+- surface：`SurfaceHandle::Win32` → `VK_KHR_win32_surface`。Wayland/X11 变体随 L1 的 Linux 窗口加入。
+- `acquire`：`vkAcquireNextImageKHR` 带一个二进制信号量，挂到交换链队列的待等待列表；帧延迟用 `VK_KHR_present_wait2`（没有就等上一轮该图像的 present fence），超时 `TimedOut`。
+- `present`：先对该队列空提交一次，发一个该图像专属的二进制信号量（发信号的第一同步域包含之前提交的所有命令），再 `vkQueuePresentKHR` 等它。
+- `resize` 等 GPU 空闲后重建。`OUT_OF_DATE` / `SUBOPTIMAL` 映射到 `PresentStatus`。
+
+## 8. 诊断
+
+- `InstanceDesc::validation`：启用 `VK_LAYER_KHRONOS_validation` + debug utils messenger，消息进 `marlin_diag`，错误计数给 `Device::validation_errors`。没装 layer 就跳过并 warn。
+- `gpu_validation`：用 `VK_EXT_layer_settings` 打开 GPU-AV。
+- `crash_diagnostics`：`VK_EXT_device_fault`（故障地址、厂商信息）+ checkpoint / buffer marker 面包屑；第一次报告 `DeviceLost` 时写日志。
+- `set_name` → `vkSetDebugUtilsObjectNameEXT`。
+
+## 9. 测试
+
+- 所有 RHI 测试与图形 API 无关，同一套在 Vulkan 上跑。只对某个 API 有意义的 case（例如"D3D12 一定有专用 compute/copy 队列"）**保留**，开头按 `marlin_rhi::GRAPHICS_API` 用 `skip!` 跳过。
+- `marlin_gpu_test_support::devices()` 返回每条屏障路径一个设备：Vulkan 只有一条，所以一个；D3D12 是 enhanced + legacy 两个。测试遍历切片，不写死下标。
+- 测试 shader 按 `SHADER_FORMAT` 选 `.dxil` 或 `.spv`，查找函数形状不变；等自研编译器就绪整个换掉（[0002 §5](0002-shader-interface.md)）。
+- golden 目录 `tests/data/golden/<api>/`，`<api>` 是 `GraphicsApi::name()`（`vulkan`、`d3d12`）。Vulkan 的参考图第一次用 `MARLIN_BLESS=1` 生成，人工看过再提交。
+- validation 开着跑；测试结束检查 `validation_errors() == 0` 的地方照旧。
+
+## 10. 并行实施计划
+
+| 阶段 | 内容 | 谁 |
+|---|---|---|
+| 0 | 本文；`GraphicsApi`；切换 backend；Vulkan 骨架（全部转发函数，返回 `Unsupported`） | 主 session |
+| 1a | 测试与 API 去 D3D12 化（§9 全部）＋ 所有占位 shader 的 `.spv` | 并行 session T |
+| 1b | Vulkan 核心：loader、instance、validation、adapter、device、队列、fence、内存、buffer、buffer 视图、descriptor heap、command list、屏障、submit、buffer 拷贝/fill、compute pipeline、dispatch。完成标志：`fill` compute 写 buffer 回读通过 | 主 session |
+| 2 | 四个并行 session，各自只改 §2 表里自己的文件（`ffi.rs` 追加自己的区块）：A 资源、B 管线与绘制、C 查询/光追/诊断、D 交换链与互操作 | 并行 session A–D |
+| 3 | 按顺序 rebase 合并到本分支；全量 GPU 测试（`cargo xtask test --tier gpu`、`desktop`）在真机上跑通；修 validation 报错 | 主 session |
+| 4 | （之后）删 D3D12 backend 及只为它存在的公共 API（`DeviceDesc::disable_enhanced_barriers` 等） | 另行 |
+
+## 11. 待定
+
+- 自研编译器产出原生 `SPV_EXT_descriptor_heap` 时，槽宽怎么传给 shader（specialization constant、编译期常量、还是统一取各厂商最大值固定下来）。
+- Linux 的 Wayland/X11 surface（等 L1 Linux 窗口）。
+- 内存子分配（现在 committed = 每资源一次 `vkAllocateMemory`，测试规模够用；Windows 上 `maxMemoryAllocationCount` 通常 4096）。

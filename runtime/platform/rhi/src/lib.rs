@@ -86,7 +86,7 @@ pub use types::{
     ColorWrites, CompareOp, ComputePipelineDesc, CullMode, DepthAttachment, DepthState,
     DepthStencilViewDesc, DeviceDesc, DispatchIndirectArgs, DrawIndexedIndirectArgs,
     DrawIndirectArgs, Features, FenceWait, Filter, Format, FormatFeatures, FormatSupport,
-    FrameStatistics, FrontFace, GeometryFlags, GraphicsPipelineDesc, HdrMetadata, HeapDesc,
+    FrameStatistics, FrontFace, GeometryFlags, GraphicsApi, GraphicsPipelineDesc, HdrMetadata, HeapDesc,
     HeapKind, INDIRECT_CONSTANT_WORD, INSTANCE_ALIGNMENT, IndexFormat, IndirectArgs, InstanceDesc,
     InstanceFlags, Layout, LoadOp, MAX_BINDLESS_RESOURCES, MAX_BINDLESS_SAMPLERS,
     MAX_COLOR_ATTACHMENTS, MAX_PUSH_CONSTANTS, MAX_UNIFORM_SIZE, MSAA_PLACEMENT_ALIGNMENT,
@@ -106,6 +106,9 @@ pub use types::{
 /// The shader bytecode this build's backend consumes. Engine code picks shader blobs with it
 /// rather than by platform.
 pub const SHADER_FORMAT: ShaderFormat = <backend::imp::Backend as contract::Types>::SHADER_FORMAT;
+
+/// The GPU API this build's backend drives.
+pub const GRAPHICS_API: GraphicsApi = <backend::imp::Backend as contract::Types>::GRAPHICS_API;
 
 // The selected backend must implement the whole contract.
 const _: () = {

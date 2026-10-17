@@ -31,11 +31,9 @@ pub(crate) struct Backend;
 pub(crate) enum Never {}
 
 impl Types for Backend {
-    // What the future backends will take: Vulkan on Linux, Metal on macOS.
-    #[cfg(marlin_platform = "linux")]
-    const SHADER_FORMAT: crate::ShaderFormat = crate::ShaderFormat::SpirV;
-    #[cfg(marlin_platform = "macos")]
+    // What the future Metal backend will take.
     const SHADER_FORMAT: crate::ShaderFormat = crate::ShaderFormat::MetalLib;
+    const GRAPHICS_API: crate::GraphicsApi = crate::GraphicsApi::Metal;
     type Instance = Never;
     type Device = Never;
     type Queue = Never;

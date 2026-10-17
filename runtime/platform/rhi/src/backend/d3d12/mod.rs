@@ -48,6 +48,7 @@ pub(crate) struct Backend;
 
 impl Types for Backend {
     const SHADER_FORMAT: crate::ShaderFormat = crate::ShaderFormat::Dxil;
+    const GRAPHICS_API: crate::GraphicsApi = crate::GraphicsApi::D3D12;
     type Instance = Instance;
     type Device = Device;
     type Queue = Queue;

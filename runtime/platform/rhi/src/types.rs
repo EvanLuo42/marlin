@@ -945,6 +945,33 @@ impl Default for SamplerDesc {
 
 // --- Pipelines ---
 
+/// The GPU API the build's backend drives: [`GRAPHICS_API`](crate::GRAPHICS_API). Code that
+/// depends on the backend (golden images, API-specific tests) keys on this, never on the platform.
+#[non_exhaustive]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum GraphicsApi {
+    D3D12,
+    Vulkan,
+    Metal,
+    /// PlayStation 5.
+    Agc,
+    /// Nintendo Switch 2.
+    Nvn,
+}
+
+impl GraphicsApi {
+    /// Lowercase name, for directory names and logs: `"vulkan"`, `"d3d12"`, ...
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::D3D12 => "d3d12",
+            Self::Vulkan => "vulkan",
+            Self::Metal => "metal",
+            Self::Agc => "agc",
+            Self::Nvn => "nvn",
+        }
+    }
+}
+
 /// The bytecode the build's backend consumes: [`SHADER_FORMAT`](crate::SHADER_FORMAT).
 #[non_exhaustive]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
