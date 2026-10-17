@@ -379,7 +379,8 @@ impl Device {
     }
 
     /// A bindless view of a buffer range, for shaders to reach through its
-    /// [`index`](ShaderView::index).
+    /// [`index`](ShaderView::index). The view does not keep `buffer` alive: the buffer must
+    /// outlive the GPU work that uses the view.
     pub fn create_buffer_view(&self, buffer: &Buffer, desc: &BufferViewDesc) -> Result<ShaderView> {
         let b = &buffer.desc;
         ensure(desc.offset < b.size)?;

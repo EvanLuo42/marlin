@@ -85,7 +85,8 @@ fn pipeline_statistics_count_invocations() {
     )
     .unwrap();
     let fill = compute_pipeline(device, "fill");
-    let (_, view) = storage(device, 64);
+    // Bound, not `_`: the shader writes through the view, so the buffer must outlive the work.
+    let (_storage, view) = storage(device, 64);
     let stats = device
         .create_query_pool(&QueryPoolDesc {
             kind: QueryKind::PipelineStatistics,
