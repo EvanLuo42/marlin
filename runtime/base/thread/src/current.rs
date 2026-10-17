@@ -40,6 +40,23 @@ pub fn set_name(name: &str) {
     marlin_pal::thread::set_current_name(name)
 }
 
+/// The calling thread's name as the OS reports it (set by [`set_name`], a
+/// [`Builder`](crate::Builder), or anything else that names threads), or `None` if it has none.
+/// On Linux unnamed threads report the process name.
+pub fn name() -> Option<alloc::string::String> {
+    let mut buf = alloc::vec![0u8; 64];
+    loop {
+        let len = marlin_pal::thread::current_name(&mut buf).ok()?;
+        if len <= buf.len() {
+            buf.truncate(len);
+            return (len > 0)
+                .then(|| alloc::string::String::from_utf8(buf).ok())
+                .flatten();
+        }
+        buf.resize(len, 0);
+    }
+}
+
 /// Sets the calling thread's priority. See [`Builder::priority`](crate::Builder::priority).
 #[inline]
 pub fn set_priority(priority: ThreadPriority) -> Result<(), Error> {
