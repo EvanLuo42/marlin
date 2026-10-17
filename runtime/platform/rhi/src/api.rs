@@ -1392,7 +1392,7 @@ pub struct Texture {
 
 impl Texture {
     #[cfg_attr(
-        any(marlin_platform = "linux", marlin_platform = "macos"),
+        marlin_platform = "macos",
         expect(dead_code, reason = "the stub backend has no swapchains")
     )]
     pub(crate) fn swapchain_image(raw: <Backend as Types>::Texture, desc: TextureDesc) -> Self {
@@ -1428,7 +1428,7 @@ impl Texture {
 /// texture (kept alive no longer than the texture).
 pub struct RenderTargetView {
     #[cfg_attr(
-        any(marlin_platform = "linux", marlin_platform = "macos"),
+        marlin_platform = "macos",
         expect(dead_code, reason = "the stub backend has no views")
     )]
     pub(crate) raw: <Backend as Types>::RenderTargetView,
@@ -1437,7 +1437,7 @@ pub struct RenderTargetView {
 /// A view of a texture as a depth target.
 pub struct DepthStencilView {
     #[cfg_attr(
-        any(marlin_platform = "linux", marlin_platform = "macos"),
+        marlin_platform = "macos",
         expect(dead_code, reason = "the stub backend has no views")
     )]
     pub(crate) raw: <Backend as Types>::DepthStencilView,

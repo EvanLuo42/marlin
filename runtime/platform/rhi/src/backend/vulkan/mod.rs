@@ -1,5 +1,32 @@
-//! Vulkan backend (Windows, Linux): being written (docs/design/0016-rhi-vulkan.md). Until the
-//! core lands, [`Instance`] creation fails with `Unsupported`, as in the stub.
+//! Vulkan backend (Windows, Linux). Design: docs/design/0016-rhi-vulkan.md.
+//!
+//! The loader (`vulkan-1.dll`, `libvulkan.so.1`) is opened at run time, so a machine without
+//! Vulkan gets `Unsupported` instead of a loader error. Baseline: Vulkan 1.4 with
+//! `VK_EXT_descriptor_heap`, `VK_EXT_mesh_shader` and `VK_EXT_device_generated_commands`.
+//! Bindless tables are descriptor heaps; there are no descriptor sets or pipeline layouts.
+//!
+//! The contract impls below only forward: each function lives in the file of its area (0016 §2).
+
+// TEMPORARY: helpers of areas still being written (0016 §10) are unused until they land.
+#![allow(dead_code)]
+
+mod command;
+mod copy;
+mod descriptor;
+mod device;
+mod diag;
+mod draw;
+mod ffi;
+mod instance;
+mod memory;
+mod pipeline;
+mod query;
+mod queue;
+mod raytracing;
+mod residency;
+mod resource;
+mod share;
+mod swapchain;
 
 use core::ffi::c_void;
 use core::ptr::NonNull;
@@ -7,399 +34,851 @@ use core::time::Duration;
 
 use alloc::vec::Vec;
 
-use crate::contract::{
-    Commands, Device, Fences, Handles, Instance, Object, Queue, Queues, Resources, Rhi, Swapchain,
-    Types,
-};
+use crate::contract::{Object, Queues, Rhi, Types};
 use crate::{
-    AccelerationStructure, AccelerationStructureCopy, AccelerationStructureInputs,
-    AccelerationStructureKind, AccelerationStructureSizes, AdapterInfo, Buffer, BufferBarrier,
-    BufferDesc, BufferState, BufferTextureCopy, BufferViewDesc, BuildAccelerationStructure,
-    BuildFlags, ClearColor, ClockCalibration, ColorSpace, ComputePipelineDesc,
-    DepthStencilViewDesc, DeviceDesc, Error, ErrorKind, Features, Fence, FenceWait, Format,
-    FormatSupport, FrameStatistics, GraphicsPipelineDesc, HdrMetadata, HeapDesc, IndexFormat,
-    IndirectArgs, InstanceDesc, MarkerPoint, MemoryBudget, MemoryRequirements, MeshPipelineDesc,
-    OutputInfo, Pageable, PredicateSkip, PresentMode, PresentStatus, QueryPoolDesc, QueueType,
-    Rect, RenderPassDesc, RenderTargetView, RenderTargetViewDesc, ResidencyPriority, Result,
-    SamplerDesc, ShadingRate, ShadingRateCombiner, SparseBind, SparseTextureLayout, SubmitDesc,
-    SubresourceRange, SurfaceHandle, SwapchainDesc, Texture, TextureBarrier, TextureCopy,
-    TextureDesc, TextureResolve, TextureViewDesc, Viewport,
+    AccelerationStructureCopy, AccelerationStructureInputs, AccelerationStructureKind,
+    AccelerationStructureSizes, AdapterInfo, BufferBarrier, BufferDesc, BufferState,
+    BufferTextureCopy, BufferViewDesc, BuildAccelerationStructure, BuildFlags, ClearColor,
+    ClockCalibration, ColorSpace, ComputePipelineDesc, DepthStencilViewDesc, DeviceDesc, Error,
+    ErrorKind, Features, Fence as PublicFence, FenceWait, Format, FormatSupport, FrameStatistics,
+    GraphicsPipelineDesc, HdrMetadata, HeapDesc, IndexFormat, IndirectArgs, InstanceDesc,
+    MarkerPoint, MemoryBudget, MemoryRequirements, MeshPipelineDesc, OutputInfo, Pageable,
+    PredicateSkip, PresentMode, PresentStatus, QueryPoolDesc, QueueType, Rect, RenderPassDesc,
+    RenderTargetViewDesc, ResidencyPriority, Result, SamplerDesc, ShadingRate, ShadingRateCombiner,
+    SparseBind, SparseTextureLayout, SubmitDesc, SubresourceRange, SurfaceHandle, SwapchainDesc,
+    TextureBarrier, TextureCopy, TextureDesc, TextureResolve, TextureViewDesc, Viewport,
 };
+use ffi::*;
 
 pub(crate) struct Backend;
 
-pub(crate) enum Never {}
-
 impl Types for Backend {
-    const GRAPHICS_API: crate::GraphicsApi = crate::GraphicsApi::Vulkan;
     const SHADER_FORMAT: crate::ShaderFormat = crate::ShaderFormat::SpirV;
-    type Instance = Never;
-    type Device = Never;
-    type Queue = Never;
-    type Fence = Never;
-    type CommandPool = Never;
-    type CommandList = Never;
-    type Swapchain = Never;
-    type Buffer = Never;
-    type Texture = Never;
-    type RenderTargetView = Never;
-    type DepthStencilView = Never;
-    type ShaderView = Never;
-    type Sampler = Never;
-    type GraphicsPipeline = Never;
-    type ComputePipeline = Never;
-    type MeshPipeline = Never;
-    type QueryPool = Never;
-    type Heap = Never;
-    type PipelineCache = Never;
-    type AccelerationStructure = Never;
-    type SharedHandle = Never;
+    const GRAPHICS_API: crate::GraphicsApi = crate::GraphicsApi::Vulkan;
+    type Instance = instance::Instance;
+    type Device = device::Device;
+    type Queue = queue::Queue;
+    type Fence = queue::Fence;
+    type CommandPool = command::CommandPool;
+    type CommandList = command::CommandList;
+    type Swapchain = swapchain::Swapchain;
+    type Buffer = resource::Buffer;
+    type Texture = resource::Texture;
+    type RenderTargetView = resource::RenderTargetView;
+    type DepthStencilView = resource::DepthStencilView;
+    type ShaderView = descriptor::Descriptor;
+    type Sampler = descriptor::Descriptor;
+    type GraphicsPipeline = pipeline::GraphicsPipeline;
+    type ComputePipeline = pipeline::ComputePipeline;
+    type MeshPipeline = pipeline::MeshPipeline;
+    type QueryPool = query::QueryPool;
+    type Heap = memory::Heap;
+    type PipelineCache = pipeline::PipelineCache;
+    type AccelerationStructure = raytracing::AccelerationStructure;
+    type SharedHandle = share::SharedHandle;
 }
 
 impl Rhi for Backend {}
 
-/// Every object holds a `Never`, so no object can be passed in.
-fn never(object: Object<'_, Backend>) -> ! {
-    match object {
-        Object::Instance(n)
-        | Object::Device(n)
-        | Object::Queue(n)
-        | Object::Fence(n)
-        | Object::CommandPool(n)
-        | Object::CommandList(n)
-        | Object::Swapchain(n)
-        | Object::Buffer(n)
-        | Object::Texture(n)
-        | Object::GraphicsPipeline(n)
-        | Object::ComputePipeline(n)
-        | Object::MeshPipeline(n)
-        | Object::QueryPool(n)
-        | Object::Heap(n)
-        | Object::AccelerationStructure(n) => match *n {},
-    }
-}
+// --- Errors ---
 
-impl Instance for Backend {
-    fn create_instance(_: &InstanceDesc) -> Result<Never> {
-        Err(Error::from_kind(ErrorKind::Unsupported))
-    }
-
-    fn adapter(instance: &Never, _: u32) -> Option<AdapterInfo> {
-        match *instance {}
-    }
-
-    fn output(instance: &Never, _: u32, _: u32) -> Option<OutputInfo> {
-        match *instance {}
-    }
-
-    fn create_device(instance: &Never, _: &DeviceDesc) -> Result<(Never, Queues<Never>)> {
-        match *instance {}
-    }
-}
-
-/// Device functions: the first argument is always a `Never`.
-macro_rules! unreachable_device {
-    ($($(unsafe)? fn $name:ident($first:ident: $first_ty:ty $(, $arg:ident: $ty:ty)*) -> $ret:ty;)*) => {
-        $(fn $name($first: $first_ty $(, $arg: $ty)*) -> $ret {
-            $(let _ = $arg;)*
-            match *$first {}
-        })*
+/// Maps a failed `VkResult` to an [`Error`].
+fn error(result: VkResult) -> Error {
+    let kind = match result {
+        VK_ERROR_OUT_OF_HOST_MEMORY
+        | VK_ERROR_OUT_OF_DEVICE_MEMORY
+        | VK_ERROR_OUT_OF_POOL_MEMORY
+        | VK_ERROR_TOO_MANY_OBJECTS => ErrorKind::OutOfMemory,
+        VK_ERROR_DEVICE_LOST => ErrorKind::DeviceLost,
+        VK_ERROR_INCOMPATIBLE_DRIVER
+        | VK_ERROR_INITIALIZATION_FAILED
+        | VK_ERROR_EXTENSION_NOT_PRESENT
+        | VK_ERROR_FEATURE_NOT_PRESENT
+        | VK_ERROR_LAYER_NOT_PRESENT
+        | VK_ERROR_FORMAT_NOT_SUPPORTED => ErrorKind::Unsupported,
+        VK_ERROR_INVALID_EXTERNAL_HANDLE => ErrorKind::InvalidInput,
+        VK_TIMEOUT => ErrorKind::TimedOut,
+        _ => ErrorKind::Other,
     };
+    Error::new(kind, result)
 }
 
-impl Device for Backend {
-    unreachable_device! {
-        fn adapter_info(device: &Never) -> &AdapterInfo;
-        fn features(device: &Never) -> Features;
-        fn format_support(device: &Never, format: Format) -> FormatSupport;
-        fn status(device: &Never) -> Result<()>;
-        fn force_device_lost(device: &Never) -> ();
-        fn set_stable_power_state(device: &Never, stable: bool) -> Result<()>;
-        fn create_fence(device: &Never, initial: u64, shared: bool) -> Result<Never>;
-        fn wait_for_fences(device: &Never, fences: &[(&Fence, u64)], mode: FenceWait, timeout: Option<Duration>) -> Result<bool>;
-        fn create_command_pool(device: &Never, ty: QueueType) -> Result<Never>;
-        fn create_command_list(device: &Never, pool: &Never) -> Result<Never>;
-        fn validation_errors(device: &Never) -> u64;
-        fn create_buffer(device: &Never, desc: &BufferDesc) -> Result<Never>;
-        fn create_texture(device: &Never, desc: &TextureDesc) -> Result<Never>;
-        fn create_render_target_view(device: &Never, texture: &Texture, desc: &RenderTargetViewDesc) -> Result<Never>;
-        fn create_depth_stencil_view(device: &Never, texture: &Texture, desc: &DepthStencilViewDesc) -> Result<Never>;
-        fn create_texture_view(device: &Never, texture: &Texture, desc: &TextureViewDesc) -> Result<Never>;
-        fn create_buffer_view(device: &Never, buffer: &Buffer, desc: &BufferViewDesc) -> Result<Never>;
-        fn create_sampler(device: &Never, desc: &SamplerDesc) -> Result<Never>;
-        fn create_graphics_pipeline(device: &Never, desc: &GraphicsPipelineDesc<'_>) -> Result<Never>;
-        fn create_compute_pipeline(device: &Never, desc: &ComputePipelineDesc<'_>) -> Result<Never>;
-        fn create_mesh_pipeline(device: &Never, desc: &MeshPipelineDesc<'_>) -> Result<Never>;
-        fn create_pipeline_cache(device: &Never, data: &[u8]) -> Result<Never>;
-        fn serialize_pipeline_cache(cache: &Never) -> Result<Vec<u8>>;
-        fn create_query_pool(device: &Never, desc: &QueryPoolDesc) -> Result<Never>;
-        fn create_heap(device: &Never, desc: &HeapDesc) -> Result<Never>;
-        fn buffer_requirements(device: &Never, desc: &BufferDesc) -> MemoryRequirements;
-        fn texture_requirements(device: &Never, desc: &TextureDesc) -> MemoryRequirements;
-        fn create_placed_buffer(device: &Never, heap: &Never, offset: u64, desc: &BufferDesc) -> Result<Never>;
-        fn create_placed_texture(device: &Never, heap: &Never, offset: u64, desc: &TextureDesc) -> Result<Never>;
-        fn memory_budget(device: &Never) -> Result<MemoryBudget>;
-        fn set_memory_reservation(device: &Never, local: u64, non_local: u64) -> Result<()>;
-        fn make_resident(device: &Never, objects: &[Pageable<'_>]) -> Result<()>;
-        fn evict(device: &Never, objects: &[Pageable<'_>]) -> Result<()>;
-        fn set_residency_priority(device: &Never, objects: &[Pageable<'_>], priority: ResidencyPriority) -> Result<()>;
-        fn acceleration_structure_sizes(device: &Never, inputs: &AccelerationStructureInputs<'_>, flags: BuildFlags) -> AccelerationStructureSizes;
-        fn create_acceleration_structure(device: &Never, storage: &Never, offset: u64, kind: AccelerationStructureKind) -> Result<(Never, Never)>;
-        fn create_sparse_buffer(device: &Never, desc: &BufferDesc) -> Result<Never>;
-        fn create_sparse_texture(device: &Never, desc: &TextureDesc) -> Result<Never>;
+/// `Err` for the error codes (negative); success codes (`VK_SUBOPTIMAL_KHR`, ...) pass.
+fn check(result: VkResult) -> Result<()> {
+    if result < 0 {
+        Err(error(result))
+    } else {
+        Ok(())
+    }
+}
+
+fn unsupported() -> Error {
+    Error::from_kind(ErrorKind::Unsupported)
+}
+
+fn invalid() -> Error {
+    Error::from_kind(ErrorKind::InvalidInput)
+}
+
+/// A non-dispatchable handle as the pointer `as_raw` hands out.
+fn handle_ptr(handle: u64) -> *mut c_void {
+    handle as usize as *mut c_void
+}
+
+// --- Contract ---
+
+impl crate::contract::Instance for Backend {
+    fn create_instance(desc: &InstanceDesc) -> Result<instance::Instance> {
+        instance::Instance::new(desc)
+    }
+
+    fn adapter(instance: &instance::Instance, index: u32) -> Option<AdapterInfo> {
+        instance.adapter(index)
+    }
+
+    fn output(instance: &instance::Instance, adapter: u32, output: u32) -> Option<OutputInfo> {
+        swapchain::output(instance, adapter, output)
+    }
+
+    fn create_device(
+        instance: &instance::Instance,
+        desc: &DeviceDesc,
+    ) -> Result<(device::Device, Queues<queue::Queue>)> {
+        device::create(instance, desc)
+    }
+}
+
+impl crate::contract::Device for Backend {
+    fn adapter_info(device: &device::Device) -> &AdapterInfo {
+        &device.info
+    }
+
+    fn features(device: &device::Device) -> Features {
+        device.features
+    }
+
+    fn format_support(device: &device::Device, format: Format) -> FormatSupport {
+        resource::format_support(device, format)
+    }
+
+    fn status(device: &device::Device) -> Result<()> {
+        device.lost.check()
+    }
+
+    fn force_device_lost(device: &device::Device) {
+        device.lost.force();
+    }
+
+    fn set_stable_power_state(_: &device::Device, _: bool) -> Result<()> {
+        // Vulkan has no portable way to pin the clocks.
+        Err(unsupported())
+    }
+
+    fn create_fence(device: &device::Device, initial: u64, shared: bool) -> Result<queue::Fence> {
+        queue::Fence::new(device, initial, shared)
+    }
+
+    fn wait_for_fences(
+        device: &device::Device,
+        fences: &[(&PublicFence, u64)],
+        mode: FenceWait,
+        timeout: Option<Duration>,
+    ) -> Result<bool> {
+        queue::wait_for_fences(device, fences, mode, timeout)
+    }
+
+    fn create_command_pool(device: &device::Device, ty: QueueType) -> Result<command::CommandPool> {
+        command::CommandPool::new(device, ty)
+    }
+
+    fn create_command_list(
+        device: &device::Device,
+        pool: &command::CommandPool,
+    ) -> Result<command::CommandList> {
+        command::CommandList::new(device, pool)
     }
 
     unsafe fn create_swapchain(
-        device: &Never,
-        _: &Never,
-        _: SurfaceHandle,
-        _: &SwapchainDesc,
-    ) -> Result<Never> {
-        match *device {}
+        device: &device::Device,
+        queue: &queue::Queue,
+        surface: SurfaceHandle,
+        desc: &SwapchainDesc,
+    ) -> Result<swapchain::Swapchain> {
+        // SAFETY: forwarded from the caller.
+        unsafe { swapchain::Swapchain::new(device, queue, surface, desc) }
     }
 
-    fn export(device: &Never, _: Object<'_, Self>) -> Result<Never> {
-        match *device {}
+    fn validation_errors(device: &device::Device) -> u64 {
+        device.instance.validation_errors()
     }
 
-    unsafe fn import_texture(device: &Never, _: &Never, _: &TextureDesc) -> Result<Never> {
-        match *device {}
+    fn create_buffer(device: &device::Device, desc: &BufferDesc) -> Result<resource::Buffer> {
+        resource::create_buffer(device, desc)
     }
 
-    unsafe fn import_buffer(device: &Never, _: &Never, _: &BufferDesc) -> Result<Never> {
-        match *device {}
+    fn create_texture(device: &device::Device, desc: &TextureDesc) -> Result<resource::Texture> {
+        resource::create_texture(device, desc)
     }
 
-    unsafe fn import_fence(device: &Never, _: &Never) -> Result<Never> {
-        match *device {}
+    fn create_render_target_view(
+        device: &device::Device,
+        texture: &crate::Texture,
+        desc: &RenderTargetViewDesc,
+    ) -> Result<resource::RenderTargetView> {
+        resource::create_render_target_view(device, texture, desc)
+    }
+
+    fn create_depth_stencil_view(
+        device: &device::Device,
+        texture: &crate::Texture,
+        desc: &DepthStencilViewDesc,
+    ) -> Result<resource::DepthStencilView> {
+        resource::create_depth_stencil_view(device, texture, desc)
+    }
+
+    fn create_texture_view(
+        device: &device::Device,
+        texture: &crate::Texture,
+        desc: &TextureViewDesc,
+    ) -> Result<descriptor::Descriptor> {
+        resource::create_texture_view(device, texture, desc)
+    }
+
+    fn create_buffer_view(
+        device: &device::Device,
+        buffer: &crate::Buffer,
+        desc: &BufferViewDesc,
+    ) -> Result<descriptor::Descriptor> {
+        resource::create_buffer_view(device, buffer, desc)
+    }
+
+    fn create_sampler(
+        device: &device::Device,
+        desc: &SamplerDesc,
+    ) -> Result<descriptor::Descriptor> {
+        resource::create_sampler(device, desc)
+    }
+
+    fn create_graphics_pipeline(
+        device: &device::Device,
+        desc: &GraphicsPipelineDesc<'_>,
+    ) -> Result<pipeline::GraphicsPipeline> {
+        pipeline::create_graphics_pipeline(device, desc)
+    }
+
+    fn create_compute_pipeline(
+        device: &device::Device,
+        desc: &ComputePipelineDesc<'_>,
+    ) -> Result<pipeline::ComputePipeline> {
+        pipeline::create_compute_pipeline(device, desc)
+    }
+
+    fn create_mesh_pipeline(
+        device: &device::Device,
+        desc: &MeshPipelineDesc<'_>,
+    ) -> Result<pipeline::MeshPipeline> {
+        pipeline::create_mesh_pipeline(device, desc)
+    }
+
+    fn create_pipeline_cache(
+        device: &device::Device,
+        data: &[u8],
+    ) -> Result<pipeline::PipelineCache> {
+        pipeline::PipelineCache::new(device, data)
+    }
+
+    fn serialize_pipeline_cache(cache: &pipeline::PipelineCache) -> Result<Vec<u8>> {
+        cache.serialize()
+    }
+
+    fn create_query_pool(
+        device: &device::Device,
+        desc: &QueryPoolDesc,
+    ) -> Result<query::QueryPool> {
+        query::create_query_pool(device, desc)
+    }
+
+    fn create_heap(device: &device::Device, desc: &HeapDesc) -> Result<memory::Heap> {
+        memory::Heap::new(device, desc)
+    }
+
+    fn buffer_requirements(device: &device::Device, desc: &BufferDesc) -> MemoryRequirements {
+        resource::buffer_requirements(device, desc)
+    }
+
+    fn texture_requirements(device: &device::Device, desc: &TextureDesc) -> MemoryRequirements {
+        resource::texture_requirements(device, desc)
+    }
+
+    fn create_placed_buffer(
+        device: &device::Device,
+        heap: &memory::Heap,
+        offset: u64,
+        desc: &BufferDesc,
+    ) -> Result<resource::Buffer> {
+        resource::create_placed_buffer(device, heap, offset, desc)
+    }
+
+    fn create_placed_texture(
+        device: &device::Device,
+        heap: &memory::Heap,
+        offset: u64,
+        desc: &TextureDesc,
+    ) -> Result<resource::Texture> {
+        resource::create_placed_texture(device, heap, offset, desc)
+    }
+
+    fn memory_budget(device: &device::Device) -> Result<MemoryBudget> {
+        residency::memory_budget(device)
+    }
+
+    fn set_memory_reservation(device: &device::Device, local: u64, non_local: u64) -> Result<()> {
+        residency::set_memory_reservation(device, local, non_local)
+    }
+
+    fn make_resident(device: &device::Device, objects: &[Pageable<'_>]) -> Result<()> {
+        residency::make_resident(device, objects)
+    }
+
+    fn evict(device: &device::Device, objects: &[Pageable<'_>]) -> Result<()> {
+        residency::evict(device, objects)
+    }
+
+    fn set_residency_priority(
+        device: &device::Device,
+        objects: &[Pageable<'_>],
+        priority: ResidencyPriority,
+    ) -> Result<()> {
+        residency::set_residency_priority(device, objects, priority)
+    }
+
+    fn acceleration_structure_sizes(
+        device: &device::Device,
+        inputs: &AccelerationStructureInputs<'_>,
+        flags: BuildFlags,
+    ) -> AccelerationStructureSizes {
+        raytracing::sizes(device, inputs, flags)
+    }
+
+    fn create_acceleration_structure(
+        device: &device::Device,
+        storage: &resource::Buffer,
+        offset: u64,
+        kind: AccelerationStructureKind,
+    ) -> Result<(resource::Buffer, raytracing::AccelerationStructure)> {
+        raytracing::create(device, storage, offset, kind)
+    }
+
+    fn create_sparse_buffer(
+        device: &device::Device,
+        desc: &BufferDesc,
+    ) -> Result<resource::Buffer> {
+        resource::create_sparse_buffer(device, desc)
+    }
+
+    fn create_sparse_texture(
+        device: &device::Device,
+        desc: &TextureDesc,
+    ) -> Result<resource::Texture> {
+        resource::create_sparse_texture(device, desc)
+    }
+
+    fn export(device: &device::Device, object: Object<'_, Self>) -> Result<share::SharedHandle> {
+        share::export(device, object)
+    }
+
+    unsafe fn import_texture(
+        device: &device::Device,
+        handle: &share::SharedHandle,
+        desc: &TextureDesc,
+    ) -> Result<resource::Texture> {
+        // SAFETY: forwarded from the caller.
+        unsafe { share::import_texture(device, handle, desc) }
+    }
+
+    unsafe fn import_buffer(
+        device: &device::Device,
+        handle: &share::SharedHandle,
+        desc: &BufferDesc,
+    ) -> Result<resource::Buffer> {
+        // SAFETY: forwarded from the caller.
+        unsafe { share::import_buffer(device, handle, desc) }
+    }
+
+    unsafe fn import_fence(
+        device: &device::Device,
+        handle: &share::SharedHandle,
+    ) -> Result<queue::Fence> {
+        // SAFETY: forwarded from the caller.
+        unsafe { share::import_fence(device, handle) }
     }
 
     unsafe fn texture_from_native(
-        device: &Never,
-        _: *mut c_void,
-        _: &TextureDesc,
-    ) -> Result<Never> {
-        match *device {}
+        device: &device::Device,
+        raw: *mut c_void,
+        desc: &TextureDesc,
+    ) -> Result<resource::Texture> {
+        // SAFETY: forwarded from the caller.
+        unsafe { share::texture_from_native(device, raw, desc) }
     }
 
-    unsafe fn buffer_from_native(device: &Never, _: *mut c_void, _: &BufferDesc) -> Result<Never> {
-        match *device {}
+    unsafe fn buffer_from_native(
+        device: &device::Device,
+        raw: *mut c_void,
+        desc: &BufferDesc,
+    ) -> Result<resource::Buffer> {
+        // SAFETY: forwarded from the caller.
+        unsafe { share::buffer_from_native(device, raw, desc) }
     }
 }
 
-impl Handles for Backend {
-    fn set_name(object: Object<'_, Self>, _: &str) {
-        never(object)
+impl crate::contract::Handles for Backend {
+    fn set_name(object: Object<'_, Self>, name: &str) {
+        diag::set_name(object, name);
     }
 
     fn native(object: Object<'_, Self>) -> *mut c_void {
-        never(object)
+        diag::native(object)
     }
 
-    fn shared_handle_raw(handle: &Never) -> *mut c_void {
-        match *handle {}
+    fn shared_handle_raw(handle: &share::SharedHandle) -> *mut c_void {
+        handle.as_raw()
     }
 
-    unsafe fn shared_handle_from_raw(_: *mut c_void) -> Never {
-        panic!("this platform's RHI backend is not written yet: no shared handles")
-    }
-}
-
-impl Resources for Backend {
-    fn buffer_mapped(buffer: &Never) -> Option<NonNull<u8>> {
-        match *buffer {}
-    }
-
-    fn shader_view_index(view: &Never) -> u32 {
-        match *view {}
-    }
-
-    fn sampler_index(sampler: &Never) -> u32 {
-        match *sampler {}
-    }
-
-    fn acceleration_structure_index(structure: &Never) -> u32 {
-        match *structure {}
-    }
-
-    fn acceleration_structure_address(structure: &Never) -> u64 {
-        match *structure {}
-    }
-
-    fn sparse_texture_layout(texture: &Never) -> SparseTextureLayout {
-        match *texture {}
+    unsafe fn shared_handle_from_raw(raw: *mut c_void) -> share::SharedHandle {
+        // SAFETY: forwarded from the caller.
+        unsafe { share::SharedHandle::from_raw(raw) }
     }
 }
 
-impl Queue for Backend {
-    unsafe fn submit(queue: &Never, _: &SubmitDesc<'_>) -> Result<()> {
-        match *queue {}
+impl crate::contract::Resources for Backend {
+    fn buffer_mapped(buffer: &resource::Buffer) -> Option<NonNull<u8>> {
+        buffer.mapped()
     }
 
-    fn timestamp_frequency(queue: &Never) -> Result<u64> {
-        match *queue {}
+    fn shader_view_index(view: &descriptor::Descriptor) -> u32 {
+        view.index()
     }
 
-    fn clock_calibration(queue: &Never) -> Result<ClockCalibration> {
-        match *queue {}
+    fn sampler_index(sampler: &descriptor::Descriptor) -> u32 {
+        sampler.index()
     }
 
-    fn wait_idle(queue: &Never) -> Result<()> {
-        match *queue {}
+    fn acceleration_structure_index(structure: &raytracing::AccelerationStructure) -> u32 {
+        structure.index()
     }
 
-    unsafe fn bind_sparse(queue: &Never, _: &[SparseBind<'_>]) -> Result<()> {
-        match *queue {}
-    }
-}
-
-impl Fences for Backend {
-    fn completed_value(fence: &Never) -> u64 {
-        match *fence {}
+    fn acceleration_structure_address(structure: &raytracing::AccelerationStructure) -> u64 {
+        structure.address()
     }
 
-    fn wait(fence: &Never, _: u64, _: Option<Duration>) -> Result<bool> {
-        match *fence {}
-    }
-
-    fn signal(fence: &Never, _: u64) -> Result<()> {
-        match *fence {}
+    fn sparse_texture_layout(texture: &resource::Texture) -> SparseTextureLayout {
+        resource::sparse_texture_layout(texture)
     }
 }
 
-/// Recording functions: the list is always a `Never`.
-macro_rules! unreachable_commands {
-    ($($(unsafe)? fn $name:ident($list:ident: $list_ty:ty $(, $arg:ident: $ty:ty)*);)*) => {
-        $(fn $name($list: $list_ty $(, $arg: $ty)*) {
-            $(let _ = $arg;)*
-            match *$list {}
-        })*
-    };
+impl crate::contract::Queue for Backend {
+    unsafe fn submit(queue: &queue::Queue, desc: &SubmitDesc<'_>) -> Result<()> {
+        // SAFETY: forwarded from the caller.
+        unsafe { queue.submit(desc) }
+    }
+
+    fn timestamp_frequency(queue: &queue::Queue) -> Result<u64> {
+        queue.timestamp_frequency()
+    }
+
+    fn clock_calibration(queue: &queue::Queue) -> Result<ClockCalibration> {
+        query::clock_calibration(queue)
+    }
+
+    fn wait_idle(queue: &queue::Queue) -> Result<()> {
+        queue.wait_idle()
+    }
+
+    unsafe fn bind_sparse(queue: &queue::Queue, binds: &[SparseBind<'_>]) -> Result<()> {
+        // SAFETY: forwarded from the caller.
+        unsafe { resource::bind_sparse(queue, binds) }
+    }
 }
 
-impl Commands for Backend {
-    unsafe fn reset_pool(pool: &mut Never) -> Result<()> {
-        match *pool {}
+impl crate::contract::Fences for Backend {
+    fn completed_value(fence: &queue::Fence) -> u64 {
+        fence.completed_value()
     }
 
-    fn begin(list: &mut Never, _: &mut Never) -> Result<()> {
-        match *list {}
+    fn wait(fence: &queue::Fence, value: u64, timeout: Option<Duration>) -> Result<bool> {
+        fence.wait(value, timeout)
     }
 
-    fn end(list: &mut Never) -> Result<()> {
-        match *list {}
+    fn signal(fence: &queue::Fence, value: u64) -> Result<()> {
+        fence.signal(value)
+    }
+}
+
+impl crate::contract::Commands for Backend {
+    unsafe fn reset_pool(pool: &mut command::CommandPool) -> Result<()> {
+        // SAFETY: forwarded from the caller.
+        unsafe { pool.reset() }
+    }
+
+    fn begin(list: &mut command::CommandList, pool: &mut command::CommandPool) -> Result<()> {
+        list.begin(pool)
+    }
+
+    fn end(list: &mut command::CommandList) -> Result<()> {
+        list.end()
+    }
+
+    fn texture_barriers(list: &mut command::CommandList, barriers: &[TextureBarrier<'_>]) {
+        list.texture_barriers(barriers);
+    }
+
+    fn buffer_barriers(list: &mut command::CommandList, barriers: &[BufferBarrier<'_>]) {
+        list.buffer_barriers(barriers);
+    }
+
+    fn memory_barrier(list: &mut command::CommandList, before: BufferState, after: BufferState) {
+        list.memory_barrier(before, after);
+    }
+
+    fn begin_render_pass(list: &mut command::CommandList, desc: &RenderPassDesc<'_>) {
+        draw::begin_render_pass(list, desc);
+    }
+
+    fn end_render_pass(list: &mut command::CommandList) {
+        draw::end_render_pass(list);
+    }
+
+    fn copy_buffer(
+        list: &mut command::CommandList,
+        src: &crate::Buffer,
+        src_offset: u64,
+        dst: &crate::Buffer,
+        dst_offset: u64,
+        size: u64,
+    ) {
+        copy::copy_buffer(list, src, src_offset, dst, dst_offset, size);
+    }
+
+    fn copy_buffer_to_texture(
+        list: &mut command::CommandList,
+        src: &crate::Buffer,
+        dst: &crate::Texture,
+        region: &BufferTextureCopy,
+    ) {
+        copy::copy_buffer_to_texture(list, src, dst, region);
+    }
+
+    fn copy_texture_to_buffer(
+        list: &mut command::CommandList,
+        src: &crate::Texture,
+        dst: &crate::Buffer,
+        region: &BufferTextureCopy,
+    ) {
+        copy::copy_texture_to_buffer(list, src, dst, region);
+    }
+
+    fn copy_texture(
+        list: &mut command::CommandList,
+        src: &crate::Texture,
+        dst: &crate::Texture,
+        region: &TextureCopy,
+    ) {
+        copy::copy_texture(list, src, dst, region);
+    }
+
+    fn resolve_texture(
+        list: &mut command::CommandList,
+        src: &crate::Texture,
+        dst: &crate::Texture,
+        resolve: &TextureResolve,
+    ) {
+        copy::resolve_texture(list, src, dst, resolve);
+    }
+
+    fn fill_buffer(
+        list: &mut command::CommandList,
+        buffer: &crate::Buffer,
+        offset: u64,
+        size: u64,
+        value: u32,
+    ) {
+        copy::fill_buffer(list, buffer, offset, size, value);
+    }
+
+    fn clear_storage_texture(
+        list: &mut command::CommandList,
+        texture: &crate::Texture,
+        range: &SubresourceRange,
+        value: ClearColor,
+    ) {
+        copy::clear_storage_texture(list, texture, range, value);
+    }
+
+    fn write_marker(
+        list: &mut command::CommandList,
+        buffer: &crate::Buffer,
+        offset: u64,
+        value: u32,
+        point: MarkerPoint,
+    ) {
+        query::write_marker(list, buffer, offset, value, point);
+    }
+
+    fn set_graphics_pipeline(
+        list: &mut command::CommandList,
+        pipeline: &pipeline::GraphicsPipeline,
+    ) {
+        draw::set_graphics_pipeline(list, pipeline);
+    }
+
+    fn set_compute_pipeline(list: &mut command::CommandList, pipeline: &pipeline::ComputePipeline) {
+        list.set_compute_pipeline(pipeline);
+    }
+
+    fn set_mesh_pipeline(list: &mut command::CommandList, pipeline: &pipeline::MeshPipeline) {
+        draw::set_mesh_pipeline(list, pipeline);
+    }
+
+    fn push_constants(list: &mut command::CommandList, offset: u32, data: &[u32]) {
+        list.push_constants(offset, data);
+    }
+
+    fn set_viewports(list: &mut command::CommandList, viewports: &[Viewport]) {
+        draw::set_viewports(list, viewports);
+    }
+
+    fn set_scissors(list: &mut command::CommandList, rects: &[Rect]) {
+        draw::set_scissors(list, rects);
+    }
+
+    fn set_stencil_reference(list: &mut command::CommandList, reference: u8) {
+        draw::set_stencil_reference(list, reference);
+    }
+
+    fn set_blend_constants(list: &mut command::CommandList, constants: [f32; 4]) {
+        draw::set_blend_constants(list, constants);
+    }
+
+    fn set_depth_bounds(list: &mut command::CommandList, min: f32, max: f32) {
+        draw::set_depth_bounds(list, min, max);
+    }
+
+    fn set_shading_rate(
+        list: &mut command::CommandList,
+        rate: ShadingRate,
+        combiners: [ShadingRateCombiner; 2],
+    ) {
+        draw::set_shading_rate(list, rate, combiners);
+    }
+
+    fn set_shading_rate_image(list: &mut command::CommandList, image: Option<&crate::Texture>) {
+        draw::set_shading_rate_image(list, image);
+    }
+
+    fn set_index_buffer(
+        list: &mut command::CommandList,
+        buffer: &crate::Buffer,
+        offset: u64,
+        format: IndexFormat,
+    ) {
+        draw::set_index_buffer(list, buffer, offset, format);
+    }
+
+    fn draw(
+        list: &mut command::CommandList,
+        vertex_count: u32,
+        instance_count: u32,
+        first_vertex: u32,
+        first_instance: u32,
+    ) {
+        draw::draw(
+            list,
+            vertex_count,
+            instance_count,
+            first_vertex,
+            first_instance,
+        );
+    }
+
+    fn draw_indexed(
+        list: &mut command::CommandList,
+        index_count: u32,
+        instance_count: u32,
+        first_index: u32,
+        vertex_offset: i32,
+        first_instance: u32,
+    ) {
+        draw::draw_indexed(
+            list,
+            index_count,
+            instance_count,
+            first_index,
+            vertex_offset,
+            first_instance,
+        );
+    }
+
+    fn dispatch(list: &mut command::CommandList, x: u32, y: u32, z: u32) {
+        list.dispatch(x, y, z);
+    }
+
+    fn dispatch_mesh(list: &mut command::CommandList, x: u32, y: u32, z: u32) {
+        draw::dispatch_mesh(list, x, y, z);
+    }
+
+    fn draw_indirect(list: &mut command::CommandList, args: &IndirectArgs<'_>) {
+        draw::draw_indirect(list, args);
+    }
+
+    fn draw_indexed_indirect(list: &mut command::CommandList, args: &IndirectArgs<'_>) {
+        draw::draw_indexed_indirect(list, args);
+    }
+
+    fn dispatch_indirect(list: &mut command::CommandList, args: &IndirectArgs<'_>) {
+        draw::dispatch_indirect(list, args);
+    }
+
+    fn dispatch_mesh_indirect(list: &mut command::CommandList, args: &IndirectArgs<'_>) {
+        draw::dispatch_mesh_indirect(list, args);
+    }
+
+    fn write_timestamp(list: &mut command::CommandList, pool: &query::QueryPool, index: u32) {
+        query::write_timestamp(list, pool, index);
+    }
+
+    fn begin_query(list: &mut command::CommandList, pool: &query::QueryPool, index: u32) {
+        query::begin_query(list, pool, index);
+    }
+
+    fn end_query(list: &mut command::CommandList, pool: &query::QueryPool, index: u32) {
+        query::end_query(list, pool, index);
+    }
+
+    fn resolve_queries(
+        list: &mut command::CommandList,
+        pool: &query::QueryPool,
+        first: u32,
+        count: u32,
+        dst: &crate::Buffer,
+        offset: u64,
+    ) {
+        query::resolve_queries(list, pool, first, count, dst, offset);
+    }
+
+    fn set_predication(
+        list: &mut command::CommandList,
+        predicate: Option<(&crate::Buffer, u64, PredicateSkip)>,
+    ) {
+        query::set_predication(list, predicate);
     }
 
     fn build_sizes(
-        list: &mut Never,
-        _: &AccelerationStructureInputs<'_>,
-        _: BuildFlags,
+        list: &mut command::CommandList,
+        inputs: &AccelerationStructureInputs<'_>,
+        flags: BuildFlags,
     ) -> AccelerationStructureSizes {
-        match *list {}
+        raytracing::build_sizes(list, inputs, flags)
     }
 
-    unreachable_commands! {
-        fn texture_barriers(list: &mut Never, barriers: &[TextureBarrier<'_>]);
-        fn buffer_barriers(list: &mut Never, barriers: &[BufferBarrier<'_>]);
-        fn memory_barrier(list: &mut Never, before: BufferState, after: BufferState);
-        fn begin_render_pass(list: &mut Never, desc: &RenderPassDesc<'_>);
-        fn end_render_pass(list: &mut Never);
-        fn copy_buffer(list: &mut Never, src: &Buffer, src_offset: u64, dst: &Buffer, dst_offset: u64, size: u64);
-        fn copy_buffer_to_texture(list: &mut Never, src: &Buffer, dst: &Texture, region: &BufferTextureCopy);
-        fn copy_texture_to_buffer(list: &mut Never, src: &Texture, dst: &Buffer, region: &BufferTextureCopy);
-        fn copy_texture(list: &mut Never, src: &Texture, dst: &Texture, region: &TextureCopy);
-        fn resolve_texture(list: &mut Never, src: &Texture, dst: &Texture, resolve: &TextureResolve);
-        fn fill_buffer(list: &mut Never, buffer: &Buffer, offset: u64, size: u64, value: u32);
-        fn clear_storage_texture(list: &mut Never, texture: &Texture, range: &SubresourceRange, value: ClearColor);
-        fn write_marker(list: &mut Never, buffer: &Buffer, offset: u64, value: u32, point: MarkerPoint);
-        fn set_graphics_pipeline(list: &mut Never, pipeline: &Never);
-        fn set_compute_pipeline(list: &mut Never, pipeline: &Never);
-        fn set_mesh_pipeline(list: &mut Never, pipeline: &Never);
-        fn push_constants(list: &mut Never, offset: u32, data: &[u32]);
-        fn set_viewports(list: &mut Never, viewports: &[Viewport]);
-        fn set_scissors(list: &mut Never, rects: &[Rect]);
-        fn set_stencil_reference(list: &mut Never, reference: u8);
-        fn set_blend_constants(list: &mut Never, constants: [f32; 4]);
-        fn set_depth_bounds(list: &mut Never, min: f32, max: f32);
-        fn set_shading_rate(list: &mut Never, rate: ShadingRate, combiners: [ShadingRateCombiner; 2]);
-        fn set_shading_rate_image(list: &mut Never, image: Option<&Texture>);
-        fn set_index_buffer(list: &mut Never, buffer: &Buffer, offset: u64, format: IndexFormat);
-        fn draw(list: &mut Never, vertex_count: u32, instance_count: u32, first_vertex: u32, first_instance: u32);
-        fn draw_indexed(list: &mut Never, index_count: u32, instance_count: u32, first_index: u32, vertex_offset: i32, first_instance: u32);
-        fn dispatch(list: &mut Never, x: u32, y: u32, z: u32);
-        fn dispatch_mesh(list: &mut Never, x: u32, y: u32, z: u32);
-        fn draw_indirect(list: &mut Never, args: &IndirectArgs<'_>);
-        fn draw_indexed_indirect(list: &mut Never, args: &IndirectArgs<'_>);
-        fn dispatch_indirect(list: &mut Never, args: &IndirectArgs<'_>);
-        fn dispatch_mesh_indirect(list: &mut Never, args: &IndirectArgs<'_>);
-        fn write_timestamp(list: &mut Never, pool: &Never, index: u32);
-        fn begin_query(list: &mut Never, pool: &Never, index: u32);
-        fn end_query(list: &mut Never, pool: &Never, index: u32);
-        fn resolve_queries(list: &mut Never, pool: &Never, first: u32, count: u32, dst: &Buffer, offset: u64);
-        fn set_predication(list: &mut Never, predicate: Option<(&Buffer, u64, PredicateSkip)>);
-        fn build_acceleration_structure(list: &mut Never, build: &BuildAccelerationStructure<'_>);
-        fn copy_acceleration_structure(list: &mut Never, src: &AccelerationStructure, dst: &AccelerationStructure, mode: AccelerationStructureCopy);
-        fn write_compacted_sizes(list: &mut Never, structures: &[&AccelerationStructure], dst: &Buffer, offset: u64);
-        fn begin_event(list: &mut Never, name: &str);
-        fn end_event(list: &mut Never);
-        fn set_marker(list: &mut Never, name: &str);
+    fn build_acceleration_structure(
+        list: &mut command::CommandList,
+        build: &BuildAccelerationStructure<'_>,
+    ) {
+        raytracing::build(list, build);
+    }
+
+    fn copy_acceleration_structure(
+        list: &mut command::CommandList,
+        src: &crate::AccelerationStructure,
+        dst: &crate::AccelerationStructure,
+        mode: AccelerationStructureCopy,
+    ) {
+        raytracing::copy(list, src, dst, mode);
+    }
+
+    fn write_compacted_sizes(
+        list: &mut command::CommandList,
+        structures: &[&crate::AccelerationStructure],
+        dst: &crate::Buffer,
+        offset: u64,
+    ) {
+        raytracing::write_compacted_sizes(list, structures, dst, offset);
+    }
+
+    fn begin_event(list: &mut command::CommandList, name: &str) {
+        diag::begin_event(list, name);
+    }
+
+    fn end_event(list: &mut command::CommandList) {
+        diag::end_event(list);
+    }
+
+    fn set_marker(list: &mut command::CommandList, name: &str) {
+        diag::set_marker(list, name);
     }
 }
 
-impl Swapchain for Backend {
-    fn acquire(swapchain: &mut Never, _: Option<Duration>) -> Result<u32> {
-        match *swapchain {}
+impl crate::contract::Swapchain for Backend {
+    fn acquire(swapchain: &mut swapchain::Swapchain, timeout: Option<Duration>) -> Result<u32> {
+        swapchain.acquire(timeout)
     }
 
-    fn present(swapchain: &mut Never) -> Result<PresentStatus> {
-        match *swapchain {}
+    fn present(swapchain: &mut swapchain::Swapchain) -> Result<PresentStatus> {
+        swapchain.present()
     }
 
-    fn resize(swapchain: &mut Never, _: u32, _: u32) -> Result<()> {
-        match *swapchain {}
+    fn resize(swapchain: &mut swapchain::Swapchain, width: u32, height: u32) -> Result<()> {
+        swapchain.resize(width, height)
     }
 
-    fn set_present_mode(swapchain: &mut Never, _: PresentMode) {
-        match *swapchain {}
+    fn set_present_mode(swapchain: &mut swapchain::Swapchain, mode: PresentMode) {
+        swapchain.set_present_mode(mode);
     }
 
-    fn supports_color_space(swapchain: &Never, _: ColorSpace) -> bool {
-        match *swapchain {}
+    fn supports_color_space(swapchain: &swapchain::Swapchain, color_space: ColorSpace) -> bool {
+        swapchain.supports_color_space(color_space)
     }
 
-    fn set_color_space(swapchain: &mut Never, _: ColorSpace) -> Result<()> {
-        match *swapchain {}
+    fn set_color_space(
+        swapchain: &mut swapchain::Swapchain,
+        color_space: ColorSpace,
+    ) -> Result<()> {
+        swapchain.set_color_space(color_space)
     }
 
-    fn set_hdr_metadata(swapchain: &mut Never, _: Option<&HdrMetadata>) -> Result<()> {
-        match *swapchain {}
+    fn set_hdr_metadata(
+        swapchain: &mut swapchain::Swapchain,
+        metadata: Option<&HdrMetadata>,
+    ) -> Result<()> {
+        swapchain.set_hdr_metadata(metadata)
     }
 
-    fn containing_output(swapchain: &Never) -> Result<OutputInfo> {
-        match *swapchain {}
+    fn containing_output(swapchain: &swapchain::Swapchain) -> Result<OutputInfo> {
+        swapchain.containing_output()
     }
 
-    fn frame_statistics(swapchain: &Never) -> Result<Option<FrameStatistics>> {
-        match *swapchain {}
+    fn frame_statistics(swapchain: &swapchain::Swapchain) -> Result<Option<FrameStatistics>> {
+        swapchain.frame_statistics()
     }
 
-    fn size(swapchain: &Never) -> (u32, u32) {
-        match *swapchain {}
+    fn size(swapchain: &swapchain::Swapchain) -> (u32, u32) {
+        swapchain.size()
     }
 
-    fn format(swapchain: &Never) -> Format {
-        match *swapchain {}
+    fn format(swapchain: &swapchain::Swapchain) -> Format {
+        swapchain.format()
     }
 
-    fn color_space(swapchain: &Never) -> ColorSpace {
-        match *swapchain {}
+    fn color_space(swapchain: &swapchain::Swapchain) -> ColorSpace {
+        swapchain.color_space()
     }
 
-    fn textures(swapchain: &Never) -> &[Texture] {
-        match *swapchain {}
+    fn textures(swapchain: &swapchain::Swapchain) -> &[crate::Texture] {
+        swapchain.textures()
     }
 
-    fn views(swapchain: &Never) -> &[RenderTargetView] {
-        match *swapchain {}
+    fn views(swapchain: &swapchain::Swapchain) -> &[crate::RenderTargetView] {
+        swapchain.views()
     }
 }

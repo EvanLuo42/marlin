@@ -32,25 +32,25 @@
 | 文件 | 内容 | 负责 |
 |---|---|---|
 | `mod.rs` | `Backend`、`Types`、contract 的各个 `impl`（多数只转发到下面的文件）、错误映射 | 核心 |
-| `ffi.rs` | 类型、常量、结构体、函数指针表（`Entry` / `InstanceFns` / `DeviceFns`） | 各自往里加自己用到的部分（按区块追加，减少冲突） |
-| `loader.rs` | 加载 loader 库，取 `vkGetInstanceProcAddr`，填函数表 | 核心 |
-| `instance.rs` | instance、validation（debug utils messenger → `marlin_diag`）、adapter 枚举、输出 | 核心 |
-| `device.rs` | 选 adapter、查特性、建 device 与队列、`Features`、`format_support` | 核心（`format_support` 归资源） |
-| `memory.rs` | memory type 选择、committed 分配、`Heap`、预算 | 核心 |
-| `descriptor.rs` | 资源/sampler heap、槽位分配、写描述符 | 核心 |
+| `ffi/` | `vk.spec` 列出要用的结构体、函数类型、常量；`gen.awk` 从 SDK 头文件生成 `generated.rs`（不手改，rustfmt 跳过）；`mod.rs` 是手写部分（回调、函数表 `EntryFns` / `InstanceFns` / `DeviceFns`） | 各区在 `vk.spec` 和函数表里自己的区块追加；`generated.rs` 冲突时合并 `vk.spec` 后重新生成 |
+| `instance.rs` | 加载 loader 库、instance、validation layer 与 GPU-AV、adapter 枚举 | 核心 |
+| `device.rs` | 选 adapter、基线检查、扩展与特性、队列族、`Features`、`Shared` | 核心 |
+| `memory.rs` | memory type 选择、`Memory` 分配、`Heap` | 核心 |
+| `descriptor.rs` | 资源/sampler heap、槽位分配、写描述符、set 0 映射 | 核心 |
 | `queue.rs` | 队列、timeline 信号量 fence、`submit`、`wait_idle`、待等待信号量 | 核心 |
-| `command.rs` | pool、list、begin/end（绑定 heap、清零 push data）、屏障、push constants | 核心 |
-| `resource.rs` | buffer、texture、视图、sampler、placed、sparse、`format_support` | A 资源 |
-| `copy.rs` | 拷贝、resolve、fill、clear、marker | A 资源 |
-| `pipeline.rs` | compute（核心）、graphics、mesh pipeline，pipeline cache | 核心 + B |
-| `draw.rs` | render pass（dynamic rendering）、动态状态、draw/dispatch、indirect（DGC） | B 管线与绘制 |
-| `query.rs` | query pool、timestamp、occlusion、pipeline statistics、predication、时钟校准 | C 查询与光追 |
+| `command.rs` | pool、list、begin/end（绑定 heap、清零 push data）、屏障与布局映射、push constants、dispatch | 核心 |
+| `resource.rs` | buffer 与 buffer 视图（核心）；texture、texture 视图、RTV/DSV、sampler、placed texture、sparse、`format_support` | 核心 + A 资源 |
+| `copy.rs` | buffer 拷贝与 fill（核心）；texture 拷贝、resolve、clear | 核心 + A |
+| `pipeline.rs` | shader stage 与映射、compute pipeline、pipeline cache（核心）；graphics、mesh pipeline | 核心 + B 管线与绘制 |
+| `draw.rs` | render pass（dynamic rendering）、动态状态、draw、mesh dispatch、indirect（DGC）；`DrawState` | B |
+| `query.rs` | query pool、timestamp、occlusion、pipeline statistics、predication、时钟校准、marker；`QueryState` | C 查询、光追与诊断 |
 | `raytracing.rs` | 加速结构 | C |
-| `diag.rs` | validation 计数、device lost、crash 诊断（device fault、checkpoint/marker）、调试名、事件 | 核心 + C |
-| `swapchain.rs` | surface、交换链、present、HDR、输出 | D 交换链与互操作 |
+| `residency.rs` | 内存预算、驻留优先级 | C |
+| `diag.rs` | validation 计数、device lost、调试名、native 句柄（核心）；调试事件/标记、crash 报告 | 核心 + C |
+| `swapchain.rs` | surface、交换链、present、HDR、输出、`tearing` | D 交换链与互操作 |
 | `share.rs` | 外部内存/信号量导出导入、native 包装 | D |
 
-骨架里每个转发函数都已存在，函数体返回 `Unsupported`（或 `unreachable!`，当参数类型还造不出来时），负责人只改自己的文件。
+骨架里每个转发函数都已存在，未实现的函数体是 `todo!("vulkan: ...")`，负责人只改自己的文件。各区的录制状态放在自己文件的 `DrawState` / `QueryState` 里，`CommandList` 每次 `begin` 重置它们。
 
 ## 3. 基线与特性
 

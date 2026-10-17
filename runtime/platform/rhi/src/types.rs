@@ -119,7 +119,7 @@ pub struct AdapterInfo {
 
 impl AdapterInfo {
     #[cfg_attr(
-        any(marlin_platform = "linux", marlin_platform = "macos"),
+        marlin_platform = "macos",
         expect(dead_code, reason = "the stub backend has no adapters")
     )]
     pub(crate) fn new(index: u32, kind: AdapterKind, name: &str) -> Self {
@@ -1906,7 +1906,7 @@ pub struct OutputInfo {
 
 impl OutputInfo {
     #[cfg_attr(
-        any(marlin_platform = "linux", marlin_platform = "macos"),
+        marlin_platform = "macos",
         expect(dead_code, reason = "the stub backend has no outputs")
     )]
     pub(crate) fn new(name: &str, desktop: Rect) -> Self {
