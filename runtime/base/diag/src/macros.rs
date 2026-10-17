@@ -10,7 +10,7 @@
 macro_rules! log {
     ($level:expr, $($arg:tt)+) => {{
         let level: $crate::Level = $level;
-        if $crate::enabled(level) {
+        if $crate::STATIC_MAX_LEVEL.allows(level) && $crate::__private::may_log(level) {
             $crate::__private::log(
                 level,
                 ::core::module_path!(),
@@ -29,7 +29,8 @@ macro_rules! __log_static {
         // A `const` condition guarantees no code is generated for compiled-out levels, even
         // without optimizations, while the arguments are still type-checked (and count as used).
         if const { $crate::STATIC_MAX_LEVEL.allows($level) } {
-            if $crate::max_level().allows($level) {
+            // One relaxed load; target rules are applied out of line.
+            if $crate::__private::may_log($level) {
                 $crate::__private::log(
                     $level,
                     ::core::module_path!(),

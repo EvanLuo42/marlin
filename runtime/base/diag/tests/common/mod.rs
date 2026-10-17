@@ -13,6 +13,7 @@ pub struct Captured {
     pub file: String,
     pub line: u32,
     pub thread_id: u64,
+    pub timestamp: u64,
     pub message: String,
 }
 
@@ -37,6 +38,10 @@ impl Capture {
         mine
     }
 
+    pub fn take_all(&self) -> Vec<Captured> {
+        std::mem::take(&mut *self.records.lock().unwrap())
+    }
+
     pub fn messages_current_thread(&self) -> Vec<String> {
         self.take_current_thread()
             .into_iter()
@@ -55,6 +60,7 @@ impl Sink for Capture {
             file: record.file().to_owned(),
             line: record.line(),
             thread_id: record.thread_id(),
+            timestamp: record.timestamp(),
             message,
         });
     }
