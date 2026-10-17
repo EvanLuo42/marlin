@@ -3,9 +3,11 @@
 //! briefly appear on screen. Run alone with `cargo test -p marlin-app --test desktop`; the
 //! clipboard test is manual (`-- --ignored`).
 //!
-//! Every test that creates windows holds `marlin_test_support::one_at_a_time()`: windows going
-//! fullscreen, shown, minimized or focused from several threads at once miss each other's
-//! events and sizes, though each test passes alone.
+//! Tests run in parallel, each with its own `App` on its own thread. Only the tests that activate
+//! a window (show it, restore it, or take the foreground) hold
+//! `marlin_test_support::one_at_a_time()`: the foreground window is shared by the whole session,
+//! and when another thread changes it while a window is shown, Windows skips that window's
+//! WM_WINDOWPOSCHANGED. Hidden windows never activate, so the other tests need no lock.
 
 use marlin_app::WindowDesc;
 

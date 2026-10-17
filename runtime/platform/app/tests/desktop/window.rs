@@ -1,13 +1,11 @@
-//! Window placement: position, size, limits and displays.
+//! Window placement: position, size, limits, modes and displays.
 
 use marlin_app::{App, Event, Point, Size, WindowDesc, WindowMode};
-use marlin_test_support::one_at_a_time;
 
 use crate::hidden;
 
 #[test]
 fn position_size_and_limits() {
-    let _desktop = one_at_a_time();
     let mut app = App::new().unwrap();
     let window = app.create_window(&hidden("placement")).unwrap();
     let id = window.id();
@@ -48,7 +46,6 @@ fn position_size_and_limits() {
 
 #[test]
 fn windows_open_on_the_chosen_display() {
-    let _desktop = one_at_a_time();
     let mut app = App::new().unwrap();
     let displays = app.displays();
     for display in &displays {
@@ -84,4 +81,37 @@ fn windows_open_on_the_chosen_display() {
         assert_eq!(window.display().unwrap().id, display.id);
         app.pump();
     }
+}
+
+#[test]
+fn mode_changes_leave_hidden_windows_hidden_and_unfocused() {
+    let mut app = App::new().unwrap();
+    let window = app.create_window(&hidden("hidden mode")).unwrap();
+    let id = window.id();
+    let size = window.size();
+    app.pump();
+
+    window.set_mode(WindowMode::BorderlessFullscreen).unwrap();
+    let events = app.pump();
+    assert!(
+        !events.contains(&Event::Focused {
+            window: id,
+            focused: true,
+        }),
+        "{events:?}"
+    );
+    assert!(!window.is_focused());
+    assert!(!window.is_visible());
+
+    window.set_mode(WindowMode::Windowed).unwrap();
+    let events = app.pump();
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, Event::Focused { .. } | Event::VisibilityChanged { .. })),
+        "{events:?}"
+    );
+    assert!(!window.is_focused());
+    assert!(!window.is_visible());
+    assert_eq!(window.size(), size);
 }

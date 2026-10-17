@@ -2,24 +2,28 @@
 //! sends them (sleep, session lock, display off), display device names, and windows driven
 //! through Win32 messages and queried through Win32 calls.
 
+use std::mem;
 use std::ptr;
+use std::sync::atomic::{AtomicIsize, Ordering};
 
 use marlin_app::os::windows::{AppExt, WindowExt};
 use marlin_app::{
     App, CursorGrab, Event, Lifecycle, Point, Size, Surface, Window, WindowDesc, WindowMode,
 };
 use marlin_test_support::one_at_a_time;
-use windows_sys::Win32::Foundation::{POINT, RECT};
+use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::System::Memory::{GHND, GlobalAlloc, GlobalLock, GlobalUnlock};
 use windows_sys::Win32::System::Power::POWERBROADCAST_SETTING;
 use windows_sys::Win32::System::SystemServices::GUID_CONSOLE_DISPLAY_STATE;
 use windows_sys::Win32::UI::Shell::DROPFILES;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GW_OWNER, GWL_EXSTYLE, GWL_STYLE, GetClipCursor, GetWindow, GetWindowLongPtrW, GetWindowRect,
-    PBT_APMRESUMEAUTOMATIC, PBT_APMSUSPEND, PBT_POWERSETTINGCHANGE, PostMessageW, SW_MINIMIZE,
-    SW_RESTORE, SendMessageW, SetForegroundWindow, ShowWindow, WM_CLOSE, WM_DISPLAYCHANGE,
-    WM_DPICHANGED, WM_DROPFILES, WM_POWERBROADCAST, WM_WTSSESSION_CHANGE, WS_EX_APPWINDOW,
-    WS_POPUP, WTS_REMOTE_CONNECT, WTS_REMOTE_DISCONNECT, WTS_SESSION_LOCK, WTS_SESSION_UNLOCK,
+    CallWindowProcW, GW_OWNER, GWL_EXSTYLE, GWL_STYLE, GWLP_WNDPROC, GetClipCursor, GetWindow,
+    GetWindowLongPtrW, GetWindowRect, PBT_APMRESUMEAUTOMATIC, PBT_APMSUSPEND,
+    PBT_POWERSETTINGCHANGE, PostMessageW, SW_MINIMIZE, SW_RESTORE, SendMessageW,
+    SetForegroundWindow, SetWindowLongPtrW, ShowWindow, WM_CLOSE, WM_DISPLAYCHANGE, WM_DPICHANGED,
+    WM_DROPFILES, WM_POWERBROADCAST, WM_WINDOWPOSCHANGED, WM_WTSSESSION_CHANGE, WNDPROC,
+    WS_EX_APPWINDOW, WS_POPUP, WTS_REMOTE_CONNECT, WTS_REMOTE_DISCONNECT, WTS_SESSION_LOCK,
+    WTS_SESSION_UNLOCK,
 };
 
 use crate::hidden;
@@ -125,7 +129,6 @@ fn display_device_names() {
 
 #[test]
 fn window_lifecycle() {
-    let _desktop = one_at_a_time();
     let mut app = App::new().unwrap();
     let window = app.create_window(&hidden("marlin-app test")).unwrap();
 
@@ -169,6 +172,10 @@ fn window_lifecycle() {
 
 #[test]
 fn minimize_restore_and_visibility() {
+    // ShowWindow(SW_SHOW) and SW_RESTORE activate the window: when another thread changes the
+    // session's foreground at the same moment, Windows skips WM_WINDOWPOSCHANGED and its
+    // WM_SIZE, so Minimized and Restored would go unreported. The tests that activate windows
+    // take turns; the others no longer touch the foreground.
     let _desktop = one_at_a_time();
     let mut app = App::new().unwrap();
     let window = app.create_window(&hidden("minimize")).unwrap();
@@ -200,9 +207,62 @@ fn minimize_restore_and_visibility() {
     }));
 }
 
+/// The window procedure `skip_window_pos_changed` forwards to.
+static ORIGINAL_PROC: AtomicIsize = AtomicIsize::new(0);
+
+/// Drops WM_WINDOWPOSCHANGED, as Windows does when another thread changes the foreground while
+/// this one shows a window.
+unsafe extern "system" fn skip_window_pos_changed(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    if msg == WM_WINDOWPOSCHANGED {
+        return 0;
+    }
+    // SAFETY: the saved value is the window's original procedure.
+    unsafe {
+        let original: WNDPROC = mem::transmute(ORIGINAL_PROC.load(Ordering::Relaxed));
+        CallWindowProcW(original, hwnd, msg, wparam, lparam)
+    }
+}
+
+#[test]
+fn visibility_reported_without_window_pos_changed() {
+    // Shows a window, which activates it (see `minimize_restore_and_visibility`).
+    let _desktop = one_at_a_time();
+    let mut app = App::new().unwrap();
+    let window = app
+        .create_window(&hidden("no WM_WINDOWPOSCHANGED"))
+        .unwrap();
+    let id = window.id();
+    app.pump();
+    let skip = skip_window_pos_changed as *const () as isize;
+    // SAFETY: subclassing our own live window; the original procedure is restored below, before
+    // the window is destroyed.
+    let original = unsafe { SetWindowLongPtrW(window.hwnd(), GWLP_WNDPROC, skip) };
+    ORIGINAL_PROC.store(original, Ordering::Relaxed);
+
+    for visible in [true, false] {
+        window.set_visible(visible);
+        assert_eq!(window.is_visible(), visible);
+        let events = app.pump();
+        assert!(
+            events.contains(&Event::VisibilityChanged {
+                window: id,
+                visible,
+            }),
+            "{events:?}"
+        );
+    }
+
+    // SAFETY: as above.
+    unsafe { SetWindowLongPtrW(window.hwnd(), GWLP_WNDPROC, original) };
+}
+
 #[test]
 fn dpi_change_rescales() {
-    let _desktop = one_at_a_time();
     let mut app = App::new().unwrap();
     let window = app.create_window(&hidden("dpi")).unwrap();
     let id = window.id();
@@ -254,7 +314,6 @@ fn dpi_change_rescales() {
 
 #[test]
 fn file_drop() {
-    let _desktop = one_at_a_time();
     let mut app = App::new().unwrap();
     let window = app
         .create_window(&WindowDesc {
@@ -300,7 +359,6 @@ fn file_drop() {
 
 #[test]
 fn owned_and_undecorated_windows() {
-    let _desktop = one_at_a_time();
     let app = App::new().unwrap();
     let owner = app.create_window(&hidden("owner")).unwrap();
     let tool: Window = app
@@ -336,6 +394,8 @@ fn owned_and_undecorated_windows() {
 
 #[test]
 fn cursor_grab_clips_while_focused() {
+    // Takes the foreground and the focus, and clips the cursor: session-wide state that
+    // another test showing a window at the same time would take away.
     let _desktop = one_at_a_time();
     let mut app = App::new().unwrap();
     let window = app

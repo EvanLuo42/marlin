@@ -4,9 +4,10 @@
 //! alone with `cargo test -p marlin-input --test desktop`; the gamepad test is manual
 //! (`-- --ignored`, with a gamepad connected).
 //!
-//! Every test that creates windows holds `marlin_test_support::one_at_a_time()`: two topmost
-//! test windows taking the foreground at once get each other's injected input, though each test
-//! passes alone.
+//! Tests run in parallel, each with its own `App` and `Input` on its own thread. Only the tests
+//! that inject OS input hold `marlin_test_support::one_at_a_time()`: injected touch and keys go to
+//! the screen and the foreground window, both shared by the whole session, so two topmost test
+//! windows taking the foreground at once would get each other's input.
 
 // Windows has the only input backend so far.
 #[cfg(marlin_platform = "windows")]

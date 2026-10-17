@@ -10,7 +10,6 @@ use marlin_test_support::{one_at_a_time, skip, wait_until};
 /// Posts messages as the OS would deliver them, so translation runs without needing focus.
 #[test]
 fn translates_window_messages() {
-    let _desktop = one_at_a_time();
     use marlin_app::WindowDesc;
     use marlin_app::os::windows::WindowExt;
     use marlin_input::MouseButton;
@@ -105,6 +104,49 @@ fn extensions_are_available() {
     }
 }
 
+/// Raw input is registered per process; dropping one `Input` must not unregister it for another
+/// (an `App` and `Input` on another thread, say).
+#[test]
+fn raw_input_stays_registered_while_an_input_lives() {
+    use windows_sys::Win32::UI::Input::{GetRegisteredRawInputDevices, RAWINPUTDEVICE};
+
+    let registered = || {
+        let mut devices = [RAWINPUTDEVICE {
+            usUsagePage: 0,
+            usUsage: 0,
+            dwFlags: 0,
+            hwndTarget: std::ptr::null_mut(),
+        }; 8];
+        let mut count = devices.len() as u32;
+        // SAFETY: `devices` holds `count` entries.
+        let n = unsafe {
+            GetRegisteredRawInputDevices(
+                devices.as_mut_ptr(),
+                &mut count,
+                size_of::<RAWINPUTDEVICE>() as u32,
+            )
+        };
+        assert_ne!(n, u32::MAX, "more registrations than expected");
+        let usages: Vec<_> = devices[..n as usize]
+            .iter()
+            .map(|d| (d.usUsagePage, d.usUsage))
+            .collect();
+        // Generic desktop mice and keyboards.
+        usages.contains(&(0x01, 0x02)) && usages.contains(&(0x01, 0x06))
+    };
+
+    let app = App::new().unwrap();
+    let first = Input::new(&app).unwrap();
+    let second = Input::new(&app).unwrap();
+    assert!(registered());
+    drop(second);
+    assert!(
+        registered(),
+        "dropping one Input removed raw input for the other"
+    );
+    drop(first);
+}
+
 fn topmost_window(app: &App, title: &str) -> marlin_app::Window {
     use marlin_app::os::windows::WindowExt;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -151,7 +193,6 @@ fn pump_until(
 
 #[test]
 fn text_input_toggles_the_ime() {
-    let _desktop = one_at_a_time();
     use marlin_app::Rect;
     use marlin_app::os::windows::WindowExt;
     use windows_sys::Win32::UI::Input::Ime::{ImmGetContext, ImmReleaseContext};
@@ -189,6 +230,9 @@ fn text_input_toggles_the_ime() {
 /// (`InjectSyntheticPointerInput`) deliver nothing without pen hardware.
 #[test]
 fn touch_from_injected_contacts() {
+    // Injected input goes to the screen, not to a window: touch lands on whatever is topmost at
+    // the contact point and keys go to the foreground window. Two injecting tests, each with a
+    // topmost window that takes the foreground, would receive each other's input.
     let _desktop = one_at_a_time();
     use std::mem;
 
@@ -257,6 +301,7 @@ fn touch_from_injected_contacts() {
 /// reaches other applications.
 #[test]
 fn raw_input_from_injected_devices() {
+    // Injects into the foreground window; see `touch_from_injected_contacts`.
     let _desktop = one_at_a_time();
     use marlin_app::os::windows::WindowExt;
     use marlin_input::DeviceId;
@@ -309,8 +354,11 @@ fn raw_input_from_injected_devices() {
     let mut moved = [0.0; 2];
     let mut device_pressed = false;
     pump_until(&mut app, &mut input, "the mouse move and F24 press", |s| {
-        let d = s.mouse().delta();
-        moved = [moved[0] + d[0], moved[1] + d[1]];
+        // Only the device-less motion is ours; a real mouse moving meanwhile reports its own.
+        for d in s.devices().filter(|d| d.id() == DeviceId::UNKNOWN) {
+            let d = d.delta();
+            moved = [moved[0] + d[0], moved[1] + d[1]];
+        }
         device_pressed |= s
             .device(DeviceId::UNKNOWN)
             .is_some_and(|d| d.key_pressed(Key::F24));
@@ -327,7 +375,6 @@ fn raw_input_from_injected_devices() {
 #[test]
 #[ignore = "needs a connected gamepad"]
 fn connected_gamepads() {
-    let _desktop = one_at_a_time();
     use marlin_input::ext::adaptive_triggers::AdaptiveTriggers;
     use marlin_input::ext::gyro::Gyro;
     use marlin_input::ext::haptics::Haptics;

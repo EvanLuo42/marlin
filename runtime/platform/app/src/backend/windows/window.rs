@@ -23,8 +23,9 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     GWL_EXSTYLE, GWL_STYLE, GetClientRect, GetCursorPos, GetWindowLongPtrW, GetWindowPlacement,
     GetWindowRect, HTCLIENT, HWND_TOP, IDC_APPSTARTING, IDC_ARROW, IDC_CROSS, IDC_HAND, IDC_IBEAM,
     IDC_NO, IDC_SIZEALL, IDC_SIZENESW, IDC_SIZENS, IDC_SIZENWSE, IDC_SIZEWE, IDC_WAIT,
-    IsWindowVisible, LoadCursorW, MINMAXINFO, MNC_CLOSE, MSGFLT_ALLOW, SC_KEYMENU, SIZE_MINIMIZED,
-    SW_HIDE, SW_SHOW, SWP_FRAMECHANGED, SWP_HIDEWINDOW, SWP_NOACTIVATE, SWP_NOMOVE,
+    IsWindowVisible, LoadCursorW, MINMAXINFO, MNC_CLOSE, MSGFLT_ALLOW, SC_KEYMENU, SHOW_WINDOW_CMD,
+    SIZE_MINIMIZED, SW_HIDE, SW_SHOW, SW_SHOWMAXIMIZED, SW_SHOWMINIMIZED, SW_SHOWMINNOACTIVE,
+    SW_SHOWNOACTIVATE, SWP_FRAMECHANGED, SWP_HIDEWINDOW, SWP_NOACTIVATE, SWP_NOMOVE,
     SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SetCursor, SetCursorPos,
     SetWindowLongPtrW, SetWindowPlacement, SetWindowPos, SetWindowTextW, ShowWindow,
     WINDOW_EX_STYLE, WINDOW_STYLE, WINDOWPLACEMENT, WINDOWPOS, WM_CLOSE, WM_COPYDATA,
@@ -114,14 +115,10 @@ impl WindowState {
                     f if f & SWP_HIDEWINDOW != 0 => Some(false),
                     _ => None,
                 };
-                if let Some(visible) = visible
-                    && self.visible.replace(visible) != visible
-                    && created
-                {
-                    self.shared.push(Event::VisibilityChanged {
-                        window: self.id,
-                        visible,
-                    });
+                match visible {
+                    Some(visible) if created => self.record_visible(visible),
+                    Some(visible) => self.visible.set(visible),
+                    None => {}
                 }
                 // DefWindowProcW turns this into WM_SIZE and WM_MOVE.
                 None
@@ -194,6 +191,16 @@ impl WindowState {
             lparam,
         });
         own.or(hooked)
+    }
+
+    /// Updates the visibility, reporting a change.
+    fn record_visible(&self, visible: bool) {
+        if self.visible.replace(visible) != visible {
+            self.shared.push(Event::VisibilityChanged {
+                window: self.id,
+                visible,
+            });
+        }
     }
 
     fn on_size(&self, kind: u32, lparam: LPARAM, created: bool) {
@@ -517,7 +524,9 @@ impl Window {
         self.state.hwnd()
     }
 
-    /// Moves and sizes the window to cover `monitor`.
+    /// Moves and sizes the window to cover `monitor`. Changes neither activation nor visibility:
+    /// without `SWP_NOACTIVATE` even a hidden window would take the focus and the session's
+    /// foreground.
     fn cover(&self, monitor: HMONITOR) -> Result<()> {
         let info = display::monitor_info(monitor).ok_or(Error::from_kind(ErrorKind::NotFound))?;
         let r = info.monitorInfo.rcMonitor;
@@ -530,7 +539,7 @@ impl Window {
                 r.top,
                 r.right - r.left,
                 r.bottom - r.top,
-                SWP_FRAMECHANGED | SWP_NOOWNERZORDER,
+                SWP_FRAMECHANGED | SWP_NOOWNERZORDER | SWP_NOACTIVATE,
             )
         })
     }
@@ -686,7 +695,16 @@ impl crate::contract::Window for Window {
             }
             WindowMode::Windowed => {
                 state.mode.set(mode);
-                let placement = state.placement.get();
+                let mut placement = state.placement.get();
+                // Restore the windowed rectangle without the saved show state's side effects:
+                // GetWindowPlacement reports SW_SHOWNORMAL for a hidden window too, and replaying
+                // it would show and activate the window.
+                placement.showCmd = match placement.showCmd as SHOW_WINDOW_CMD {
+                    _ if visible == 0 => SW_HIDE,
+                    SW_SHOWMAXIMIZED => SW_SHOWMAXIMIZED,
+                    SW_SHOWMINIMIZED => SW_SHOWMINNOACTIVE,
+                    _ => SW_SHOWNOACTIVATE,
+                } as u32;
                 // SAFETY: `hwnd` is live; `placement` came from GetWindowPlacement.
                 unsafe {
                     SetWindowLongPtrW(hwnd, GWL_STYLE, (state.windowed_style | visible) as isize);
@@ -702,6 +720,7 @@ impl crate::contract::Window for Window {
                             | SWP_NOSIZE
                             | SWP_NOZORDER
                             | SWP_NOOWNERZORDER
+                            | SWP_NOACTIVATE
                             | SWP_FRAMECHANGED,
                     );
                 }
@@ -719,6 +738,11 @@ impl crate::contract::Window for Window {
     fn set_visible(&self, visible: bool) {
         // SAFETY: `hwnd` is live.
         unsafe { ShowWindow(self.hwnd(), if visible { SW_SHOW } else { SW_HIDE }) };
+        // ShowWindow normally reports through WM_WINDOWPOSCHANGED, but Windows skips that message
+        // when another thread changes the foreground window at the same time (seen with several
+        // Apps on different threads). Reconcile, or the next change in the same direction would go
+        // unreported too.
+        self.state.record_visible(self.is_visible());
     }
 
     fn is_visible(&self) -> bool {

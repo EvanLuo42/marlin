@@ -156,7 +156,7 @@ GPU 层的看门狗：xtask 监控测试进程，超时没有输出就报告卡�
 | `isolated::run(test, env)` / `isolated::is_child()` | 3 处子进程重入 |
 | `BackgroundServer::spawn(|listener, stop| …)`：helper 先在回环临时端口上 bind 一个 std `TcpListener` 交给服务 | 用 std socket 的后台服务线程 |
 | `BackgroundService::spawn(|ready, stop| …)`：服务自己 bind，`ready.listening(addr)` 报告地址 | 自己建监听的服务（cookd、store、cooker 的共享 store、framework 端到端） |
-| `one_at_a_time()`：进程内互斥的 guard | 共享 OS 会话状态（前台窗口、光标裁剪、注入输入）的 desktop 测试轮流跑 |
+| `one_at_a_time()`：进程内互斥的 guard | 会激活窗口或注入输入的 desktop 测试轮流跑（共享前台窗口、焦点、光标裁剪；见 §9） |
 | `MemCap<A: GlobalAlloc>`：带上限的计数全局分配器 | fuzz/鲁棒性/压力测试的内存上限（目前没有） |
 | `seed()`：读 `MARLIN_TEST_SEED`，否则用固定默认值；失败时打印 | 各处写死的种子 |
 | `scale()`：读 `MARLIN_TEST_SCALE` 放大迭代次数 | 属性测试的固定次数 |
@@ -270,7 +270,12 @@ GPU 层的看门狗：xtask 监控测试进程，超时没有输出就报告卡�
 迁移后留下的后续：
 - diag 里几个有界的自旋等待可以换成 `wait_until`。
 - pal 的 `windows_command_line_quoting` 需要精确的原始命令行，`isolated::run` 传不了，仍自己重入。
-- app 的窗口测试和 input 的触摸/原始输入注入测试并行时偶尔失败，现在靠 `one_at_a_time()` 串行；app 那部分也可能是多个 `App` 在不同线程上的真 bug，还没查。
+- ✅ app 窗口测试和 input 注入测试的并行失败已查清（2026-10-17）。修了三个真 bug，各有一个去掉修复就失败的测试：
+  - 进全屏的 `SetWindowPos` 没带 `SWP_NOACTIVATE`，隐藏窗口会被激活、拿走焦点和会话前台。
+  - 退全屏时 `SetWindowPlacement` 重放 `SW_SHOWNORMAL`，会把隐藏窗口显示出来。
+  - 原始输入的注册是整个进程共用的，而 `Input::drop` 会无条件 `RIDEV_REMOVE`，丢一个 `Input` 会关掉别的 `Input` 的原始输入。现在按引用计数，最后一个才注销。
+
+  剩下的确实是会话状态：另一个线程同时改前台窗口时，Windows 会跳过正在显示的窗口的 `WM_WINDOWPOSCHANGED`（`WH_CALLWNDPROC` 钩子也收不到）。`set_visible` 之后现在会按 `IsWindowVisible` 对账，但最小化和还原的事件仍会丢。注入的触摸和按键发给屏幕和前台窗口。所以 `one_at_a_time()` 只留在会激活窗口的 3 个 app 测试和 2 个注入测试上，每处都写了原因。
 - 每个 fuzz 目标在所属 crate 的 `unit` 里加一个 `regress::for_each` 回放测试（text 3 个、serial 2 个、compress 4 个、asset 3 个；serial 的要把 `fuzz/src/lib.rs` 里的测试类型也复制过去），这样 `tests/data/regress/` 一有用例就会被跑到。
 - 读代码发现、fuzz 还没打到的两个疑似问题：`PackageIndex::check` 里 `c.unit_offset + c.raw_size as u64` 可能溢出；`Package::finish` 按 `record.size` 分配，没有上限，一个很小的恶意包就能要求分配巨量内存。
 - `asset_package`、`asset_unit` 基本过不了包的校验和：加一个 `cfg(fuzzing)` 下跳过校验和的开关，或写一个会重算校验和的目标，才能测得更深。

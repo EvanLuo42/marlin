@@ -18,6 +18,7 @@ use alloc::vec::Vec;
 use marlin_app::os::windows::{AppExt, Message, MessageHook, WindowExt};
 use marlin_app::{App, Rect, Window};
 use marlin_pal::os::windows::check;
+use marlin_sync::Mutex;
 use windows_sys::Win32::Foundation::LRESULT;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyNameTextW, MAPVK_VK_TO_VSC_EX, MapVirtualKeyW, ReleaseCapture, SetCapture, VK_NUMLOCK,
@@ -404,14 +405,7 @@ impl crate::contract::Input for Input {
             ime: Cell::new(None),
         });
         app.add_message_hook(Rc::downgrade(&core) as Weak<dyn MessageHook>)?;
-        // SAFETY: valid device descriptions.
-        check(unsafe {
-            RegisterRawInputDevices(
-                RAW_DEVICES.as_ptr(),
-                RAW_DEVICES.len() as u32,
-                size_of::<RAWINPUTDEVICE>() as u32,
-            )
-        })?;
+        register_raw_input()?;
         Ok(Self {
             core,
             xinput: XInput::load(),
@@ -560,11 +554,40 @@ impl crate::contract::ext::Haptics for Input {
 
 impl Drop for Input {
     fn drop(&mut self) {
+        unregister_raw_input();
+    }
+}
+
+/// Live [`Input`]s. Raw input is registered for the whole process, not per window or thread:
+/// the first `Input` registers and the last removes, so dropping one leaves the others' raw input
+/// flowing.
+static RAW_INPUT_USERS: Mutex<usize> = Mutex::new(0);
+
+fn register_raw_input() -> Result<()> {
+    let mut users = RAW_INPUT_USERS.lock();
+    if *users == 0 {
+        // SAFETY: valid device descriptions.
+        check(unsafe {
+            RegisterRawInputDevices(
+                RAW_DEVICES.as_ptr(),
+                RAW_DEVICES.len() as u32,
+                size_of::<RAWINPUTDEVICE>() as u32,
+            )
+        })?;
+    }
+    *users += 1;
+    Ok(())
+}
+
+fn unregister_raw_input() {
+    let mut users = RAW_INPUT_USERS.lock();
+    *users -= 1;
+    if *users == 0 {
         let devices = RAW_DEVICES.map(|d| RAWINPUTDEVICE {
             dwFlags: RIDEV_REMOVE,
             ..d
         });
-        // SAFETY: valid device descriptions; removing an unregistered device is harmless.
+        // SAFETY: valid device descriptions, registered by `register_raw_input`.
         unsafe {
             RegisterRawInputDevices(
                 devices.as_ptr(),
