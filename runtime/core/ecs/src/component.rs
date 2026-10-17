@@ -185,6 +185,9 @@ impl ComponentDescriptor {
         let name = match *info.name {
             marlin_reflect::TypeName::Path { path, .. } => path,
             marlin_reflect::TypeName::Array { .. } => "[array]",
+            marlin_reflect::TypeName::Tuple(_) => "(tuple)",
+            // Const arguments only appear inside other names.
+            marlin_reflect::TypeName::Const(_) => "(const)",
         };
         Self {
             name,
