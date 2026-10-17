@@ -6,3 +6,10 @@ targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
 target-cpu = { x86_64 = "x86-64-v3" }
 # Planned: crash_dump.
 ext = ["large_pages", "vmem_alias", "dylib"]
+
+# See platforms/windows/platform.toml.
+[cook]
+texture-compression = ["bc"]
+texture-layout = "linear"
+head-codec = "zstd"
+bulk-codec = "zstd"

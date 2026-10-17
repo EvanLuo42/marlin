@@ -19,6 +19,7 @@ marlin-io.workspace = true
 marlin-jobs.workspace = true
 marlin-math.workspace = true
 marlin-reflect.workspace = true
+marlin-rt.workspace = true
 marlin-render.workspace = true
 marlin-rhi.workspace = true
 marlin-serial.workspace = true

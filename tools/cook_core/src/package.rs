@@ -16,6 +16,7 @@ use marlin_hash::xxh3_64;
 
 use crate::ddc::Ddc;
 use crate::manifest::Manifest;
+use crate::platform::Platform;
 
 #[derive(Clone, Copy, Debug)]
 pub struct PackageOptions {
@@ -30,15 +31,23 @@ pub struct PackageOptions {
     pub threads: usize,
 }
 
-impl Default for PackageOptions {
-    fn default() -> Self {
+impl PackageOptions {
+    /// The defaults for packaging for `platform`: its codecs.
+    pub fn for_platform(platform: &Platform) -> Self {
         Self {
-            head_codec: Codec::Zstd,
-            bulk_codec: Codec::Zstd,
+            head_codec: platform.head_codec,
+            bulk_codec: platform.bulk_codec,
             level: Level::DEFAULT,
             chunk_size: MAX_CHUNK,
             threads: 0,
         }
+    }
+}
+
+impl Default for PackageOptions {
+    /// For the host platform.
+    fn default() -> Self {
+        Self::for_platform(Platform::host())
     }
 }
 

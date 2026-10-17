@@ -12,10 +12,10 @@ pub struct UploadAlignment {
 }
 
 impl UploadAlignment {
-    /// D3D12's, which marlin-rhi requires on every backend.
+    /// The RHI's, which every backend accepts and the runtime checks cooked textures against.
     pub const RHI: Self = Self {
-        row_pitch: 256,
-        offset: 512,
+        row_pitch: marlin_rhi::TEXTURE_ROW_PITCH_ALIGNMENT,
+        offset: marlin_rhi::TEXTURE_OFFSET_ALIGNMENT,
     };
 }
 

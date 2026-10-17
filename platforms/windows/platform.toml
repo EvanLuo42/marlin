@@ -10,3 +10,13 @@ target-cpu = { x86_64 = "x86-64-v3" }
 # Listing a capability that a backend does not implement is a compile error.
 # Planned: direct_storage, cpu_markers.
 ext = ["large_pages", "hybrid_cores", "vmem_alias", "crash_dump", "dylib", "gyro", "adaptive_triggers", "haptics"]
+
+# What the cooker produces for this platform (read by marlin-cook-core; see its `platform` module).
+[cook]
+# Block-compression families the platform's GPUs sample, preferred first: "bc", "astc", "etc2".
+texture-compression = ["bc"]
+# Texture memory layout: "linear", or "tiled" (swizzled by the platform's tiler).
+texture-layout = "linear"
+# Package codecs (marlin_compress names) of unit heads, decoded on the CPU, and of bulk blobs.
+head-codec = "zstd"
+bulk-codec = "zstd"

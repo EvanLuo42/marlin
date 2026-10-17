@@ -278,7 +278,7 @@ bulk        GPU 数据（顶点、纹理 mip），对齐到 4 KiB，直接上传
 - **P3 · cook 管线完成**：
   - `marlin-asset::cooked`：MCU1 单元格式，零拷贝读取 `UnitView`，所有偏移都检查范围，随机损坏输入不 panic。
   - `tools/cook_core`：
-    - cook 键（xxh3-128）覆盖 cook 格式版本、平台、单元路径、源文本、每个对象类型的 reflect 结构指纹与 cooker 版本、每个 `source:` 文件的内容哈希、每个链接目标所在的单元。
+    - cook 键（xxh3-128）覆盖 cook 格式版本、平台名及其 `platform.toml` `[cook]` 里 cooker 读的纹理描述（压缩族、布局；包编解码器不算）、单元路径、源文本、每个对象类型的 reflect 结构指纹与 cooker 版本、每个 `source:` 文件的内容哈希、每个链接目标所在的单元。
     - cooker 只能读取对象用 `source:` 声明过的文件，杜绝"字符串魔法"依赖。
     - 没有专用 cooker 的类型走 marlin-serial 通用 cooker。
     - `LocalDdc`：追加写、带校验和的 pack 文件，崩溃时截断不完整的尾部，读出校验失败的条目视为未命中。
@@ -350,7 +350,7 @@ bulk        GPU 数据（顶点、纹理 mip），对齐到 4 KiB，直接上传
     - 全工作区 548 个测试通过。
 - **P6 · framework、game 与 samples 完成**：
   - `marlin-framework`（no_std）：
-    - `boot`：读 `boot.toml` 里的 cvar（`content.package`、`content.cookd`、`game.level`、`game.platform`、`r.vsync`、`window.*`），命令行 `+cvar value` 可以覆盖。先挂载包，cookd 挂在包的上层。入口关卡按 UUID 指定，没有按路径加载。`ContentSettings` 是这些 cvar 解析后的纯数据，`mount` 直接用它，不读全局状态。
+    - `boot`：读 `boot.toml` 里的 cvar（`content.package`、`content.cookd`、`game.level`、`game.platform`、`r.vsync`、`window.*`），命令行 `+cvar value` 可以覆盖。先挂载包，cookd 挂在包的上层。入口关卡按 UUID 指定，没有按路径加载。`ContentSettings` 是这些 cvar 解析后的纯数据，`mount` 直接用它，不读全局状态。`game.platform` 默认是构建目标平台（`marlin_rt::PLATFORM`），包路径里的 `{platform}` 会替换成它；包头的平台和它不一致时 `mount` 报 `WrongPlatform`。
     - `Level` 资产：实体加引擎组件（`StaticMesh`、`Camera`、`Spin`、`FlyCamera`）和环境。关卡链接到网格，网格靠 import 闭包随关卡加载。关卡重载会重建它生成的实体。
     - `loaders`：`Mesh` 解码 LOD 0，产出 `Arc<MeshGeometry>`；`Texture`、`Skeleton`、`AnimationClip` 校验一次后原地保留在单元字节里（`InPlace<T>`），不拷贝。
     - `Engine`（模拟侧）与 `RenderSide`（渲染侧）完全不共享状态，每帧之间只传一份不可变的 `RenderDelta`：要上传或替换的网格（按 UUID 加版本）、要释放的网格、相机、环境和实例。GPU 上的旧网格要等在途帧都结束后才释放。目前每帧整份发送，GPU Scene 到位后再缩成只发变化量。

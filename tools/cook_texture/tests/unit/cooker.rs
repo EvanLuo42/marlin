@@ -5,10 +5,11 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use image::{ImageFormat, Rgb32FImage, Rgba32FImage, RgbaImage};
 use marlin_asset::cooked::{BulkKind, Encoding, UnitView};
-use marlin_cook_core::Cookers;
-use marlin_cook_texture::{Format, MIP_TAIL_BYTES, TextureCooker, decode, metrics};
+use marlin_compress::Codec;
+use marlin_cook_core::{Cookers, Platform, TextureFamily, TextureLayout};
+use marlin_cook_texture::{Format, MIP_TAIL_BYTES, TextureCooker, choose_format, decode, metrics};
 use marlin_reflect::type_info;
-use marlin_render::asset::texture::{PixelFormat, Texture, TextureView};
+use marlin_render::asset::texture::{PixelFormat, Texture, TextureCompression, TextureView};
 use marlin_serial::cooked::CookedBuffer;
 
 use crate::support::{Project, uuid};
@@ -267,5 +268,47 @@ fn bc1_with_alpha_warns() {
         units[0].warnings.iter().any(|w| w.contains("AlphaCutoff")),
         "{:?}",
         units[0].warnings
+    );
+}
+
+#[test]
+fn formats_follow_the_platform() {
+    let astc_only = Platform {
+        name: "astc-only",
+        texture_compression: &[TextureFamily::Astc],
+        texture_layout: TextureLayout::Linear,
+        head_codec: Codec::Zstd,
+        bulk_codec: Codec::Zstd,
+    };
+    let bc_last = Platform {
+        texture_compression: &[TextureFamily::Astc, TextureFamily::Bc],
+        ..astc_only
+    };
+    let auto = Texture::default();
+    let bc7 = Texture {
+        format: TextureCompression::Bc7,
+        ..Texture::default()
+    };
+    let rgba8 = Texture {
+        format: TextureCompression::Rgba8,
+        ..Texture::default()
+    };
+
+    // Auto takes the most preferred family there is an encoder for.
+    assert_eq!(
+        choose_format(&auto, &bc_last),
+        Ok(PixelFormat::Bc7UnormSrgb)
+    );
+    let error = choose_format(&auto, &astc_only).unwrap_err();
+    assert!(
+        error.contains("no encoder for astc-only") && error.contains("astc"),
+        "{error}"
+    );
+    // An explicit format the platform cannot sample is refused, not cooked anyway.
+    let error = choose_format(&bc7, &astc_only).unwrap_err();
+    assert!(error.contains("astc-only does not sample"), "{error}");
+    assert_eq!(
+        choose_format(&rgba8, &astc_only),
+        Ok(PixelFormat::Rgba8UnormSrgb)
     );
 }

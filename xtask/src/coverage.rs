@@ -62,7 +62,7 @@ pub fn run(root: &Path, args: &[String]) -> Result {
         .into());
     }
 
-    let dir = root.join("target").join("coverage");
+    let dir = crate::target_dir(root).join("coverage");
     let raw = dir.join("profraw");
     let _ = std::fs::remove_dir_all(&raw);
     std::fs::create_dir_all(&raw)?;
@@ -70,7 +70,16 @@ pub fn run(root: &Path, args: &[String]) -> Result {
     let platform = platform::find(root, platform::host())?;
     let mut flags = cfg::flags(&platform, &host, None);
     flags.push("-Cinstrument-coverage".into());
-    let env = [("CARGO_ENCODED_RUSTFLAGS", flags.join("\x1f"))];
+    // Without `--target` the flags also instrument proc-macros and build scripts, which then run
+    // inside rustc during the build: their profiles go to a scratch directory, not the root.
+    let build_profile = dir.join("build-profraw").join("%p-%m.profraw");
+    let env = [
+        ("CARGO_ENCODED_RUSTFLAGS", flags.join("\x1f")),
+        (
+            "LLVM_PROFILE_FILE",
+            build_profile.to_string_lossy().into_owned(),
+        ),
+    ];
     let binaries = test::build(root, &options.packages, &env, Some(&dir.join("build")))?;
 
     let profile = raw.join("%p-%m.profraw").to_string_lossy().into_owned();

@@ -6,7 +6,9 @@
 //! level above the mip tail and one for the tail.
 
 use marlin_asset::cooked::{BulkKind, Encoding};
-use marlin_cook_core::{CookContext, Cooked, Cooker, SourceObject};
+use marlin_cook_core::{
+    CookContext, Cooked, Cooker, Platform, SourceObject, TextureFamily, TextureLayout,
+};
 use marlin_reflect::type_info;
 use marlin_render::asset::texture::{
     AddressMode, CompressionQuality, CookedTexture, MipFilter as SourceMipFilter, PixelFormat,
@@ -42,14 +44,15 @@ impl Cooker for TextureCooker {
             .as_ref()
             .downcast()
             .ok_or("the object is not a Texture")?;
-        let platform = ctx.platform().to_owned();
-        if matches!(platform.as_str(), "ps5" | "xbox" | "switch2") {
-            return Err(match platform_tiling(&platform) {
+        let platform = ctx.platform();
+        if platform.texture_layout == TextureLayout::Tiled {
+            let name = platform.name;
+            return Err(match platform_tiling(name) {
                 None => format!(
-                    "cooking textures for {platform} needs its tiler: build with the `{platform}` \
+                    "cooking textures for {name} needs its tiler: build with the `{name}` \
                      feature and its platform repository"
                 ),
-                Some(_) => format!("tiled texture units for {platform} are not supported yet"),
+                Some(_) => format!("tiled texture units for {name} are not supported yet"),
             });
         }
         let path = &texture.source.path;
@@ -67,7 +70,7 @@ impl Cooker for TextureCooker {
                 "`{path}` is an HDR image but `Usage` is {usage:?}; it is cooked as such"
             ));
         }
-        let pixel_format = choose_format(texture)?;
+        let pixel_format = choose_format(texture, platform)?;
         if has_alpha
             && matches!(
                 pixel_format,
@@ -225,30 +228,82 @@ fn cook_usage(usage: TextureUsage) -> Usage {
     }
 }
 
-/// The cooked format for `texture`'s settings, or why they do not fit together.
-pub fn choose_format(texture: &Texture) -> Result<PixelFormat, String> {
+/// The cooked format for `texture`'s settings on `platform`, or why they do not fit together.
+/// `Auto` takes the platform's most preferred block-compression family there is an encoder for.
+pub fn choose_format(texture: &Texture, platform: &Platform) -> Result<PixelFormat, String> {
     let usage = texture.usage;
     let srgb = usage == TextureUsage::Color && texture.srgb;
     let pick =
         |linear: PixelFormat, srgb_format: PixelFormat| if srgb { srgb_format } else { linear };
-    let format = match texture.format {
-        TextureCompression::Auto => match usage {
-            TextureUsage::Color | TextureUsage::Data => {
-                pick(PixelFormat::Bc7Unorm, PixelFormat::Bc7UnormSrgb)
-            }
-            TextureUsage::Normal => PixelFormat::Bc5Unorm,
-            TextureUsage::Mask => PixelFormat::Bc4Unorm,
-            TextureUsage::Hdr => PixelFormat::Bc6hUfloat,
-        },
-        TextureCompression::Bc1 => pick(PixelFormat::Bc1Unorm, PixelFormat::Bc1UnormSrgb),
-        TextureCompression::Bc3 => pick(PixelFormat::Bc3Unorm, PixelFormat::Bc3UnormSrgb),
-        TextureCompression::Bc7 => pick(PixelFormat::Bc7Unorm, PixelFormat::Bc7UnormSrgb),
-        TextureCompression::Rgba8 => pick(PixelFormat::Rgba8Unorm, PixelFormat::Rgba8UnormSrgb),
-        TextureCompression::Bc4 => PixelFormat::Bc4Unorm,
-        TextureCompression::Bc5 => PixelFormat::Bc5Unorm,
-        TextureCompression::Bc6h => PixelFormat::Bc6hUfloat,
-        TextureCompression::Rgba16Float => PixelFormat::Rgba16Float,
+    let bc = || {
+        if platform.supports(TextureFamily::Bc) {
+            Ok(())
+        } else {
+            Err(format!(
+                "`Format = {:?}` is a BC format, which {} does not sample",
+                texture.format, platform.name
+            ))
+        }
     };
+    // Only BC has an encoder so far.
+    let encodable = [TextureFamily::Bc];
+    let format = match texture.format {
+        TextureCompression::Auto => match platform
+            .texture_compression
+            .iter()
+            .find(|f| encodable.contains(f))
+        {
+            Some(TextureFamily::Bc) => bc_for(usage, pick),
+            _ => {
+                let names: Vec<_> = platform
+                    .texture_compression
+                    .iter()
+                    .map(|f| f.name())
+                    .collect();
+                return Err(format!(
+                    "`Format = Auto`: no encoder for {}'s texture formats ({}); \
+                     set `Format = Rgba8` or `Rgba16Float`",
+                    platform.name,
+                    names.join(", ")
+                ));
+            }
+        },
+        TextureCompression::Rgba8 => pick(PixelFormat::Rgba8Unorm, PixelFormat::Rgba8UnormSrgb),
+        TextureCompression::Rgba16Float => PixelFormat::Rgba16Float,
+        explicit => {
+            bc()?;
+            match explicit {
+                TextureCompression::Bc1 => pick(PixelFormat::Bc1Unorm, PixelFormat::Bc1UnormSrgb),
+                TextureCompression::Bc3 => pick(PixelFormat::Bc3Unorm, PixelFormat::Bc3UnormSrgb),
+                TextureCompression::Bc7 => pick(PixelFormat::Bc7Unorm, PixelFormat::Bc7UnormSrgb),
+                TextureCompression::Bc4 => PixelFormat::Bc4Unorm,
+                TextureCompression::Bc5 => PixelFormat::Bc5Unorm,
+                TextureCompression::Bc6h => PixelFormat::Bc6hUfloat,
+                _ => unreachable!("handled above"),
+            }
+        }
+    };
+    check_format(texture, format)
+}
+
+/// The BC format `Auto` gives `usage`.
+fn bc_for(
+    usage: TextureUsage,
+    pick: impl Fn(PixelFormat, PixelFormat) -> PixelFormat,
+) -> PixelFormat {
+    match usage {
+        TextureUsage::Color | TextureUsage::Data => {
+            pick(PixelFormat::Bc7Unorm, PixelFormat::Bc7UnormSrgb)
+        }
+        TextureUsage::Normal => PixelFormat::Bc5Unorm,
+        TextureUsage::Mask => PixelFormat::Bc4Unorm,
+        TextureUsage::Hdr => PixelFormat::Bc6hUfloat,
+    }
+}
+
+/// `format` if it suits `texture`'s usage.
+fn check_format(texture: &Texture, format: PixelFormat) -> Result<PixelFormat, String> {
+    let usage = texture.usage;
     let hdr_format = matches!(format, PixelFormat::Bc6hUfloat | PixelFormat::Rgba16Float);
     if usage == TextureUsage::Hdr && !hdr_format {
         return Err(format!(

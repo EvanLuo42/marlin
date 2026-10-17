@@ -5,10 +5,11 @@
 //!
 //! | cvar              | meaning                                                          |
 //! |-------------------|------------------------------------------------------------------|
-//! | `content.package` | package(s) to mount, `;`-separated, relative to the boot file    |
+//! | `content.package` | package(s) to mount, `;`-separated, relative to the boot file;   |
+//! |                   | `{platform}` in a path stands for `game.platform`                |
 //! | `content.cookd`   | cook service address; mounted above the packages (dev streaming)  |
 //! | `game.level`      | UUID of the entry level                                          |
-//! | `game.platform`   | the platform cookd cooks for                                     |
+//! | `game.platform`   | the platform cookd cooks for; defaults to the build's platform   |
 //! | `r.vsync`, `window.width`, `window.height` | presentation                            |
 //!
 //! There is no load-by-path: the entry level is named by UUID, and everything else is reached
@@ -20,6 +21,7 @@ use alloc::vec::Vec;
 use core::net::SocketAddr;
 use core::time::Duration;
 
+use marlin_asset::cooked::platform_id;
 use marlin_asset::{DevSource, Package, Uuid, Vfs};
 use marlin_config::{CvarBool, CvarI64, CvarString, Source};
 use marlin_sync::Once;
@@ -37,8 +39,8 @@ pub static CONTENT_COOKD: CvarString = CvarString::new(
 pub static GAME_LEVEL: CvarString = CvarString::new("game.level", "", "UUID of the entry level.");
 pub static GAME_PLATFORM: CvarString = CvarString::new(
     "game.platform",
-    "windows",
-    "Platform the cook service cooks for.",
+    marlin_rt::PLATFORM,
+    "Platform the cook service cooks for; defaults to the one this build targets.",
 );
 pub static R_VSYNC: CvarBool = CvarBool::new("r.vsync", true, "Wait for vertical blank.");
 pub static WINDOW_WIDTH: CvarI64 =
@@ -73,6 +75,8 @@ pub enum BootError {
         #[source]
         source: marlin_asset::SourceError,
     },
+    #[error("{path} is cooked for another platform than {platform}")]
+    WrongPlatform { path: String, platform: String },
     #[error("connecting to the cook service at {addr}")]
     Cookd {
         addr: String,
@@ -133,15 +137,17 @@ impl ContentSettings {
             .trim()
             .parse()
             .map_err(|_| BootError::Level(level.clone()))?;
+        let platform = GAME_PLATFORM.get();
         let packages = CONTENT_PACKAGE
             .get()
             .split(';')
             .map(str::trim)
             .filter(|p| !p.is_empty())
+            .map(|path| path.replace("{platform}", &platform))
             .map(|path| {
                 let absolute = path.starts_with('/') || path.get(1..2) == Some(":");
                 if absolute || base_dir.is_empty() {
-                    String::from(path)
+                    path
                 } else {
                     format!("{}/{path}", base_dir.trim_end_matches(['/', '\\']))
                 }
@@ -158,7 +164,7 @@ impl ContentSettings {
         Ok(Self {
             packages,
             cookd,
-            platform: GAME_PLATFORM.get(),
+            platform,
             level,
         })
     }
@@ -172,6 +178,12 @@ pub fn mount(settings: &ContentSettings) -> Result<Boot, BootError> {
             path: path.clone(),
             source,
         })?;
+        if package.index().header.platform != platform_id(&settings.platform) {
+            return Err(BootError::WrongPlatform {
+                path: path.clone(),
+                platform: settings.platform.clone(),
+            });
+        }
         vfs.mount(path.clone(), package);
     }
     if let Some(addr) = settings.cookd {

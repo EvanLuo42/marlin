@@ -10,6 +10,8 @@ use marlin_hash::{xxh3_64, xxh3_128};
 use marlin_masset::{Schema, SchemaError};
 use marlin_reflect::{Reflect, TypeId, TypeInfo, TypeKind, Value, type_info};
 
+use crate::platform::Platform;
+
 /// A source object, bound to its reflected type.
 pub struct SourceObject<'a> {
     pub uuid: Uuid,
@@ -28,7 +30,7 @@ pub struct Cooked {
 
 /// What a cooker may do besides returning its result.
 pub struct CookContext<'a> {
-    pub(crate) platform: &'a str,
+    pub(crate) platform: &'a Platform,
     pub(crate) root: &'a Path,
     /// Source files the object links to (the only files it may read), each with the content
     /// hash the cook key was computed from.
@@ -37,9 +39,9 @@ pub struct CookContext<'a> {
     pub(crate) warnings: Vec<String>,
 }
 
-impl CookContext<'_> {
-    /// The platform being cooked for (`windows`, `ps5`, …).
-    pub fn platform(&self) -> &str {
+impl<'a> CookContext<'a> {
+    /// The target being cooked for: decide formats and layouts from its description.
+    pub fn platform(&self) -> &'a Platform {
         self.platform
     }
 

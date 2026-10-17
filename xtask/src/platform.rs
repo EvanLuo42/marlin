@@ -93,6 +93,8 @@ impl Platform {
                         platform.target_cpu.insert(arch, cpu);
                     }
                 }
+                // The cook target description; marlin-cook-core's build script reads it.
+                "cook" => {}
                 other => return Err(format!("unknown field `{other}`")),
             }
         }
@@ -147,13 +149,14 @@ pub fn find(root: &Path, name: &str) -> Result<Platform> {
 
 /// The desktop platform xtask itself runs on.
 pub fn host() -> &'static str {
-    if cfg!(windows) {
-        "windows"
-    } else if cfg!(target_os = "macos") {
-        "macos"
-    } else {
-        "linux"
-    }
+    #[cfg(windows)]
+    return "windows";
+    #[cfg(target_os = "macos")]
+    return "macos";
+    #[cfg(target_os = "linux")]
+    return "linux";
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+    compile_error!("xtask runs on Windows, macOS and Linux hosts only");
 }
 
 pub fn list(root: &Path) -> Result {

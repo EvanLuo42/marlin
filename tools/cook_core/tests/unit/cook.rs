@@ -4,8 +4,8 @@ use marlin_asset::cooked::{BULK_ALIGN, BulkKind, Encoding, UnitView, unit_id};
 use marlin_asset::{Link, SourceFile, Uuid};
 
 use marlin_cook_core::{
-    CookContext, CookOptions, Cooked, Cooker, Cookers, Ddc, Manifest, SourceObject, cook_all,
-    publish_manifest,
+    CookContext, CookOptions, Cooked, Cooker, Cookers, Ddc, Manifest, Platform, SourceObject,
+    TextureFamily, cook_all, publish_manifest,
 };
 use marlin_reflect::{Reflect, type_info};
 use marlin_test_support::panic_message;
@@ -183,7 +183,11 @@ fn cooks_everything_once_then_hits_the_cache() {
     let key = publish_manifest(&p.root, &ddc, &manifest).unwrap();
     let stored = Manifest::from_bytes(&ddc.get(key).unwrap().unwrap()).unwrap();
     assert_eq!(stored, manifest);
-    assert!(p.root.join(".marlin/build/windows.manifest").exists());
+    assert!(
+        p.root
+            .join(format!(".marlin/build/{}.manifest", Platform::host().name))
+            .exists()
+    );
 }
 
 #[test]
@@ -252,17 +256,29 @@ fn cooking_is_deterministic() {
             u.path
         );
     }
-    // Another platform is another build.
-    let other = cook_all(
-        &db,
-        &cookers,
-        &one,
-        &CookOptions {
-            platform: "ps5".into(),
-            ..CookOptions::default()
-        },
-    );
-    assert_ne!(key_of(&other.0, "a"), key_of(&r1, "a"));
+    // Another platform is another build, and so is another texture description of the same one.
+    let host = Platform::host();
+    let renamed = Platform {
+        name: "other",
+        ..*host
+    };
+    let retextured = Platform {
+        texture_compression: &[TextureFamily::Astc],
+        ..*host
+    };
+    for platform in [renamed, retextured] {
+        let platform: &'static Platform = Box::leak(Box::new(platform));
+        let other = cook_all(
+            &db,
+            &cookers,
+            &one,
+            &CookOptions {
+                platform,
+                ..CookOptions::default()
+            },
+        );
+        assert_ne!(key_of(&other.0, "a"), key_of(&r1, "a"));
+    }
 }
 
 #[test]

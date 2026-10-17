@@ -8,3 +8,4 @@ mod support;
 mod cook;
 mod ddc;
 mod package;
+mod platform;

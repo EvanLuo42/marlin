@@ -185,7 +185,7 @@ fn the_sample_cooks_packages_and_renders_the_same_from_cookd() {
     let boot = mount(&ContentSettings {
         packages: vec![package],
         cookd: None,
-        platform: "windows".into(),
+        platform: marlin_rt::PLATFORM.into(),
         level,
     })
     .unwrap();
@@ -207,7 +207,7 @@ fn the_sample_cooks_packages_and_renders_the_same_from_cookd() {
     let boot = mount(&ContentSettings {
         packages: Vec::new(),
         cookd: Some(cookd.addr()),
-        platform: "windows".into(),
+        platform: marlin_rt::PLATFORM.into(),
         level,
     })
     .unwrap();
@@ -228,7 +228,7 @@ fn editing_the_level_changes_the_picture_live() {
     let boot = mount(&ContentSettings {
         packages: Vec::new(),
         cookd: Some(cookd.addr()),
-        platform: "windows".into(),
+        platform: marlin_rt::PLATFORM.into(),
         level,
     })
     .unwrap();

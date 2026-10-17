@@ -5,11 +5,11 @@ use std::time::{Duration, Instant};
 
 use marlin_asset::cooked::{BulkKind, Encoding};
 use marlin_asset::{
-    AssetError, AssetRef, AssetServer, DevSource, Handle, Link, LoadState, Loaders, SourceFile,
-    Uuid, Vfs,
+    AssetError, AssetRef, AssetServer, DevSource, Handle, Link, LoadState, Loaders, SourceError,
+    SourceFile, Uuid, Vfs,
 };
 use marlin_asset_db::{AssetDb, Options};
-use marlin_cook_core::{CookContext, Cooked, Cooker, Cookers, LocalDdc, SourceObject};
+use marlin_cook_core::{CookContext, Cooked, Cooker, Cookers, LocalDdc, Platform, SourceObject};
 use marlin_cookd::{Cookd, CookdOptions, bind};
 use marlin_reflect::{Reflect, type_info};
 use marlin_test_support::{BackgroundService, TempDir, panic_message, test_uuid, wait_until};
@@ -208,8 +208,12 @@ impl Running {
     }
 
     fn connect(&self) -> Vfs {
-        let source =
-            DevSource::connect(self.service.addr(), "windows", Duration::from_secs(10)).unwrap();
+        let source = DevSource::connect(
+            self.service.addr(),
+            Platform::host().name,
+            Duration::from_secs(10),
+        )
+        .unwrap();
         let mut vfs = Vfs::new();
         vfs.mount("dev", source);
         vfs
@@ -311,6 +315,18 @@ fn failures_come_back_as_states() {
 }
 
 #[test]
+fn unknown_platforms_are_refused() {
+    let cookd = Running::start("platform");
+    match DevSource::connect(cookd.service.addr(), "nope", Duration::from_secs(10)) {
+        Err(SourceError::Remote(message)) => {
+            assert!(message.contains("unknown platform `nope`"), "{message}")
+        }
+        Err(other) => panic!("{other:?}"),
+        Ok(_) => panic!("served a platform without a manifest"),
+    }
+}
+
+#[test]
 fn clients_share_the_cook() {
     let cookd = Running::start("shared");
     let (one, two) = (cookd.connect(), cookd.connect());
@@ -349,7 +365,11 @@ fn a_long_cook_does_not_stall_the_service() {
     // A worker holds the project for the whole cook, and the watch runs every 30 ms meanwhile:
     // with nothing changed it must not wait for the project, so a new client is still served.
     std::thread::sleep(Duration::from_millis(100));
-    let connected = DevSource::connect(cookd.service.addr(), "windows", Duration::from_secs(3));
+    let connected = DevSource::connect(
+        cookd.service.addr(),
+        Platform::host().name,
+        Duration::from_secs(3),
+    );
     GATE_OPEN.store(true, Ordering::Relaxed);
     assert!(
         connected.is_ok(),

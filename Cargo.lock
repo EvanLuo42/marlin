@@ -373,6 +373,7 @@ dependencies = [
  "marlin-reflect",
  "marlin-serial",
  "marlin-test-support",
+ "toml",
 ]
 
 [[package]]
@@ -420,6 +421,7 @@ dependencies = [
  "marlin-asset",
  "marlin-asset-db",
  "marlin-bench",
+ "marlin-compress",
  "marlin-cook-core",
  "marlin-gpu-test-support",
  "marlin-math",
@@ -587,6 +589,7 @@ dependencies = [
  "marlin-reflect",
  "marlin-render",
  "marlin-rhi",
+ "marlin-rt",
  "marlin-serial",
  "marlin-sync",
  "marlin-test-support",

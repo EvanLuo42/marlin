@@ -12,14 +12,15 @@ use marlin_masset::{DocumentLinks, Severity, parse};
 use crate::cooker::{CookContext, Cookers, SourceObject};
 use crate::ddc::Ddc;
 use crate::manifest::{Manifest, ManifestUnit};
+use crate::platform::Platform;
 
 /// Bump when the unit layout or key derivation changes: every key changes with it.
 pub const COOK_FORMAT: u32 = 1;
 
 #[derive(Clone, Debug)]
 pub struct CookOptions {
-    /// Target platform name, as in `platforms/<name>/platform.toml`.
-    pub platform: String,
+    /// The target, from `platforms/<name>/platform.toml`.
+    pub platform: &'static Platform,
     /// 0: one thread per logical CPU.
     pub threads: usize,
 }
@@ -27,7 +28,7 @@ pub struct CookOptions {
 impl Default for CookOptions {
     fn default() -> Self {
         Self {
-            platform: "windows".into(),
+            platform: Platform::host(),
             threads: 0,
         }
     }
@@ -106,15 +107,16 @@ fn unit_of(db: &AssetDb, uuid: Uuid) -> Option<u64> {
 
 /// The cook key of `file`: a hash over every input of its cooked unit.
 ///
-/// Inputs: the format version and platform; the unit id; the source text; per object its type
-/// and the type's fingerprint (structure and cooker version); every source file it links to, by
-/// content; and the unit of every object it links to (which the import table records). A link's
-/// target content is not an input: links are resolved at load time.
+/// Inputs: the format version; the platform's name and the texture description cookers read;
+/// the unit id; the source text; per object its type and the type's fingerprint (structure and
+/// cooker version); every source file it links to, by content; and the unit of every object it
+/// links to (which the import table records). A link's target content is not an input: links
+/// are resolved at load time.
 pub fn unit_key(
     db: &AssetDb,
     cookers: &Cookers,
     file: FileId,
-    platform: &str,
+    platform: &Platform,
 ) -> Result<u128, CookError> {
     let info = db.file_info(file);
     let asset_path = db.asset_path(file);
@@ -128,7 +130,12 @@ pub fn unit_key(
     let mut key = KeyWriter(Vec::with_capacity(256));
     key.bytes(b"marlin-cook");
     key.u64(u64::from(COOK_FORMAT));
-    key.bytes(platform.as_bytes());
+    key.bytes(platform.name.as_bytes());
+    // What cookers read from the description; package codecs are not unit inputs.
+    for family in platform.texture_compression {
+        key.bytes(family.name().as_bytes());
+    }
+    key.bytes(platform.texture_layout.name().as_bytes());
     key.u64(unit_id(&asset_path));
     key.u128(info.hash);
     for object in db.objects_in(file) {
@@ -172,7 +179,7 @@ struct CookedObject {
 /// Lays out a unit (see `marlin_asset::cooked`).
 fn assemble(
     unit: u64,
-    platform: &str,
+    platform: &Platform,
     objects: Vec<CookedObject>,
     imports: BTreeMap<Uuid, u64>,
 ) -> Vec<u8> {
@@ -187,7 +194,7 @@ fn assemble(
         })
         .collect();
     let imports: Vec<(Uuid, u64)> = imports.into_iter().collect();
-    write::unit(unit, platform_id(platform), objects, &imports)
+    write::unit(unit, platform_id(platform.name), objects, &imports)
 }
 
 /// Cooks one unit (no cache involved).
@@ -195,7 +202,7 @@ pub fn cook_unit(
     db: &AssetDb,
     cookers: &Cookers,
     file: FileId,
-    platform: &str,
+    platform: &Platform,
 ) -> Result<(Vec<u8>, Vec<String>), CookError> {
     let info = db.file_info(file);
     let asset_path = db.asset_path(file);
@@ -328,7 +335,7 @@ pub fn cook(
     }
     .clamp(1, units.len().max(1));
     let chunk = units.len().div_ceil(threads).max(1);
-    let platform = options.platform.as_str();
+    let platform = options.platform;
     let results: Vec<Result<UnitOutcome, CookError>> = std::thread::scope(|s| {
         let handles: Vec<_> = units
             .chunks(chunk)
@@ -360,7 +367,7 @@ fn cook_one(
     db: &AssetDb,
     cookers: &Cookers,
     ddc: &dyn Ddc,
-    platform: &str,
+    platform: &Platform,
     file: FileId,
 ) -> Result<UnitOutcome, CookError> {
     let path = db.asset_path(file);
@@ -421,7 +428,7 @@ pub fn cook_all(
     objects.sort_unstable();
     objects.dedup_by_key(|(uuid, _)| *uuid);
     let manifest = Manifest {
-        platform: options.platform.clone(),
+        platform: options.platform.name.to_owned(),
         units,
         objects,
     };
@@ -446,7 +453,7 @@ pub fn fetch_unit(
     db: &AssetDb,
     cookers: &Cookers,
     ddc: &dyn Ddc,
-    platform: &str,
+    platform: &Platform,
     file: FileId,
 ) -> Result<(u128, Vec<u8>, bool, Vec<String>), CookError> {
     let key = unit_key(db, cookers, file, platform)?;

@@ -15,6 +15,10 @@ marlin-masset.workspace = true
 marlin-reflect.workspace = true
 marlin-serial.workspace = true
 
+# Reads the `[cook]` tables of platforms/*/platform.toml (see build.rs).
+[build-dependencies]
+toml = { workspace = true, features = ["parse"] }
+
 [dev-dependencies]
 marlin-math.workspace = true
 marlin-test-support.workspace = true

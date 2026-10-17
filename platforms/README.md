@@ -1,6 +1,9 @@
 # platforms/
 
-One directory per platform. Each has a `platform.toml` manifest read by `cargo xtask`.
+One directory per platform. Each has a `platform.toml` manifest, read by `cargo xtask` (targets,
+capabilities) and compiled into the cook tools (its `[cook]` table: texture formats and layout,
+package codecs; see `tools/cook_core/src/platform.rs`). Tools and games default to the platform
+they were built for (`marlin_rt::PLATFORM`).
 
 - `windows/`, `linux/`, `macos/` are public and tracked. Their backends live inside the runtime
   crates (`runtime/*/<crate>/src/backend/<platform>/`).
@@ -14,7 +17,7 @@ The layout mirrors the public crates:
 
 ```
 platforms/<console>/
-├── platform.toml      # targets, ext list, target-spec, build-std
+├── platform.toml      # targets, ext list, target-spec, build-std, [cook]
 ├── target/*.json      # custom target spec
 ├── pal/mod.rs         # included by runtime/base/pal/src/backend/mod.rs
 │   └── sys/           # SDK FFI bindings, re-exported as marlin_pal::os::<console>::sys

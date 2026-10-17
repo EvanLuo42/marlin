@@ -23,6 +23,7 @@ pub mod hosted;
 pub mod panic;
 pub mod process;
 
+pub use marlin_pal::PLATFORM;
 pub use process::args;
 
 /// Capability extensions of the PAL that belong to the process; each module exists only where

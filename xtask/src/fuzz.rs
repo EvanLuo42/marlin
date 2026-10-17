@@ -118,7 +118,7 @@ pub fn run(root: &Path, options: &Options, args: &Args) -> Result {
     let time = args.time.unwrap_or(DEFAULT_TIME);
 
     let (host, _) = coverage::rustc_host()?;
-    let out = root.join("target").join("fuzz");
+    let out = crate::target_dir(root).join("fuzz");
     build(root, &out, &host, selected.iter().map(|(t, _)| t.as_str()))?;
     let asan_dir = if host.contains("-msvc") {
         Some(msvc_asan_dir(&host)?)
@@ -275,10 +275,10 @@ fn build<'a>(
 
 /// The directory of MSVC's AddressSanitizer runtime DLL for `host`, through vswhere.
 fn msvc_asan_dir(host: &str) -> Result<PathBuf> {
-    let (arch, tools) = if host.starts_with("aarch64") {
-        ("aarch64", r"Hostarm64\arm64")
-    } else {
-        ("x86_64", r"Hostx64\x64")
+    let (arch, tools) = match host.split('-').next() {
+        Some("x86_64") => ("x86_64", r"Hostx64\x64"),
+        Some("aarch64") => ("aarch64", r"Hostarm64\arm64"),
+        _ => return Err(format!("no MSVC AddressSanitizer runtime is known for {host}").into()),
     };
     let dll = format!("clang_rt.asan_dynamic-{arch}.dll");
     let program_files =
@@ -327,11 +327,11 @@ impl Fuzzer {
             format!("-timeout={INPUT_TIMEOUT}"),
         ]);
         if let Some(dir) = &self.asan_dir {
-            let mut path = std::ffi::OsString::from(dir);
-            if let Some(old) = std::env::var_os("PATH") {
-                path.push(";");
-                path.push(old);
-            }
+            let old = std::env::var_os("PATH").unwrap_or_default();
+            let path = std::env::join_paths(
+                std::iter::once(dir.clone()).chain(std::env::split_paths(&old)),
+            )
+            .map_err(|e| format!("PATH: {e}"))?;
             command.env("PATH", path);
         }
         let file = std::fs::OpenOptions::new()
@@ -469,14 +469,7 @@ fn run_bounded(mut command: Command, limit: Duration) -> Result<Option<std::proc
             return Ok(Some(status));
         }
         if Instant::now() >= deadline {
-            if cfg!(windows) {
-                let _ = Command::new("taskkill")
-                    .args(["/T", "/F", "/PID", &child.id().to_string()])
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status();
-            }
-            let _ = child.kill();
+            crate::process::kill_tree(&mut child);
             let _ = child.wait();
             return Ok(None);
         }

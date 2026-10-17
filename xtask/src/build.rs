@@ -52,7 +52,7 @@ pub fn run(root: &Path, args: &[String]) -> Result {
             config.cargo_profile(),
         ])
         .arg("--target-dir")
-        .arg(root.join("target").join(&platform.name));
+        .arg(crate::target_dir(root).join(&platform.name));
     let target = match (target, &platform.target_spec) {
         (Some(t), _) if !platform.targets.contains(&t) => {
             return Err(format!("`{t}` is not a target of {}", platform.name).into());

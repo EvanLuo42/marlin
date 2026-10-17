@@ -24,7 +24,7 @@ use std::time::Instant;
 
 use marlin_asset_db::{AssetDb, Options};
 use marlin_cook_core::{
-    CookOptions, Manifest, PackageOptions, cook_all, publish_manifest, write_package,
+    CookOptions, Manifest, PackageOptions, Platform, cook_all, publish_manifest, write_package,
 };
 use marlin_cooker::{engine_cookers, open_ddc};
 use marlin_masset::{NodeKind, parse};
@@ -248,7 +248,13 @@ fn cook(args: &[String]) -> ExitCode {
     let mut rest = args[1..].iter();
     while let Some(flag) = rest.next() {
         match (flag.as_str(), rest.next()) {
-            ("--platform", Some(p)) => options.platform = p.clone(),
+            ("--platform", Some(p)) => match Platform::find(p) {
+                Ok(p) => options.platform = p,
+                Err(e) => {
+                    eprintln!("--platform: {e}");
+                    return ExitCode::from(2);
+                }
+            },
             ("--store", Some(a)) => match a.parse() {
                 Ok(a) => store = Some(a),
                 Err(_) => {
@@ -300,7 +306,7 @@ fn cook(args: &[String]) -> ExitCode {
     }
     let summary = format!(
         "{}: {} units ({} cooked, {} cached), {} failed",
-        options.platform,
+        options.platform.name,
         report.units.len(),
         report.cooked(),
         report.cached(),
@@ -330,28 +336,35 @@ fn codec(name: &str) -> Option<marlin_compress::Codec> {
 
 fn package(args: &[String]) -> ExitCode {
     let root = Path::new(&args[0]);
-    let mut platform = CookOptions::default().platform;
+    let mut platform = Platform::host();
     let mut out: Option<PathBuf> = None;
-    let mut options = PackageOptions::default();
+    // Codecs default to the platform's, which is known only after every flag.
+    let (mut head_codec, mut bulk_codec, mut level) = (None, None, None);
     let mut store = None;
     let mut rest = args[1..].iter();
     while let Some(flag) = rest.next() {
         let value = rest.next();
         let ok = match (flag.as_str(), value) {
-            ("--platform", Some(p)) => {
-                platform = p.clone();
-                true
-            }
+            ("--platform", Some(p)) => match Platform::find(p) {
+                Ok(p) => {
+                    platform = p;
+                    true
+                }
+                Err(e) => {
+                    eprintln!("--platform: {e}");
+                    return ExitCode::from(2);
+                }
+            },
             ("--out", Some(p)) => {
                 out = Some(PathBuf::from(p));
                 true
             }
             ("--store", Some(a)) => a.parse().map(|a| store = Some(a)).is_ok(),
-            ("--head-codec", Some(c)) => codec(c).map(|c| options.head_codec = c).is_some(),
-            ("--bulk-codec", Some(c)) => codec(c).map(|c| options.bulk_codec = c).is_some(),
+            ("--head-codec", Some(c)) => codec(c).map(|c| head_codec = Some(c)).is_some(),
+            ("--bulk-codec", Some(c)) => codec(c).map(|c| bulk_codec = Some(c)).is_some(),
             ("--level", Some(n)) => n
                 .parse()
-                .map(|n| options.level = marlin_compress::Level::new(n))
+                .map(|n| level = Some(marlin_compress::Level::new(n)))
                 .is_ok(),
             _ => false,
         };
@@ -360,6 +373,11 @@ fn package(args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     }
+    let mut options = PackageOptions::for_platform(platform);
+    options.head_codec = head_codec.unwrap_or(options.head_codec);
+    options.bulk_codec = bulk_codec.unwrap_or(options.bulk_codec);
+    options.level = level.unwrap_or(options.level);
+    let platform = platform.name;
     let build = root.join(".marlin").join("build");
     let manifest_path = build.join(format!("{platform}.manifest"));
     let manifest = match std::fs::read(&manifest_path).map(|b| Manifest::from_bytes(&b)) {

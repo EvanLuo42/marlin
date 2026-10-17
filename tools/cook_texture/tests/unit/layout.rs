@@ -1,5 +1,6 @@
 //! Formats, tight packing, the upload layout marlin-rhi copies from, and the tiling hook.
 
+use marlin_cook_core::{Platform, TextureLayout};
 use marlin_cook_texture::{
     EncodeOptions, EncodedTexture, Format, LinearTiling, MipOptions, Quality, TextureTiling,
     TiledSubresource, TiledTexture, UploadAlignment, decode, encode, encode_texture, generate_mips,
@@ -190,8 +191,14 @@ fn tiling_hook() {
     let linear = texture.subresource_data(1, 0);
     assert_eq!(first, &linear[linear.len() - 8..]);
 
-    // Desktop textures stay linear; console tilers exist only with their repositories.
-    for platform in ["windows", "linux", "macos", "ps5", "xbox", "switch2"] {
-        assert!(platform_tiling(platform).is_none(), "{platform}");
+    // Linear targets have no tiler; console tilers exist only with their repositories.
+    for platform in Platform::all() {
+        if platform.texture_layout == TextureLayout::Linear {
+            assert!(
+                platform_tiling(platform.name).is_none(),
+                "{}",
+                platform.name
+            );
+        }
     }
 }

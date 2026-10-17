@@ -3,7 +3,7 @@
 # Or stream from a running cook service instead: +content.cookd 127.0.0.1:47200
 
 [content]
-package = ".marlin/build/windows.mpak"
+package = ".marlin/build/{platform}.mpak"
 
 [game]
 level = "01992d00-0000-7000-8000-000000000001"

@@ -22,7 +22,7 @@ use marlin_asset::cooked::unit_id;
 use marlin_asset::dev::*;
 use marlin_asset::wire::{Frame, Reader, Writer};
 use marlin_asset_db::{AssetDb, FileId};
-use marlin_cook_core::{Cookers, Ddc, fetch_unit, source_units, unit_key};
+use marlin_cook_core::{Cookers, Ddc, Platform, fetch_unit, source_units, unit_key};
 use marlin_store::{ConnId, Outbox, Server, ServerError, Service};
 
 /// The project as the service sees it.
@@ -72,18 +72,18 @@ struct Shared {
 
 struct Job {
     unit: u64,
-    platform: String,
+    platform: &'static Platform,
 }
 
 struct Done {
     unit: u64,
-    platform: String,
+    platform: &'static Platform,
     /// The bytes and their key, or why not and the key the attempt had (if it got one).
     result: Result<(u128, Vec<u8>), (String, Option<u128>)>,
 }
 
 struct Client {
-    platform: Option<String>,
+    platform: Option<&'static Platform>,
     /// Units served, with the key they were served at: `None` for a failure without one (a unit
     /// that does not parse). Failures count, so fixing them tells the client too.
     served: HashMap<u64, Option<u128>>,
@@ -115,7 +115,7 @@ pub struct Cookd {
     workers: Vec<JoinHandle<()>>,
     clients: HashMap<ConnId, Client>,
     /// (unit, platform) being cooked → who waits for it.
-    in_flight: HashMap<(u64, String), Vec<(ConnId, u32)>>,
+    in_flight: HashMap<(u64, &'static str), Vec<(ConnId, u32)>>,
     /// A second index of the project, owned by the network thread: the watch updates it outside
     /// any lock and swaps it in only when it changed (see [`watch`](Self::watch)). `None` when
     /// it could not be opened; the watch then updates the served index in place.
@@ -238,7 +238,7 @@ impl Cookd {
             .read()
             .unwrap_or_else(|e| e.into_inner());
         for (&conn, client) in &mut self.clients {
-            let Some(platform) = &client.platform else {
+            let Some(platform) = client.platform else {
                 continue;
             };
             let mut stale = Vec::new();
@@ -292,12 +292,12 @@ fn worker(shared: &Shared, jobs: &Mutex<Receiver<Job>>, done: &Sender<Done>) {
                     &project.db,
                     &shared.cookers,
                     shared.ddc.as_ref(),
-                    &job.platform,
+                    job.platform,
                     file,
                 )
                 .map(|(key, bytes, _, _)| (key, bytes))
                 .map_err(|e| {
-                    let key = unit_key(&project.db, &shared.cookers, file, &job.platform).ok();
+                    let key = unit_key(&project.db, &shared.cookers, file, job.platform).ok();
                     (e.to_string(), key)
                 }),
             }
@@ -340,9 +340,16 @@ impl Service for Cookd {
         let mut r = Reader::new(&frame.payload);
         match frame.kind {
             HELLO => {
-                let Ok(platform) = r.str() else {
+                let Ok(name) = r.str() else {
                     out.send(conn, ERROR, frame.id, &message("HELLO: malformed"));
                     return;
+                };
+                let platform = match Platform::find(&name) {
+                    Ok(platform) => platform,
+                    Err(e) => {
+                        out.send(conn, ERROR, frame.id, &message(&format!("HELLO: {e}")));
+                        return;
+                    }
                 };
                 if let Some(c) = self.clients.get_mut(&conn) {
                     c.platform = Some(platform);
@@ -359,12 +366,11 @@ impl Service for Cookd {
                     out.send(conn, ERROR, frame.id, &message("UNIT: malformed"));
                     return;
                 };
-                let Some(platform) = self.clients.get(&conn).and_then(|c| c.platform.clone())
-                else {
+                let Some(platform) = self.clients.get(&conn).and_then(|c| c.platform) else {
                     out.send(conn, ERROR, frame.id, &message("UNIT before HELLO"));
                     return;
                 };
-                let waiters = self.in_flight.entry((unit, platform.clone())).or_default();
+                let waiters = self.in_flight.entry((unit, platform.name)).or_default();
                 waiters.push((conn, frame.id));
                 if waiters.len() == 1
                     && let Some(jobs) = &self.jobs
@@ -392,7 +398,7 @@ impl Service for Cookd {
         while let Ok(done) = self.done.try_recv() {
             let waiters = self
                 .in_flight
-                .remove(&(done.unit, done.platform))
+                .remove(&(done.unit, done.platform.name))
                 .unwrap_or_default();
             for (conn, id) in waiters {
                 let Some(client) = self.clients.get_mut(&conn) else {

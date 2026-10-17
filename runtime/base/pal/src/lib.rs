@@ -40,6 +40,10 @@ pub mod watch;
 pub use error::{Error, ErrorKind, Result};
 pub use types::{CpuSet, Protection, ThreadPriority};
 
+/// The platform this build targets: its `platforms/<name>/platform.toml` name (`windows`,
+/// `linux`, ...), the value of the `marlin_platform` cfg.
+pub const PLATFORM: &str = env!("MARLIN_PLATFORM");
+
 // The selected backend must implement the whole contract, even items nothing calls yet.
 const _: () = {
     const fn assert_platform<P: contract::Platform>() {}

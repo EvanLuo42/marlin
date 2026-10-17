@@ -12,6 +12,8 @@ marlin-cook-core.workspace = true
 marlin-math.workspace = true
 marlin-reflect.workspace = true
 marlin-render.workspace = true
+# The copy alignments cooked textures are laid out in.
+marlin-rhi.workspace = true
 marlin-serial.workspace = true
 
 # Console texture tiling, from the private platform repositories cloned into platforms/<name>/
@@ -23,9 +25,9 @@ switch2 = []
 
 [dev-dependencies]
 marlin-bench.workspace = true
+marlin-compress.workspace = true
 marlin-test-support.workspace = true
-# The GPU conformance test uploads encoded textures, and the layout tests check the RHI's rules.
-marlin-rhi.workspace = true
+# The GPU conformance test uploads encoded textures.
 marlin-gpu-test-support.workspace = true
 marlin-asset-db.workspace = true
 

@@ -61,11 +61,9 @@ fn tag(tag: String) -> Result<String> {
     Ok(tag)
 }
 
-/// `CARGO_TARGET_DIR` (relative to the workspace root) or `<root>/target`, the same rule the
-/// harness follows.
+/// Under [`crate::target_dir`], where the harness writes its results.
 fn bench_dir(root: &Path) -> PathBuf {
-    root.join(std::env::var_os("CARGO_TARGET_DIR").unwrap_or_else(|| "target".into()))
-        .join("bench")
+    crate::target_dir(root).join("bench")
 }
 
 struct BenchBinary {
@@ -184,7 +182,7 @@ fn wait(mut command: Command, limit: Duration) -> Result<Option<bool>> {
             return Ok(Some(status.success()));
         }
         if Instant::now() >= deadline {
-            let _ = child.kill();
+            crate::process::kill_tree(&mut child);
             let _ = child.wait();
             return Ok(None);
         }

@@ -7,7 +7,7 @@ fn boot_file_and_command_line() {
     register_cvars();
     let config = r#"
 [content]
-package = "build/game.mpak; dlc/extra.mpak"
+package = "build/game.mpak; dlc/extra.mpak; build/{platform}.mpak"
 
 [game]
 level = "01992d00-0000-7000-8000-000000000001"
@@ -20,12 +20,13 @@ level = "01992d00-0000-7000-8000-000000000001"
     assert_eq!(
         settings.packages,
         [
-            "C:/games/sample/build/game.mpak",
-            "C:/games/sample/dlc/extra.mpak"
+            "C:/games/sample/build/game.mpak".to_owned(),
+            "C:/games/sample/dlc/extra.mpak".to_owned(),
+            format!("C:/games/sample/build/{}.mpak", marlin_rt::PLATFORM),
         ]
     );
     assert_eq!(settings.cookd, Some("127.0.0.1:47200".parse().unwrap()));
-    assert_eq!(settings.platform, "windows");
+    assert_eq!(settings.platform, marlin_rt::PLATFORM);
     assert_eq!(
         settings.level,
         "01992d00-0000-7000-8000-000000000001".parse().unwrap()

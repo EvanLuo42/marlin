@@ -400,7 +400,7 @@ pub fn execute(
     options: &Options,
     env: &[(&str, String)],
 ) -> Result<Report> {
-    let log_dir = root.join("target").join("xtask");
+    let log_dir = crate::target_dir(root).join("xtask");
     std::fs::create_dir_all(&log_dir)?;
     let skip_log = log_dir.join("skips.log");
     let _ = std::fs::remove_file(&skip_log);
@@ -509,7 +509,7 @@ fn watch(child: &mut Child, stall: Duration) -> (BinaryResult, bool) {
                 if result.stalled.is_empty() {
                     result.stalled.push("<no test running>".into());
                 }
-                let _ = child.kill();
+                crate::process::kill_tree(child);
                 // A process stuck in a driver's kernel wait may never exit.
                 let deadline = Instant::now() + Duration::from_secs(15);
                 while Instant::now() < deadline {

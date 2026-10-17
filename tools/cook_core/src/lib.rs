@@ -17,6 +17,7 @@ mod cooker;
 mod ddc;
 mod manifest;
 mod package;
+mod platform;
 
 pub use cook::{
     COOK_FORMAT, CookError, CookOptions, CookReport, UnitOutcome, cook, cook_all, cook_unit,
@@ -26,3 +27,4 @@ pub use cooker::{CookContext, Cooked, Cooker, Cookers, SourceObject, fingerprint
 pub use ddc::{Ddc, LayeredDdc, LocalDdc};
 pub use manifest::{Manifest, ManifestError, ManifestUnit};
 pub use package::{PackageOptions, PackageReport, PackageWriteError, write_package};
+pub use platform::{Platform, TextureFamily, TextureLayout, UnknownPlatform};

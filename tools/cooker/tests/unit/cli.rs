@@ -4,6 +4,7 @@ use std::io::Cursor;
 use std::process::Command;
 
 use marlin_asset::Uuid;
+use marlin_cook_core::Platform;
 use marlin_test_support::{TempDir, test_uuid};
 
 fn run(args: &[&str]) -> (bool, String) {
@@ -33,6 +34,9 @@ fn cooks_then_hits_the_cache_then_reports_failures() {
         ),
     );
     let r = root.to_str().unwrap();
+    // The default target is the platform the tools were built for.
+    let build = root.join(".marlin/build");
+    let manifest_path = build.join(format!("{}.manifest", Platform::host().name));
 
     let (ok, text) = run(&["cook", r]);
     assert!(ok, "{text}");
@@ -40,7 +44,7 @@ fn cooks_then_hits_the_cache_then_reports_failures() {
         text.contains("1 units (1 cooked, 0 cached), 0 failed"),
         "{text}"
     );
-    assert!(root.join(".marlin/build/windows.manifest").is_file());
+    assert!(manifest_path.is_file());
 
     let (ok, text) = run(&["cook", r, "--threads", "2"]);
     assert!(ok, "{text}");
@@ -49,14 +53,13 @@ fn cooks_then_hits_the_cache_then_reports_failures() {
     let (ok, text) = run(&["package", r, "--bulk-codec", "gdeflate"]);
     assert!(ok, "{text}");
     assert!(text.contains("1 units"), "{text}");
-    let package =
-        marlin_asset::Package::open(root.join(".marlin/build/windows.mpak").to_str().unwrap())
-            .unwrap();
+    let package_path = build.join(format!("{}.mpak", Platform::host().name));
+    let package = marlin_asset::Package::open(package_path.to_str().unwrap()).unwrap();
     assert_eq!(package.index().units.len(), 1);
     let (ok, text) = run(&["package", r, "--bulk-codec", "brotli"]);
     assert!(!ok && text.contains("usage"), "{text}");
 
-    let manifest = std::fs::read(root.join(".marlin/build/windows.manifest")).unwrap();
+    let manifest = std::fs::read(&manifest_path).unwrap();
     root.write(
         "tex/broken.masset",
         format!(
@@ -72,11 +75,16 @@ fn cooks_then_hits_the_cache_then_reports_failures() {
     );
     assert!(text.contains("1 failed; manifest not published"), "{text}");
     assert_eq!(
-        std::fs::read(root.join(".marlin/build/windows.manifest")).unwrap(),
+        std::fs::read(&manifest_path).unwrap(),
         manifest,
         "a failed cook keeps the last good manifest"
     );
 
     let (ok, text) = run(&["cook", r, "--platform"]);
     assert!(!ok && text.contains("usage"), "{text}");
+    // Platforms come from platforms/*/platform.toml: a typo is not a new target.
+    for command in ["cook", "package"] {
+        let (ok, text) = run(&[command, r, "--platform", "Windows"]);
+        assert!(!ok && text.contains("unknown platform `Windows`"), "{text}");
+    }
 }

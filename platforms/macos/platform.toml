@@ -7,3 +7,10 @@ target-cpu = { x86_64 = "x86-64-v3" }
 # Planned: crash_dump. No hybrid_cores: ThreadPriority maps to QoS classes,
 # which already steer threads between P and E cores.
 ext = ["vmem_alias", "dylib"]
+
+# See platforms/windows/platform.toml.
+[cook]
+texture-compression = ["bc"]
+texture-layout = "linear"
+head-codec = "zstd"
+bulk-codec = "zstd"

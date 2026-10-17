@@ -1,4 +1,8 @@
 /target
+# fuzz/ is its own workspace, with its own target directory.
+/fuzz/target/
+# LLVM coverage profiles belong under target/coverage/; any elsewhere are strays.
+*.profraw
 
 # Console backends are private repositories cloned into platforms/<name>/.
 # Only the public desktop platform manifests are tracked.

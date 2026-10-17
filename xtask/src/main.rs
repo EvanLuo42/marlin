@@ -7,6 +7,7 @@ mod check;
 mod coverage;
 mod fuzz;
 mod platform;
+mod process;
 mod test;
 mod unicode;
 
@@ -89,6 +90,12 @@ fn root() -> PathBuf {
         .parent()
         .unwrap()
         .to_path_buf()
+}
+
+/// Cargo's target directory: `CARGO_TARGET_DIR` (relative to the workspace root) or
+/// `<root>/target`, the rule marlin-bench and the golden-image helpers follow too.
+fn target_dir(root: &Path) -> PathBuf {
+    root.join(std::env::var_os("CARGO_TARGET_DIR").unwrap_or_else(|| "target".into()))
 }
 
 /// The cargo that invoked us, so the pinned toolchain is used.
