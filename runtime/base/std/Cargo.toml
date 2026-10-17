@@ -10,6 +10,7 @@ marlin-diag.workspace = true
 marlin-error.workspace = true
 marlin-io.workspace = true
 marlin-mem.workspace = true
+marlin-rt.workspace = true
 marlin-sync.workspace = true
 marlin-thread.workspace = true
 marlin-time.workspace = true

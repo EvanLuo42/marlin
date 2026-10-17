@@ -709,6 +709,7 @@ dependencies = [
  "marlin-error",
  "marlin-io",
  "marlin-mem",
+ "marlin-rt",
  "marlin-sync",
  "marlin-thread",
  "marlin-time",

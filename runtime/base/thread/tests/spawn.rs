@@ -137,7 +137,7 @@ fn handles_can_be_joined_from_another_thread() {
 fn current_name_reads_back() {
     let handle = marlin_thread::Builder::new()
         .name("named-worker")
-        .spawn(|| marlin_thread::current::name())
+        .spawn(marlin_thread::current::name)
         .unwrap();
     assert_eq!(handle.join().as_deref(), Some("named-worker"));
 }
