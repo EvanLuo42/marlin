@@ -39,7 +39,7 @@
 | NonUniform | 编译器自动推断，允许手工覆盖 | 10.3 |
 | 指针 | 暂不支持 | 10 |
 | 入口 | 按 stage 分的 attribute：`[Compute(8, 8, 1)]`、`[Vertex]`、`[Pixel]`、`[Mesh(...)]` | 11 |
-| 系统值 | 写在参数或字段上的 attribute：`[DispatchThreadId]`、`[Position]`…… | 11.2 |
+| 系统值 | 写在参数或字段上的 attribute：`[DispatchThreadId]`、`[Position]`……，完整清单见 §11.2 | 11.2 |
 | push constants | 入口参数标 `[Push]`，最多一个 | 11.3 |
 | 模板入口 | 泛型入口，cook 时给出类型实参 | 11.4 |
 | groupshared | namespace 级的 `[GroupShared]` 字段 | 12.1 |
@@ -71,6 +71,8 @@
 | 隐式数值转换 | C# 的表，加上 `half` → `float`/`double`；转成 `half` 要显式；同长度向量逐分量 | 9.3、9.4 |
 | 向量比较 | `==` 和 `<` 一样逐分量，结果是 bool 向量；`&&`、`||`、`?:` 只接受标量 bool | 9.4 |
 | 重载决议 | 照 C# 的核心规则（更好的函数成员），不做 `params` 展开 | 9.8 |
+| 确定赋值 | 照 C#：读之前确定赋值，`out` 在出口前赋值，非 void 函数每条路径都 return | 6 |
+| 穷尽 | switch 表达式一律必须穷尽；switch 语句只对非 Flags enum 要求 | 9.1 |
 | 内建类型 | 核心库里用 `[Builtin]` 声明，编译器实现；`float` 等关键字是它们的别名 | 17.1 |
 | 内建函数 | 核心库里写签名、不写函数体，标 `[Intrinsic("op")]` | 17.2 |
 
@@ -246,6 +248,7 @@ Decode(g, out var n, ref w);
   - `ref` 可读可写；
   - 调用处必须写上 `out` 或 `ref`。
 - 实现方式是 copy-in/copy-out，**不承诺**真正的别名。需要别名语义的场景，比如原子操作，用资源上的方法来做（§12.2）。
+- 确定赋值照 C#：局部变量在每条路径上都赋过值才能读；`out` 参数在函数的每个出口之前都要赋值；返回非 `void` 的函数每条路径都要 `return`。编译器按 C# 的规则做流分析，读到未赋值的变量就报错，不会隐式清零。
 - 局部函数和 lambda 见 §9.2。
 - **递归**只允许编译期递归：在泛型参数或 const 参数上递减、单态化之后能完全展开的递归是合法的（例如 `Layer<N>` 调用 `Layer<N - 1>`）。运行时递归会报错，并给出形成环的调用链。
 
@@ -397,6 +400,7 @@ extension<T>(Vector<T, 3> v) where T : IArithmetic<T>
 ### 9.1 保留的 C# 特性
 
 - **switch 表达式和模式匹配**：支持常量模式、关系模式、`and`/`or`/`not` 和属性模式，没有类型模式。
+- switch **表达式**一律必须穷尽（通常写 `_ =>`），否则报错：C# 在这里只给警告、运行时抛异常，GPU 上没有异常。switch **语句**只对非 `[Flags]` 的 enum 要求覆盖所有成员（§3.5）。
 - **元组和解构**：`var (wi, pdf) = Sample(...);`
 - **`foreach` 和范围**：`foreach (var i in 0..n)`，也可以对定长数组和实现了枚举接口的类型做 `foreach`。
 - 其他语句（`if`、`for`、`while`、`do`、`switch`、`break`、`continue`、`return`）都和 C# 一样。像素着色器里丢弃像素用内建函数 `Discard()`。
@@ -602,6 +606,20 @@ public void Blur([DispatchThreadId] uint3 id, [GroupIndex] uint gi, [Push] in Bl
 - 没有标系统值的 stage I/O 字段，由编译器按字段名分配 location。
 - `[Flat]`、`[NoPerspective]` 等插值修饰也写成 attribute。
 - 0002 §3 的约定照旧：`[VertexId]` 包含 base vertex，`[InstanceId]` 从 0 开始。
+- 系统值的完整清单（类型在括号里），编译器按 stage 和方向检查：
+
+| 位置 | 系统值 |
+|---|---|
+| compute、mesh、amplification 的输入 | `[DispatchThreadId]`（`uint3`）、`[GroupId]`（`uint3`）、`[GroupThreadId]`（`uint3`）、`[GroupIndex]`（`uint`） |
+| vertex 的输入 | `[VertexId]`（`uint`）、`[InstanceId]`（`uint`） |
+| vertex 和 mesh 顶点的输出、pixel 的输入 | `[Position]`（`float4`）、`[ClipDistance]`（`float[N]`） |
+| pixel 的输入、mesh 图元的输出 | `[PrimitiveId]`（`uint`） |
+| mesh 图元的输出 | `[CullPrimitive]`（`bool`） |
+| pixel 的输入 | `[IsFrontFace]`（`bool`）、`[SampleIndex]`（`uint`） |
+| pixel 的输出 | `[Target(i)]`（1 到 4 个分量的 `float`/`int`/`uint`）、`[Depth]`（`float`）、`[Coverage]`（`uint`） |
+| 插值修饰（stage I/O 字段） | `[Flat]`、`[NoPerspective]`、`[Centroid]`、`[Sample]` |
+
+- 以后需要时再加（比如 `[ViewIndex]`、`[Layer]`）。
 
 ### 11.3 Push constants
 
@@ -735,6 +753,8 @@ else { ... }
 ```
 
 - 编译器从函数体推断出每个函数需要哪些 capability，并沿调用图向上传播。
+  - 来源：用到的类型（`half`、`short`、`ushort` → `Native16Bit`；`long`、`ulong` → `Int64`；`double` → `Float64`），以及核心库里标了 `[Requires(...)]` 的内建函数和类型（wave、mesh、ray query……）。
+  - 推断和 `[Requires]` 契约检查在类型检查阶段做；和具体 target 对照、`const if` 裁掉的分支不检查，要等 target 描述（0005 §11 第 9 步）。
 - public 函数可以标 `[Requires(...)]` 作为契约，推断结果超出声明就报错。
 - 当 target 不满足入口需要的 capability 时报错，并给出调用链。
 - `Target.Has(...)` 和 `Target.Tier` 等是编译期常量，配合 `const if` 使用（§13.2）。

@@ -1,0 +1,74 @@
+namespace Game;
+
+public interface IShape
+{
+    type Params;
+    float Area();
+    float Scale(float s) => s;
+}
+
+public interface IAddable<T> where T : IAddable<T>
+{
+    static abstract T operator +(T a, T b);
+}
+
+public struct Square : IShape, IAddable<Square>
+{
+    public float Side;
+    public type Params = float4;
+    public float Area() => Side * Side;
+    public static Square operator +(Square a, Square b) => Square { Side = a.Side + b.Side };
+}
+
+public float Total<S>(S s) where S : IShape => s.Area();
+
+public struct Args
+{
+    public Buffer<float4> Out;
+    public float Scale;
+    public uint Count;
+}
+
+public struct VsOut
+{
+    [Position] public float4 Pos;
+    public float2 Uv;
+    [Flat] public uint Id;
+}
+
+public struct Lighting
+{
+    public float4 Color;
+    public float3 Dir;
+    public float Range;
+}
+
+[GroupShared] float4[64] Tile;
+public const int Size = 8;
+public const bool UseWave = true;
+
+[Compute(Size, Size, 1)]
+public void Main([DispatchThreadId] uint3 id, [GroupIndex] uint gi, [Push] in Args args)
+{
+    Tile[gi] = float4(1, 1, 1, 1);
+}
+
+[Vertex]
+public VsOut Vs([VertexId] uint vid)
+{
+    VsOut o = default;
+    return o;
+}
+
+[Pixel]
+public float4 Ps(in VsOut i, [IsFrontFace] bool front) => i.Pos;
+
+public void Uses(Uniform<Lighting> u, Func<float, float> f) { }
+
+[Requires(Capability.Float64)]
+public double Precise(double x) => x * 2;
+
+public void Guarded()
+{
+    const if (UseWave) { MatMul16(); }
+}

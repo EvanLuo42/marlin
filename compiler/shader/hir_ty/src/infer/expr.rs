@@ -400,6 +400,9 @@ impl InferCtx<'_, '_> {
                 .map(|(id, _)| id)
                 .expect("root scope")
         });
+        if self.used_before_declaration(e, scope, path) {
+            return Ok(Ty::Error);
+        }
         let resolution =
             self.resolver
                 .resolve_in_body(self.cx, &def_path, true, &self.scopes, scope)?;
@@ -479,6 +482,29 @@ impl InferCtx<'_, '_> {
         Ok(ty)
     }
 
+    /// C#'s rule that a block's locals cover the whole block: a name a later local of an
+    /// enclosing block declares is that local, used before its declaration.
+    fn used_before_declaration(
+        &mut self,
+        e: ExprId,
+        scope: marlin_front_hir_def::ScopeId,
+        path: &HirPath,
+    ) -> bool {
+        let first = match path.segments.first() {
+            Some(first) if !path.global && first.args.is_none() => first,
+            _ => return false,
+        };
+        if self.scopes.declared_later(scope, &first.name).is_none() {
+            return false;
+        }
+        self.report(
+            InferLoc::Expr(e),
+            "E1128",
+            format!("`{}` is used before its declaration", first.name),
+        );
+        true
+    }
+
     pub(crate) fn binding_ty(&self, b: marlin_front_hir_def::store::BindingId) -> Ty {
         self.result
             .binding_types
@@ -500,7 +526,7 @@ impl InferCtx<'_, '_> {
         match data.kind {
             ItemKind::Field | ItemKind::EnumMember | ItemKind::Property => {
                 let types = self.cx.get::<ItemTypesQuery>(&item)?;
-                let ty = types.ty.clone().unwrap_or(Ty::Error);
+                let ty = self.in_enum_initializer(item, types.ty.clone().unwrap_or(Ty::Error))?;
                 let instance = data
                     .parent
                     .is_some_and(|p| tree.items[p].kind != ItemKind::Namespace)
@@ -577,7 +603,10 @@ impl InferCtx<'_, '_> {
         member: Member,
     ) -> Result<(Ty, Option<Step>), Cancelled> {
         Ok(match member {
-            Member::Field { item, ty } => (ty, Some(Step::Field(item))),
+            Member::Field { item, ty } => {
+                let ty = self.in_enum_initializer(item, ty)?;
+                (ty, Some(Step::Field(item)))
+            }
             Member::Property { item, ty } => (ty, Some(Step::Property(item))),
             Member::Swizzle { components, ty } => (ty, Some(Step::Swizzle(components))),
             Member::Length => (self.scalar_ty(Scalar::I32), Some(Step::Length)),
@@ -630,6 +659,10 @@ impl InferCtx<'_, '_> {
                         .map(|(id, _)| id)
                         .expect("root scope")
                 });
+                if self.used_before_declaration(callee, scope, &path) {
+                    self.arg_infos(args)?;
+                    return Ok(Ty::Error);
+                }
                 let explicit = self.explicit_args(&path)?;
                 let resolution =
                     self.resolver

@@ -1,0 +1,95 @@
+error[E1129]: cannot assign to `this`, which is read-only in a `readonly` member
+  --> game/Checks.mshader:10:36
+   |
+10 |     public readonly void Sneak() { N = 1; }
+   |                                    ^
+
+error[E1129]: cannot assign to `this`, which is read-only in a `readonly struct`
+  --> game/Checks.mshader:17:27
+   |
+17 |     public void Touch() { N = 2; }
+   |                           ^
+
+error[E1132]: `a` may be read before it is assigned
+  --> game/Checks.mshader:27:12
+   |
+27 |     return a;
+   |            ^
+
+error[E1132]: `v` may be read before it is assigned
+  --> game/Checks.mshader:34:12
+   |
+34 |     return v.Y;
+   |            ^^^
+
+error[E1126]: not every path of this function returns a value
+  --> game/Checks.mshader:37:7
+   |
+37 | float NoReturn(int n)
+   |       ^^^^^^^^
+
+error[E1133]: `out` parameter `r` must be assigned before the function returns
+  --> game/Checks.mshader:44:12
+   |
+44 |     if (c) return;
+   |            ^^^^^^^
+
+error[E1127]: a `switch` section must end in `break`, `continue` or `return`
+  --> game/Checks.mshader:53:13
+   |
+53 |             n++;
+   |             ^^^^
+
+error[E1128]: `y` is used before its declaration
+  --> game/Checks.mshader:61:13
+   |
+61 |     int x = y;
+   |             ^
+
+error[E1129]: cannot assign to `p`, an `in` parameter
+  --> game/Checks.mshader:68:5
+   |
+68 |     p.X = 1;
+   |     ^^^
+
+error[E1130]: `Inc` is not `readonly`, so it cannot be called on `m`, an `in` parameter
+  --> game/Checks.mshader:69:5
+   |
+69 |     m.Inc();
+   |     ^^^^^
+
+error[E1129]: cannot assign to an element of `arr`, an `in` parameter
+  --> game/Checks.mshader:71:5
+   |
+71 |     arr[0] = 1;
+   |     ^^^^^^
+
+error[E1129]: cannot assign to `i`, a `foreach` variable
+  --> game/Checks.mshader:72:31
+   |
+72 |     foreach (var i in 0..3) { i = 2; }
+   |                               ^
+
+error[E1131]: this `switch` does not cover `Shape.Triangle`; add them or `_ =>`
+  --> game/Checks.mshader:77:13
+   |
+77 |     var a = s switch { Shape.Circle => 1, Shape.Square => 2 };
+   |             ^
+
+error[E1131]: this `switch` expression does not cover every value; add `_ =>`
+  --> game/Checks.mshader:78:13
+   |
+78 |     var b = n switch { 0 => 1, 1 => 2 };
+   |             ^
+
+error[E1131]: this `switch` does not cover `Shape.Square`, `Shape.Triangle`; add them or `default:`
+  --> game/Checks.mshader:79:13
+   |
+79 |     switch (s)
+   |             ^
+
+error[E1126]: not every path of this function returns a value
+  --> game/Checks.mshader:91:18
+   |
+91 |     return Apply(x => { if (x > 0) return x; });
+   |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

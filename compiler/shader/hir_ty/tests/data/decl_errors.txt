@@ -1,0 +1,137 @@
+error[E1204]: `Blob` does not implement `IShape.Params`
+  --> game/Decls.mshader:14:22
+   |
+14 | public struct Blob : IShape, IAddable<Blob>
+   |                      ^^^^^^
+
+error[E1204]: `Blob` has a member that does not match `IShape.Area`
+  --> game/Decls.mshader:14:22
+   |
+14 | public struct Blob : IShape, IAddable<Blob>
+   |                      ^^^^^^
+
+error[E1204]: `Blob` does not implement `IAddable.operator +`
+  --> game/Decls.mshader:14:30
+   |
+14 | public struct Blob : IShape, IAddable<Blob>
+   |                              ^^^^^^^^^^^^^^
+
+error[E1201]: `IShape` is an interface; interfaces can only be constraints (`where T : IShape`)
+  --> game/Decls.mshader:21:12
+   |
+21 |     public IShape Shape;
+   |            ^^^^^^
+
+error[E1202]: `Func<float, float>` can only be the type of a parameter, not of a field, local or result
+  --> game/Decls.mshader:22:12
+   |
+22 |     public Func<float, float> F;
+   |            ^^^^^^^^^^^^^^^^^^
+
+error[E1201]: `IShape` is an interface; interfaces can only be constraints (`where T : IShape`)
+  --> game/Decls.mshader:25:18
+   |
+25 | public void Take(IShape s) { }
+   |                  ^^^^^^
+
+error[E1205]: a namespace-level variable must be `[GroupShared]`; a constant is `const`
+  --> game/Decls.mshader:27:1
+   |
+27 | float Global;
+   | ^^^^^^^^^^^^^
+
+error[E1205]: `[GroupShared]` is for namespace-level fields
+  --> game/Decls.mshader:29:24
+   |
+29 | public struct Shared { [GroupShared] public float X; }
+   |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E1203]: `Buffer<Flagged>` holds a `bool`, which cannot be stored in a buffer; use `uint`
+  --> game/Decls.mshader:33:21
+   |
+33 | public void Buffers(Buffer<Flagged> b, Uniform<Misaligned> u) { }
+   |                     ^^^^^^^^^^^^^^^
+
+error[E1215]: in `Uniform<Misaligned>`, `B` (12 bytes at offset 8) crosses a 16-byte row; reorder the fields or add padding so that it starts at offset 16
+  --> game/Decls.mshader:33:40
+   |
+33 | public void Buffers(Buffer<Flagged> b, Uniform<Misaligned> u) { }
+   |                                        ^^^^^^^^^^^^^^^^^^^
+
+error[E1210]: `[Compute(x, y, z)]` takes the thread-group size: three positive integer constants
+  --> game/Decls.mshader:40:13
+   |
+40 | public void C1([VertexId] uint v, [Push] in Big big, [Push] in Small a) { }
+   |             ^^
+
+error[E1211]: `[VertexId]` is not an input of a compute entry point
+  --> game/Decls.mshader:40:27
+   |
+40 | public void C1([VertexId] uint v, [Push] in Big big, [Push] in Small a) { }
+   |                           ^^^^
+
+error[E1214]: push constants are at most 128 bytes; `Big` is 144 bytes
+  --> game/Decls.mshader:40:45
+   |
+40 | public void C1([VertexId] uint v, [Push] in Big big, [Push] in Small a) { }
+   |                                             ^^^
+
+error[E1214]: an entry point has at most one `[Push]` parameter
+  --> game/Decls.mshader:40:64
+   |
+40 | public void C1([VertexId] uint v, [Push] in Big big, [Push] in Small a) { }
+   |                                                                ^^^^^
+
+error[E1211]: `[DispatchThreadId]` is not an input of a pixel entry point
+  --> game/Decls.mshader:43:37
+   |
+43 | public float4 P1([DispatchThreadId] uint3 id, in BadIo io) => float4(0, 0, 0, 0);
+   |                                     ^^^^^
+
+error[E1211]: `BadIo.V`: `[VertexId]` is not an input of a pixel entry point
+  --> game/Decls.mshader:43:50
+   |
+43 | public float4 P1([DispatchThreadId] uint3 id, in BadIo io) => float4(0, 0, 0, 0);
+   |                                                  ^^^^^
+
+error[E1210]: an entry point has exactly one stage attribute
+  --> game/Decls.mshader:47:13
+   |
+47 | public void Two() { }
+   |             ^^^
+
+error[E1210]: a compute entry point returns `void`
+  --> game/Decls.mshader:50:8
+   |
+50 | public float NotVoid() => 1;
+   |        ^^^^^
+
+error[E1213]: `[DispatchThreadId]` belongs on a parameter of an entry point
+  --> game/Decls.mshader:52:41
+   |
+52 | public void NotEntry([DispatchThreadId] uint3 id) { }
+   |                                         ^^^^^
+
+error[E1212]: `[Position]` must be `float4`, not `float3`
+  --> game/Decls.mshader:56:23
+   |
+56 |     [Position] public float3 P;
+   |                       ^^^^^^
+
+error[E1212]: `[Target(i)]` takes the render target's index, 0 to 7
+  --> game/Decls.mshader:57:24
+   |
+57 |     [Target(9)] public float4 C;
+   |                        ^^^^^^
+
+error[E1220]: this function needs `Native16Bit` (it uses `half`), which its `[Requires]` does not list
+  --> game/Decls.mshader:61:13
+   |
+61 | public half Contract(half h) => h;
+   |             ^^^^^^^^
+
+error[E1202]: `Func<float, float>` can only be the type of a parameter, not of a field, local or result
+  --> game/Decls.mshader:65:24
+   |
+65 |     Func<float, float> f = x => x;
+   |                        ^

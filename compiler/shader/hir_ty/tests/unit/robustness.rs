@@ -19,6 +19,10 @@ fn broken_bodies_type_check_without_panicking() {
         "game/Bodies.mshader",
         "game/BodyErrors.mshader",
         "game/Game.mshader",
+        "game/Checks.mshader",
+        "game/ChecksOk.mshader",
+        "game/Decls.mshader",
+        "game/DeclsOk.mshader",
     ] {
         let world = world(&[name]);
         let file = world.file(name);

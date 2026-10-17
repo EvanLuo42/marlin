@@ -24,7 +24,11 @@ public interface IMaterial
     type Params;
 }
 
-public float4 Shade<M>(M.Params p, in Light l, out float3 n) where M : IMaterial => default;
+public float4 Shade<M>(M.Params p, in Light l, out float3 n) where M : IMaterial
+{
+    n = default;
+    return default;
+}
 
 public type Color = float4;
 public Color Tint(Color c) => c;

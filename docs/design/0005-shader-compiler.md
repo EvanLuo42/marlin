@@ -425,10 +425,12 @@ public const ClosureInfo Flatten<M>() where M : IMaterial { ... }
 | 2 | `front/syntax`：lexer、无损 CST、超集文法的 parser、validation、有类型的 AST 视图；`shader/syntax`：shader 的 dialect | 覆盖 0004 的全部语法；任意输入都不 panic，并且能原样往返 |
 | 3 | `common/query`：红绿增量引擎 | 改一个文件只重算依赖它的 query |
 | 4 | `front/hir_def`：4a 是 item tree、def map、名字解析；4b 是函数体降低成 HIR 和局部作用域 | 包内跨文件、跨 namespace 的名字都能解析 |
-| 5 | `shader/hir_ty`：5a 是类型表示、内建类型（0004 §17）、类型降低和签名；5b 是表达式的类型推断、转换、运算符、成员查找和重载；5c 是其余语义检查（readonly、`out` 赋值、穷尽、入口、布局、capability） | 0004 的类型规则都有诊断 |
+| 5 | `shader/hir_ty`：5a 是类型表示、内建类型（0004 §17）、类型降低和签名；5b 是表达式的类型推断、转换、运算符、成员查找和重载；5c 是其余语义检查（确定赋值、readonly、穷尽、接口实现、入口和系统值、push 大小、scalar 布局、capability 推断和 `[Requires]` 契约） | 0004 的类型规则都有诊断 |
 | 6 | `ir`：指令集、builder、verifier、文本打印和解析、解释器 | 文本能往返；解释器能跑 compute 语义 |
 | 7 | `mir`、`mono`：降低到 SSA、单态化、CTFE | 泛型入口能单态化，`const` 函数能在编译期求值 |
 | 8 | `opt`：pass manager 和阶段 0–1 的 pass，再加上 SCCP、DCE、CFG 化简 | 第一个 compute 入口能走完整条流水线 |
 | 9 | `target`、`backend_spirv`（SPIR-V 1.6 / Vulkan 1.3 环境）、`reflect`、facade `Session`、真正的核心库 | 第一个 compute shader 生成的 SPIR-V 通过我们自己的验证器；Vulkan RHI 就绪后在真实 GPU 上跑通 |
 | 10 | 补齐其余 stage、资源、wave、纹理；cook 和 build.rs 接入；随 Vulkan RHI 替换占位 shader | |
 | 11 | 阶段 2–5 的其余 pass、自动微分、调试信息（NonSemantic.Shader.DebugInfo）、其他后端：DXIL（Xbox 等需要 D3D12 的平台）、Metal、主机 | |
+
+第 5c 步留到后面的：`[StructLayout]`/`[FieldOffset]`（0004 §16）；mesh 的 `MeshOutput`、`[Payload]` 和 `Mesh.Dispatch` 的检查（§11.6）；长度由 `const` 字段给出的数组，布局要等第 7 步的编译期求值；capability 和具体 target 的对照、`const if` 的裁剪，等第 9 步的 target 描述。

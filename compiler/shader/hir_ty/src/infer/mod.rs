@@ -93,6 +93,9 @@ pub struct InferenceResult {
     pub callees: ArenaMap<Expr, Callee>,
     /// Expressions converted implicitly, to the type they were converted to.
     pub coercions: ArenaMap<Expr, Ty>,
+    /// What the body produces: a function's result, `void` for constructors and setters,
+    /// `None` for initializers.
+    pub body_ty: Option<Ty>,
     pub diagnostics: Vec<InferDiagnostic>,
 }
 
@@ -201,6 +204,14 @@ impl InferCtx<'_, '_> {
 
         let value_ty = match (data.kind, self.owner.part) {
             (ItemKind::Constructor, _) => Some(Ty::Void),
+            // C#: an enum member's value is a constant of the underlying type.
+            (ItemKind::EnumMember, _) => match data.parent {
+                Some(parent) => Some(self.underlying_ty(ItemId {
+                    file: item.file,
+                    local: parent,
+                })?),
+                None => Some(Ty::Error),
+            },
             (
                 ItemKind::Property | ItemKind::Indexer,
                 marlin_front_hir_def::BodyPart::Accessor(_),
@@ -220,6 +231,7 @@ impl InferCtx<'_, '_> {
             _ => types.ty.clone(),
         };
         self.return_ty = value_ty.clone();
+        self.result.body_ty = value_ty.clone();
 
         if let Some(init) = self.body.constructor_initializer {
             self.infer_expr(init, None)?;
@@ -358,6 +370,36 @@ impl InferCtx<'_, '_> {
                 .into(),
             },
             None => Ty::Error,
+        }
+    }
+
+    /// An enum's underlying type: the one written after `:`, else `int`.
+    pub(crate) fn underlying_ty(&self, enum_item: ItemId) -> Result<Ty, Cancelled> {
+        let types = self.cx.get::<ItemTypesQuery>(&enum_item)?;
+        Ok(match types.bases.first() {
+            Some(t) => t.clone(),
+            None => self.scalar_ty(Scalar::I32),
+        })
+    }
+
+    /// The type of the field or enum member `item` read here: inside an enum member's
+    /// initializer, the members of the same enum have the underlying type (as in C#).
+    pub(crate) fn in_enum_initializer(&self, item: ItemId, ty: Ty) -> Result<Ty, Cancelled> {
+        if item.file != self.owner.item.file {
+            return Ok(ty);
+        }
+        let tree = self.cx.get::<ItemTreeQuery>(&item.file)?;
+        let data = &tree.items[item.local];
+        let owner = &tree.items[self.owner.item.local];
+        let same_enum = data.kind == ItemKind::EnumMember
+            && owner.kind == ItemKind::EnumMember
+            && data.parent == owner.parent;
+        match (same_enum, data.parent) {
+            (true, Some(parent)) => self.underlying_ty(ItemId {
+                file: item.file,
+                local: parent,
+            }),
+            _ => Ok(ty),
         }
     }
 

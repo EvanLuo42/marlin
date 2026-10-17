@@ -198,6 +198,8 @@ pub struct Item {
     pub is_static: bool,
     /// `const` fields and functions.
     pub is_const: bool,
+    /// `readonly` fields, methods and structs.
+    pub is_readonly: bool,
     pub generic_params: Vec<GenericParam>,
     pub members: Vec<LocalItemId>,
     pub parent: Option<LocalItemId>,
@@ -337,6 +339,7 @@ impl Lower<'_> {
             visibility,
             is_static: has(STATIC_KW),
             is_const: has(CONST_KW),
+            is_readonly: has(READONLY_KW),
             generic_params: generic_params(&member),
             members: Vec::new(),
             parent,
@@ -389,6 +392,7 @@ impl Lower<'_> {
                         visibility: Visibility::Public,
                         is_static: true,
                         is_const: true,
+                        is_readonly: true,
                         generic_params: Vec::new(),
                         members: Vec::new(),
                         parent: Some(id),

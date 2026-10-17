@@ -1,0 +1,92 @@
+namespace Game;
+
+public struct Vec2 { public float X; public float Y; }
+
+public struct Mut
+{
+    public int N;
+    public void Inc() { N++; }
+    public readonly int Get() => N;
+    public readonly void Sneak() { N = 1; }
+}
+
+public readonly struct Fixed
+{
+    public readonly int N;
+    public Fixed(int n) { N = n; }
+    public void Touch() { N = 2; }
+}
+
+public enum Shape { Circle, Square, Triangle }
+public const int Limit = 4;
+
+float Unassigned(bool c)
+{
+    float a;
+    if (c) a = 1;
+    return a;
+}
+
+float HalfAStruct()
+{
+    Vec2 v;
+    v.X = 1;
+    return v.Y;
+}
+
+float NoReturn(int n)
+{
+    if (n > 0) return 1;
+}
+
+void OutMissing(bool c, out float r)
+{
+    if (c) return;
+    r = 1;
+}
+
+void FallThrough(int n)
+{
+    switch (n)
+    {
+        case 0:
+            n++;
+        case 1:
+            break;
+    }
+}
+
+int UsedBeforeDeclared()
+{
+    int x = y;
+    int y = 1;
+    return x + y;
+}
+
+void Writes(in Vec2 p, in Mut m, in float[3] arr)
+{
+    p.X = 1;
+    m.Inc();
+    var ok = m.Get();
+    arr[0] = 1;
+    foreach (var i in 0..3) { i = 2; }
+}
+
+float NotExhaustive(Shape s, int n)
+{
+    var a = s switch { Shape.Circle => 1, Shape.Square => 2 };
+    var b = n switch { 0 => 1, 1 => 2 };
+    switch (s)
+    {
+        case Shape.Circle:
+            break;
+    }
+    return a + b;
+}
+
+float Apply(Func<float, float> f) => f(1);
+
+float Lambda()
+{
+    return Apply(x => { if (x > 0) return x; });
+}

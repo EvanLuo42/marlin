@@ -17,6 +17,8 @@ public struct IntrinsicAttribute : IAttribute
     public IntrinsicAttribute(string op) { Op = op; }
 }
 
+public struct FlagsAttribute : IAttribute { }
+
 public interface IScalar<T> where T : IScalar<T> { }
 
 public interface IArithmetic<T> where T : IArithmetic<T>
@@ -76,3 +78,27 @@ public Vector<T, N> Lerp<T, const int N>(Vector<T, N> a, Vector<T, N> b, T t)
 [Intrinsic("max")] public float Max(float a, float b);
 [Intrinsic("max")] public double Max(double a, double b);
 [Intrinsic("max")] public int Max(int a, int b);
+
+// Attributes the compiler knows (0004 §11, §12).
+public struct ComputeAttribute : IAttribute { public ComputeAttribute(int x, int y, int z) { } }
+public struct VertexAttribute : IAttribute { }
+public struct PixelAttribute : IAttribute { }
+public struct PushAttribute : IAttribute { }
+public struct GroupSharedAttribute : IAttribute { }
+public struct DispatchThreadIdAttribute : IAttribute { }
+public struct GroupIndexAttribute : IAttribute { }
+public struct VertexIdAttribute : IAttribute { }
+public struct PositionAttribute : IAttribute { }
+public struct IsFrontFaceAttribute : IAttribute { }
+public struct FlatAttribute : IAttribute { }
+public struct TargetAttribute : IAttribute { public TargetAttribute(int index) { } }
+
+public enum Capability { Native16Bit, Int64, Float64, WaveMatrix }
+public struct RequiresAttribute : IAttribute { public RequiresAttribute(Capability c) { } }
+
+[Builtin("uniform")] public struct Uniform<T> { }
+[Builtin("buffer")] public struct Buffer<T> { }
+
+[Requires(Capability.WaveMatrix)]
+[Intrinsic("wave.matmul")]
+public void MatMul16();

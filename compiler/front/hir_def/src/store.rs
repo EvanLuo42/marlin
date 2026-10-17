@@ -498,3 +498,187 @@ pub enum BindingKind {
     LocalFunction,
     LocalFunctionParam,
 }
+
+/// A node of a body, for walking it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Node {
+    Expr(ExprId),
+    Stmt(StmtId),
+    Pat(PatId),
+}
+
+impl ExprStore {
+    /// The direct children of `node` that are expressions, statements or patterns, in source
+    /// order. Types and attributes are left out.
+    pub fn children(&self, node: Node) -> Vec<Node> {
+        let mut out = Vec::new();
+        let args = |out: &mut Vec<Node>, args: &[Arg]| {
+            out.extend(args.iter().map(|a| Node::Expr(a.expr)));
+        };
+        let lambda = |out: &mut Vec<Node>, body: LambdaBody| {
+            out.push(match body {
+                LambdaBody::Expr(e) => Node::Expr(e),
+                LambdaBody::Block(s) => Node::Stmt(s),
+            });
+        };
+        match node {
+            Node::Expr(e) => match &self.exprs[e] {
+                Expr::Missing
+                | Expr::Literal(_)
+                | Expr::Path(_)
+                | Expr::Type(_)
+                | Expr::Default(_)
+                | Expr::This
+                | Expr::Base
+                | Expr::Typeof(_)
+                | Expr::Sizeof(_)
+                | Expr::DeclVar { .. }
+                | Expr::DeclTuple(_)
+                | Expr::Throw(None) => {}
+                Expr::Interpolated(parts) => {
+                    for part in parts {
+                        if let InterpolationPart::Hole {
+                            expr, alignment, ..
+                        } = part
+                        {
+                            out.push(Node::Expr(*expr));
+                            out.extend(alignment.map(Node::Expr));
+                        }
+                    }
+                }
+                Expr::Member { receiver, .. } => out.push(Node::Expr(*receiver)),
+                Expr::Call {
+                    callee: base,
+                    args: a,
+                }
+                | Expr::Index { base, args: a } => {
+                    out.push(Node::Expr(*base));
+                    args(&mut out, a);
+                }
+                Expr::Unary { operand, .. } => out.push(Node::Expr(*operand)),
+                Expr::Binary { lhs, rhs, .. } => {
+                    out.extend([Node::Expr(*lhs), Node::Expr(*rhs)]);
+                }
+                Expr::Assign { target, value, .. } => {
+                    out.extend([Node::Expr(*target), Node::Expr(*value)]);
+                }
+                Expr::Conditional {
+                    cond,
+                    then,
+                    otherwise,
+                } => out.extend([cond, then, otherwise].map(|x| Node::Expr(*x))),
+                Expr::Cast { expr, .. } | Expr::As { expr, .. } | Expr::Throw(Some(expr)) => {
+                    out.push(Node::Expr(*expr));
+                }
+                Expr::Range { start, end } => {
+                    out.extend(start.iter().chain(end).map(|x| Node::Expr(*x)));
+                }
+                Expr::Is { expr, pat } => out.extend([Node::Expr(*expr), Node::Pat(*pat)]),
+                Expr::Switch { scrutinee, arms } => {
+                    out.push(Node::Expr(*scrutinee));
+                    for arm in arms {
+                        out.push(Node::Pat(arm.pat));
+                        out.extend(arm.guard.map(Node::Expr));
+                        out.push(Node::Expr(arm.expr));
+                    }
+                }
+                Expr::With { expr, inits } => {
+                    out.push(Node::Expr(*expr));
+                    out.extend(inits.iter().map(|i| Node::Expr(i.value)));
+                }
+                Expr::ObjectInit { inits, .. } => {
+                    out.extend(inits.iter().map(|i| Node::Expr(i.value)));
+                }
+                Expr::New { args: a, inits, .. } => {
+                    if let Some(a) = a {
+                        args(&mut out, a);
+                    }
+                    out.extend(inits.iter().flatten().map(|i| Node::Expr(i.value)));
+                }
+                Expr::Collection(items) => out.extend(items.iter().map(|x| Node::Expr(*x))),
+                Expr::Tuple(items) => out.extend(items.iter().map(|(_, x)| Node::Expr(*x))),
+                Expr::Lambda { body, .. } => lambda(&mut out, *body),
+            },
+            Node::Stmt(s) => match &self.stmts[s] {
+                Stmt::Missing | Stmt::Empty | Stmt::Break | Stmt::Continue => {}
+                Stmt::Expr(e) => out.push(Node::Expr(*e)),
+                Stmt::Local { declarators, .. } => {
+                    out.extend(declarators.iter().filter_map(|(_, i)| i.map(Node::Expr)));
+                }
+                Stmt::Block(stmts) => out.extend(stmts.iter().map(|s| Node::Stmt(*s))),
+                Stmt::If {
+                    cond,
+                    then,
+                    otherwise,
+                    ..
+                } => {
+                    out.extend([Node::Expr(*cond), Node::Stmt(*then)]);
+                    out.extend(otherwise.map(Node::Stmt));
+                }
+                Stmt::For {
+                    init,
+                    cond,
+                    update,
+                    body,
+                } => {
+                    out.extend(init.iter().map(|s| Node::Stmt(*s)));
+                    out.extend(cond.map(Node::Expr));
+                    out.extend(update.iter().map(|e| Node::Expr(*e)));
+                    out.push(Node::Stmt(*body));
+                }
+                Stmt::Foreach {
+                    variable,
+                    iterable,
+                    body,
+                } => out.extend([
+                    Node::Expr(*variable),
+                    Node::Expr(*iterable),
+                    Node::Stmt(*body),
+                ]),
+                Stmt::While { cond, body } => out.extend([Node::Expr(*cond), Node::Stmt(*body)]),
+                Stmt::Do { body, cond } => out.extend([Node::Stmt(*body), Node::Expr(*cond)]),
+                Stmt::Switch {
+                    scrutinee,
+                    sections,
+                } => {
+                    out.push(Node::Expr(*scrutinee));
+                    for section in sections {
+                        for (pat, guard) in section.labels.iter().flatten() {
+                            out.push(Node::Pat(*pat));
+                            out.extend(guard.map(Node::Expr));
+                        }
+                        out.extend(section.body.iter().map(|s| Node::Stmt(*s)));
+                    }
+                }
+                Stmt::Return(value) => out.extend(value.map(Node::Expr)),
+                Stmt::LocalFunction(f) => {
+                    if let Some(body) = f.body {
+                        lambda(&mut out, body);
+                    }
+                }
+            },
+            Node::Pat(p) => match &self.pats[p] {
+                Pat::Missing | Pat::Discard | Pat::Var(_) => {}
+                Pat::Constant(e) | Pat::Relational { value: e, .. } => out.push(Node::Expr(*e)),
+                Pat::And(a, b) | Pat::Or(a, b) => out.extend([Node::Pat(*a), Node::Pat(*b)]),
+                Pat::Not(a) => out.push(Node::Pat(*a)),
+                Pat::Property(items) => out.extend(items.iter().map(|(_, p)| Node::Pat(*p))),
+                Pat::Positional(items) => out.extend(items.iter().map(|p| Node::Pat(*p))),
+            },
+        }
+        out
+    }
+
+    /// `node` and everything under it, depth first.
+    pub fn descendants(&self, node: Node) -> Vec<Node> {
+        let mut out = Vec::new();
+        let mut stack = vec![node];
+        while let Some(n) = stack.pop() {
+            out.push(n);
+            let mut children = self.children(n);
+            children.reverse();
+            stack.extend(children);
+        }
+        out
+    }
+}

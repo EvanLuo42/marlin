@@ -81,6 +81,11 @@ pub enum TyDiagnosticKind {
     AttributeOutsideCore {
         attribute: &'static str,
     },
+    /// A declaration rule of step 5c (E12xx), with its message.
+    Check {
+        code: &'static str,
+        message: String,
+    },
     /// A function without a body that is neither `[Intrinsic]` nor in an interface.
     MissingBody,
 }
@@ -102,6 +107,7 @@ impl TyDiagnostic {
             NotAnInterface { .. } => "E1011",
             BadConstParamType { .. } => "E1012",
             MissingBody => "E1013",
+            Check { code, .. } => code,
         })
     }
 
@@ -139,6 +145,7 @@ impl TyDiagnostic {
             AttributeOutsideCore { attribute } => {
                 format!("`[{attribute}]` is only for the core library")
             }
+            Check { message, .. } => message.clone(),
             MissingBody => {
                 "a function without a body must be `[Intrinsic]` or declared in an interface".into()
             }
@@ -210,11 +217,19 @@ impl Query for FileTyDiagnostics {
         let tree = cx.get::<ItemTreeQuery>(file)?;
         for (local, _) in tree.items.iter() {
             let item = ItemId { file: *file, local };
-            for d in &cx.get::<ItemTypesQuery>(&item)?.diagnostics {
+            let checks = cx.get::<crate::ItemChecksQuery>(&item)?;
+            for d in cx
+                .get::<ItemTypesQuery>(&item)?
+                .diagnostics
+                .iter()
+                .chain(checks.iter())
+            {
                 out.push(d.to_diagnostic(cx)?);
             }
             for owner in marlin_front_hir_def::body_owners(cx, item)? {
-                for d in &cx.get::<crate::InferQuery>(&owner)?.diagnostics {
+                let checks = cx.get::<crate::BodyChecksQuery>(&owner)?;
+                let infer = cx.get::<crate::InferQuery>(&owner)?;
+                for d in infer.diagnostics.iter().chain(checks.iter()) {
                     out.push(d.to_diagnostic(cx)?);
                 }
             }

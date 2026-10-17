@@ -35,6 +35,8 @@ pub struct ExprScopes {
     stmt_scopes: ArenaMap<Stmt, ScopeId>,
     /// `(binding, earlier binding of the same name in an enclosing scope)`.
     pub redeclared: Vec<(BindingId, BindingId)>,
+    /// Each local with the innermost declaration space (block, loop, section...) it is in.
+    spaces: Vec<(Name, BindingId, ScopeId)>,
 }
 
 impl ExprScopes {
@@ -51,6 +53,7 @@ impl ExprScopes {
                 expr_scopes: ArenaMap::new(),
                 stmt_scopes: ArenaMap::new(),
                 redeclared: Vec::new(),
+                spaces: Vec::new(),
             },
             spaces: std::collections::HashSet::new(),
             declared: Vec::new(),
@@ -89,6 +92,24 @@ impl ExprScopes {
                 return Some(binding);
             }
             at = data.parent;
+        }
+        None
+    }
+
+    /// A local named `name` that is not visible in `scope` although its declaration space
+    /// contains `scope`: C# makes such a use refer to the local, before its declaration.
+    pub fn declared_later(&self, scope: ScopeId, name: &Name) -> Option<BindingId> {
+        let visible = self.resolve(scope, name);
+        let mut at = Some(scope);
+        while let Some(s) = at {
+            if let Some(&(_, binding, _)) = self
+                .spaces
+                .iter()
+                .find(|(n, b, space)| *space == s && n == name && Some(*b) != visible)
+            {
+                return Some(binding);
+            }
+            at = self.scopes[s].parent;
         }
         None
     }
@@ -134,6 +155,12 @@ impl Builder<'_> {
             .iter()
             .map(|&(b, s)| (b, space_path(&self.this, s)))
             .collect();
+        for (b, path) in &paths {
+            if let Some(&space) = path.last() {
+                let name = self.store.bindings[*b].name.clone();
+                self.this.spaces.push((name, *b, space));
+            }
+        }
         for (j, (later, later_path)) in paths.iter().enumerate() {
             let name = &self.store.bindings[*later].name;
             let earlier = paths[..j].iter().find(|(b, path)| {

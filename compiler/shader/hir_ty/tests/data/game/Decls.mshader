@@ -1,0 +1,66 @@
+namespace Game;
+
+public interface IShape
+{
+    type Params;
+    float Area();
+}
+
+public interface IAddable<T> where T : IAddable<T>
+{
+    static abstract T operator +(T a, T b);
+}
+
+public struct Blob : IShape, IAddable<Blob>
+{
+    public int Area() => 1;
+}
+
+public struct Holder
+{
+    public IShape Shape;
+    public Func<float, float> F;
+}
+
+public void Take(IShape s) { }
+
+float Global;
+
+public struct Shared { [GroupShared] public float X; }
+
+public struct Flagged { public bool On; public float V; }
+public struct Misaligned { public float2 A; public float3 B; }
+public void Buffers(Buffer<Flagged> b, Uniform<Misaligned> u) { }
+
+public struct Big { public float4x4 A; public float4x4 B; public float4 C; }
+public struct Small { public float X; }
+public struct BadIo { [VertexId] public uint V; }
+
+[Compute(8, 8)]
+public void C1([VertexId] uint v, [Push] in Big big, [Push] in Small a) { }
+
+[Pixel]
+public float4 P1([DispatchThreadId] uint3 id, in BadIo io) => float4(0, 0, 0, 0);
+
+[Vertex]
+[Pixel]
+public void Two() { }
+
+[Compute(1, 1, 1)]
+public float NotVoid() => 1;
+
+public void NotEntry([DispatchThreadId] uint3 id) { }
+
+public struct Wrong
+{
+    [Position] public float3 P;
+    [Target(9)] public float4 C;
+}
+
+[Requires(Capability.WaveMatrix)]
+public half Contract(half h) => h;
+
+public void Locals()
+{
+    Func<float, float> f = x => x;
+}

@@ -15,6 +15,8 @@
 == Marlin.IntrinsicAttribute.IntrinsicAttribute
   param string op
   type IntrinsicAttribute
+== Marlin.FlagsAttribute
+  bases [IAttribute]
 == Marlin.IScalar
   generic T : [IScalar<T>]
 == Marlin.IArithmetic
@@ -133,3 +135,58 @@
   param int b
   type int
   intrinsic max
+== Marlin.ComputeAttribute
+  bases [IAttribute]
+== Marlin.ComputeAttribute.ComputeAttribute
+  param int x
+  param int y
+  param int z
+  type ComputeAttribute
+== Marlin.VertexAttribute
+  bases [IAttribute]
+== Marlin.PixelAttribute
+  bases [IAttribute]
+== Marlin.PushAttribute
+  bases [IAttribute]
+== Marlin.GroupSharedAttribute
+  bases [IAttribute]
+== Marlin.DispatchThreadIdAttribute
+  bases [IAttribute]
+== Marlin.GroupIndexAttribute
+  bases [IAttribute]
+== Marlin.VertexIdAttribute
+  bases [IAttribute]
+== Marlin.PositionAttribute
+  bases [IAttribute]
+== Marlin.IsFrontFaceAttribute
+  bases [IAttribute]
+== Marlin.FlatAttribute
+  bases [IAttribute]
+== Marlin.TargetAttribute
+  bases [IAttribute]
+== Marlin.TargetAttribute.TargetAttribute
+  param int index
+  type TargetAttribute
+== Marlin.Capability
+== Marlin.Capability.Native16Bit
+  type Capability
+== Marlin.Capability.Int64
+  type Capability
+== Marlin.Capability.Float64
+  type Capability
+== Marlin.Capability.WaveMatrix
+  type Capability
+== Marlin.RequiresAttribute
+  bases [IAttribute]
+== Marlin.RequiresAttribute.RequiresAttribute
+  param Capability c
+  type RequiresAttribute
+== Marlin.Uniform
+  generic T : []
+  builtin Resource(Uniform)
+== Marlin.Buffer
+  generic T : []
+  builtin Resource(Buffer)
+== Marlin.MatMul16
+  type void
+  intrinsic wave.matmul
