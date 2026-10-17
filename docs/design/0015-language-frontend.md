@@ -16,6 +16,7 @@ Marlin shader 的语法照着 C# 走（0004），以后的 VM 语言大概率也
 | 语法差异 | 一份**超集文法**，每种语言提供一个 **`Dialect`**；parser 不看 dialect，解析之后由 validation 按 dialect 报错 | 2 |
 | 目录 | `compiler/common`（语言无关）、`compiler/front`（C# 系共享前端）、`compiler/shader`、`compiler/vm` | 1 |
 | VM 专有语法 | 结构现在搭好；shader 为了给出好提示本来就要解析的构造现在就建成正式节点，其余等 VM 语言设计时再加 | 2.4 |
+| query 引擎 | 每个 query 一个类型、单一动态 `Db`；红绿增量 + backdate + durability；协作式取消（`get` 返回 `Result<_, Cancelled>`）；可恢复的循环；诊断是返回值的一部分 | 4 |
 
 ## 1. 分层
 
@@ -122,9 +123,51 @@ pub struct Dialect {
 
 接口的具体形状到实现 `hir_def` 时再定（0005 §11 的第 4 步）。
 
-## 4. 待定
+## 4. query 引擎：`common/query`
+
+### 4.1 决定
+
+| 维度 | 决定 |
+|---|---|
+| 定义 | 每个 query 是一个实现了 `Query` 的类型（`Key`、`Value`、`execute`，可选的循环回退）；input 是实现了 `Input` 的类型。只有一个具体的 `Db`，按 `TypeId` 存表。任何 crate 加 query 都只是加一个类型，不用宏，也不用拼数据库 trait |
+| 组合 | `front` 的 query 和各语言的 query 都放进同一个 `Db`。语言专有的上下文（`Dialect`、target 描述、`SourceProvider` 读到的内容）都是普通 input |
+| 增量 | 红绿算法：每个 memo 记录读过的依赖、`verified_at` 和 `changed_at`。input 变了以后，用到时才从依赖往上验证；依赖都没变就直接把 memo 标绿，不重算 |
+| backdate | 重算出的值和旧值相等（`Value: Eq`）时，保留旧的 `changed_at`，依赖它的 query 不用重算 |
+| durability | input 分 `Low` 和 `High`（标准库、核心库这类很少改的是 `High`）。只改了 `Low` 的 input 时，只依赖 `High` input 的 memo 不必逐个验证依赖 |
+| 并发 | `Db` 是 `Sync`。同一个 key 只算一次，别的线程等它的结果。编译器内部不开线程（0005 §5.5） |
+| 取消 | **协作式**：`set` 先举起取消标志，等正在读的 snapshot 都结束后再改 input 并进入新 revision。`get` 返回 `Result<V, Cancelled>`，query 里用 `?` 往上传；长循环里调 `cx.check_cancelled()?`。工程是 `panic = "abort"`，不能靠 unwinding 取消 |
+| 循环 | 同一线程上的环和跨线程的等待环都检测。query 可以声明 `cycle_fallback`：环上请求它的那一次拿到回退值（比如"类型未知"，再由 query 自己的返回值带上一条列出整个环的诊断）。没声明回退的 query 出现在环上是编译器 bug，直接 panic，信息里列出环上的所有 query |
+| 诊断 | 作为 query 返回值的一部分，由入口按固定顺序收集；不做旁路收集器 |
+| 确定性 | query 必须是纯函数，只能通过 `cx` 读 input 和别的 query，结果不能依赖线程调度 |
+| 持久化 | 不做，只在内存里（0005 §8） |
+
+### 4.2 API
+
+```rust
+struct ItemTree;
+impl Query for ItemTree {
+    type Key = FileId;
+    type Value = Arc<item_tree::ItemTree>;
+    fn execute(cx: &Cx<'_>, file: &FileId) -> Result<Self::Value, Cancelled> {
+        let parse = cx.get::<ParseFile>(file)?;
+        ...
+    }
+}
+
+// 宿主
+let db = Arc::new(Db::new());
+db.set::<SourceText>(file, text, Durability::Low);          // 也可以 db.update(|w| { ... }) 批量改
+let snap = db.snapshot();                                   // 每个线程一个
+let tree = snap.get::<ItemTree>(&file)?;                    // Err(Cancelled)：input 正在改，稍后重试
+```
+
+- 读要通过 `Snapshot`：它在存在期间挡住 `set`。`set` 会先让正在跑的 query 尽快返回 `Cancelled`，再等所有 snapshot 释放。
+- 持有 snapshot 的线程不能调 `set`（会自己等自己），debug 构建里检测并 panic。
+- 每个 `Snapshot` 只给一个线程用；多线程编译时每个线程各取一个。
+
+## 5. 待定
 
 - `hir_def` 里语言描述的具体接口。
-- query 数据库在多种语言之间怎么组合：`front` 定义自己的 query，各语言的 facade 把它们和自己的 query 组装起来，细节在实现 `query` 时定。
+- query 的内存回收（LRU、按 revision 清理不再用到的 memo）：等内存成为问题时再做。
 - VM 语言的 dialect 和它的专有构造：VM 语言设计时定。
 - VM 语言是否需要 `protected`，以及它的默认可见性。

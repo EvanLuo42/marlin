@@ -407,7 +407,7 @@ public const ClosureInfo Flatten<M>() where M : IMaterial { ... }
 
 ## 10. 待定
 
-- query 引擎的具体设计：取消的语义。第一版不做持久化，以后如果实测发现标准库的前端开销明显，再考虑（§8）。
+- query 引擎的设计已定（0015 §4）。第一版不做持久化，以后如果实测发现标准库的前端开销明显，再考虑（§8）。
 - peephole 规则表的格式；寄存器压力模型的参数（按 target）。
 - DXIL 写出器：LLVM 3.7 bitcode 的子集，以及验证哈希的算法。
 - 语言服务器的范围。

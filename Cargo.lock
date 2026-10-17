@@ -697,6 +697,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "marlin-lang-query"
+version = "0.1.0"
+dependencies = [
+ "marlin-math",
+ "marlin-test-support",
+]
+
+[[package]]
 name = "marlin-lang-span"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,15 @@
+[package]
+name = "marlin-lang-query"
+description = "Marlin language toolchain: incremental query engine (red-green, durability, cooperative cancellation)."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+marlin-math.workspace = true
+marlin-test-support.workspace = true
+
+[lints]
+workspace = true
