@@ -42,40 +42,41 @@ pub(crate) enum Kind {
     Huge = 2,
 }
 
+/// The fields the fast paths touch come first, within 42 bytes.
 #[repr(C)]
 pub(crate) struct Page {
     /// Blocks ready to hand out.
     pub(crate) free: *mut Block,
-    /// Keys of the blocks' encoded links, next to `free` for the fast path.
+    /// Keys of the blocks' encoded links.
     pub(crate) keys: [usize; 2],
     /// Blocks freed by the owner. They become `free` once it runs dry, so the fast paths of
     /// allocation and free never touch the same list.
     pub(crate) local_free: *mut Block,
-    /// Links in the owner's queue for the bin, or in its retired queue.
-    pub(crate) next: *mut Page,
-    pub(crate) prev: *mut Page,
     /// Blocks handed out and not yet back with the owner (foreign frees count once collected).
     pub(crate) used: u32,
     /// Blocks carved out so far. Pages are carved lazily so memory is touched gradually.
     pub(crate) capacity: u32,
-    /// Blocks that fit in the page.
-    pub(crate) reserved: u32,
+    /// The page is in its heap's full queue: a foreign free must leave a hint.
+    pub(crate) in_full: AtomicBool,
+    /// Some block was handed out at an interior pointer (over-aligned allocation).
+    pub(crate) has_aligned: AtomicBool,
     pub(crate) in_use: bool,
     pub(crate) committed: bool,
     /// Unused and still committed: in the owner's retired queue until purged or reused.
     pub(crate) retired: bool,
     pub(crate) bin: u8,
+    /// Blocks that fit in the page.
+    pub(crate) reserved: u32,
     pub(crate) block_size: usize,
     /// First block; for huge segments, the allocation.
     pub(crate) area: *mut u8,
-    /// When the page was retired, in `marlin_pal::time` ticks.
-    pub(crate) retired_at: u64,
     /// Blocks freed by other threads, collected by the owner.
     pub(crate) thread_free: AtomicPtr<Block>,
-    /// The page is in its heap's full queue: a foreign free must leave a hint.
-    pub(crate) in_full: AtomicBool,
-    /// Some block was handed out at an interior pointer (over-aligned allocation).
-    pub(crate) has_aligned: AtomicBool,
+    /// Links in the owner's queue for the bin, or in its retired queue.
+    pub(crate) next: *mut Page,
+    pub(crate) prev: *mut Page,
+    /// When the page was retired, in `marlin_pal::time` ticks.
+    pub(crate) retired_at: u64,
 }
 
 #[repr(C)]
