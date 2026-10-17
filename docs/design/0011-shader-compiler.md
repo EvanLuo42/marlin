@@ -14,7 +14,7 @@
 |---|---|---|
 | 形态 | 纯 Rust 库，没有 CLI；编译器 crate 放在 `compiler/shader/`，主机平台的后端放在 `platforms/<p>/shader/` | 1 |
 | 前端 | 由 query 驱动，增量编译；query 引擎自己写一个精简版 | 2 |
-| IR | 两层：前端产出泛型的 MIR，单态化之后是后端的 SSA IR | 3 |
+| IR | 两层：前端产出泛型的 MIR，单态化之后是后端的 SSA IR；两层共用同一套指令（0012） | 3 |
 | 后端 IR 控制流 | CFG + SSA；分支和循环的终结指令带 merge 块和 continue 块，结构和 SPIR-V 同构，pass 必须保持 | 3.2 |
 | 后端 | pass 流水线（LLVM 新 pass manager 式），所有后端共用一条流水线；后端只负责最后的 lower 和写出 | 4 |
 | pass 清单 | 保留 DXC 有用的 pass；DXC 因为缺 GPU 语义而关掉的 LICM、unswitch、sinking，补上相应的 analysis 后重新打开；再加上 uniformity、资源别名、值域分析，以及 barrier、groupshared、原子聚合、描述符外提这些 GPU 专用的优化 | 4.4 |
@@ -55,9 +55,9 @@ compiler/shader/
   syntax        lexer、无损 CST、能容错的 parser、有类型的 AST 视图
   hir_def       item tree、包与 namespace 的 def map、名字解析、把函数体降低成 HIR
   hir_ty        类型检查与推断、泛型与约束求解、capability 推断、const 求值的入口
-  mir           泛型的、结构化的中层 IR；从 HIR 降低；CTFE 解释器
+  mir           从 HIR 降低到泛型 MIR（与 ir 共用指令集，0012 §2）；直接构造 SSA
   mono          从 EntryRequest 收集实例，单态化，产出后端 IR
-  ir            后端 SSA IR、builder、verifier、打印器
+  ir            指令集、类型、builder、verifier、打印器和解析器；IR 解释器（CTFE 和差分测试都用它）
   opt           pass manager 和各个 pass
   target        target 描述（capability、布局规则、资源模型、支持的操作）
   backend_dxil  DXIL：LLVM 3.7 bitcode 写出器、DXIL 元数据、容器和验证哈希
@@ -78,7 +78,7 @@ platforms/<p>/shader/  主机平台的后端（在 cook 平台 cfg 下通过 #[p
 
 | 层 | 特点 | 上面做的事 |
 |---|---|---|
-| **MIR** | 前端的产物：泛型的、按函数做 query 的；控制流是结构化的；还保留着源码级的类型 | CTFE（`const` 函数、`[Export]`、静态参数）；热重载时只重算改动了的函数 |
+| **MIR** | 前端的产物：泛型的、按函数做 query 的。指令集和后端 IR 相同，但类型里可以有类型参数、关联类型投影和还没求值的 const 表达式，接口调用也还没解析（0012 §2） | 热重载时只重算改动了的函数；作为单态化的输入 |
 | **IR** | 单态化之后的 SSA；类型都是具体的；按入口组织成 module | 自动微分、uniformity 和 NonUniform 分析、legalize、所有优化 |
 
 - 单态化（`mono`）从 `EntryRequest` 出发，收集所有用到的实例，包括泛型函数、`Func` 参数和 lambda（0010 §9.2）。
@@ -155,7 +155,7 @@ DXC **故意关掉**了以下几项：
 
 | # | pass | 来源 | 说明 |
 |---|---|---|---|
-| 0.1 | 直接构造 SSA | 新增 | MIR 降低成 IR 时，用 Braun 等人的"简单高效的 SSA 构造"直接得到 SSA，局部变量不经过 alloca + mem2reg 绕一圈 |
+| 0.1 | 单态化 | — | MIR 本身就是 SSA：HIR 降低到 MIR 时，用 Braun 等人的"简单高效的 SSA 构造"直接构造，局部变量不经过 alloca + mem2reg 绕一圈。这一步把 MIR 拷贝一份、代入类型实参、解析接口调用、求出 const 表达式的值（0012 §2、§11） |
 | 0.2 | 除零检查插入 | 新增 | 0010 §9.6：除数不是常量时，插入 `d == 0 ? 0 : n / d`。放在优化之前，值域分析可以把多余的检查消掉 |
 | 0.3 | 自动微分 | 新增（参考实现） | 前向模式：对 `ForwardDiff` 的调用点生成导数函数；对 `Derivatives.Seed` 出发的数据流，生成 x、y 两个方向的切向量（0010 §15.3）。只为确实用到的导数生成代码。反向模式以后在这里加。放在优化之前，生成的导数代码可以和原代码一起被优化 |
 | 0.4 | `Debug.*` 删除或降低 | 新增 | Shipping 构建删除；Development 构建降低成写调试 buffer（0010 §12.5） |
@@ -359,7 +359,7 @@ public const ClosureInfo Flatten<M>() where M : IMaterial { ... }
 ```
 
 - 语言层面的规则见 0010 §13.4。
-- CTFE 解释器在 MIR 上运行。
+- CTFE 的执行方式：先把用到的 `const` 函数单态化，再用 IR 解释器执行（0012 §11）。
 
 ## 7. 调试信息与统计
 
@@ -376,6 +376,14 @@ public const ClosureInfo Flatten<M>() where M : IMaterial { ... }
   - 主机平台官方工具链的版本（如果这个后端要调用它）。
 - 改了编译器代码，缓存就自动失效，不会因为忘了加版本号而读到过期的缓存。
 - 每个产物还带上它用到的源文件的内容哈希，cook 键（0003 §4.1）把这些都算进去。
+- **跨进程缓存**用的是 manifest 模式（ccache 和 Bazel 也是这么做的）：
+  - 不编译，就不知道一个入口用到了哪些文件。所以 DDC 里额外存一份"请求 → 上次用到的源文件及其内容哈希"。
+  - 查缓存时先核对这些哈希。全部没变就直接取 blob，不进编译器。
+  - 只有依赖了改动文件的入口才会重编。
+- 第一版只缓存最终的 blob，前端 query 的结果不落盘。
+  - 在 cookd 里，增量靠内存中的 `Session`。
+  - 在新进程里，需要重编的入口，它们的前端从头再走一遍。
+  - 以后如果实测发现标准库的前端开销明显，再加 rustc 式的持久化 query 缓存。
 
 ## 9. Rust 端的参数结构
 
@@ -391,8 +399,7 @@ public const ClosureInfo Flatten<M>() where M : IMaterial { ... }
 
 ## 10. 待定
 
-- query 引擎的具体设计：持久化缓存（跨进程复用 query 结果），以及取消的语义。
-- MIR 和 IR 的指令集。
+- query 引擎的具体设计：取消的语义。第一版不做持久化，以后如果实测发现标准库的前端开销明显，再考虑（§8）。
 - peephole 规则表的格式；寄存器压力模型的参数（按 target）。
 - DXIL 写出器：LLVM 3.7 bitcode 的子集，以及验证哈希的算法。
 - 语言服务器的范围。
