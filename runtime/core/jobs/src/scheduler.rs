@@ -22,6 +22,7 @@ use marlin_std::thread::fiber::{self, Context, Stack};
 use marlin_std::thread::{self, Builder, CpuSet, Error, JoinHandle};
 
 use crate::counter::Counter;
+use crate::deque::{Deque, Steal};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Config {
@@ -55,6 +56,7 @@ pub enum Priority {
     Low,
 }
 
+#[derive(Clone, Copy)]
 pub(crate) struct Job {
     pub(crate) run: unsafe fn(*mut ()),
     pub(crate) data: *mut (),
@@ -81,7 +83,7 @@ pub(crate) struct Shared {
     queues: [Mutex<VecDeque<Job>>; 3],
     /// Per worker: Normal jobs spawned by its jobs. The owner pops the newest (depth first, which
     /// bounds how many fibers nested waits park); idle workers steal the oldest.
-    locals: Box<[Mutex<VecDeque<Job>>]>,
+    locals: Box<[Deque]>,
     /// Parked fibers whose wait is over; served before new jobs.
     ready: Mutex<VecDeque<FiberPtr>>,
     free: Mutex<Vec<FiberPtr>>,
@@ -106,7 +108,8 @@ unsafe impl Sync for Shared {}
 impl Shared {
     pub(crate) fn push_job(&self, job: Job, priority: Priority) {
         match self.local_index() {
-            Some(index) if priority == Priority::Normal => self.locals[index].lock().push_back(job),
+            // SAFETY: we are worker `index`'s thread, the only one using its deque's owner side.
+            Some(index) if priority == Priority::Normal => unsafe { self.locals[index].push(job) },
             _ => self.queues[priority as usize].lock().push_back(job),
         }
         self.notify();
@@ -125,13 +128,30 @@ impl Shared {
         let [high, normal, low] = &self.queues;
         high.lock()
             .pop_front()
-            .or_else(|| self.locals[index].lock().pop_back())
+            // SAFETY: only worker `index`'s thread calls this with `index`.
+            .or_else(|| unsafe { self.locals[index].pop() })
             .or_else(|| normal.lock().pop_front())
-            .or_else(|| {
-                let n = self.locals.len();
-                (1..n).find_map(|k| self.locals[(index + k) % n].lock().pop_front())
-            })
+            .or_else(|| self.steal(index))
             .or_else(|| low.lock().pop_front())
+    }
+
+    /// The oldest job of another worker's deque, trying each in turn after `index`.
+    fn steal(&self, index: usize) -> Option<Job> {
+        let n = self.locals.len();
+        loop {
+            let mut retry = false;
+            for k in 1..n {
+                match self.locals[(index + k) % n].steal() {
+                    Steal::Success(job) => return Some(job),
+                    Steal::Retry => retry = true,
+                    Steal::Empty => {}
+                }
+            }
+            // A lost race means someone else took a job; look again while jobs may remain.
+            if !retry {
+                return None;
+            }
+        }
     }
 
     fn pop_ready(&self) -> Option<*mut Fiber> {
@@ -151,7 +171,7 @@ impl Shared {
     fn has_work(&self) -> bool {
         !self.ready.lock().is_empty()
             || self.queues.iter().any(|q| !q.lock().is_empty())
-            || self.locals.iter().any(|q| !q.lock().is_empty())
+            || self.locals.iter().any(|q| !q.is_empty())
     }
 
     /// Wakes a sleeping worker after new work was queued.
@@ -363,7 +383,7 @@ impl JobSystem {
 
         let shared = Box::new(Shared {
             queues: [const { Mutex::new(VecDeque::new()) }; 3],
-            locals: (0..workers).map(|_| Mutex::new(VecDeque::new())).collect(),
+            locals: (0..workers).map(|_| Deque::new()).collect(),
             ready: Mutex::new(VecDeque::new()),
             free: Mutex::new(fibers.iter().map(|&f| FiberPtr(f)).collect()),
             fibers,

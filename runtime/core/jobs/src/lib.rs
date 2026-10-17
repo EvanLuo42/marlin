@@ -27,6 +27,7 @@
 extern crate alloc;
 
 mod counter;
+mod deque;
 mod handle;
 mod scheduler;
 mod scope;

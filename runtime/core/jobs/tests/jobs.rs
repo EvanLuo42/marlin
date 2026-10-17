@@ -122,6 +122,31 @@ fn parallel_for_visits_each_index_once() {
 }
 
 #[test]
+fn local_queues_grow_while_stolen() {
+    // One job pushes far more children than a local queue starts with, so the queue grows
+    // while the other workers steal from it; every child must run exactly once.
+    let jobs = system(4, 64);
+    for round in 0..4 {
+        let hits: Vec<AtomicU64> = (0..50_000).map(|_| AtomicU64::new(0)).collect();
+        jobs.scope(|s| {
+            s.spawn(|| {
+                jobs.scope(|inner| {
+                    for hit in &hits {
+                        inner.spawn(move || {
+                            hit.fetch_add(1, Ordering::Relaxed);
+                        });
+                    }
+                });
+            });
+        });
+        assert!(
+            hits.iter().all(|h| h.load(Ordering::Relaxed) == 1),
+            "round {round}"
+        );
+    }
+}
+
+#[test]
 fn many_outside_threads_share_a_system() {
     let jobs = system(4, 256);
     let total = AtomicU64::new(0);
