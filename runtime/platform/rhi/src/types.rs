@@ -1922,8 +1922,8 @@ pub struct OutputInfo {
 
 impl OutputInfo {
     #[cfg_attr(
-        marlin_platform = "macos",
-        expect(dead_code, reason = "the stub backend has no outputs")
+        any(marlin_platform = "linux", marlin_platform = "macos"),
+        expect(dead_code, reason = "no display enumeration on these platforms yet")
     )]
     pub(crate) fn new(name: &str, desktop: Rect) -> Self {
         let mut info = Self {

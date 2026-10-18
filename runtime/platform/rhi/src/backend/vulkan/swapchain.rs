@@ -175,6 +175,10 @@ impl<I: Deref<Target = InstanceShared>> Surface<I> {
     }
 
     /// Some queue family of `physical` presents to the surface.
+    #[cfg_attr(
+        marlin_platform = "linux",
+        expect(dead_code, reason = "no Linux surfaces yet (0016 §11)")
+    )]
     fn supported_by(&self, physical: VkPhysicalDevice) -> bool {
         let f = &self.instance.fns;
         let Some(support) = f.vkGetPhysicalDeviceSurfaceSupportKHR else {
@@ -385,6 +389,10 @@ pub(crate) struct Swapchain {
     shared: Arc<Shared>,
     queue: QueueHandle,
     /// The window, for its monitor (`containing_output`).
+    #[cfg_attr(
+        marlin_platform = "linux",
+        expect(dead_code, reason = "no Linux surfaces yet (0016 §11)")
+    )]
     hwnd: usize,
     surface: Surface,
     raw: VkSwapchainKHR,
