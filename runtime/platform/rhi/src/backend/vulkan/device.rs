@@ -15,6 +15,7 @@ use super::ffi::*;
 use super::instance::{Adapter, Instance, InstanceShared};
 use super::memory::MemoryInfo;
 use super::queue::Queue;
+use super::resource::InternalWork;
 use super::{check, unsupported};
 use crate::contract::Queues;
 use crate::{
@@ -205,6 +206,9 @@ pub(crate) struct Shared {
     pub(crate) lost: Lost,
     /// Dropped before the device, in `Drop`.
     pub(crate) bindless: ManuallyDrop<Bindless>,
+    /// New textures' first layout and sparse binds, which submissions wait for (resource.rs);
+    /// destroyed before the device, in `Drop`.
+    pub(crate) internal: InternalWork,
 }
 
 // SAFETY: Vulkan devices may be used from any thread; objects needing external synchronization
@@ -220,6 +224,7 @@ impl Drop for Shared {
         unsafe {
             (self.fns.vkDeviceWaitIdle)(self.raw);
             ManuallyDrop::drop(&mut self.bindless);
+            self.internal.destroy(&self.fns, self.raw);
             (self.fns.vkDestroyDevice)(self.raw, ptr::null());
         }
     }
@@ -686,6 +691,15 @@ pub(crate) fn create(instance: &Instance, desc: &DeviceDesc) -> Result<(Device, 
             return Err(e);
         }
     };
+    let internal = match InternalWork::new(&device_fns, raw) {
+        Ok(w) => w,
+        Err(e) => {
+            drop(bindless);
+            // SAFETY: nothing uses the new device.
+            unsafe { (device_fns.vkDestroyDevice)(raw, ptr::null()) };
+            return Err(e);
+        }
+    };
 
     let tearing = super::swapchain::tearing(shared_instance, physical);
     let features = report_features(&chain, &ext, &props, &families, &memory, tearing);
@@ -702,6 +716,7 @@ pub(crate) fn create(instance: &Instance, desc: &DeviceDesc) -> Result<(Device, 
         memory,
         lost: Lost::default(),
         bindless: ManuallyDrop::new(bindless),
+        internal,
     });
     let queues = Queues {
         graphics: Queue::new(&shared, QueueType::Graphics, families.graphics),

@@ -95,6 +95,10 @@ impl Queue {
             .collect();
         let mut state = self.state.lock();
         waits.extend(state.pending_waits.drain(..).map(|s| wait(s, 0)));
+        // New textures' first layout and sparse binds come first (resource.rs).
+        if let Some((semaphore, value)) = s.internal.before_submit(s, self.raw, self.family)? {
+            waits.push(wait(semaphore, value));
+        }
         let info = VkSubmitInfo2 {
             waitSemaphoreInfoCount: waits.len() as u32,
             pWaitSemaphoreInfos: waits.as_ptr(),
