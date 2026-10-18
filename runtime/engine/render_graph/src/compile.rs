@@ -16,7 +16,7 @@ use crate::access::{
 };
 use crate::alias::{self, Item};
 use crate::backend::Backend;
-use crate::graph::{AccessRec, RenderGraph, Res};
+use crate::graph::{AccessRec, RenderGraph, Res, Source};
 use crate::plan::{
     BufferTransition, CompiledPlan, Lifetime, Placement, PlannedBuffer, PlannedPass,
     PlannedTexture, TextureFinal, TextureTransition,
@@ -335,9 +335,16 @@ impl<'a, 'g, B: Backend> States<'a, 'g, B> {
         buffers: &'a [PlannedBuffer],
     ) -> Self {
         let mut tex = Vec::with_capacity(subs.total as usize);
-        for node in &g.textures {
+        for (t, node) in g.textures.iter().enumerate() {
             let initial: &[TextureState] = match &node.import {
                 None => &[TextureState::UNDEFINED],
+                // A frame needing more usage than a graph-owned object has gets a new one.
+                Some(i)
+                    if matches!(i.object, Source::Retained(_))
+                        && !i.usage.contains(textures[t].usage) =>
+                {
+                    &[TextureState::UNDEFINED]
+                }
                 Some(i) => i.initial,
             };
             for sub in 0..node.desc.subresources() as usize {
@@ -353,11 +360,18 @@ impl<'a, 'g, B: Backend> States<'a, 'g, B> {
         let buf = g
             .buffers
             .iter()
-            .map(|node| {
-                let initial = node
-                    .import
-                    .as_ref()
-                    .map_or(BufferState::NONE, |i| i.initial);
+            .enumerate()
+            .map(|(b, node)| {
+                let initial = match &node.import {
+                    None => BufferState::NONE,
+                    Some(i)
+                        if matches!(i.object, Source::Retained(_))
+                            && !i.usage.contains(buffers[b].usage) =>
+                    {
+                        BufferState::NONE
+                    }
+                    Some(i) => i.initial,
+                };
                 Track::new(initial, is_read_only(initial.access))
             })
             .collect();

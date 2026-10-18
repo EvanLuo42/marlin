@@ -15,6 +15,7 @@ use crate::backend::{Backend, Rhi};
 use crate::context::PassContext;
 use crate::desc::{BufferDesc, TextureDesc};
 use crate::handle::{BufferHandle, Range, TextureHandle};
+use crate::retained::RetainedUse;
 use crate::state::StateTable;
 
 pub(crate) type Exec<'g, B> = Box<dyn FnOnce(&mut PassContext<'_, B>) + Send + 'g, &'g Arena>;
@@ -40,11 +41,24 @@ pub struct ImportBuffer {
     pub stride: Option<u32>,
 }
 
+/// Where an imported resource's object comes from.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Source<T> {
+    /// The caller's.
+    Object(T),
+    /// The graph's: a history or persistent resource ([`RenderGraph::retained`]).
+    Retained(u32),
+}
+
+/// A resource whose object outlives the frame: the caller's (imports) or the graph's (history and
+/// persistent resources). Neither kind is placed or aliased; both keep their contents and states
+/// across frames.
 pub(crate) struct Imported<T, S, U> {
-    pub object: T,
+    pub object: Source<T>,
     pub initial: S,
     pub read_only: bool,
-    /// The object's usage: accesses must stay within it.
+    /// The object's usage: accesses must stay within it. For the graph's resources, the usage
+    /// its object was made with (the state table's); a frame that needs more makes a new one.
     pub usage: U,
 }
 
@@ -152,6 +166,10 @@ pub struct RenderGraph<'g, B: Backend = Rhi> {
     pub(crate) accesses: Vec<AccessRec, &'g Arena>,
     /// Readbacks declared so far.
     pub(crate) readbacks: u32,
+    /// History and persistent resources requested this frame.
+    pub(crate) retained: Vec<RetainedUse<'g>, &'g Arena>,
+    /// Views whose history this frame does not continue.
+    pub(crate) invalidated: Vec<u64, &'g Arena>,
 }
 
 impl<'g, B: Backend> RenderGraph<'g, B> {
@@ -166,6 +184,8 @@ impl<'g, B: Backend> RenderGraph<'g, B> {
             passes: Vec::new_in(arena),
             accesses: Vec::new_in(arena),
             readbacks: 0,
+            retained: Vec::new_in(arena),
+            invalidated: Vec::new_in(arena),
         }
     }
 
@@ -249,7 +269,7 @@ impl<'g, B: Backend> RenderGraph<'g, B> {
             desc,
             version: 0,
             import: Some(Imported {
-                object: texture,
+                object: Source::Object(texture),
                 initial,
                 read_only: import.read_only,
                 usage: rhi.usage,
@@ -285,7 +305,7 @@ impl<'g, B: Backend> RenderGraph<'g, B> {
             },
             version: 0,
             import: Some(Imported {
-                object: buffer,
+                object: Source::Object(buffer),
                 initial,
                 read_only: import.read_only,
                 usage: rhi.usage,
@@ -704,6 +724,7 @@ impl<'g, B: Backend> PassBuilder<'_, 'g, B> {
         );
         if cfg!(debug_assertions)
             && let Some(import) = &node.import
+            && matches!(import.object, Source::Object(_))
         {
             assert!(
                 import.usage.contains(usage.texture_usage()),
@@ -761,6 +782,7 @@ impl<'g, B: Backend> PassBuilder<'_, 'g, B> {
         );
         if cfg!(debug_assertions)
             && let Some(import) = &node.import
+            && matches!(import.object, Source::Object(_))
         {
             assert!(
                 import.usage.contains(usage.buffer_usage()),

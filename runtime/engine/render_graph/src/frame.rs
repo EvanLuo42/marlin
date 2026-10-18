@@ -28,9 +28,11 @@ use crate::backend::{Backend as _, Rhi};
 use crate::cache::{Lookup, PlanCache};
 use crate::context::{NO_VIEW, PassContext, RhiParts};
 use crate::desc::{BufferDesc, TextureDesc};
-use crate::graph::{AccessRec, Builtin, Exec, Readback, RenderGraph, Res};
+use crate::graph::{AccessRec, Builtin, Exec, Imported, Readback, RenderGraph, Res, Source};
 use crate::plan::CompiledPlan;
+use crate::retained::RetainedKind;
 use crate::state::StateTable;
+use crate::state::{buffer_object_usage, texture_object_usage};
 
 /// Frames the CPU may record ahead of the GPU.
 pub const FRAMES_IN_FLIGHT: usize = 2;
@@ -200,6 +202,8 @@ pub struct FrameContext {
     next_value: u64,
     slots: Vec<Slot>,
     import_views: HashMap<(u64, ViewSpec), Cached>,
+    /// The objects of history and persistent resources, by key and slot.
+    retained: HashMap<(u64, u8), RetainedObject>,
     /// Objects to drop once the fence reaches the value.
     retired: Vec<(u64, Box<dyn Send>)>,
     readbacks: Vec<PendingReadback>,
@@ -245,6 +249,7 @@ impl FrameContext {
             next_value: 1,
             slots,
             import_views: HashMap::new(),
+            retained: HashMap::new(),
             retired: Vec::new(),
             readbacks: Vec::new(),
             stats: None,
@@ -296,6 +301,7 @@ impl FrameContext {
             next_value,
             slots,
             import_views,
+            retained,
             retired,
             readbacks,
             stats,
@@ -339,33 +345,81 @@ impl FrameContext {
             }
         };
 
-        // Views of imported objects.
-        let retained = plan.passes.iter().map(|p| p.node as usize);
-        for node in retained {
-            let pass = &g.passes[node];
-            for i in pass.accesses.start as usize..pass.accesses.end as usize {
-                let rec = &g.accesses[i];
-                let Some((object, spec)) = import_spec(&g, rec, pass) else {
-                    continue;
-                };
-                match import_views.get_mut(&(object, spec)) {
-                    Some(cached) => cached.frame = frame,
-                    None => {
-                        created += 1;
-                        let view = create_view(device, import_object(&g, rec.res), spec)?;
-                        import_views.insert((object, spec), Cached { view, frame });
+        // Objects of history and persistent resources the plan uses.
+        let last_submitted = *next_value - 1;
+        for u in g.retained.iter() {
+            let (planned_t, planned_b, used) = match u.res {
+                Res::Texture(t) => {
+                    let p = &plan.textures[t as usize];
+                    (p.usage, Default::default(), p.lifetime.is_some())
+                }
+                Res::Buffer(b) => {
+                    let p = &plan.buffers[b as usize];
+                    (Default::default(), p.usage, p.lifetime.is_some())
+                }
+            };
+            if !used {
+                continue;
+            }
+            let (stored_t, stored_b) = if u.same {
+                states.retained_usage(u.key, u.slot)
+            } else {
+                Default::default()
+            };
+            let object = match u.kind {
+                RetainedKind::Texture(desc) => {
+                    let rhi = desc.to_rhi(texture_object_usage(stored_t, planned_t));
+                    match retained.get(&(u.key, u.slot)) {
+                        Some(RetainedObject::Texture(o)) if *o.desc() == rhi => continue,
+                        _ => {
+                            let o = device.create_texture(&rhi)?;
+                            o.set_name(u.name);
+                            RetainedObject::Texture(o)
+                        }
                     }
                 }
+                RetainedKind::Buffer(desc) => {
+                    let rhi = desc.to_rhi(buffer_object_usage(stored_b, planned_b));
+                    match retained.get(&(u.key, u.slot)) {
+                        Some(RetainedObject::Buffer(o)) if *o.desc() == rhi => continue,
+                        _ => {
+                            let o = device.create_buffer(&rhi)?;
+                            o.set_name(u.name);
+                            RetainedObject::Buffer(o)
+                        }
+                    }
+                }
+            };
+            created += 1;
+            if let Some(old) = retained.insert((u.key, u.slot), object) {
+                retire_retained(old, import_views, retired, last_submitted);
             }
         }
 
         // Per-frame tables: objects, shapes, view indices.
         let physical = &slot.physical[physical];
+        let retained_object = |source: &Source<()>| -> Option<&RetainedObject> {
+            let Source::Retained(i) = source else {
+                return None;
+            };
+            let u = &g.retained[*i as usize];
+            retained.get(&(u.key, u.slot))
+        };
         let textures: Vec<Option<&Texture>, &Arena> = {
             let mut v = Vec::with_capacity_in(g.textures.len(), arena);
             for (t, node) in g.textures.iter().enumerate() {
                 v.push(match &node.import {
-                    Some(i) => Some(i.object),
+                    Some(Imported {
+                        object: Source::Object(o),
+                        ..
+                    }) => Some(*o),
+                    Some(Imported {
+                        object: Source::Retained(i),
+                        ..
+                    }) => match retained_object(&Source::Retained(*i)) {
+                        Some(RetainedObject::Texture(o)) => Some(o),
+                        _ => None,
+                    },
                     None => physical.textures[t].as_ref(),
                 });
             }
@@ -375,12 +429,45 @@ impl FrameContext {
             let mut v = Vec::with_capacity_in(g.buffers.len(), arena);
             for (b, node) in g.buffers.iter().enumerate() {
                 v.push(match &node.import {
-                    Some(i) => Some(i.object),
+                    Some(Imported {
+                        object: Source::Object(o),
+                        ..
+                    }) => Some(*o),
+                    Some(Imported {
+                        object: Source::Retained(i),
+                        ..
+                    }) => match retained_object(&Source::Retained(*i)) {
+                        Some(RetainedObject::Buffer(o)) => Some(o),
+                        _ => None,
+                    },
                     None => physical.buffers[b].as_ref(),
                 });
             }
             v
         };
+
+        // Views of imported and graph-owned objects.
+        for pp in &plan.passes {
+            let pass = &g.passes[pp.node as usize];
+            for i in pass.accesses.start as usize..pass.accesses.end as usize {
+                let rec = &g.accesses[i];
+                let Some((object, spec)) = import_spec(&g, rec, pass, &textures, &buffers) else {
+                    continue;
+                };
+                match import_views.get_mut(&(object, spec)) {
+                    Some(cached) => cached.frame = frame,
+                    None => {
+                        created += 1;
+                        let target = match rec.res {
+                            Res::Texture(t) => Object::Texture(textures[t as usize].expect("used")),
+                            Res::Buffer(b) => Object::Buffer(buffers[b as usize].expect("used")),
+                        };
+                        let view = create_view(device, target, spec)?;
+                        import_views.insert((object, spec), Cached { view, frame });
+                    }
+                }
+            }
+        }
         let shapes: Vec<(u32, u32), &Arena> = {
             let mut v = Vec::with_capacity_in(g.textures.len(), arena);
             v.extend(
@@ -401,7 +488,7 @@ impl FrameContext {
                         .as_ref()
                         .map_or(NO_VIEW, ShaderView::index)
                 } else {
-                    match import_spec(&g, rec, pass) {
+                    match import_spec(&g, rec, pass, &textures, &buffers) {
                         Some(key @ (_, ViewSpec::Texture(_) | ViewSpec::Buffer(_))) => {
                             match &import_views[&key].view {
                                 View::Shader(v) => v.index(),
@@ -488,7 +575,15 @@ impl FrameContext {
                 None => {
                     let raster = pass.kind == PassKind::Raster;
                     if raster {
-                        begin_render_pass(list, &g, pass, physical, &*import_views, &textures);
+                        begin_render_pass(
+                            list,
+                            &g,
+                            pass,
+                            physical,
+                            &*import_views,
+                            &textures,
+                            &buffers,
+                        );
                     }
                     if let Some(exec) = execs[pp.node as usize].take() {
                         let views =
@@ -536,10 +631,30 @@ impl FrameContext {
             passes: plan.passes.len(),
             created,
         });
-        let import_states = g.import_states(plan);
+        let frame_states = g.frame_states(plan);
         drop(execs);
         drop(g);
-        states.end_frame(import_states);
+        states.end_frame(frame_states);
+
+        // Objects of graph-owned resources the table let go, or whose description changed.
+        let orphans: Vec<(u64, u8)> = retained
+            .iter()
+            .filter(|((key, _), object)| match (states.retained(*key), object) {
+                (Some(e), RetainedObject::Texture(o)) => {
+                    e.kind != RetainedKind::Texture(TextureDesc::from_rhi(o.desc()))
+                }
+                (Some(e), RetainedObject::Buffer(o)) => !matches!(
+                    e.kind,
+                    RetainedKind::Buffer(d) if d.size == o.desc().size
+                ),
+                (None, _) => true,
+            })
+            .map(|(k, _)| *k)
+            .collect();
+        for key in orphans {
+            let object = retained.remove(&key).expect("listed above");
+            retire_retained(object, import_views, retired, value);
+        }
 
         // Views of imports no frame in flight uses any more.
         let stale: Vec<(u64, ViewSpec)> = import_views
@@ -610,16 +725,7 @@ impl FrameContext {
 
     fn forget(&mut self, object: u64) {
         let last = self.next_value - 1;
-        let keys: Vec<(u64, ViewSpec)> = self
-            .import_views
-            .keys()
-            .filter(|k| k.0 == object)
-            .copied()
-            .collect();
-        for key in keys {
-            let cached = self.import_views.remove(&key).expect("listed above");
-            self.retired.push((last, Box::new(cached.view)));
-        }
+        retire_views(&mut self.import_views, &mut self.retired, object, last);
     }
 
     /// Blocks until every submitted frame has finished, and drops what they retired.
@@ -655,35 +761,61 @@ enum Object<'a> {
     Buffer(&'a Buffer),
 }
 
-fn import_object<'a>(g: &RenderGraph<'a>, res: Res) -> Object<'a> {
-    match res {
-        Res::Texture(t) => Object::Texture(
-            g.textures[t as usize]
-                .import
-                .as_ref()
-                .expect("an import")
-                .object,
-        ),
-        Res::Buffer(b) => Object::Buffer(
-            g.buffers[b as usize]
-                .import
-                .as_ref()
-                .expect("an import")
-                .object,
-        ),
+/// The object of a history or persistent resource.
+enum RetainedObject {
+    Texture(Texture),
+    Buffer(Buffer),
+}
+
+/// Retires a graph-owned object and the cached views of it.
+fn retire_retained(
+    object: RetainedObject,
+    import_views: &mut HashMap<(u64, ViewSpec), Cached>,
+    retired: &mut Vec<(u64, Box<dyn Send>)>,
+    value: u64,
+) {
+    let key = match &object {
+        RetainedObject::Texture(t) => Rhi::texture_key(t),
+        RetainedObject::Buffer(b) => Rhi::buffer_key(b),
+    };
+    retire_views(import_views, retired, key, value);
+    retired.push((value, Box::new(object)));
+}
+
+/// Retires the cached views of the object with native handle `object`.
+fn retire_views(
+    import_views: &mut HashMap<(u64, ViewSpec), Cached>,
+    retired: &mut Vec<(u64, Box<dyn Send>)>,
+    object: u64,
+    value: u64,
+) {
+    let keys: Vec<(u64, ViewSpec)> = import_views
+        .keys()
+        .filter(|k| k.0 == object)
+        .copied()
+        .collect();
+    for key in keys {
+        let cached = import_views.remove(&key).expect("listed above");
+        retired.push((value, Box::new(cached.view)));
     }
 }
 
-/// The view an access of an imported object needs, by the object's key.
+/// The view an access of an imported or graph-owned object needs, by the object's key.
+/// Transients have none here: their views live with the plan.
 fn import_spec(
     g: &RenderGraph<'_>,
     rec: &AccessRec,
     pass: &crate::graph::PassNode<'_, Rhi>,
+    textures: &[Option<&Texture>],
+    buffers: &[Option<&Buffer>],
 ) -> Option<(u64, ViewSpec)> {
+    if is_transient(g, rec.res) {
+        return None;
+    }
     let spec = view_spec(g, rec, pass)?;
     let key = match rec.res {
-        Res::Texture(t) => Rhi::texture_key(g.textures[t as usize].import.as_ref()?.object),
-        Res::Buffer(b) => Rhi::buffer_key(g.buffers[b as usize].import.as_ref()?.object),
+        Res::Texture(t) => Rhi::texture_key(textures[t as usize]?),
+        Res::Buffer(b) => Rhi::buffer_key(buffers[b as usize]?),
     };
     Some((key, spec))
 }
@@ -949,13 +1081,14 @@ fn begin_render_pass(
     physical: &Physical,
     import_views: &HashMap<(u64, ViewSpec), Cached>,
     textures: &[Option<&Texture>],
+    buffers: &[Option<&Buffer>],
 ) {
     let attachment_view = |access: u32| -> &View {
         let rec = &g.accesses[access as usize];
         if is_transient(g, rec.res) {
             unreachable!("transient attachments are looked up directly")
         }
-        let key = import_spec(g, rec, pass).expect("attachments have views");
+        let key = import_spec(g, rec, pass, textures, buffers).expect("attachments have views");
         &import_views[&key].view
     };
     let mut colors: marlin_containers::ArrayVec<ColorAttachment<'_>, MAX_COLOR_ATTACHMENTS> =

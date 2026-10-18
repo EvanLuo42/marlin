@@ -1,15 +1,17 @@
 //! The cross-frame state table: where each imported object stood at the end of the last frame
-//! that used it, so imports need not report their state (0007 §2.3).
+//! that used it, so imports need not report their state (0007 §2.3); and the graph's own
+//! history and persistent resources (0007 §8), with their objects' usage and states.
 
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 
 use marlin_containers::{HashMap, HashMapExt};
-use marlin_rhi::{BufferState, TextureState};
+use marlin_rhi::{BufferState, BufferUsage, TextureState, TextureUsage};
 
 use crate::backend::{Backend, Rhi};
-use crate::graph::RenderGraph;
+use crate::graph::{RenderGraph, Res, Source};
 use crate::plan::CompiledPlan;
+use crate::retained::{BUFFER_BASE, RETIRE_FRAMES, RetainedEntry, RetainedUse, TEXTURE_BASE};
 
 struct Entry<S> {
     state: S,
@@ -17,36 +19,58 @@ struct Entry<S> {
     frame: u64,
 }
 
-/// States of imported objects by object key ([`Backend::texture_key`]).
+/// States of imported objects by object key ([`Backend::texture_key`]), and the graph's history
+/// and persistent resources.
 ///
-/// An entry lives until its object is forgotten, or until it has gone unused for
+/// An import's entry lives until its object is forgotten, or until it has gone unused for
 /// [`TTL`](Self::TTL) frames. Forget an object before dropping it: a new object may reuse its
-/// native handle, and would then start in the old one's state.
+/// native handle, and would then start in the old one's state. A graph-owned resource's entry
+/// lives until it has gone [`RETIRE_FRAMES`] frames without being requested.
 pub struct StateTable<B: Backend = Rhi> {
     /// One state per subresource.
     textures: HashMap<u64, Entry<Vec<TextureState>>>,
     buffers: HashMap<u64, Entry<BufferState>>,
+    retained: HashMap<u64, RetainedEntry>,
     frame: u64,
     _backend: PhantomData<fn() -> B>,
 }
 
-/// What a frame leaves its imports in, taken from the graph and plan so the table can be
+/// One object slot of a graph-owned resource, as a frame left it.
+#[derive(Clone, PartialEq, Debug)]
+struct RetainedUpdate {
+    key: u64,
+    /// The request that made it, for a new entry.
+    entry: RetainedEntry,
+    same: bool,
+    slot: u8,
+    cur: bool,
+    /// A retained pass used it; the rest is only set then.
+    used: bool,
+    texture_usage: TextureUsage,
+    buffer_usage: BufferUsage,
+    texture_states: Option<Vec<TextureState>>,
+    buffer_state: Option<BufferState>,
+}
+
+/// What a frame leaves the table to record, taken from the graph and plan so the table can be
 /// updated once the graph (which borrows it) is gone.
-#[derive(Clone, PartialEq, Eq, Debug, Default)]
-pub struct ImportStates {
+#[derive(Clone, PartialEq, Debug, Default)]
+pub struct FrameStates {
     textures: Vec<(u64, Vec<TextureState>)>,
     buffers: Vec<(u64, BufferState)>,
+    retained: Vec<RetainedUpdate>,
 }
 
 impl<B: Backend> StateTable<B> {
-    /// Frames an entry survives unused. Long: an object imported now and then must keep its
-    /// state, and stale entries are cheap.
+    /// Frames an import's entry survives unused. Long: an object imported now and then must
+    /// keep its state, and stale entries are cheap.
     pub const TTL: u64 = 1024;
 
     pub fn new() -> Self {
         Self {
             textures: HashMap::new(),
             buffers: HashMap::new(),
+            retained: HashMap::new(),
             frame: 0,
             _backend: PhantomData,
         }
@@ -74,36 +98,64 @@ impl<B: Backend> StateTable<B> {
         self.buffers.remove(&B::buffer_key(buffer));
     }
 
-    /// Records where the frame left its imports and moves to the next frame; drops entries
-    /// unused for [`TTL`](Self::TTL) frames.
-    pub fn end_frame(&mut self, states: ImportStates) {
+    pub(crate) fn retained(&self, key: u64) -> Option<&RetainedEntry> {
+        self.retained.get(&key)
+    }
+
+    /// Whether the table holds the graph-owned resource (`name`, `scope`).
+    pub fn has_retained(&self, name: &str, scope: u64) -> bool {
+        self.retained
+            .contains_key(&crate::retained::retained_key(name, scope))
+    }
+
+    /// The usage the object of slot `slot` of graph-owned resource `key` is made with, if any.
+    pub(crate) fn retained_usage(&self, key: u64, slot: u8) -> (TextureUsage, BufferUsage) {
+        self.retained.get(&key).map_or_else(Default::default, |e| {
+            let s = &e.slots[slot as usize];
+            (s.texture_usage, s.buffer_usage)
+        })
+    }
+
+    /// Records where the frame left its imports and graph-owned resources and moves to the
+    /// next frame; drops entries unused for too long.
+    pub fn end_frame(&mut self, states: FrameStates) {
+        let frame = self.frame;
         for (key, state) in states.textures {
-            self.textures.insert(
-                key,
-                Entry {
-                    state,
-                    frame: self.frame,
-                },
-            );
+            self.textures.insert(key, Entry { state, frame });
         }
         for (key, state) in states.buffers {
-            self.buffers.insert(
-                key,
-                Entry {
-                    state,
-                    frame: self.frame,
-                },
-            );
+            self.buffers.insert(key, Entry { state, frame });
         }
-        let frame = self.frame;
+        for u in states.retained {
+            let entry = match self.retained.get_mut(&u.key) {
+                Some(e) if u.same => e,
+                _ => {
+                    self.retained.insert(u.key, u.entry);
+                    self.retained.get_mut(&u.key).expect("just inserted")
+                }
+            };
+            entry.frame = frame;
+            if !u.used {
+                continue;
+            }
+            let slot = &mut entry.slots[u.slot as usize];
+            slot.texture_usage |= u.texture_usage;
+            slot.buffer_usage |= u.buffer_usage;
+            slot.texture_states = u.texture_states;
+            slot.buffer_state = u.buffer_state;
+            if u.cur {
+                entry.last_cur = Some(u.slot);
+            }
+        }
         self.textures.retain(|_, e| frame - e.frame < Self::TTL);
         self.buffers.retain(|_, e| frame - e.frame < Self::TTL);
+        self.retained.retain(|_, e| frame - e.frame < RETIRE_FRAMES);
         self.frame += 1;
     }
 
-    /// Objects the table knows.
+    /// Imported objects and graph-owned resources the table knows.
     pub fn len(&self) -> usize {
-        self.textures.len() + self.buffers.len()
+        self.textures.len() + self.buffers.len() + self.retained.len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -117,18 +169,42 @@ impl<B: Backend> Default for StateTable<B> {
     }
 }
 
+/// The usage a graph-owned object of a slot that had `stored` is made with for a frame that
+/// needs `planned`: unchanged when it has enough, else the union with the base set.
+pub(crate) fn texture_object_usage(stored: TextureUsage, planned: TextureUsage) -> TextureUsage {
+    if stored.contains(planned) && !stored.is_empty() {
+        stored
+    } else {
+        stored | planned | TEXTURE_BASE
+    }
+}
+
+pub(crate) fn buffer_object_usage(stored: BufferUsage, planned: BufferUsage) -> BufferUsage {
+    if stored.contains(planned) && !stored.is_empty() {
+        stored
+    } else {
+        stored | planned | BUFFER_BASE
+    }
+}
+
 impl<B: Backend> RenderGraph<'_, B> {
-    /// Where `plan` (compiled from this graph) leaves the graph's imports: the states the frame
-    /// started with, overwritten by the last access of each subresource it touched.
-    pub fn import_states(&self, plan: &CompiledPlan) -> ImportStates {
-        let mut out = ImportStates::default();
+    /// What `plan` (compiled from this graph) leaves for the state table: the states the frame
+    /// started its imports and graph-owned resources in, overwritten by the last access of each
+    /// subresource it touched; and the usage graph-owned objects are made with.
+    pub fn frame_states(&self, plan: &CompiledPlan) -> FrameStates {
+        let mut out = FrameStates::default();
         for (t, node) in self.textures.iter().enumerate() {
             let Some(import) = &node.import else { continue };
-            if plan.textures[t].lifetime.is_none() {
+            let planned = &plan.textures[t];
+            if planned.lifetime.is_none() {
                 continue;
             }
             let n = node.desc.subresources() as usize;
+            // A new graph-owned object starts undefined (as compiling assumed).
+            let renewed = matches!(import.object, Source::Retained(_))
+                && !import.usage.contains(planned.usage);
             let mut states: Vec<TextureState> = match import.initial.len() {
+                _ if renewed => alloc::vec![TextureState::UNDEFINED; n],
                 1 => alloc::vec![import.initial[0]; n],
                 _ => import.initial.to_vec(),
             };
@@ -140,15 +216,78 @@ impl<B: Backend> RenderGraph<'_, B> {
                     }
                 }
             }
-            out.textures.push((B::texture_key(import.object), states));
+            if let Source::Object(object) = import.object {
+                out.textures.push((B::texture_key(object), states));
+            } else {
+                self.retained_states(&mut out, Res::Texture(t as u32), Some(states), None, plan);
+            }
         }
         for &(b, state) in &plan.buffer_finals {
             let import = self.buffers[b as usize]
                 .import
                 .as_ref()
                 .expect("finals are of imports");
-            out.buffers.push((B::buffer_key(import.object), state));
+            match import.object {
+                Source::Object(object) => out.buffers.push((B::buffer_key(object), state)),
+                Source::Retained(_) => {
+                    self.retained_states(&mut out, Res::Buffer(b), None, Some(state), plan)
+                }
+            }
+        }
+        // Requested but unused: the entry is kept alive, nothing else changes.
+        for u in &self.retained {
+            if !out
+                .retained
+                .iter()
+                .any(|r| r.key == u.key && r.slot == u.slot)
+            {
+                out.retained.push(update(u, false, plan));
+            }
         }
         out
+    }
+
+    fn retained_states(
+        &self,
+        out: &mut FrameStates,
+        res: Res,
+        texture_states: Option<Vec<TextureState>>,
+        buffer_state: Option<BufferState>,
+        plan: &CompiledPlan,
+    ) {
+        let u = self
+            .retained
+            .iter()
+            .find(|u| u.res == res)
+            .expect("graph-owned resources are requested");
+        let mut r = update(u, true, plan);
+        r.texture_states = texture_states;
+        r.buffer_state = buffer_state;
+        out.retained.push(r);
+    }
+}
+
+fn update(u: &RetainedUse<'_>, used: bool, plan: &CompiledPlan) -> RetainedUpdate {
+    let (texture_usage, buffer_usage) = match u.res {
+        Res::Texture(t) => (
+            texture_object_usage(TextureUsage::default(), plan.textures[t as usize].usage),
+            BufferUsage::default(),
+        ),
+        Res::Buffer(b) => (
+            TextureUsage::default(),
+            buffer_object_usage(BufferUsage::default(), plan.buffers[b as usize].usage),
+        ),
+    };
+    RetainedUpdate {
+        key: u.key,
+        entry: RetainedEntry::new(u),
+        same: u.same,
+        slot: u.slot,
+        cur: u.cur,
+        used,
+        texture_usage,
+        buffer_usage,
+        texture_states: None,
+        buffer_state: None,
     }
 }

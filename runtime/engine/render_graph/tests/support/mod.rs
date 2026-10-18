@@ -100,3 +100,23 @@ pub fn imported_buffer(size: u64) -> recording::Buffer {
         memory: MemoryLocation::GpuOnly,
     })
 }
+
+pub type Table = marlin_render_graph::StateTable<Recording>;
+
+/// Runs one frame over `table`: declares with `declare`, compiles, records the states the frame
+/// leaves. `&'g &'o ()` lets `declare` import objects that live for `'o` (it implies `'o: 'g`).
+pub fn frame<'o>(
+    table: &mut Table,
+    declare: impl for<'g> FnOnce(&mut Graph<'g>, &'g &'o ()),
+) -> CompiledPlan {
+    let arena = arena();
+    let (plan, states) = {
+        let mut g = Graph::with_states(&arena, table);
+        declare(&mut g, &&());
+        let plan = compile(&g);
+        let states = g.frame_states(&plan);
+        (plan, states)
+    };
+    table.end_frame(states);
+    plan
+}

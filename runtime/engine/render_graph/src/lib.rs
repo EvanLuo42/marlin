@@ -40,6 +40,7 @@ mod handle;
 mod key;
 mod plan;
 pub mod recording;
+mod retained;
 mod state;
 
 pub use access::{Access, PassKind};
@@ -54,7 +55,8 @@ pub use plan::{
     BufferTransition, CompiledPlan, Lifetime, Placement, PlannedBuffer, PlannedPass,
     PlannedTexture, TextureFinal, TextureTransition,
 };
-pub use state::{ImportStates, StateTable};
+pub use retained::{GLOBAL_SCOPE, History, Persistent, RETIRE_FRAMES, RetainedDesc, RetainedKind};
+pub use state::{FrameStates, StateTable};
 
 impl<B: Backend> RenderGraph<'_, B> {
     /// The hash of everything compiling depends on: two graphs with the same key compile to the

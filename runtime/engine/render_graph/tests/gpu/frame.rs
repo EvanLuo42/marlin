@@ -14,16 +14,16 @@ use marlin_rhi::{
 };
 use marlin_serial::cooked::Pod;
 
-fn device() -> &'static Device {
+pub fn device() -> &'static Device {
     hardware_device()
 }
 
-fn context() -> FrameContext {
+pub fn context() -> FrameContext {
     FrameContext::new(device(), &FrameContextDesc::default()).unwrap()
 }
 
 /// Ends a test: the GPU is done and the validation layer had nothing to say.
-fn finish(mut frame: FrameContext) {
+pub fn finish(mut frame: FrameContext) {
     frame.wait_idle().unwrap();
     drop(frame);
     assert_eq!(device().validation_errors(), 0);
@@ -35,7 +35,7 @@ fn fill() -> &'static ComputePipeline {
     P.get_or_init(|| compute_pipeline(device(), "Fill"))
 }
 
-fn crate_compute(entry: &'static str) -> ComputePipeline {
+pub fn crate_compute(entry: &'static str) -> ComputePipeline {
     device()
         .create_compute_pipeline(&ComputePipelineDesc {
             shader: marlin_gpu_test_support::Shader::new(entry)
@@ -51,7 +51,7 @@ fn fill_texture() -> &'static ComputePipeline {
     P.get_or_init(|| crate_compute("RenderGraph.FillTexture"))
 }
 
-fn words(bytes: &[u8]) -> Vec<u32> {
+pub fn words(bytes: &[u8]) -> Vec<u32> {
     bytes
         .as_chunks::<4>()
         .0

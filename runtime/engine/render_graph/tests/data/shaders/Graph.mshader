@@ -33,3 +33,31 @@ public struct CopyUniformArgs
 /// Words 0–3 of the output = the uniform's.
 [Compute(1, 1, 1)]
 public void CopyUniform([Push] in CopyUniformArgs a) => a.Output.Store4(0, a.Input.Value.Words);
+
+public struct NextArgs
+{
+    /// A read-only raw view of last frame's words, unless `HasInput` is 0.
+    public ReadOnlyByteBuffer Input;
+    /// A writable raw view.
+    public ByteBuffer Output;
+    public uint HasInput;
+}
+
+/// Word i = the input's word i + 1, or 1 without an input.
+[Compute(64, 1, 1)]
+public void Next([DispatchThreadId] uint3 id, [Push] in NextArgs a)
+{
+    uint previous = a.HasInput != 0 ? a.Input.Load(id.x * 4) : 0;
+    a.Output.Store(id.x * 4, previous + 1);
+}
+
+public struct IncrementArgs
+{
+    /// A writable raw view.
+    public ByteBuffer Data;
+}
+
+/// Adds 1 to every word, in place.
+[Compute(64, 1, 1)]
+public void Increment([DispatchThreadId] uint3 id, [Push] in IncrementArgs a) =>
+    a.Data.Store(id.x * 4, a.Data.Load(id.x * 4) + 1);

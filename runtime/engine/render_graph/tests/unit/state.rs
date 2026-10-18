@@ -1,32 +1,12 @@
 //! The cross-frame state table, present and readback passes.
 
-use marlin_render_graph::{Access, ImportTexture, StateTable, TextureDesc, recording};
+use marlin_render_graph::{Access, ImportTexture, TextureDesc, recording};
 use marlin_rhi::{
     Access as RhiAccess, BufferState, Format, Layout, LoadOp, Stage, StoreOp, TextureState,
     TextureUsage,
 };
 
 use crate::support::*;
-
-type Table = StateTable<marlin_render_graph::recording::Recording>;
-
-/// Runs one frame over `table`: declares with `declare`, compiles, records the imports' states.
-/// `&'g &'o ()` lets `declare` import objects that live for `'o` (it implies `'o: 'g`).
-fn frame<'o>(
-    table: &mut Table,
-    declare: impl for<'g> FnOnce(&mut Graph<'g>, &'g &'o ()),
-) -> marlin_render_graph::CompiledPlan {
-    let arena = arena();
-    let (plan, states) = {
-        let mut g = Graph::with_states(&arena, table);
-        declare(&mut g, &&());
-        let plan = compile(&g);
-        let states = g.import_states(&plan);
-        (plan, states)
-    };
-    table.end_frame(states);
-    plan
-}
 
 fn mipped(mips: u32) -> recording::Texture {
     let mut desc = marlin_rhi::TextureDesc::new_2d(

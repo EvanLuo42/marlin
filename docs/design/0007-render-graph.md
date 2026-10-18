@@ -534,7 +534,16 @@ R1b 做完时（2026-10-18）定下的细节：
 - raster pass 开始时，viewport 和 scissor 已经设成第一个附件的大小。
 - 内置 pass：`g.present(h)` 把纹理交到 `PRESENT`；`g.readback(buf)`、`g.readback_texture(tex)`（一个 mip、一层，行紧密排列）返回 `Readback` 票据，用 `FrameContext::readback`（不等待）或 `wait_readback` 取数据。
 - **退休队列**按 fence 值：对象在提交它最后一次被用到的那一帧之后，fence 到了才 drop。`FrameContext` drop 时等 GPU 空闲。
-- 已知的空缺：新建的 placed 纹理第一次使用时，legacy D3D12 需要 `undefined_from = Common`，这里给的是 plan 末尾的 layout。Vulkan 和 enhanced barrier 都忽略这个字段；桌面上的 D3D12 后端会删掉，所以先不处理。
+- 已知的空缺（R1b）：新建的 placed 纹理第一次使用时，legacy D3D12 需要 `undefined_from = Common`，这里给的是 plan 末尾的 layout。Vulkan 和 enhanced barrier 都忽略这个字段；桌面上的 D3D12 后端会删掉，所以先不处理。
+
+R1c 做完时（2026-10-18）定下的细节：
+- **API**：`g.history(name, view, desc)` 返回 `History { prev: Option<H>, cur: H }`，`g.persistent(name, scope, desc)` 返回 `Persistent { handle, fresh }`。`desc` 是 `TextureDesc` 或 `BufferDesc`，句柄类型随之而定。整帧共享的用 `GLOBAL_SCOPE`。`g.invalidate_history(view)` 之后，这个 view 本帧请求的历史都没有 `prev`。同一帧请求同一个键两次会 panic；没有状态表的图不能用它们。
+- **在图里它们就是导入资源**：不放进瞬态 heap、不参与别名，帧末的内容算作被读取（所以只写 `cur` 的 pass 不会被剔除），状态记在状态表里。区别只在对象归谁：对象由 `FrameContext` 在某一帧第一次用到时创建（committed），状态表的表项在它就在，描述变了或者需要新的 usage 时换一个新对象。
+- **双缓冲按使用翻转**：`cur` 是上一次真正写过的那个对象的另一个；请求了但这一帧没有 pass 用 `cur`，就不翻转，下一帧的 `prev` 仍然是上次写的那份。
+- **退休**：键连续 `RETIRE_FRAMES`（= 2 × `FRAMES_IN_FLIGHT` + 2 = 6）帧没被请求，状态表删掉表项，`FrameContext` 把对象和它们的视图放进退休队列。
+- **usage**：每个对象的 usage 是本帧需要的加上一组基础 usage。纹理的基础是 `SAMPLED`、`COPY_SRC`、`COPY_DST`：一帧写、下一帧采样的历史不需要换对象。buffer 的基础是所有普通 usage（读写、uniform、indirect、index、拷贝），因为 buffer 的 usage 不影响压缩和布局。某一帧需要对象没有的 usage（比如原来是 storage 写，现在当 render target）时，换一个 usage 取并集的新对象，内容和状态从 undefined 开始。这只在开发期偶尔发生，所以那一帧的 `prev` 内容未定义，接受这一点。编译时（初始状态取 undefined）、`FrameContext`（换对象）和状态表（记下新的 usage）按同一条规则判断，三者一致。
+- **`fresh`**：持久资源第一次被请求、描述变了，或者还从没被写过时为 `true`，调用方据此清零（例如在一个 copy pass 里 `ctx.fill_buffer`）。因为 usage 增长而换的对象不会标 `fresh`，同上，只在开发期发生。
+- GPU 测试：历史 buffer 每帧读上一帧的值加一，6 帧的读回分别是 1 到 6，第 4 帧起不再创建任何 RHI 对象；持久 buffer 累加，改尺寸后从头开始。
 
 ## 12. 测试
 
