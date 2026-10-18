@@ -4,10 +4,11 @@
 use core::cell::Cell;
 
 use marlin_ecs::World;
-use marlin_gpu_test_support::{Image, hardware_device, read_texture, run};
+use marlin_gpu_test_support::{Image, hardware_device, read_texture, run, shader};
 use marlin_math::{Transform, Vec3};
 use marlin_render::{
-    Camera, Environment, MeshData, MeshHandle, RenderStats, Renderer, RendererDesc, cube,
+    Camera, Environment, ForwardShaders, MeshData, MeshHandle, RenderStats, Renderer, RendererDesc,
+    cube,
 };
 use marlin_rhi::{
     ClearValue, Device, Format, RenderTargetViewDesc, Texture, TextureBarrier, TextureDesc,
@@ -36,6 +37,10 @@ impl Harness {
                 frames_in_flight: 2,
                 width: SIZE,
                 height: SIZE,
+                shaders: Some(ForwardShaders {
+                    vertex: shader("ForwardVs"),
+                    pixel: shader("ForwardPs"),
+                }),
             },
         )
         .unwrap();

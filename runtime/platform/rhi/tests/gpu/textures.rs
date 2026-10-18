@@ -14,7 +14,7 @@ use marlin_rhi::{
     aligned_row_pitch,
 };
 use support::{
-    COLUMN_HEIGHT, COLUMN_WIDTH, COLUMNS, ColumnTarget, Stage, buffer, columns_pipeline, devices,
+    COLUMN_HEIGHT, COLUMN_WIDTH, COLUMNS, ColumnTarget, buffer, columns_pipeline, devices,
     read_bytes, read_words, readback, run, shader, upload, words_to_bytes,
 };
 
@@ -83,13 +83,13 @@ fn volume_textures_are_written_read_and_copied() {
             .unwrap();
         let write = device
             .create_compute_pipeline(&ComputePipelineDesc {
-                shader: shader("volume.write", Stage::Compute),
+                shader: shader("VolumeWrite"),
                 cache: None,
             })
             .unwrap();
         let read = device
             .create_compute_pipeline(&ComputePipelineDesc {
-                shader: shader("volume.read", Stage::Compute),
+                shader: shader("VolumeRead"),
                 cache: None,
             })
             .unwrap();
@@ -902,8 +902,8 @@ fn stencil_needs_a_stencil_format() {
     };
     let err = device
         .create_graphics_pipeline(&marlin_rhi::GraphicsPipelineDesc {
-            vertex: shader("columns", Stage::Vertex),
-            pixel: Some(shader("columns", Stage::Pixel)),
+            vertex: shader("ColumnsVs"),
+            pixel: Some(shader("ColumnsPs")),
             topology: marlin_rhi::PrimitiveTopology::TriangleList,
             raster: marlin_rhi::RasterState::default(),
             depth: Some(state),

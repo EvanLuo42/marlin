@@ -23,7 +23,7 @@ fn bindless_work_passes_gpu_validation() {
         .unwrap();
     let (out, view) = storage(&device, 64);
     let rb = readback(&device, 256);
-    let pipeline = compute_pipeline(&device, "fill");
+    let pipeline = compute_pipeline(&device, "Fill");
     support::run(&device, |list| {
         list.set_compute_pipeline(&pipeline);
         list.push_constants(0, &[view.index(), 2]);

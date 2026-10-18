@@ -101,6 +101,7 @@ pub(crate) struct Writer<'m> {
     pub interface: Vec<u32>,
     heap: Option<u32>,
     sampler_heap: Option<u32>,
+    accel_heap: Option<u32>,
     slot: Option<u32>,
     builtins: HashMap<u32, u32>,
     /// The stage of the entry point being written.
@@ -128,6 +129,7 @@ impl<'m> Writer<'m> {
             interface: Vec::new(),
             heap: None,
             sampler_heap: None,
+            accel_heap: None,
             slot: None,
             builtins: HashMap::new(),
         };
@@ -664,7 +666,6 @@ impl<'m> Writer<'m> {
         let (desc, sampler) = match kind.kind {
             k if k.texture().is_some() => (self.image_ty(kind)?, false),
             ResourceKind::Sampler | ResourceKind::ComparisonSampler => (self.sampler_ty(), true),
-            ResourceKind::AccelerationStructure => (self.accel_ty(), false),
             ResourceKind::Buffer
             | ResourceKind::ReadOnlyBuffer
             | ResourceKind::ByteBuffer
@@ -939,5 +940,28 @@ impl Writer<'_> {
     pub fn accel_ty(&mut self) -> u32 {
         self.ray_query_ext();
         self.once("", op::TypeAccelerationStructureKHR, vec![])
+    }
+
+    /// The resource heap seen as acceleration structures, through set 0 binding 0, which the
+    /// RHI maps onto the heap with the slot width as the stride (0016 §4.2). Acceleration
+    /// structures are not loaded from `ResourceHeapEXT` itself: a ray query on one loaded that
+    /// way finds nothing on NVIDIA's driver (2026-10-18), though validation accepts it.
+    pub fn accel_heap(&mut self) -> u32 {
+        if let Some(h) = self.accel_heap {
+            return h;
+        }
+        let accel = self.accel_ty();
+        self.capability(cap::RuntimeDescriptorArray);
+        let array = self.once("accel_heap", op::TypeRuntimeArray, vec![accel]);
+        let ptr = self.ptr_ty(sc::UniformConstant, array);
+        let var = self.id();
+        self.globals
+            .extend(inst(op::Variable, &[ptr, var, sc::UniformConstant]));
+        self.decorate(var, decoration::DescriptorSet, &[0]);
+        self.decorate(var, decoration::Binding, &[0]);
+        self.name(var, "acceleration_structures");
+        self.interface.push(var);
+        self.accel_heap = Some(var);
+        var
     }
 }

@@ -1161,6 +1161,23 @@ impl Default for VkPhysicalDeviceDescriptorHeapFeaturesEXT {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
+pub(crate) struct VkPhysicalDeviceShaderUntypedPointersFeaturesKHR {
+    pub sType: VkStructureType,
+    pub pNext: *mut c_void,
+    pub shaderUntypedPointers: VkBool32,
+}
+
+impl Default for VkPhysicalDeviceShaderUntypedPointersFeaturesKHR {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000387000; // VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_UNTYPED_POINTERS_FEATURES_KHR
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
 pub(crate) struct VkPhysicalDeviceMeshShaderFeaturesEXT {
     pub sType: VkStructureType,
     pub pNext: *mut c_void,
@@ -5203,6 +5220,7 @@ pub(crate) const VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES: VkStruct
 pub(crate) const VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES: VkStructureType = 53;
 pub(crate) const VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES: VkStructureType = 55;
 pub(crate) const VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_FEATURES_EXT: VkStructureType = 1000135009;
+pub(crate) const VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_UNTYPED_POINTERS_FEATURES_KHR: VkStructureType = 1000387000;
 pub(crate) const VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT: VkStructureType = 1000328000;
 pub(crate) const VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_GENERATED_COMMANDS_FEATURES_EXT: VkStructureType = 1000572000;
 pub(crate) const VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR: VkStructureType = 1000150013;

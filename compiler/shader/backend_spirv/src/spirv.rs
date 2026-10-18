@@ -93,6 +93,7 @@ table! {
         GroupNonUniformShuffle = 65, GroupNonUniformClustered = 67, GroupNonUniformQuad = 68,
         DrawParameters = 4427, RayQueryKHR = 4472, ShaderNonUniform = 5301, StorageBuffer16BitAccess = 4433, StoragePushConstant16 = 4435,
         UntypedPointersKHR = 4473, DescriptorHeapEXT = 5128, MeshShadingEXT = 5283,
+        RuntimeDescriptorArray = 5302,
     }
 }
 
@@ -100,7 +101,8 @@ table! {
     decoration {
         Block = 2, ColMajor = 5, ArrayStride = 6, MatrixStride = 7, BuiltIn = 11,
         NoPerspective = 13, Flat = 14, Centroid = 16, Sample = 17, NonWritable = 24,
-        NonReadable = 25, Location = 30, Index = 32, Offset = 35,
+        NonReadable = 25, Location = 30, Index = 32, Binding = 33, DescriptorSet = 34,
+        Offset = 35,
         ArrayStrideIdEXT = 5124, PerPrimitiveEXT = 5271, NonUniform = 5300,
     }
 }

@@ -13,7 +13,7 @@ use support::{
 };
 
 const WHITE: [f32; 4] = [1.0; 4];
-/// `solid` modes: the whole 4x4 target, and a sliver that covers no sample.
+/// `SolidVs` modes: the whole 4x4 target, and a sliver that covers no sample.
 const FULL: u32 = 0;
 const SLIVER: u32 = 2;
 
@@ -31,7 +31,7 @@ fn occlusion_queries_count_samples() {
     for device in devices() {
         let pipeline = solid_pipeline(
             device,
-            "solid",
+            "SolidPs",
             ColorTargetState::new(Format::Rgba8Unorm),
             |_| {},
         )
@@ -80,12 +80,12 @@ fn pipeline_statistics_count_invocations() {
     support::require_feature!(device, pipeline_statistics);
     let pipeline = solid_pipeline(
         device,
-        "solid",
+        "SolidPs",
         ColorTargetState::new(Format::Rgba8Unorm),
         |_| {},
     )
     .unwrap();
-    let fill = compute_pipeline(device, "fill");
+    let fill = compute_pipeline(device, "Fill");
     // Bound, not `_`: the shader writes through the view, so the buffer must outlive the work.
     let (_storage, view) = storage(device, 64);
     let stats = device
@@ -145,7 +145,7 @@ fn predication_skips_occluded_draws() {
     for device in devices() {
         let pipeline = solid_pipeline(
             device,
-            "solid",
+            "SolidPs",
             ColorTargetState::new(Format::Rgba8Unorm),
             |_| {},
         )

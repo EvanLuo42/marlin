@@ -27,6 +27,7 @@ use crate::{
 #[derive(Clone, Copy, Default)]
 pub(crate) struct DeviceExtensions {
     pub(crate) descriptor_heap: bool,
+    pub(crate) shader_untyped_pointers: bool,
     pub(crate) mesh_shader: bool,
     pub(crate) device_generated_commands: bool,
     pub(crate) swapchain: bool,
@@ -56,9 +57,13 @@ pub(crate) struct DeviceExtensions {
 }
 
 impl DeviceExtensions {
-    fn table(&mut self) -> [(&'static CStr, &mut bool); 27] {
+    fn table(&mut self) -> [(&'static CStr, &mut bool); 28] {
         [
             (c"VK_EXT_descriptor_heap", &mut self.descriptor_heap),
+            (
+                c"VK_KHR_shader_untyped_pointers",
+                &mut self.shader_untyped_pointers,
+            ),
             (c"VK_EXT_mesh_shader", &mut self.mesh_shader),
             (
                 c"VK_EXT_device_generated_commands",
@@ -250,6 +255,7 @@ struct FeatureChain {
     v13: VkPhysicalDeviceVulkan13Features,
     v14: VkPhysicalDeviceVulkan14Features,
     heap: VkPhysicalDeviceDescriptorHeapFeaturesEXT,
+    untyped: VkPhysicalDeviceShaderUntypedPointersFeaturesKHR,
     mesh: VkPhysicalDeviceMeshShaderFeaturesEXT,
     dgc: VkPhysicalDeviceDeviceGeneratedCommandsFeaturesEXT,
     acceleration: VkPhysicalDeviceAccelerationStructureFeaturesKHR,
@@ -315,6 +321,7 @@ impl FeatureChain {
         }
         push!(dgc);
         push!(mesh);
+        push!(untyped);
         push!(heap);
         push!(v14);
         push!(v13);
@@ -348,6 +355,8 @@ impl FeatureChain {
             (self.v14.maintenance5, "maintenance5"),
             (self.v14.maintenance6, "maintenance6"),
             (self.heap.descriptorHeap, "descriptorHeap"),
+            // Shaders reach the descriptor heaps through untyped pointers.
+            (self.untyped.shaderUntypedPointers, "shaderUntypedPointers"),
             (self.mesh.taskShader, "taskShader"),
             (self.mesh.meshShader, "meshShader"),
             (self.dgc.deviceGeneratedCommands, "deviceGeneratedCommands"),
@@ -387,7 +396,11 @@ fn extensions(instance: &InstanceShared, physical: VkPhysicalDevice) -> Option<D
         *on = available.iter().any(|e| name_of(&e.extensionName) == name);
     }
     ext.settle();
-    (ext.descriptor_heap && ext.mesh_shader && ext.device_generated_commands).then_some(ext)
+    (ext.descriptor_heap
+        && ext.shader_untyped_pointers
+        && ext.mesh_shader
+        && ext.device_generated_commands)
+        .then_some(ext)
 }
 
 fn queue_families(instance: &InstanceShared, physical: VkPhysicalDevice) -> Option<Families> {

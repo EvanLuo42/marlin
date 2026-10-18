@@ -87,6 +87,7 @@ marlin-shaderc-opt = { path = "compiler/shader/opt" }
 marlin-shaderc-reflect = { path = "compiler/shader/reflect" }
 marlin-shaderc-target = { path = "compiler/shader/target" }
 marlin-shaderc-testgen = { path = "compiler/shader/testgen" }
+marlin-shaderc = { path = "compiler/shader/shaderc" }
 # --- editor ---
 marlin-editor-ui-core = { path = "editor/ui_core" }
 marlin-editor-ui-widgets = { path = "editor/ui_widgets" }

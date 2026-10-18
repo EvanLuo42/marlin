@@ -1,0 +1,96 @@
+namespace Test;
+
+// Reads textures through views and samplers the tests make, writing what they saw to a raw
+// buffer; and 3D textures, `Size` texels on a side.
+
+/// One push layout for the `Sample*` entries: each names its texture's type.
+public struct SampleArgs
+{
+    public Texture2D<float> Texture;
+    public Sampler Sampler;
+    public ByteBuffer Output;
+    public uint X;
+    public float U;
+    public float V;
+}
+
+/// One filtered sample of a float texture at (U, V), mip 0.
+[Compute(1, 1, 1)]
+public void SampleOne([Push] in SampleArgs a) =>
+    a.Output.Store(0, AsUInt(a.Texture.Sample(a.Sampler, float2(a.U, a.V), lod: 0)));
+
+public struct StencilArgs
+{
+    public Texture2D<uint> Texture;
+    public Sampler Sampler;
+    public ByteBuffer Output;
+}
+
+/// Texels (0, 0) through (3, 0) of a stencil view.
+[Compute(4, 1, 1)]
+public void SampleStencil([DispatchThreadId] uint3 id, [Push] in StencilArgs a) =>
+    a.Output.Store(id.x * 4, a.Texture[int2((int)id.x, 0)]);
+
+public struct MultisampleArgs
+{
+    public Texture2DMS<float4> Texture;
+    public Sampler Sampler;
+    public ByteBuffer Output;
+    public uint X;
+}
+
+/// The red of each of 4 samples of pixel (X, X) of a multisampled texture, as 0..255.
+[Compute(4, 1, 1)]
+public void SampleMultisample([DispatchThreadId] uint3 id, [Push] in MultisampleArgs a)
+{
+    int x = (int)a.X;
+    float r = a.Texture.Load(int2(x, x), sample: (int)id.x).x;
+    a.Output.Store(id.x * 4, (uint)(r * 255 + 0.5));
+}
+
+public struct CubeArgs
+{
+    public TextureCubeArray<float4> Texture;
+    public Sampler Sampler;
+    public ByteBuffer Output;
+    public uint X;
+}
+
+/// The red of cube X of a cube array, seen along +X, as 0..255.
+[Compute(1, 1, 1)]
+public void SampleCube([Push] in CubeArgs a)
+{
+    float4 c = a.Texture.Sample(a.Sampler, float3(1, 0, 0), layer: (int)a.X, lod: 0);
+    a.Output.Store(0, (uint)(c.x * 255 + 0.5));
+}
+
+public struct VolumeWriteArgs
+{
+    public StorageTexture3D<uint> Volume;
+    public ByteBuffer Output;
+    public uint Size;
+}
+
+/// Texel (x, y, z) of an R32Uint volume = x + 16 * y + 256 * z + 1.
+[Compute(4, 4, 4)]
+public void VolumeWrite([DispatchThreadId] uint3 id, [Push] in VolumeWriteArgs a)
+{
+    if (All(id < a.Size))
+        a.Volume[(int3)id] = id.x + 16 * id.y + 256 * id.z + 1;
+}
+
+public struct VolumeReadArgs
+{
+    public Texture3D<uint> Volume;
+    public ByteBuffer Output;
+    public uint Size;
+}
+
+/// Every texel of a volume into a raw buffer, x fastest.
+[Compute(4, 4, 4)]
+public void VolumeRead([DispatchThreadId] uint3 id, [Push] in VolumeReadArgs a)
+{
+    uint size = a.Size;
+    if (All(id < size))
+        a.Output.Store(((id.z * size + id.y) * size + id.x) * 4, a.Volume[(int3)id]);
+}

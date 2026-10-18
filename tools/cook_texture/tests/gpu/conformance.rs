@@ -8,25 +8,21 @@
 //! output, every format decodes random blocks, which reach modes, partitions and endpoint
 //! combinations no encoder emits.
 //!
-//! The readback shader is a PLACEHOLDER for the in-house shader language:
-//! tests/data/shaders/texel_load.hlsl, compiled once by hand with dxc (in that directory) and
-//! committed as texel_load.cs.dxil and texel_load.cs.spv (SPIR-V bindings: 0016 §4.2):
-//!
-//! ```text
-//! dxc -HV 2021 -Qstrip_debug -Qstrip_reflect -T cs_6_6 -E main -Fo texel_load.cs.dxil texel_load.hlsl
-//! dxc -spirv -fspv-target-env=vulkan1.3 -HV 2021 -fvk-bind-resource-heap 0 0 -fvk-bind-sampler-heap 1 0 -fvk-bind-register b0 0 2 0 -fvk-use-scalar-layout -T cs_6_6 -E main -Fo texel_load.cs.spv texel_load.hlsl
-//! ```
+//! The readback shader is `CookTexture.TexelLoad`, a Marlin shader in tests/data/shaders/
+//! compiled at run time.
 
 use marlin_cook_texture::{
     self as ct, EncodeOptions, EncodedTexture, Format, Image, Interpolation, MipOptions, Quality,
     Subresource, UploadAlignment,
 };
-use marlin_gpu_test_support::{hardware_device, read_bytes, readback, run, storage, upload};
+use marlin_gpu_test_support::{
+    crate_shader, hardware_device, read_bytes, readback, run, storage, upload,
+};
 use marlin_math::Rng;
 use marlin_rhi::{
     self as rhi, BufferBarrier, BufferState, BufferTextureCopy, BufferUsage, ComputePipelineDesc,
-    Device, ShaderModule, SubresourceRange, TextureBarrier, TextureDesc, TextureState,
-    TextureUsage, TextureViewDesc, TextureViewDimension,
+    Device, SubresourceRange, TextureBarrier, TextureDesc, TextureState, TextureUsage,
+    TextureViewDesc, TextureViewDimension,
 };
 
 use crate::support;
@@ -37,19 +33,6 @@ use crate::support;
 const INTERPOLATION_TOLERANCE: f32 = 8.0 / 255.0;
 
 const NVIDIA: u32 = 0x10de;
-
-/// The readback shader in the backend's [`SHADER_FORMAT`](rhi::SHADER_FORMAT).
-fn shader() -> ShaderModule<'static> {
-    let code: &'static [u8] = match rhi::SHADER_FORMAT {
-        rhi::ShaderFormat::Dxil => include_bytes!("../data/shaders/texel_load.cs.dxil"),
-        rhi::ShaderFormat::SpirV => include_bytes!("../data/shaders/texel_load.cs.spv"),
-        format => panic!("no texel_load placeholder compiled to {format:?}"),
-    };
-    ShaderModule {
-        code,
-        entry: "main",
-    }
-}
 
 fn rhi_format(format: Format) -> rhi::Format {
     match format {
@@ -114,7 +97,7 @@ fn gpu_decode(device: &Device, texture: &EncodedTexture) -> Vec<Vec<[f32; 4]>> {
     let readback = readback(device, size);
     let pipeline = device
         .create_compute_pipeline(&ComputePipelineDesc {
-            shader: shader(),
+            shader: crate_shader!("CookTexture.TexelLoad"),
             cache: None,
         })
         .unwrap();

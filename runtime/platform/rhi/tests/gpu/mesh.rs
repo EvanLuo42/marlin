@@ -8,17 +8,17 @@ use marlin_rhi::{
     INDIRECT_CONSTANT_WORD, IndirectArgs, MemoryLocation, MeshPipeline, MeshPipelineDesc,
     RasterState,
 };
-use support::{COLUMNS, ColumnTarget, Stage, buffer, bytes_of, devices, run, shader, upload};
+use support::{COLUMNS, ColumnTarget, buffer, bytes_of, devices, run, shader, upload};
 
 fn mesh_pipeline(device: &Device, amplified: bool) -> MeshPipeline {
     device
         .create_mesh_pipeline(&MeshPipelineDesc {
-            amplification: amplified.then(|| shader("mesh", Stage::Amplification)),
+            amplification: amplified.then(|| shader("ColumnsAmplify")),
             mesh: match amplified {
-                true => shader("mesh.amplified", Stage::Mesh),
-                false => shader("mesh", Stage::Mesh),
+                true => shader("ColumnsAmplified"),
+                false => shader("ColumnsMesh"),
             },
-            pixel: Some(shader("mesh", Stage::Pixel)),
+            pixel: Some(shader("ColumnsPs")),
             raster: RasterState {
                 cull: CullMode::None,
                 ..RasterState::default()

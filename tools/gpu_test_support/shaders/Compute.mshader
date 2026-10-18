@@ -1,0 +1,28 @@
+namespace Test;
+
+// Compute shaders on raw buffers reached through the descriptor heap.
+
+public struct FillArgs
+{
+    /// A writable raw view.
+    public ByteBuffer Output;
+    public uint Base;
+}
+
+/// Writes `Base + 3 * i` to word i.
+[Compute(64, 1, 1)]
+public void Fill([DispatchThreadId] uint3 id, [Push] in FillArgs a) =>
+    a.Output.Store(id.x * 4, a.Base + id.x * 3);
+
+// Push word 31 is the per-dispatch constant of indirect dispatches.
+public struct CountArgs
+{
+    /// A writable raw view, as words.
+    public Buffer<uint> Output;
+    public uint[30] Unused;
+    public uint Constant;
+}
+
+/// Counts threads per dispatch: every thread adds 1 to word `Constant`.
+[Compute(64, 1, 1)]
+public void Count([Push] in CountArgs a) => a.Output.AtomicAdd(a.Constant, 1);

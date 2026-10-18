@@ -37,7 +37,7 @@ fn objects_take_debug_names() {
     pool.set_name("named pool");
     let list = device.create_command_list(&pool).unwrap();
     list.set_name("named list");
-    compute_pipeline(device, "fill").set_name("named pipeline");
+    compute_pipeline(device, "Fill").set_name("named pipeline");
     assert!(device.status().is_ok());
     assert_eq!(device.validation_errors(), 0);
 }
@@ -207,7 +207,7 @@ fn pipeline_cache_round_trips() {
     for device in devices() {
         let cache = device.create_pipeline_cache(&[]).unwrap();
         let desc = |cache| marlin_rhi::ComputePipelineDesc {
-            shader: support::shader("fill", support::Stage::Compute),
+            shader: support::shader("Fill"),
             cache,
         };
         let empty = cache.serialize().unwrap().len();

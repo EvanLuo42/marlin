@@ -12,9 +12,9 @@ use marlin_rhi::{
 };
 use support::{compute_pipeline, copy_out, devices, read_words, readback, run, storage};
 
-/// Runs `shader` (one of the `sample` entries) once over `view` with `sampler` and returns
+/// Runs `shader` (one of the `Sample*` entries) once over `view` with `sampler` and returns
 /// `words` results.
-/// What the `sample` shaders read: a texture view, a sampler, an integer argument and a
+/// What the `Sample*` shaders read: a texture view, a sampler, an integer argument and a
 /// coordinate.
 struct Read {
     view: u32,
@@ -141,7 +141,7 @@ fn samplers_reduce_to_min_max_or_average() {
                 .unwrap();
             let r = sample(
                 device,
-                "sample",
+                "SampleOne",
                 Read {
                     view: view.index(),
                     sampler: sampler.index(),
@@ -230,7 +230,7 @@ fn stencil_and_16_bit_depth_read_through_views() {
             .unwrap();
         let stencil = sample(
             device,
-            "sample.stencil",
+            "SampleStencil",
             Read {
                 view: stencil_view.index(),
                 sampler: 0,
@@ -268,7 +268,7 @@ fn stencil_and_16_bit_depth_read_through_views() {
             .unwrap();
         let depth = sample(
             device,
-            "sample",
+            "SampleOne",
             Read {
                 view: view16.index(),
                 sampler: point.index(),
@@ -319,7 +319,7 @@ fn cube_arrays_sample_each_cube() {
             uploaded = true;
             sample(
                 device,
-                "sample.cube",
+                "SampleCube",
                 Read {
                     view: view.index(),
                     sampler: sampler.index(),

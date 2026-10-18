@@ -1,0 +1,72 @@
+namespace Test;
+
+// The renderer's forward opaque pass, for its tests (the engine gets its shaders from the
+// cooker): vertex pulling, per-instance transforms and colors, one directional light plus
+// ambient.
+
+public struct ForwardArgs
+{
+    public Uniform<Frame> Frame;
+    public ReadOnlyBuffer<Instance> Instances;
+    public ReadOnlyBuffer<Vertex> Vertices;
+    /// The first instance of this draw in `Instances`.
+    public uint BaseInstance;
+}
+
+/// Matrices are column-major, as marlin-math stores them; `M * v` is the column-vector product.
+public struct Frame
+{
+    public float4x4 ViewProjection;
+    /// xyz: the direction the light travels, in world space.
+    public float4 LightDirection;
+    /// rgb: linear radiance.
+    public float4 LightColor;
+    /// rgb: linear radiance.
+    public float4 Ambient;
+}
+
+public struct Instance
+{
+    public float4x4 Model;
+    /// Linear RGBA.
+    public float4 Color;
+}
+
+public struct Vertex
+{
+    public float3 Position;
+    public float3 Normal;
+}
+
+public struct ForwardVertex
+{
+    [Position] public float4 Pos;
+    public float3 Normal;
+    public float4 Color;
+}
+
+[Vertex]
+public ForwardVertex ForwardVs(
+    [VertexId] uint vertexId, [InstanceId] uint instanceId, [Push] in ForwardArgs a)
+{
+    Instance instance = a.Instances[a.BaseInstance + instanceId];
+    Vertex vertex = a.Vertices[vertexId];
+    float4 world = instance.Model * float4(vertex.Position, 1);
+    return ForwardVertex
+    {
+        Pos = a.Frame.Value.ViewProjection * world,
+        // Exact for rotation and uniform scale; non-uniform scale needs the inverse transpose.
+        Normal = (instance.Model * float4(vertex.Normal, 0)).xyz,
+        Color = instance.Color,
+    };
+}
+
+[Pixel]
+public float4 ForwardPs(in ForwardVertex i, [Push] in ForwardArgs a)
+{
+    Frame frame = a.Frame.Value;
+    float3 n = Normalize(i.Normal);
+    float lit = Saturate(Dot(n, -frame.LightDirection.xyz));
+    float3 radiance = frame.Ambient.xyz + frame.LightColor.xyz * lit;
+    return float4(i.Color.xyz * radiance, i.Color.w);
+}

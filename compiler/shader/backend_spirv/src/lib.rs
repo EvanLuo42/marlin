@@ -12,10 +12,13 @@
 //! - What SPIR-V leaves undefined is made defined, as the IR has it: shift counts are taken
 //!   modulo the width, float-to-integer conversions saturate (NaN to 0).
 //!
-//! Step 10d: inline ray queries (`SPV_KHR_ray_query`): the acceleration structure is loaded
-//! from the resource heap, a query is a `Function` variable of `OpTypeRayQueryKHR`, and
-//! `rq.get` is the `OpRayQueryGet*KHR` for its field (the hit kind mapped to `HitKind`). The
-//! `RayQuery` capability is the target's one optional capability.
+//! Step 10d: inline ray queries (`SPV_KHR_ray_query`): a query is a `Function` variable of
+//! `OpTypeRayQueryKHR`, and `rq.get` is the `OpRayQueryGet*KHR` for its field (the hit kind
+//! mapped to `HitKind`). The `RayQuery` capability is the target's one optional capability.
+//!
+//! Step 10e, on hardware: acceleration structures are loaded through set 0 binding 0, which
+//! the RHI maps onto the resource heap (0016 §4.2), not from `ResourceHeapEXT`: one loaded
+//! that way finds nothing on NVIDIA's driver.
 //!
 //! Step 10c: mesh and task shaders (`SPV_EXT_mesh_shader`): mesh outputs are `Output` arrays
 //! (`PerPrimitiveEXT` for primitives, the index list a `Primitive*IndicesEXT` built-in); the

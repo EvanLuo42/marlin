@@ -10,8 +10,8 @@ use marlin_rhi::{
     INDIRECT_CONSTANT_WORD, IndexFormat, IndirectArgs, MAX_PUSH_CONSTANTS, MemoryLocation,
 };
 use support::{
-    COLUMNS, ColumnTarget, Stage, buffer, bytes_of, columns_pipeline, devices, read_words,
-    readback, run, shader, upload, words_to_bytes,
+    COLUMNS, ColumnTarget, buffer, bytes_of, columns_pipeline, devices, read_words, readback, run,
+    shader, upload, words_to_bytes,
 };
 
 #[test]
@@ -123,7 +123,7 @@ fn draws_indexed_indirect() {
     for device in devices() {
         let pipeline = columns_pipeline(device, None);
         let target = ColumnTarget::new(device);
-        // Six indices (0..6) after two unused ones; vertex offsets shift SV_VertexID by 6 (the
+        // Six indices (0..6) after two unused ones; vertex offsets shift the vertex id by 6 (the
         // shader takes it modulo 6, so the quad is the same).
         let indices = GpuBuffer::new(
             device,
@@ -187,7 +187,7 @@ fn dispatches_indirect_on_graphics_and_compute_lists() {
     for device in devices() {
         let pipeline = device
             .create_compute_pipeline(&ComputePipelineDesc {
-                shader: shader("count", Stage::Compute),
+                shader: shader("Count"),
                 cache: None,
             })
             .unwrap();

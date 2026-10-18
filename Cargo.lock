@@ -645,6 +645,7 @@ version = "0.1.0"
 dependencies = [
  "marlin-gpu-test-macros",
  "marlin-rhi",
+ "marlin-shaderc",
  "marlin-test-support",
  "png",
 ]

@@ -1,6 +1,6 @@
 [package]
 name = "marlin-gpu-test-support"
-description = "Shared helpers for GPU integration tests: the shared hardware devices, submit-and-wait, buffers, readback, render targets, test shaders and golden images."
+description = "Shared helpers for GPU integration tests: the shared hardware devices, submit-and-wait, buffers, readback, render targets, Marlin test shaders compiled at run time, and golden images."
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 marlin-gpu-test-macros.workspace = true
 marlin-rhi.workspace = true
+marlin-shaderc.workspace = true
 marlin-test-support.workspace = true
 png.workspace = true
 

@@ -466,8 +466,16 @@ Development 下的 `Debug.Print` 在 SPIR-V 上还写不出来，等调试 buffe
 - 核心库：`RayTracing.mshader` 里有 `Ray`、`[Flags] RayFlags`、`HitKind`、`RayHit`（`InstanceIndex` 和 `InstanceId` 都有）、`RayQuery`（构造函数、`Proceed`、`CommitTriangle`、`Committed`、`Candidate`），以及 `AccelerationStructure` 的 `TraceAny`、`TraceClosest`。后两个用 Marlin 写，循环调用 `Proceed`，遇到三角形候选就提交。它们需要 `Capability.RayQuery`。
 - 类型检查：任何 enum 都有 `==`、`!=`；`[Flags]` enum 还有 `&`、`|`、`^`，结果还是这个 enum。声明了构造函数的内建类型可以构造。
 - 降低：`RayQuery` 是指向它自己那个 `rayquery` 变量的指针；只有一个值的块参数被去掉（trivial phi），所以循环里的 query 还是同一个指针；intrinsic 的结果类型取成员声明的类型；常量路径也可以当默认实参；构造函数、静态函数和命名空间函数不带接收者。
-- SPIR-V 后端：`SPV_KHR_ray_query`；加速结构从 resource heap 里加载；`rq.get` 对应 `OpRayQueryGet*KHR`。candidate 的种类加 1，和 `HitKind` 对齐。`vulkan-1.4` target 把 `RayQuery` 当作可选 capability，设备没有它就跳过，反射里会列出来。
+- SPIR-V 后端：`SPV_KHR_ray_query`；`rq.get` 对应 `OpRayQueryGet*KHR`。candidate 的种类加 1，和 `HitKind` 对齐。`vulkan-1.4` target 把 `RayQuery` 当作可选 capability，设备没有它就跳过，反射里会列出来。加速结构的取法见第 10e 步。
 - ray tracing pipeline（raygen、hit、miss）不在第 10 步里。
+
+第 10e 步把占位 shader 全部换掉，并在真实 GPU 上跑通（RTX 5060，GPU tier 132 个测试，2026-10-18）：
+- 测试 shader：`marlin-gpu-test-support` 在运行时用 `Session` 编译，见 0002 §5。共用包 `Test` 有 22 个 entry，cook_texture 自己的包里有 `TexelLoad`。
+- 引擎 shader 交给 cooker：`RendererDesc` 的 shader 由调用方传入，`framework::run` 在 cooker 能编 shader 之前只清屏。
+- 硬件上发现的问题：
+  - RHI 要启用 `VK_KHR_shader_untyped_pointers`；
+  - RHI 的槽宽改成正好等于 shader 算出的值，不对齐的 device 不支持；
+  - 加速结构改经 set 0 binding 0 读取，因为从 `ResourceHeapEXT` 直接 load 出来的，在 NVIDIA 驱动上做 ray query 什么也找不到（0016 §4.2）。
 
 第 5c 步留到后面的：`[StructLayout]`/`[FieldOffset]`（0004 §16）；mesh 的 `MeshOutput`、`[Payload]` 和 `Mesh.Dispatch` 的检查（§11.6）；长度由 `const` 字段给出的数组，布局要等第 7 步的编译期求值；capability 和具体 target 的对照、`const if` 的裁剪，等第 9 步的 target 描述。
 

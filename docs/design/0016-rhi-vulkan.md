@@ -12,9 +12,9 @@
 |---|---|---|
 | 哪些平台用 Vulkan | Windows 和 Linux **立刻**切到 Vulkan；D3D12 只留给 Xbox（代码暂留，之后删掉，有 Xbox 时再加回） | 1 |
 | API 绑定 | 手写 FFI（同 d3d12/ffi.rs），只绑用到的部分；运行时用 `marlin_pal::ext::Dylib` 加载 `vulkan-1.dll` / `libvulkan.so.1`，缺了就是 `Unsupported`；no_std，无第三方依赖 | 2 |
-| 基线 | Vulkan **1.4** instance/device ＋ 必需扩展 `VK_EXT_descriptor_heap`、`VK_EXT_mesh_shader`、`VK_EXT_device_generated_commands`；其余能力按 `Features` 可选 | 3 |
+| 基线 | Vulkan **1.4** instance/device ＋ 必需扩展 `VK_EXT_descriptor_heap`、`VK_KHR_shader_untyped_pointers`（shader 通过无类型指针访问 heap）、`VK_EXT_mesh_shader`、`VK_EXT_device_generated_commands`；其余能力按 `Features` 可选 | 3 |
 | bindless | **descriptor heap，不用 descriptor set 和 pipeline layout**：一个资源 heap、一个 sampler heap，每个 command list 开头绑定一次；push constants 走 push data | 4 |
-| shader 侧绑定 | 原生 `SPV_EXT_descriptor_heap`（自研编译器以后直接产出）或 set 0 的固定映射（binding 0 资源、1 sampler、2 push data），后者给占位 HLSL 用 | 4.2 |
+| shader 侧绑定 | 原生 `SPV_EXT_descriptor_heap`（自研编译器产出这种），以及 set 0 的固定映射（binding 0 资源、1 sampler、2 push data）；自研编译器只经 binding 0 取加速结构 | 4.2 |
 | 屏障 | synchronization2，`Stage`/`Access`/`Layout` 一一映射；`Features::enhanced_barriers = true` | 5 |
 | 交换链依赖 | 不改 API：acquire 的信号量挂到 swapchain 所在队列，下一次 `submit` 自动等待；present 前空提交一次发信号 | 7 |
 | 测试 | 同一套 RHI 测试；只对某个图形 API 有意义的 case 保留，按 `marlin_rhi::GRAPHICS_API` 跳过；golden 目录按 API 名 | 9 |
@@ -98,8 +98,8 @@ adapter：`AdapterPreference::HighPerformance` 选独显优先、然后显存最
 
 两种 shader 都接受，backend 每次建 pipeline 都附上同一份映射（`VkShaderDescriptorSetAndBindingMappingInfoEXT`），原生 heap 的 shader 不受它影响：
 
-1. **原生 `SPV_EXT_descriptor_heap`**：shader 直接用 `ResourceHeapEXT` / `SamplerHeapEXT`，下标即槽号（字节偏移 = 槽号 × 槽宽）。槽宽由 shader 用 `OpConstantSizeOfEXT` 算出：`max(image, buffer)` 的描述符大小，sampler heap 是 sampler 的大小（2026-10-17 定，0002 §6）。所以 backend 的槽宽必须正好是 `max(imageDescriptorSize, bufferDescriptorSize)`：现在的实现再向上对齐到两者对齐的较大值，接入自研编译器时改成检查这个最大值已经对齐（实际的描述符大小都是对齐的），不对齐就不支持这个 device；push constants 用 `PushConstant` 存储类，读的是 push data。
-2. **set 0 映射**（占位 HLSL，dxc 默认的"emulated heap"）：
+1. **原生 `SPV_EXT_descriptor_heap`**：shader 直接用 `ResourceHeapEXT` / `SamplerHeapEXT`，下标即槽号（字节偏移 = 槽号 × 槽宽）。槽宽由 shader 用 `OpConstantSizeOfEXT` 算出：`max(image, buffer)` 的描述符大小，sampler heap 是 sampler 的大小（2026-10-17 定，0002 §6）。所以 backend 的槽宽正好是 `max(imageDescriptorSize, bufferDescriptorSize)`，sampler 的槽宽正好是 `samplerDescriptorSize`。这两个值要是不是各自对齐的整数倍，就不支持这个 device（2026-10-18 起，`descriptor.rs`）。push constants 用 `PushConstant` 存储类，读的是 push data。shader 用到无类型指针，所以基线要求 `VK_KHR_shader_untyped_pointers` 和 `shaderUntypedPointers`。
+2. **set 0 映射**（dxc 的"emulated heap"形式）：自研编译器只用 binding 0 取加速结构。从 `ResourceHeapEXT` 直接 load 出来的加速结构，在 NVIDIA 驱动上做 ray query 什么也找不到，validation 也不报错（2026-10-18，RTX 5060）；而经 binding 0 读同一个槽是对的。
 
 | SPIR-V | 映射到 | `VkDescriptorMappingSourceEXT` |
 |---|---|---|
@@ -107,15 +107,7 @@ adapter：`AdapterPreference::HighPerformance` 选独显优先、然后显存最
 | set 0 binding 1（sampler 数组） | sampler heap，偏移 0，步长 = sampler 槽宽 | `HEAP_WITH_CONSTANT_OFFSET` |
 | set 0 binding 2（uniform block） | push data 偏移 0 | `PUSH_DATA` |
 
-占位 SPIR-V 的编译命令（只用 SDK 的 dxc，离线手工跑一次，不进任何构建）：
-
-```text
-dxc -spirv -fspv-target-env=vulkan1.3 -HV 2021 -fvk-bind-resource-heap 0 0 -fvk-bind-sampler-heap 1 0 -fvk-bind-register b0 0 2 0 -fvk-use-scalar-layout -T <stage>_6_6 -E <entry> -Fo <name>.<stage>.spv <name>.hlsl
-```
-
-dxc 的 `-fspv-use-descriptor-heap`（原生）目前不支持 UAV，所以占位品用映射方式。
-
-buffer 成员的 offset 由 shader 自己声明（SPIR-V 的 `Offset` 装饰），RHI 不规定布局，只打开 `scalarBlockLayout`，让任意自然对齐的 offset 都合法。布局规则归自研 shader 编译器定（它产出的 offset 要和手写的 Rust 结构体一致，用反射检查），见 §11。占位 shader 用 `-fvk-use-scalar-layout`：紧密排列、按标量自然对齐，和现在 `#[repr(C)]` 的结构体一致。
+buffer 成员的 offset 由 shader 自己声明（SPIR-V 的 `Offset` 装饰），RHI 不规定布局，只打开 `scalarBlockLayout`，让任意自然对齐的 offset 都合法。布局规则归自研 shader 编译器定（它产出的 offset 要和手写的 Rust 结构体一致，用反射检查），见 §11。Marlin shader 是标量布局：紧密排列、按标量自然对齐，和 `#[repr(C)]` 的结构体一致。
 
 ### 4.3 push constants
 
@@ -163,7 +155,7 @@ buffer 成员的 offset 由 shader 自己声明（SPIR-V 的 `Offset` 装饰）�
 
 - 所有 RHI 测试与图形 API 无关，同一套在 Vulkan 上跑。只对某个 API 有意义的 case（例如"D3D12 一定有专用 compute/copy 队列"）**保留**，用 `#[gpu_test(api = d3d12)]` 代替 `#[test]`：其他 API 上按 `marlin_rhi::GRAPHICS_API` 在运行期 `skip!`。
 - `marlin_gpu_test_support::devices()` 返回每条屏障路径一个设备：Vulkan 只有一条，所以一个；D3D12 是 enhanced + legacy 两个。测试遍历切片，不写死下标。
-- 测试 shader 按 `SHADER_FORMAT` 选 `.dxil` 或 `.spv`，查找函数形状不变；等自研编译器就绪整个换掉（[0002 §5](0002-shader-interface.md)）。
+- 测试 shader 是 Marlin shader，在运行时编译成 SPIR-V（[0002 §5](0002-shader-interface.md)）。
 - golden 目录 `tests/data/golden/<api>/`，`<api>` 是 `GraphicsApi::name()`（`vulkan`、`d3d12`）。Vulkan 的参考图第一次用 `MARLIN_BLESS=1` 生成，人工看过再提交。
 - validation 开着跑；测试结束检查 `validation_errors() == 0` 的地方照旧。
 

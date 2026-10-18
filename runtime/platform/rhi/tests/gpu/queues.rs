@@ -12,8 +12,7 @@ use marlin_rhi::{
     SubmitDesc,
 };
 use support::{
-    Stage, buffer, devices, gpu_test, read_words, readback, run_on, shader, skip, upload,
-    words_to_bytes,
+    buffer, devices, gpu_test, read_words, readback, run_on, shader, skip, upload, words_to_bytes,
 };
 
 /// A recorded list of type `ty`, with its pool.
@@ -98,7 +97,7 @@ fn queues_wait_for_each_other_on_the_gpu() {
             .unwrap();
         let fill = device
             .create_compute_pipeline(&ComputePipelineDesc {
-                shader: shader("fill", Stage::Compute),
+                shader: shader("Fill"),
                 cache: None,
             })
             .unwrap();
@@ -218,7 +217,7 @@ fn timestamps_on_every_queue() {
     for device in devices() {
         let fill = device
             .create_compute_pipeline(&ComputePipelineDesc {
-                shader: shader("fill", Stage::Compute),
+                shader: shader("Fill"),
                 cache: None,
             })
             .unwrap();

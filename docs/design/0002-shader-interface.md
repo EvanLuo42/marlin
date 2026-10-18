@@ -82,35 +82,26 @@
 - 深度用 **reverse-Z**：近平面 = 1，远平面 = 0，比较用 `GreaterEqual`（`DepthState::reverse_z`），清除值为 0。marlin-math 的 `perspective_rh` 等函数直接产出这种投影。
 - 正面是屏幕上逆时针（`FrontFace::CounterClockwise`），默认剔除背面。
 - viewport 和 scissor 以渲染目标左上角为原点，单位是像素。
-- 世界坐标系（来自 marlin-math）：右手系，Y 向上，相机看向 −Z，列向量，矩阵列主序存储。shader 里的 `mul(M, v)` 对应列向量约定：HLSL 的 `float4x4` 从 buffer 读入时默认按 column-major 打包，跟 marlin-math 的存储一致。
+- 世界坐标系（来自 marlin-math）：右手系，Y 向上，相机看向 −Z，列向量，矩阵列主序存储。Marlin shader 里的 `M * v` 是列向量乘法；buffer 里的 `float4x4` 按列主序排列，跟 marlin-math 的存储一致。
 
-## 5. 当前的占位实现
+## 5. 测试 shader 与引擎 shader
 
-自研编译器还没有，现在的 shader 是**占位品**：用 HLSL 写，用 dxc 手工编译一次，提交编译结果：`.dxil`（D3D12）和 `.spv`（Vulkan，用 Vulkan SDK 的 dxc，绑定按 §6 的 set 0 映射，每个都用 `spirv-val --target-env vulkan1.3` 验过）。dxc 和 HLSL 都不进任何构建或管线。每条编译命令记在查找它的代码旁边。
+占位 HLSL 已经全部删掉（第 10e 步，2026-10-18），现在所有 shader 都是 Marlin shader，仓库里没有 HLSL、DXIL，也没有 dxc 编出的 SPIR-V。
 
-| 位置 | 编译结果 | 查找 | 用途 |
-|---|---|---|---|
-| `tools/gpu_test_support/shaders/` | `fill.cs`、`quad.{vs,ps}`、`columns.{vs,ps}`、`mesh.{ms,as,amplified.ms,ps}`、`count.cs`、`volume.{write,read}.cs`、`solid.{vs,ps,dual.ps,coord.ps}`、`sample.{sample,stencil,ms,cube}.cs`、`rayquery.cs`，各有 `.dxil` 和 `.spv` | `marlin_gpu_test_support::shader(name, stage)`（命令在该 crate 的 `src/lib.rs`） | GPU 测试：compute 写 bindless UAV；绘制测试覆盖 vertex pulling、uniform、纹理、采样器和 reverse-Z；`solid` 覆盖多重采样、混合、保守光栅、深度范围、VRS 和查询；`sample` 覆盖 min/max 采样、stencil 视图、多重采样读取和 cube array；`rayquery` 覆盖加速结构和 inline ray query |
-| `runtime/engine/render/shaders/` | `forward.{vs,ps}`，各有 `.dxil` 和 `.spv` | marlin-render 的 `src/shaders.rs` | marlin-render 前向 pass |
-| `tools/cook_texture/tests/data/shaders/` | `texel_load.cs.dxil`、`texel_load.cs.spv` | cook_texture 的 `tests/gpu/conformance.rs` | 纹理编码在硬件上逐 texel 回读 |
-
-- 查找按 `marlin_rhi::SHADER_FORMAT` 选 `.dxil` 或 `.spv`；没有该格式的编译结果就 panic（测试）或返回 `Unsupported`（marlin-render）。
-- 只为 Vulkan 的改动用 `#ifdef __spirv__` 或 `[[vk::...]]`，DXIL 不变：dual-source blending 的第二个源在 Vulkan 是 location 0 index 1（`solid.hlsl`）。
-- 读 `SV_InstanceID` 的 vertex shader 编 SPIR-V 时加 `-fvk-support-nonzero-base-instance`，让它像 §3 说的那样从 0 开始（`forward.vs.spv`）。
-
-测试通过 `marlin_gpu_test_support::shader(name, stage)` 查找 shader。等编译器就绪，计划把这个查找换成一个测试 shader crate：
-- 它的 `build.rs` 把编译器库作为 `[build-dependencies]` 调用，编译 `shaders/**` 下的全部 Marlin shader（按 backend 的格式），把结果写进 `OUT_DIR`，再生成同样形状的 `include_bytes!` 查找表。
-- shader 编译错误会让构建失败。
-- 增量编译依靠 `rerun-if-changed`。
-- workspace 设置 `[profile.dev.build-override] opt-level = 3`，让编译器在构建期以优化速度运行。
-
-到时候 cooker 也调用同一个库。
+- **测试 shader** 在运行时编译，不走 build.rs（2026-10-17 定）。`marlin_gpu_test_support` 在每个测试二进制里建一个编译器 session，第一次用到某个 entry 时才编译，结果一直留到进程结束。
+  - 共用的包 `Test` 在 `tools/gpu_test_support/shaders/`，用 `shader("Fill")` 按 entry 名取，stage 由 entry 的属性决定。
+  - 只有一个 crate 用的 shader 放在那个 crate 的 `tests/data/shaders/`，用 `crate_shader!("CookTexture.TexelLoad")` 取。这个包依赖 `Test`。
+  - 需要设静态参数时用 `Shader::new(entry).with_const(path, value)`。
+  - shader 编不过时测试会 panic，panic 信息里带着编译器的诊断。
+  - 不用 GPU 的 `unit` 测试会把 `Test` 包里的每个 entry 都编一遍；设了 `MARLIN_SPIRV_VAL` 时，还会再用 spirv-val 检查一遍。
+- **引擎 shader** 由 cooker 编译，作为资产交给引擎，引擎自己不带 shader。`marlin_render::RendererDesc::shaders` 由创建方传入：测试里传 `ForwardVs` / `ForwardPs`。cooker 还不能编 shader，所以在那之前 `framework::run` 传 `None`，窗口只清屏、不画 mesh（2026-10-18 定）。
+- 编译器只产出 SPIR-V。后端格式不是 SPIR-V（D3D12）时没有测试 shader 可用；D3D12 只留给 Xbox（0016）。
 
 ## 6. SPIR-V 绑定（Vulkan）
 
 已定，见 [0016 §4](0016-rhi-vulkan.md)：bindless 用 `VK_EXT_descriptor_heap`，不用 descriptor set 和 pipeline layout。shader 两种写法都接受：
 - 原生 `SPV_EXT_descriptor_heap`（`ResourceHeapEXT` / `SamplerHeapEXT`，push constants 是 `PushConstant` 存储类）：自研编译器直接产出这种（2026-10-17 定）。资源 heap 的槽宽由 shader 自己算：`max(OpConstantSizeOfEXT(image), OpConstantSizeOfEXT(buffer))`（`OpSpecConstantOp` 的 `UGreaterThan` + `Select`，用 `ArrayStrideIdEXT` 标在 heap 的运行时数组上），sampler heap 的步长是 `OpConstantSizeOfEXT(sampler)`；驱动给出这些大小，编译器不用知道。RHI 的槽宽必须正好是这个最大值（0016 §4.1）。
-- set 0 映射（占位 HLSL 用的）：binding 0 资源表、binding 1 采样器表、binding 2 push constants 的 uniform block。
+- set 0 映射：binding 0 资源表、binding 1 采样器表、binding 2 push constants 的 uniform block。自研编译器只用 binding 0 取加速结构，因为从 `ResourceHeapEXT` 直接 load 出来的加速结构，在 NVIDIA 驱动上做 ray query 什么也找不到，validation 却不报错（2026-10-18 在 RTX 5060 上实测）。heap 槽号仍然是 `AccelerationStructure::index()`。
 
 ## 7. 待定
 

@@ -1,0 +1,35 @@
+namespace Test;
+
+// The whole interface at once: vertex pulling from a buffer, a uniform, a sampled texture and a
+// sampler, all reached through push-constant indices.
+
+public struct QuadArgs
+{
+    public ReadOnlyBuffer<float2> Vertices;
+    public Uniform<Tint> Tint;
+    public Texture2D<float4> Texture;
+    public Sampler Sampler;
+    public float Depth;
+}
+
+public struct Tint
+{
+    public float4 Color;
+}
+
+public struct QuadVertex
+{
+    [Position] public float4 Pos;
+    public float2 Uv;
+}
+
+[Vertex]
+public QuadVertex QuadVs([VertexId] uint vertex, [Push] in QuadArgs a)
+{
+    float2 p = a.Vertices[vertex];
+    return QuadVertex { Pos = float4(p, a.Depth, 1), Uv = p * float2(0.5, -0.5) + 0.5 };
+}
+
+[Pixel]
+public float4 QuadPs(in QuadVertex i, [Push] in QuadArgs a) =>
+    a.Texture.Sample(a.Sampler, i.Uv, lod: 0) * a.Tint.Value.Color;

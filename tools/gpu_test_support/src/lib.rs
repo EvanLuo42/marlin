@@ -3,135 +3,21 @@
 //! readback, common render targets and pipelines, the test shaders, and golden images
 //! ([`assert_image!`], [`read_texture`]).
 //!
-//! Shaders are looked up by name and stage, in the backend's [`SHADER_FORMAT`]. This is the
-//! shape the planned test-shader crate will have: its build.rs compiles every Marlin shader under
-//! `shaders/` with the Marlin shader compiler library and generates this lookup. Until that
-//! compiler exists, the blobs are PLACEHOLDERS: the `.hlsl` files beside them, compiled once by
-//! hand with dxc, to DXIL:
-//!
-//! ```text
-//! dxc -HV 2021 -Qstrip_debug -Qstrip_reflect -T cs_6_6 -E main         -Fo fill.cs.dxil fill.hlsl
-//! dxc -HV 2021 -Qstrip_debug -Qstrip_reflect -T vs_6_6 -E vs_main      -Fo quad.vs.dxil quad.hlsl
-//! dxc -HV 2021 -Qstrip_debug -Qstrip_reflect -T ps_6_6 -E ps_main      -Fo quad.ps.dxil quad.hlsl
-//! dxc -HV 2021 -Qstrip_debug -Qstrip_reflect -T vs_6_6 -E vs_main      -Fo columns.vs.dxil columns.hlsl
-//! dxc -HV 2021 -Qstrip_debug -Qstrip_reflect -T ps_6_6 -E ps_main      -Fo columns.ps.dxil columns.hlsl
-//! dxc -HV 2021 -Qstrip_debug -Qstrip_reflect -T ms_6_6 -E ms_main      -Fo mesh.ms.dxil mesh.hlsl
-//! dxc -HV 2021 -Qstrip_debug -Qstrip_reflect -T as_6_6 -E as_main      -Fo mesh.as.dxil mesh.hlsl
-//! dxc -HV 2021 -Qstrip_debug -Qstrip_reflect -T ms_6_6 -E ms_amplified -Fo mesh.amplified.ms.dxil mesh.hlsl
-//! dxc -HV 2021 -Qstrip_debug -Qstrip_reflect -T ps_6_6 -E ps_main      -Fo mesh.ps.dxil mesh.hlsl
-//! dxc -HV 2021 -Qstrip_debug -Qstrip_reflect -T cs_6_6 -E main         -Fo count.cs.dxil count.hlsl
-//! dxc -HV 2021 -Qstrip_debug -Qstrip_reflect -T cs_6_6 -E write_main   -Fo volume.write.cs.dxil volume.hlsl
-//! dxc -HV 2021 -Qstrip_debug -Qstrip_reflect -T cs_6_6 -E read_main    -Fo volume.read.cs.dxil volume.hlsl
-//! dxc -HV 2021 -Qstrip_debug -Qstrip_reflect -T vs_6_6 -E vs_main      -Fo solid.vs.dxil solid.hlsl
-//! dxc -HV 2021 -Qstrip_debug -Qstrip_reflect -T ps_6_6 -E ps_main      -Fo solid.ps.dxil solid.hlsl
-//! dxc -HV 2021 -Qstrip_debug -Qstrip_reflect -T ps_6_6 -E ps_dual      -Fo solid.dual.ps.dxil solid.hlsl
-//! dxc -HV 2021 -Qstrip_debug -Qstrip_reflect -T ps_6_6 -E ps_coord     -Fo solid.coord.ps.dxil solid.hlsl
-//! dxc -HV 2021 -Qstrip_debug -Qstrip_reflect -T cs_6_6 -E sample_main  -Fo sample.sample.cs.dxil sample.hlsl
-//! dxc -HV 2021 -Qstrip_debug -Qstrip_reflect -T cs_6_6 -E stencil_main -Fo sample.stencil.cs.dxil sample.hlsl
-//! dxc -HV 2021 -Qstrip_debug -Qstrip_reflect -T cs_6_6 -E ms_main      -Fo sample.ms.cs.dxil sample.hlsl
-//! dxc -HV 2021 -Qstrip_debug -Qstrip_reflect -T cs_6_6 -E cube_main    -Fo sample.cube.cs.dxil sample.hlsl
-//! dxc -HV 2021 -Qstrip_debug -Qstrip_reflect -T cs_6_6 -E main         -Fo rayquery.cs.dxil rayquery.hlsl
-//! ```
-//!
-//! and to SPIR-V with the Vulkan SDK's dxc, resources at the set 0 bindings of
-//! docs/design/0016-rhi-vulkan.md §4.2 (`$VK` stands for
-//! `-spirv -fspv-target-env=vulkan1.3 -HV 2021 -fvk-bind-resource-heap 0 0
-//! -fvk-bind-sampler-heap 1 0 -fvk-bind-register b0 0 2 0 -fvk-use-scalar-layout`: buffers packed tightly, as `#[repr(C)]` lays them out),
-//! each checked with
-//! `spirv-val --target-env vulkan1.3 --scalar-block-layout`:
-//!
-//! ```text
-//! dxc $VK -T cs_6_6 -E main         -Fo fill.cs.spv fill.hlsl
-//! dxc $VK -T vs_6_6 -E vs_main      -Fo quad.vs.spv quad.hlsl
-//! dxc $VK -T ps_6_6 -E ps_main      -Fo quad.ps.spv quad.hlsl
-//! dxc $VK -T vs_6_6 -E vs_main      -Fo columns.vs.spv columns.hlsl
-//! dxc $VK -T ps_6_6 -E ps_main      -Fo columns.ps.spv columns.hlsl
-//! dxc $VK -T ms_6_6 -E ms_main      -Fo mesh.ms.spv mesh.hlsl
-//! dxc $VK -T as_6_6 -E as_main      -Fo mesh.as.spv mesh.hlsl
-//! dxc $VK -T ms_6_6 -E ms_amplified -Fo mesh.amplified.ms.spv mesh.hlsl
-//! dxc $VK -T ps_6_6 -E ps_main      -Fo mesh.ps.spv mesh.hlsl
-//! dxc $VK -T cs_6_6 -E main         -Fo count.cs.spv count.hlsl
-//! dxc $VK -T cs_6_6 -E write_main   -Fo volume.write.cs.spv volume.hlsl
-//! dxc $VK -T cs_6_6 -E read_main    -Fo volume.read.cs.spv volume.hlsl
-//! dxc $VK -T vs_6_6 -E vs_main      -Fo solid.vs.spv solid.hlsl
-//! dxc $VK -T ps_6_6 -E ps_main      -Fo solid.ps.spv solid.hlsl
-//! dxc $VK -T ps_6_6 -E ps_dual      -Fo solid.dual.ps.spv solid.hlsl
-//! dxc $VK -T ps_6_6 -E ps_coord     -Fo solid.coord.ps.spv solid.hlsl
-//! dxc $VK -T cs_6_6 -E sample_main  -Fo sample.sample.cs.spv sample.hlsl
-//! dxc $VK -T cs_6_6 -E stencil_main -Fo sample.stencil.cs.spv sample.hlsl
-//! dxc $VK -T cs_6_6 -E ms_main      -Fo sample.ms.cs.spv sample.hlsl
-//! dxc $VK -T cs_6_6 -E cube_main    -Fo sample.cube.cs.spv sample.hlsl
-//! dxc $VK -T cs_6_6 -E main         -Fo rayquery.cs.spv rayquery.hlsl
-//! ```
-//!
-//! A vertex shader that reads `SV_InstanceID` also needs `-fvk-support-nonzero-base-instance`
-//! for SPIR-V (it starts at 0 on every backend, 0002 §3); none of these does.
+//! Test shaders are Marlin shaders, compiled at run time by the Marlin shader compiler the
+//! first time a test asks for one ([`shader`], [`Shader`], [`crate_shader!`]): the shared ones
+//! in this crate's `shaders/`, a crate's own in its `tests/data/shaders/`.
 
 pub mod image;
+mod shaders;
 
 pub use image::{Image, Tolerance, read_texture};
+pub use marlin_shaderc::ConstValue;
+pub use shaders::{SHARED, Shader, shader};
 
 use marlin_rhi::{
     AdapterPreference, Buffer, BufferDesc, BufferUsage, CommandList, Device, DeviceDesc,
-    GRAPHICS_API, GraphicsApi, Instance, InstanceDesc, MemoryLocation, QueueType, SHADER_FORMAT,
-    ShaderFormat, ShaderModule,
+    GRAPHICS_API, GraphicsApi, Instance, InstanceDesc, MemoryLocation, QueueType,
 };
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Stage {
-    Vertex,
-    Pixel,
-    Compute,
-    Amplification,
-    Mesh,
-}
-
-/// The compiled shader `name` for `stage`, in the backend's [`SHADER_FORMAT`]. Panics if there
-/// is none.
-pub fn shader(name: &str, stage: Stage) -> ShaderModule<'static> {
-    // (name, stage) => file under shaders/ without the format's extension, entry point.
-    macro_rules! shaders {
-        ($(($name:literal, $stage:ident) => ($file:literal, $entry:literal),)*) => {
-            match (name, stage) {
-                $(($name, Stage::$stage) => (
-                    include_bytes!(concat!("../shaders/", $file, ".dxil")).as_slice(),
-                    include_bytes!(concat!("../shaders/", $file, ".spv")).as_slice(),
-                    $entry,
-                ),)*
-                _ => panic!("no test shader {name} for {stage:?}"),
-            }
-        };
-    }
-    let (dxil, spirv, entry) = shaders! {
-        ("fill", Compute) => ("fill.cs", "main"),
-        ("quad", Vertex) => ("quad.vs", "vs_main"),
-        ("quad", Pixel) => ("quad.ps", "ps_main"),
-        ("columns", Vertex) => ("columns.vs", "vs_main"),
-        ("columns", Pixel) => ("columns.ps", "ps_main"),
-        ("mesh", Mesh) => ("mesh.ms", "ms_main"),
-        ("mesh", Amplification) => ("mesh.as", "as_main"),
-        ("mesh.amplified", Mesh) => ("mesh.amplified.ms", "ms_amplified"),
-        ("mesh", Pixel) => ("mesh.ps", "ps_main"),
-        ("count", Compute) => ("count.cs", "main"),
-        ("volume.write", Compute) => ("volume.write.cs", "write_main"),
-        ("volume.read", Compute) => ("volume.read.cs", "read_main"),
-        ("solid", Vertex) => ("solid.vs", "vs_main"),
-        ("solid", Pixel) => ("solid.ps", "ps_main"),
-        ("solid.dual", Pixel) => ("solid.dual.ps", "ps_dual"),
-        ("solid.coord", Pixel) => ("solid.coord.ps", "ps_coord"),
-        ("sample", Compute) => ("sample.sample.cs", "sample_main"),
-        ("sample.stencil", Compute) => ("sample.stencil.cs", "stencil_main"),
-        ("sample.ms", Compute) => ("sample.ms.cs", "ms_main"),
-        ("sample.cube", Compute) => ("sample.cube.cs", "cube_main"),
-        ("rayquery", Compute) => ("rayquery.cs", "main"),
-    };
-    let code = match SHADER_FORMAT {
-        ShaderFormat::Dxil => dxil,
-        ShaderFormat::SpirV => spirv,
-        format => panic!("no test shaders are compiled to {format:?} (the backend's format)"),
-    };
-    ShaderModule { code, entry }
-}
 
 /// `DeviceDesc::disable_enhanced_barriers` for each barrier path the backend has: D3D12 has
 /// enhanced barriers and the legacy resource-state ones, every other backend one path (Vulkan's
@@ -265,7 +151,7 @@ pub const COLUMNS: u32 = 16;
 pub const COLUMN_WIDTH: u32 = 8;
 pub const COLUMN_HEIGHT: u32 = 8;
 
-/// An R32Uint render target of [`COLUMNS`] columns that the `columns` and `mesh` shaders draw
+/// An R32Uint render target of [`COLUMNS`] columns that the `Columns*` and `Mesh*` shaders draw
 /// into, read back one value per column.
 pub struct ColumnTarget {
     pub texture: marlin_rhi::Texture,
@@ -374,7 +260,7 @@ impl ColumnTarget {
     }
 }
 
-/// The `columns` shaders drawing into a [`ColumnTarget`], with optional depth-stencil state.
+/// The `ColumnsVs` and `ColumnsPs` shaders drawing into a [`ColumnTarget`], with optional depth-stencil state.
 pub fn columns_pipeline(
     device: &Device,
     depth: Option<marlin_rhi::DepthState>,
@@ -382,8 +268,8 @@ pub fn columns_pipeline(
     use marlin_rhi::{CullMode, GraphicsPipelineDesc, PrimitiveTopology, RasterState};
     device
         .create_graphics_pipeline(&GraphicsPipelineDesc {
-            vertex: shader("columns", Stage::Vertex),
-            pixel: Some(shader("columns", Stage::Pixel)),
+            vertex: shader("ColumnsVs"),
+            pixel: Some(shader("ColumnsPs")),
             topology: PrimitiveTopology::TriangleList,
             raster: RasterState {
                 cull: CullMode::None,
@@ -398,11 +284,11 @@ pub fn columns_pipeline(
         .unwrap()
 }
 
-/// The compute shader `name` as a pipeline.
+/// The compute entry `name` of the shared test shaders (`Fill`) as a pipeline.
 pub fn compute_pipeline(device: &Device, name: &str) -> marlin_rhi::ComputePipeline {
     device
         .create_compute_pipeline(&marlin_rhi::ComputePipelineDesc {
-            shader: shader(name, Stage::Compute),
+            shader: shader(name),
             cache: None,
         })
         .unwrap()
@@ -519,7 +405,7 @@ impl ColorTarget {
     }
 }
 
-/// The `solid` vertex shader with pixel shader `pixel` (`solid`, `solid.dual`, `solid.coord`)
+/// The `SolidVs` vertex shader with pixel entry `pixel` (`SolidPs`, `SolidDual`, `SolidCoord`)
 /// into one color target, no culling; `tweak` adjusts the description.
 pub fn solid_pipeline(
     device: &Device,
@@ -530,8 +416,8 @@ pub fn solid_pipeline(
     use marlin_rhi::{CullMode, GraphicsPipelineDesc, PrimitiveTopology, RasterState};
     let targets = [target];
     let mut desc = GraphicsPipelineDesc {
-        vertex: shader("solid", Stage::Vertex),
-        pixel: Some(shader(pixel, Stage::Pixel)),
+        vertex: shader("SolidVs"),
+        pixel: Some(shader(pixel)),
         topology: PrimitiveTopology::TriangleList,
         primitive_restart: None,
         raster: RasterState {
@@ -547,7 +433,7 @@ pub fn solid_pipeline(
     device.create_graphics_pipeline(&desc)
 }
 
-/// Push constants of the `solid` shaders.
+/// Push constants of the `Solid*` shaders.
 pub fn solid_constants(color: [f32; 4], mode: u32, depth: f32, color1: [f32; 4]) -> [u32; 12] {
     let mut words = [0u32; 12];
     for i in 0..4 {

@@ -26,7 +26,7 @@ fn reports_loss_then_recovers_with_a_new_device() {
     {
         let device = instance.create_device(&desc).unwrap();
         let (out, view) = storage(&device, 64);
-        let pipeline = compute_pipeline(&device, "fill");
+        let pipeline = compute_pipeline(&device, "Fill");
         let fence = device.create_fence(0).unwrap();
         let mut pool = device.create_command_pool().unwrap();
         let mut list = device.create_command_list(&pool).unwrap();
@@ -61,7 +61,7 @@ fn reports_loss_then_recovers_with_a_new_device() {
     assert!(device.status().is_ok());
     let (out, view) = storage(&device, 64);
     let rb = readback(&device, 256);
-    let pipeline = compute_pipeline(&device, "fill");
+    let pipeline = compute_pipeline(&device, "Fill");
     run(&device, |list| {
         list.set_compute_pipeline(&pipeline);
         list.push_constants(0, &[view.index(), 1]);

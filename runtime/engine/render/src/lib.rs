@@ -13,10 +13,9 @@ extern crate alloc;
 pub mod asset;
 mod mesh;
 mod renderer;
-mod shaders;
 
 pub use mesh::{MeshData, Vertex, cube};
 pub use renderer::{
-    Camera, Environment, MeshHandle, MeshRenderer, RenderStats, Renderer, RendererDesc, Scene,
-    SceneInstance,
+    Camera, Environment, ForwardShaders, MeshHandle, MeshRenderer, RenderStats, Renderer,
+    RendererDesc, Scene, SceneInstance,
 };

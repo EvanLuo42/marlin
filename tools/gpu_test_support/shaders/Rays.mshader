@@ -1,0 +1,33 @@
+namespace Test;
+
+// `Count` rays along +z from z = -1, spread over x in -2..2 at y = 0.1, against a top-level
+// acceleration structure. Word i of the output is `InstanceId << 16 | PrimitiveIndex` of the
+// closest hit of ray i, or all ones for a miss.
+
+public struct RayArgs
+{
+    public AccelerationStructure Scene;
+    public ByteBuffer Output;
+    public uint Count;
+}
+
+[Compute(64, 1, 1)]
+public void TraceRays([DispatchThreadId] uint3 id, [Push] in RayArgs a)
+{
+    if (id.x >= a.Count)
+        return;
+    var ray = Ray
+    {
+        Origin = float3(((float)id.x + 0.5) / (float)a.Count * 4 - 2, 0.1, -1),
+        Direction = float3(0, 0, 1),
+        TMin = 0,
+        TMax = 100,
+    };
+    var q = RayQuery(a.Scene, ray, RayFlags.Opaque | RayFlags.CullNoOpaque);
+    q.Proceed();
+    uint result = 0xFFFFFFFF;
+    RayHit hit = q.Committed;
+    if (hit.Kind == HitKind.Triangle)
+        result = (hit.InstanceId << 16) | hit.PrimitiveIndex;
+    a.Output.Store(id.x * 4, result);
+}

@@ -283,13 +283,22 @@ impl Bindless {
             .imageDescriptorAlignment
             .max(h.bufferDescriptorAlignment)
             .max(1);
-        let resource_stride = h
-            .imageDescriptorSize
-            .max(h.bufferDescriptorSize)
-            .next_multiple_of(resource_alignment);
-        let sampler_stride = h
-            .samplerDescriptorSize
-            .next_multiple_of(h.samplerDescriptorAlignment.max(1));
+        // The slot widths shaders index the heaps with: Marlin shaders compute them as
+        // `max(OpConstantSizeOfEXT(image), OpConstantSizeOfEXT(buffer))` and
+        // `OpConstantSizeOfEXT(sampler)`, with no rounding (0016 §4). A device whose sizes are
+        // not multiples of their alignments would need rounding the shaders cannot see.
+        let resource_stride = h.imageDescriptorSize.max(h.bufferDescriptorSize);
+        let sampler_stride = h.samplerDescriptorSize;
+        if !resource_stride.is_multiple_of(resource_alignment)
+            || !sampler_stride.is_multiple_of(h.samplerDescriptorAlignment.max(1))
+        {
+            marlin_diag::warn!(
+                "Vulkan descriptor sizes are not multiples of their alignments: \
+                 resources {resource_stride} / {resource_alignment}, samplers {sampler_stride} / {}",
+                h.samplerDescriptorAlignment
+            );
+            return Err(unsupported());
+        }
         let resources = DescriptorHeap::new(
             fns,
             device,

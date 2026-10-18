@@ -12,7 +12,7 @@ use marlin_rhi::{
     SamplerDesc, StoreOp, TextureBarrier, TextureDesc, TextureState, TextureUsage, TextureViewDesc,
     Viewport,
 };
-use support::{Stage, buffer, devices, read_words, run, shader};
+use support::{buffer, devices, read_words, run, shader};
 
 #[test]
 fn compute_writes_through_bindless_view() {
@@ -35,7 +35,7 @@ fn compute_writes_through_bindless_view() {
             .unwrap();
         let pipeline = device
             .create_compute_pipeline(&ComputePipelineDesc {
-                shader: shader("fill", Stage::Compute),
+                shader: shader("Fill"),
                 cache: None,
             })
             .unwrap();
@@ -177,8 +177,8 @@ fn draws_with_vertex_pulling_textures_and_depth() {
 
         let pipeline = device
             .create_graphics_pipeline(&GraphicsPipelineDesc {
-                vertex: shader("quad", Stage::Vertex),
-                pixel: Some(shader("quad", Stage::Pixel)),
+                vertex: shader("QuadVs"),
+                pixel: Some(shader("QuadPs")),
                 topology: PrimitiveTopology::TriangleList,
                 raster: RasterState::default(),
                 depth: Some(DepthState::reverse_z(Format::D32Float)),

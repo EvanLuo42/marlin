@@ -12,8 +12,8 @@ use marlin_cooker::{engine_cookers, open_ddc};
 use marlin_framework::{
     Boot, ContentSettings, Engine, OFFSCREEN_FORMAT, Offscreen, RenderSide, mount,
 };
-use marlin_gpu_test_support::{Image, assert_image, hardware_device};
-use marlin_render::{Renderer, RendererDesc};
+use marlin_gpu_test_support::{Image, assert_image, hardware_device, shader};
+use marlin_render::{ForwardShaders, Renderer, RendererDesc};
 use marlin_rhi::Device;
 use marlin_test_support::{BackgroundService, TempDir, wait_until};
 
@@ -86,6 +86,10 @@ impl Viewer {
                 frames_in_flight: 2,
                 width: WIDTH,
                 height: HEIGHT,
+                shaders: Some(ForwardShaders {
+                    vertex: shader("ForwardVs"),
+                    pixel: shader("ForwardPs"),
+                }),
             },
         )
         .unwrap();

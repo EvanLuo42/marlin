@@ -10,12 +10,11 @@ use marlin_rhi::{
     ClearValue, ColorAttachment, ColorTargetState, CommandList, DepthAttachment, DepthState,
     DepthStencilView, DepthStencilViewDesc, Device, Error, ErrorKind, Format, GraphicsPipeline,
     GraphicsPipelineDesc, IndexFormat, LoadOp, MemoryLocation, MultisampleState, PrimitiveTopology,
-    RasterState, Rect, RenderPassDesc, RenderTargetView, Result, ShaderView, StoreOp, Texture,
-    TextureBarrier, TextureDesc, TextureState, TextureUsage, Viewport,
+    RasterState, Rect, RenderPassDesc, RenderTargetView, Result, ShaderModule, ShaderView, StoreOp,
+    Texture, TextureBarrier, TextureDesc, TextureState, TextureUsage, Viewport,
 };
 
 use crate::mesh::{MeshData, Vertex};
-use crate::shaders;
 
 /// The view a [`Renderer`] draws from: put it on an entity with a [`Transform`]. The camera looks
 /// down its local −Z with +Y up.
@@ -110,7 +109,7 @@ impl Default for Environment {
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
-pub struct RendererDesc {
+pub struct RendererDesc<'a> {
     /// Format of the targets [`Renderer::render`] draws into.
     pub color_format: Format,
     /// Frames in flight: [`Renderer::render`]'s `frame` is below this.
@@ -118,6 +117,18 @@ pub struct RendererDesc {
     /// Initial target size; see [`Renderer::resize`].
     pub width: u32,
     pub height: u32,
+    /// The forward pass's shaders, which the engine gets from the cooker like any asset. Without
+    /// them the renderer only clears.
+    pub shaders: Option<ForwardShaders<'a>>,
+}
+
+/// The forward pass: vertex pulling and per-instance transforms, one directional light plus
+/// ambient. Its push constants are the frame constants', instances' and vertices' view indices
+/// and the draw's first instance (`docs/design/0002-shader-interface.md`).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct ForwardShaders<'a> {
+    pub vertex: ShaderModule<'a>,
+    pub pixel: ShaderModule<'a>,
 }
 
 /// What a [`Renderer::render`] call drew.
@@ -159,7 +170,8 @@ struct DepthTarget {
 
 /// Draws the meshes of a [`World`]: see the crate docs.
 pub struct Renderer {
-    pipeline: GraphicsPipeline,
+    /// `None` without shaders: frames are only cleared.
+    pipeline: Option<GraphicsPipeline>,
     meshes: SlotMap<Mesh>,
     frames: Vec<Option<FrameData>>,
     depth: DepthTarget,
@@ -190,18 +202,22 @@ fn bytes(words: &[f32]) -> &[u8] {
 
 impl Renderer {
     pub fn new(device: &Device, desc: &RendererDesc) -> Result<Self> {
-        let (vertex, pixel) = shaders::forward().ok_or(Error::from_kind(ErrorKind::Unsupported))?;
-        let pipeline = device.create_graphics_pipeline(&GraphicsPipelineDesc {
-            vertex,
-            pixel: Some(pixel),
-            topology: PrimitiveTopology::TriangleList,
-            raster: RasterState::default(),
-            depth: Some(DepthState::reverse_z(DEPTH_FORMAT)),
-            color_targets: &[ColorTargetState::new(desc.color_format)],
-            multisample: MultisampleState::NONE,
-            primitive_restart: None,
-            cache: None,
-        })?;
+        let pipeline = desc
+            .shaders
+            .map(|s| {
+                device.create_graphics_pipeline(&GraphicsPipelineDesc {
+                    vertex: s.vertex,
+                    pixel: Some(s.pixel),
+                    topology: PrimitiveTopology::TriangleList,
+                    raster: RasterState::default(),
+                    depth: Some(DepthState::reverse_z(DEPTH_FORMAT)),
+                    color_targets: &[ColorTargetState::new(desc.color_format)],
+                    multisample: MultisampleState::NONE,
+                    primitive_restart: None,
+                    cache: None,
+                })
+            })
+            .transpose()?;
         Ok(Self {
             pipeline,
             meshes: SlotMap::new(),
@@ -393,13 +409,14 @@ impl Renderer {
         });
         let mut stats = RenderStats::default();
         if let Some((camera_transform, camera)) = camera
+            && self.pipeline.is_some()
             && !self.instances.is_empty()
         {
             // SAFETY: forwarded from the caller.
             let (frame_index, instances_index) =
                 unsafe { self.write_frame(device, frame, camera_transform, camera)? };
             let (width, height) = self.size;
-            list.set_graphics_pipeline(&self.pipeline);
+            list.set_graphics_pipeline(self.pipeline.as_ref().expect("checked above"));
             list.set_viewport(&Viewport::full(width, height));
             list.set_scissor(&Rect {
                 x: 0,

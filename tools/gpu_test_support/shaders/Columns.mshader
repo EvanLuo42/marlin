@@ -1,0 +1,39 @@
+namespace Test;
+
+// Vertical columns in an R32Uint target: column `First` (push word 31, which indirect draws set
+// per draw) through `First + Span - 1` of `Columns`, written as `First + 1 + Offset`. Six
+// vertices (two triangles) per draw.
+
+public struct ColumnsArgs
+{
+    public uint Columns;
+    public uint Span;
+    public uint Offset;
+    public uint[28] Unused;
+    public uint First;
+}
+
+public struct ColumnVertex
+{
+    [Position] public float4 Pos;
+    [Flat] public uint Value;
+}
+
+public const float2[6] Corners =
+    [float2(0, 0), float2(1, 0), float2(1, 1), float2(0, 0), float2(1, 1), float2(0, 1)];
+
+[Vertex]
+public ColumnVertex ColumnsVs([VertexId] uint vertex, [Push] in ColumnsArgs a)
+{
+    uint span = Max(a.Span, 1);
+    float2 c = Corners[vertex % 6];
+    float x = Lerp((float)a.First, (float)(a.First + span), c.x) / (float)a.Columns;
+    return ColumnVertex
+    {
+        Pos = float4(x * 2 - 1, c.y * 2 - 1, 0.5, 1),
+        Value = a.First + 1 + a.Offset,
+    };
+}
+
+[Pixel]
+public uint ColumnsPs(in ColumnVertex i) => i.Value;

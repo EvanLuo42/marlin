@@ -9,7 +9,7 @@ use marlin_rhi::{
     SamplerDesc, ShaderFormat, ShaderModule, TextureDesc, TextureUsage, TextureViewDesc,
     TextureViewDimension, UNIFORM_ALIGNMENT,
 };
-use support::{Stage, gpu_test, hardware_device, shader, skip};
+use support::{gpu_test, hardware_device, shader, skip};
 
 #[test]
 fn baseline_features() {
@@ -262,14 +262,14 @@ fn pipelines() {
     let device = hardware_device();
     device
         .create_compute_pipeline(&ComputePipelineDesc {
-            shader: shader("fill", Stage::Compute),
+            shader: shader("Fill"),
             cache: None,
         })
         .unwrap();
     device
         .create_graphics_pipeline(&GraphicsPipelineDesc {
-            vertex: shader("quad", Stage::Vertex),
-            pixel: Some(shader("quad", Stage::Pixel)),
+            vertex: shader("QuadVs"),
+            pixel: Some(shader("QuadPs")),
             topology: PrimitiveTopology::TriangleList,
             raster: RasterState::default(),
             depth: Some(DepthState::reverse_z(Format::D32Float)),

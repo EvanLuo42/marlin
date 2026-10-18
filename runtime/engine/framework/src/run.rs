@@ -8,7 +8,7 @@ use core::fmt::Write;
 use core::time::Duration;
 
 use marlin_app::{App, Event, Surface, WindowDesc};
-use marlin_diag::{FixedBuf, info};
+use marlin_diag::{FixedBuf, info, warn};
 use marlin_input::{GamepadButton, Input, Key};
 use marlin_jobs::{Config, JobSystem};
 use marlin_render::{Renderer, RendererDesc};
@@ -71,6 +71,8 @@ pub fn run(boot: &Boot, title: &str) -> Result<(), RunError> {
         PresentMode::Immediate
     });
     let mut frames = FramesInFlight::new(&device, 2)?;
+    // The forward shaders come from the cooker, which does not cook shaders yet.
+    warn!("no cooked shaders yet: the window is cleared, meshes are not drawn");
     let renderer = Renderer::new(
         &device,
         &RendererDesc {
@@ -78,6 +80,7 @@ pub fn run(boot: &Boot, title: &str) -> Result<(), RunError> {
             frames_in_flight: frames.count(),
             width: size.width,
             height: size.height,
+            shaders: None,
         },
     )?;
     let mut render = RenderSide::new(renderer, frames.count());

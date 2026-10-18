@@ -38,7 +38,7 @@ fn multisampled_edges_resolve_and_read_per_sample() {
             .unwrap();
         let pipeline = solid_pipeline(
             device,
-            "solid",
+            "SolidPs",
             ColorTargetState::new(Format::Rgba8Unorm),
             |d| {
                 d.multisample = MultisampleState::samples(4);
@@ -48,7 +48,7 @@ fn multisampled_edges_resolve_and_read_per_sample() {
         let samples_view = device
             .create_texture_view(&ms.texture, &TextureViewDesc::SAMPLED)
             .unwrap();
-        let reader = compute_pipeline(device, "sample.ms");
+        let reader = compute_pipeline(device, "SampleMultisample");
         let (samples, samples_out) = storage(device, 4);
         let samples_rb = readback(device, 16);
         run(device, |list| {
@@ -151,7 +151,7 @@ fn alpha_to_coverage_covers_part_of_each_pixel() {
     let ms = ColorTarget::new(device, 8, Format::Rgba8Unorm, 4);
     let pipeline = solid_pipeline(
         device,
-        "solid",
+        "SolidPs",
         ColorTargetState::new(Format::Rgba8Unorm),
         |d| {
             d.multisample = MultisampleState {
@@ -206,7 +206,7 @@ fn blend_constants_and_dual_source_blending() {
     for device in devices() {
         let constant = solid_pipeline(
             device,
-            "solid",
+            "SolidPs",
             ColorTargetState {
                 blend: Some(blend(BlendFactor::Constant)),
                 ..ColorTargetState::new(Format::Rgba8Unorm)
@@ -216,7 +216,7 @@ fn blend_constants_and_dual_source_blending() {
         .unwrap();
         let dual = solid_pipeline(
             device,
-            "solid.dual",
+            "SolidDual",
             ColorTargetState {
                 blend: Some(blend(BlendFactor::Src1Color)),
                 ..ColorTargetState::new(Format::Rgba8Unorm)
@@ -263,8 +263,8 @@ fn dual_source_blending_takes_one_target() {
     let targets = [target, target];
     let error = device
         .create_graphics_pipeline(&marlin_rhi::GraphicsPipelineDesc {
-            vertex: support::shader("solid", support::Stage::Vertex),
-            pixel: Some(support::shader("solid.dual", support::Stage::Pixel)),
+            vertex: support::shader("SolidVs"),
+            pixel: Some(support::shader("SolidDual")),
             topology: PrimitiveTopology::TriangleList,
             primitive_restart: None,
             raster: RasterState::default(),
@@ -284,7 +284,7 @@ fn conservative_rasterization_shades_touched_pixels() {
     let draw = |conservative: bool| {
         let pipeline = solid_pipeline(
             device,
-            "solid",
+            "SolidPs",
             ColorTargetState::new(Format::Rgba8Unorm),
             |d| {
                 d.raster = RasterState {
@@ -315,7 +315,7 @@ fn depth_bounds_discard_pixels_outside_the_range() {
         support::require_feature!(device, depth_bounds);
         let pipeline = solid_pipeline(
             device,
-            "solid",
+            "SolidPs",
             ColorTargetState::new(Format::Rgba8Unorm),
             |d| {
                 d.depth = Some(DepthState {
@@ -405,7 +405,7 @@ fn variable_rate_shading_per_draw_and_by_image() {
     }
     let pipeline = solid_pipeline(
         device,
-        "solid.coord",
+        "SolidCoord",
         ColorTargetState::new(Format::R32Uint),
         |_| {},
     )
@@ -488,7 +488,7 @@ fn viewport_arrays_and_primitive_restart() {
     for device in devices() {
         let strip = solid_pipeline(
             device,
-            "solid",
+            "SolidPs",
             ColorTargetState::new(Format::Rgba8Unorm),
             |d| {
                 d.topology = PrimitiveTopology::TriangleStrip;
@@ -521,7 +521,7 @@ fn viewport_arrays_and_primitive_restart() {
         // Restart needs a strip.
         let error = solid_pipeline(
             device,
-            "solid",
+            "SolidPs",
             ColorTargetState::new(Format::Rgba8Unorm),
             |d| {
                 d.primitive_restart = Some(IndexFormat::U16);

@@ -211,7 +211,7 @@ fn cast(
     tlas: &AccelerationStructure,
     record: impl FnOnce(&mut CommandList),
 ) -> Vec<u32> {
-    let pipeline = compute_pipeline(device, "rayquery");
+    let pipeline = compute_pipeline(device, "TraceRays");
     let (out, view) = storage(device, RAYS as u64);
     let rb = readback(device, RAYS as u64 * 4);
     run(device, |list| {

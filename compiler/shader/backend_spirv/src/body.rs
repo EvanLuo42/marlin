@@ -620,26 +620,31 @@ impl<'w, 'm> Body<'w, 'm> {
                 let TypeData::Res(kind) = self.w.m.data(f.ty(ops[0])).clone() else {
                     return unsupported("`desc.get` of something that is not a resource");
                 };
-                let array = self.w.heap_array(&kind)?;
+                use marlin_shaderc_ir::ResourceKind;
                 let sampler = matches!(
                     kind.kind,
-                    marlin_shaderc_ir::ResourceKind::Sampler
-                        | marlin_shaderc_ir::ResourceKind::ComparisonSampler
+                    ResourceKind::Sampler | ResourceKind::ComparisonSampler
                 );
-                let heap = if sampler {
-                    self.w.sampler_heap()
-                } else {
-                    self.w.heap()
-                };
                 let index = a(self, 0)?;
-                let ptr_t = self
-                    .w
-                    .untyped_ptr_ty(crate::spirv::storage_class::UniformConstant);
-                let p = self.value(ptr_t, op::UntypedAccessChainKHR, &[array, heap, index]);
-                // Images and samplers are loaded; a buffer is reached through the pointer.
-                let loaded = kind.kind.texture().is_some()
-                    || sampler
-                    || kind.kind == marlin_shaderc_ir::ResourceKind::AccelerationStructure;
+                let uc = crate::spirv::storage_class::UniformConstant;
+                let (p, loaded) = if kind.kind == ResourceKind::AccelerationStructure {
+                    // Through the set 0 mapping, not `ResourceHeapEXT` (see `accel_heap`).
+                    let heap = self.w.accel_heap();
+                    let accel = self.w.accel_ty();
+                    let ptr_t = self.w.ptr_ty(uc, accel);
+                    (self.value(ptr_t, op::AccessChain, &[heap, index]), true)
+                } else {
+                    let array = self.w.heap_array(&kind)?;
+                    let heap = if sampler {
+                        self.w.sampler_heap()
+                    } else {
+                        self.w.heap()
+                    };
+                    let ptr_t = self.w.untyped_ptr_ty(uc);
+                    let p = self.value(ptr_t, op::UntypedAccessChainKHR, &[array, heap, index]);
+                    // Images and samplers are loaded; a buffer is reached through the pointer.
+                    (p, kind.kind.texture().is_some() || sampler)
+                };
                 let v = if loaded {
                     self.value(rt.unwrap_or(0), op::Load, &[p])
                 } else {
