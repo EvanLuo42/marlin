@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use marlin_rhi::{
     BufferBarrier, BufferState, BufferUsage, BufferViewDesc, BufferViewKind, CommandList,
-    ComputePipelineDesc, Device, ErrorKind, MemoryLocation, QueryKind, QueryPoolDesc, QueueType,
-    SubmitDesc,
+    ComputePipelineDesc, Device, ErrorKind, Format, MemoryLocation, QueryKind, QueryPoolDesc,
+    QueueType, SubmitDesc, TextureDesc, TextureUsage,
 };
 use support::{
     buffer, devices, gpu_test, read_words, readback, run_on, shader, skip, upload, words_to_bytes,
@@ -167,6 +167,71 @@ fn queues_wait_for_each_other_on_the_gpu() {
             assert_eq!(words[i], 5 + 3 * i as u32, "filled word {i}");
             assert_eq!(words[COUNT as usize + i], data[i], "moved word {i}");
         }
+        assert_eq!(device.validation_errors(), 0);
+    }
+}
+
+/// The backend's own work for a new texture (its first layout) never queues behind application
+/// work: a graphics submission held until compute finishes, a new texture, another graphics
+/// submission (which takes the texture's transition along), then that compute submission. With
+/// the transition behind the held graphics work, compute would wait for it: a deadlock.
+#[test]
+fn new_textures_do_not_tie_queues_together() {
+    for device in devices() {
+        if device.dedicated_queue(QueueType::Compute).is_none() {
+            skip!("the device lacks a dedicated compute queue");
+        }
+        let (_held_pool, held) = record(device, QueueType::Graphics, |_| {});
+        let (_next_pool, next) = record(device, QueueType::Graphics, |_| {});
+        let (_compute_pool, compute) = record(device, QueueType::Compute, |_| {});
+        let computed = device.create_fence(0).unwrap();
+        let done = device.create_fence(0).unwrap();
+        // SAFETY: everything the lists use outlives the waits below.
+        unsafe {
+            device
+                .queue()
+                .submit_with(&SubmitDesc {
+                    waits: &[(&computed, 1)],
+                    lists: &[&held],
+                    signals: &[],
+                })
+                .unwrap();
+        }
+        let texture = device
+            .create_texture(&TextureDesc::new_2d(
+                4,
+                4,
+                Format::Rgba8Unorm,
+                TextureUsage::SAMPLED,
+            ))
+            .unwrap();
+        // SAFETY: as above.
+        unsafe {
+            device
+                .queue()
+                .submit_with(&SubmitDesc {
+                    waits: &[],
+                    lists: &[&next],
+                    signals: &[(&done, 1)],
+                })
+                .unwrap();
+            device
+                .queue_for(QueueType::Compute)
+                .submit_with(&SubmitDesc {
+                    waits: &[],
+                    lists: &[&compute],
+                    signals: &[(&computed, 1)],
+                })
+                .unwrap();
+        }
+        let finished = computed.wait(1, Some(Duration::from_secs(10))).unwrap();
+        if !finished {
+            // Dropping the texture would wait for its transition, which never runs: fail instead.
+            std::mem::forget(texture);
+            panic!("the compute queue waited for the held graphics queue");
+        }
+        assert!(done.wait(1, Some(Duration::from_secs(10))).unwrap());
+        drop(texture);
         assert_eq!(device.validation_errors(), 0);
     }
 }

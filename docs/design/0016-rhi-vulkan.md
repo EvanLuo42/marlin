@@ -136,6 +136,11 @@ buffer 成员的 offset 由 shader 自己声明（SPIR-V 的 `Offset` 装饰）�
 - 队列：graphics 族；有"只 compute"族就是 compute 队列，有"只 transfer"族就是 copy 队列；没有就是 `None`。
 - `submit` = `vkQueueSubmit2`；队列对象上有一个"待等待的二进制信号量"列表，`submit` 取走并等待（交换链 acquire 用，§7.1）。
 - `wait_idle` = `vkQueueWaitIdle`。
+- 新纹理要从 `UNDEFINED` 转到 `GENERAL`。backend 把这些转换攒成一批，在下一次 `submit` 之前提交，随后任何队列上的每次提交都要等这批完成。
+- 这批转换跑在 backend 自己的队列上：在用到的队列族里，取第一个至少有两个队列的族（先 graphics，再 compute，再 copy），用它的第二个队列。资源是 `CONCURRENT` 的，所以换队列不需要所有权转移。
+- 要是转换跟在应用队列上，就会排在那个队列已有的工作后面，而所有队列又都等它，结果互相等待。例子：graphics 提交等 compute 的 fence，这时新建一张纹理，graphics 再提交一次（把转换带上），之后 compute 的提交也得等这次转换。这会死锁（2026-10-18 发现，回归测试是 `queues::new_textures_do_not_tie_queues_together`）。
+- 没有空闲队列的设备还按原来的做法，把转换放在提交的那个队列上。
+- sparse bind 仍然在调用方指定的队列上执行，因为它和那个队列上的工作有先后约定。
 
 ### 7.1 交换链
 

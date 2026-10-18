@@ -1674,8 +1674,16 @@ pub(crate) unsafe fn bind_sparse(queue: &Queue, binds: &[SparseBind<'_>]) -> Res
 /// compression (`optimalDeviceAccess`), and not every 1.4 device has them. A texture dropped
 /// while its batch may still run waits for that batch (its own signal), so the image is never
 /// destroyed under it.
+///
+/// The transitions run on a queue of their own where a family in use has a second one (resources
+/// are `CONCURRENT` over those families). On an application queue they would wait behind its
+/// earlier work, and every queue waits for them: a graphics submission waiting for a compute
+/// one, followed by texture creation, then that compute submission, was a deadlock (2026-10-18).
+/// Without a spare queue they go on the submitting queue, as before.
 pub(crate) struct InternalWork {
     timeline: VkSemaphore,
+    /// The transitions' own queue and its family; used only with `state` locked.
+    queue: Option<(VkQueue, u32)>,
     state: Mutex<WorkState>,
 }
 
@@ -1699,7 +1707,11 @@ struct FamilyPool {
 }
 
 impl InternalWork {
-    pub(crate) fn new(fns: &DeviceFns, device: VkDevice) -> Result<Self> {
+    pub(crate) fn new(
+        fns: &DeviceFns,
+        device: VkDevice,
+        queue: Option<(VkQueue, u32)>,
+    ) -> Result<Self> {
         let timeline = VkSemaphoreTypeCreateInfo {
             semaphoreType: VK_SEMAPHORE_TYPE_TIMELINE,
             initialValue: 0,
@@ -1714,6 +1726,7 @@ impl InternalWork {
         super::check(unsafe { (fns.vkCreateSemaphore)(device, &info, ptr::null(), &mut raw) })?;
         Ok(Self {
             timeline: raw,
+            queue,
             state: Mutex::new(WorkState::default()),
         })
     }
@@ -1786,7 +1799,8 @@ impl InternalWork {
     }
 
     /// Called by `Queue::submit` with the queue locked: submits the pending texture transitions
-    /// on `queue` (of `family`) first, if any, and returns the wait every submission needs.
+    /// first, if any, on the transitions' own queue or else on `queue` (of `family`), and returns
+    /// the wait every submission needs.
     pub(crate) fn before_submit(
         &self,
         shared: &Shared,
@@ -1794,6 +1808,7 @@ impl InternalWork {
         family: u32,
     ) -> Result<Option<(VkSemaphore, u64)>> {
         let mut state = self.state.lock();
+        let (queue, family) = self.queue.unwrap_or((queue, family));
         if !state.pending.is_empty() {
             let completed = self.completed(shared);
             state.flushed.retain(|f| f.1 > completed);
@@ -1823,7 +1838,8 @@ impl InternalWork {
                 pSignalSemaphoreInfos: &signal_info,
                 ..Default::default()
             };
-            // SAFETY: the caller holds the queue's lock; the buffer is recorded and of `family`.
+            // SAFETY: the queue is locked (the caller holds an application queue's lock, `state`
+            // guards the transitions' own); the buffer is recorded and of `family`.
             let r = unsafe { (shared.fns.vkQueueSubmit2)(queue, 1, &info, 0) };
             shared.lost.result(r)?;
             state.value = signal;

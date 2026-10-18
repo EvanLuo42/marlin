@@ -154,6 +154,10 @@ pub(crate) struct Families {
     pub(crate) graphics: u32,
     pub(crate) compute: Option<u32>,
     pub(crate) copy: Option<u32>,
+    /// The family whose second queue runs the backend's own transitions (resource.rs's
+    /// `InternalWork`), so they never queue behind application work waiting on something; `None`
+    /// when no family in use has a second queue.
+    pub(crate) internal: Option<u32>,
     /// Every family in use, for `VK_SHARING_MODE_CONCURRENT` resources.
     pub(crate) unique: Vec<u32>,
     /// `timestampValidBits` and `queueFlags` per family index.
@@ -427,6 +431,11 @@ fn queue_families(instance: &InstanceShared, physical: VkPhysicalDevice) -> Opti
         VK_QUEUE_TRANSFER_BIT,
         VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT,
     );
+    // Graphics first: its queues take every command; then compute, then copy.
+    let internal = [Some(graphics), compute, copy]
+        .into_iter()
+        .flatten()
+        .find(|&f| properties[f as usize].queueCount >= 2);
     let mut unique = alloc::vec![graphics];
     unique.extend(compute);
     unique.extend(copy);
@@ -434,6 +443,7 @@ fn queue_families(instance: &InstanceShared, physical: VkPhysicalDevice) -> Opti
         graphics,
         compute,
         copy,
+        internal,
         unique,
         properties,
     })
@@ -639,14 +649,18 @@ pub(crate) fn create(instance: &Instance, desc: &DeviceDesc) -> Result<(Device, 
     let props = properties(shared_instance, physical, &ext);
     let memory = MemoryInfo::query(shared_instance, physical);
 
-    let priority = 1.0f32;
+    let priorities = [1.0f32; 2];
     let queue_infos: Vec<VkDeviceQueueCreateInfo> = families
         .unique
         .iter()
         .map(|&family| VkDeviceQueueCreateInfo {
             queueFamilyIndex: family,
-            queueCount: 1,
-            pQueuePriorities: &priority,
+            queueCount: if families.internal == Some(family) {
+                2
+            } else {
+                1
+            },
+            pQueuePriorities: priorities.as_ptr(),
             ..Default::default()
         })
         .collect();
@@ -698,7 +712,18 @@ pub(crate) fn create(instance: &Instance, desc: &DeviceDesc) -> Result<(Device, 
             return Err(e);
         }
     };
-    let internal = match InternalWork::new(&device_fns, raw) {
+    let internal_queue = families.internal.map(|family| {
+        let info = VkDeviceQueueInfo2 {
+            queueFamilyIndex: family,
+            queueIndex: 1,
+            ..Default::default()
+        };
+        let mut queue = ptr::null_mut();
+        // SAFETY: the device was created with two queues in this family.
+        unsafe { (device_fns.vkGetDeviceQueue2)(raw, &info, &mut queue) };
+        (queue, family)
+    });
+    let internal = match InternalWork::new(&device_fns, raw, internal_queue) {
         Ok(w) => w,
         Err(e) => {
             drop(bindless);
