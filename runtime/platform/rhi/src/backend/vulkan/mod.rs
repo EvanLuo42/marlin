@@ -364,9 +364,10 @@ impl crate::contract::Device for Backend {
         device: &device::Device,
         storage: &resource::Buffer,
         offset: u64,
+        size: u64,
         kind: AccelerationStructureKind,
     ) -> Result<(resource::Buffer, raytracing::AccelerationStructure)> {
-        raytracing::create(device, storage, offset, kind)
+        raytracing::create(device, storage, offset, size, kind)
     }
 
     fn create_sparse_buffer(

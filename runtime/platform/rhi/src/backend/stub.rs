@@ -145,7 +145,7 @@ impl Device for Backend {
         fn evict(device: &Never, objects: &[Pageable<'_>]) -> Result<()>;
         fn set_residency_priority(device: &Never, objects: &[Pageable<'_>], priority: ResidencyPriority) -> Result<()>;
         fn acceleration_structure_sizes(device: &Never, inputs: &AccelerationStructureInputs<'_>, flags: BuildFlags) -> AccelerationStructureSizes;
-        fn create_acceleration_structure(device: &Never, storage: &Never, offset: u64, kind: AccelerationStructureKind) -> Result<(Never, Never)>;
+        fn create_acceleration_structure(device: &Never, storage: &Never, offset: u64, size: u64, kind: AccelerationStructureKind) -> Result<(Never, Never)>;
         fn create_sparse_buffer(device: &Never, desc: &BufferDesc) -> Result<Never>;
         fn create_sparse_texture(device: &Never, desc: &TextureDesc) -> Result<Never>;
     }

@@ -761,7 +761,7 @@ impl Device {
                 .is_some_and(|e| e <= storage.desc.size),
         )?;
         let (shared, raw) =
-            Backend::create_acceleration_structure(&self.raw, &storage.raw, offset, kind)?;
+            Backend::create_acceleration_structure(&self.raw, &storage.raw, offset, size, kind)?;
         Ok(AccelerationStructure {
             raw,
             storage: Buffer {

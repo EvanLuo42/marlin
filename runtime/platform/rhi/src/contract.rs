@@ -199,12 +199,14 @@ pub(crate) trait Device: Types {
         inputs: &AccelerationStructureInputs<'_>,
         flags: BuildFlags,
     ) -> AccelerationStructureSizes;
-    /// A structure at `offset` of `storage`, a buffer with acceleration structure storage usage,
-    /// and a second handle to `storage` sharing its resource (the structure keeps it alive).
+    /// A structure of `size` bytes at `offset` of `storage`, a buffer with acceleration structure
+    /// storage usage, and a second handle to `storage` sharing its resource (the structure keeps
+    /// it alive).
     fn create_acceleration_structure(
         device: &Self::Device,
         storage: &Self::Buffer,
         offset: u64,
+        size: u64,
         kind: AccelerationStructureKind,
     ) -> Result<(Self::Buffer, Self::AccelerationStructure)>;
 

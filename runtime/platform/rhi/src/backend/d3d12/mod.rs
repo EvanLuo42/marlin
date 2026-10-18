@@ -819,6 +819,7 @@ impl crate::contract::Device for Backend {
         device: &Device,
         storage: &resource::Buffer,
         offset: u64,
+        _size: u64,
         _kind: crate::AccelerationStructureKind,
     ) -> Result<(resource::Buffer, raytracing::AccelerationStructure)> {
         Ok((
