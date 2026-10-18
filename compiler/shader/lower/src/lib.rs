@@ -76,6 +76,10 @@
 //! `if (!c) print`); signed integer textures; `SampleCompare`, `Gather`, `GatherCompare`,
 //! constant offsets (E1309 otherwise) and the size queries (`texture.rs`).
 //!
+//! Step 10g: `Ddx`, `Ddy` and their `Coarse`/`Fine` forms as `deriv.*` (pixel entries only, E1309
+//! elsewhere until automatic differentiation); storage textures' atomics as `tex.atomic.*`
+//! (`texture.rs`), whose `Min`/`Max` pick their operation by the texel's kind.
+//!
 //! Not lowered yet: auto-properties.
 
 mod closures;
@@ -289,7 +293,8 @@ impl<'a, 'b> Lowering<'a, 'b> {
     }
 
     /// A sample without `lod:` or `grad:` takes its level from derivatives, which only pixel
-    /// entries have (0004 §10.4): an error in code a module's other entries run.
+    /// entries have (0004 §10.4), and so do `Ddx` and the like: an error in code a module's
+    /// other entries run.
     fn implicit_levels(&self) -> R<()> {
         use marlin_shaderc_ir::{Op, Stage as IrStage, TexArg};
         if self
@@ -303,6 +308,17 @@ impl<'a, 'b> Lowering<'a, 'b> {
         for (_, f) in self.module.funcs.iter() {
             for &b in &f.layout {
                 for inst in f.insts(b) {
+                    // Compute derivatives come with automatic differentiation (0004 §15.3).
+                    if let Op::Deriv { .. } = &f.insts[inst].op {
+                        return Err(LowerError::new(
+                            "E1309",
+                            format!(
+                                "`{}` takes a derivative (`Ddx`, `Ddy`, `Fwidth`), which only \
+                                 pixel entries can so far",
+                                f.name
+                            ),
+                        ));
+                    }
                     if let Op::TexSample(a) = &f.insts[inst].op
                         && !a.contains(&TexArg::Lod)
                         && !a.contains(&TexArg::Grad)

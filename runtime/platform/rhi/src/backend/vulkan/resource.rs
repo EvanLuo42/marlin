@@ -395,6 +395,7 @@ pub(crate) const fn vk_format(format: Format) -> VkFormat {
         Rgba32Uint => VK_FORMAT_R32G32B32A32_UINT,
         Rgba32Sint => VK_FORMAT_R32G32B32A32_SINT,
         Rgba32Float => VK_FORMAT_R32G32B32A32_SFLOAT,
+        R64Uint => VK_FORMAT_R64_UINT,
         D16Unorm => VK_FORMAT_D16_UNORM,
         D32Float => VK_FORMAT_D32_SFLOAT,
         D32FloatS8 => VK_FORMAT_D32_SFLOAT_S8_UINT,
@@ -574,13 +575,15 @@ pub(crate) fn format_support(device: &Device, format: Format) -> FormatSupport {
         sampled && has(VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_DEPTH_COMPARISON_BIT),
         FormatFeatures::COMPARISON,
     );
-    // Shaders declare writable textures without a format (`shaderStorageImage*WithoutFormat`).
+    // Shaders declare writable textures without a format (`shaderStorageImage*WithoutFormat`),
+    // except 64-bit ones, which name theirs (`R64ui`).
+    let named = format == Format::R64Uint;
     set(
-        storage && has(VK_FORMAT_FEATURE_2_STORAGE_WRITE_WITHOUT_FORMAT_BIT),
+        storage && (named || has(VK_FORMAT_FEATURE_2_STORAGE_WRITE_WITHOUT_FORMAT_BIT)),
         FormatFeatures::STORAGE_WRITE,
     );
     set(
-        storage && has(VK_FORMAT_FEATURE_2_STORAGE_READ_WITHOUT_FORMAT_BIT),
+        storage && (named || has(VK_FORMAT_FEATURE_2_STORAGE_READ_WITHOUT_FORMAT_BIT)),
         FormatFeatures::STORAGE_READ,
     );
     set(

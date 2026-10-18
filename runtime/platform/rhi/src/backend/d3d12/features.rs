@@ -129,8 +129,10 @@ pub(super) fn query_features(
         tearing,
         mesh_shader: options7.MeshShaderTier != 0,
         ray_query: options5.RaytracingTier >= D3D12_RAYTRACING_TIER_1_1,
-        atomic_int64: options9.AtomicInt64OnTypedResourceSupported != 0
+        // Shader model 6.6 has 64-bit atomics on raw buffers wherever it has 64-bit integers.
+        atomic_int64: options1.Int64ShaderOps != 0
             && options9.AtomicInt64OnGroupSharedSupported != 0,
+        texture_atomic_int64: options9.AtomicInt64OnTypedResourceSupported != 0,
         copy_queue_timestamps: options3.CopyQueueTimestampQueriesSupported != 0,
         mixed_heaps: options.ResourceHeapTier >= D3D12_RESOURCE_HEAP_TIER_2,
         wave_size_range: (options1.WaveLaneCountMin, options1.WaveLaneCountMax),

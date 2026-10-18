@@ -264,17 +264,23 @@ pub fn result_types_in(
         Op::TexGather { args, .. } if args.contains(&TexArg::Compare) => {
             one(vector(t, Scalar::F32, 4))
         }
-        Op::TexSample(_) | Op::TexLoad(_) | Op::TexGather { .. } => match data(t, arg(0)?) {
-            TypeData::Handle(kind) if kind.kind.texture().is_some() => match kind.element {
-                Some(e) if matches!(op, Op::TexGather { .. }) => match data(t, e) {
-                    TypeData::Scalar(s) | TypeData::Vector(s, _) => one(vector(t, s, 4)),
-                    _ => Err("a texel that is not a scalar or vector".into()),
+        Op::TexAtomic {
+            op: crate::op::AtomicOp::Store,
+            ..
+        } => Ok(vec![]),
+        Op::TexSample(_) | Op::TexLoad(_) | Op::TexGather { .. } | Op::TexAtomic { .. } => {
+            match data(t, arg(0)?) {
+                TypeData::Handle(kind) if kind.kind.texture().is_some() => match kind.element {
+                    Some(e) if matches!(op, Op::TexGather { .. }) => match data(t, e) {
+                        TypeData::Scalar(s) | TypeData::Vector(s, _) => one(vector(t, s, 4)),
+                        _ => Err("a texel that is not a scalar or vector".into()),
+                    },
+                    Some(e) => one(Ok(e)),
+                    None => Err("a texture without a texel type".into()),
                 },
-                Some(e) => one(Ok(e)),
-                None => Err("a texture without a texel type".into()),
-            },
-            _ => Err("expected a texture handle".into()),
-        },
+                _ => Err("expected a texture handle".into()),
+            }
+        }
         Op::TexQuery(q) => match data(t, arg(0)?) {
             TypeData::Handle(kind) => match (q, kind.kind.texture()) {
                 // A cube's size is a face's.

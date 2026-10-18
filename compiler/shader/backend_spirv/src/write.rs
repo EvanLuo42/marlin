@@ -14,7 +14,7 @@ use marlin_shaderc_ir::{
 };
 use marlin_shaderc_target::BackendError;
 
-use crate::spirv::{capability as cap, decoration, op, storage_class as sc};
+use crate::spirv::{capability as cap, decoration, image_format, op, storage_class as sc};
 
 pub(crate) type R<T> = Result<T, BackendError>;
 
@@ -723,7 +723,7 @@ impl<'m> Writer<'m> {
 
     /// The scalar type images of `kind` hold: a signed integer for `signed` textures, the IR's
     /// (unsigned) one otherwise.
-    fn image_scalar(&mut self, kind: &ResKind) -> R<u32> {
+    pub fn image_scalar(&mut self, kind: &ResKind) -> R<u32> {
         let texel = kind.element.ok_or_else(|| BackendError {
             message: "a texture without a texel type".into(),
         })?;
@@ -745,8 +745,29 @@ impl<'m> Writer<'m> {
     }
 
     /// The image type of a texture kind (0006 §8.6): its texel's scalar (signed for `signed`
-    /// textures), dimension, array and multisample bits; storage textures without a format.
+    /// textures), dimension, array and multisample bits; storage textures without a format,
+    /// except 64-bit ones, which are `R64ui` or `R64i` (their only formats, which Vulkan
+    /// reads and writes only when the shader names them).
     pub fn image_ty(&mut self, kind: &ResKind) -> R<u32> {
+        let format = match (self.texel_bits(kind)?, kind.signed) {
+            (64, true) => image_format::R64i,
+            (64, false) => image_format::R64ui,
+            _ => image_format::Unknown,
+        };
+        self.image_ty_with(kind, format)
+    }
+
+    /// The bits of the scalar images of `kind` hold.
+    pub fn texel_bits(&mut self, kind: &ResKind) -> R<u32> {
+        let texel = kind.element.ok_or_else(|| BackendError {
+            message: "a texture without a texel type".into(),
+        })?;
+        Ok(self.m.element_scalar(texel).map_or(0, |s| s.bits()))
+    }
+
+    /// The image type of a texture kind with image format `format` (a storage texture's for
+    /// atomics, which need one).
+    pub fn image_ty_with(&mut self, kind: &ResKind, format: u32) -> R<u32> {
         let shape = kind.kind.texture().ok_or_else(|| BackendError {
             message: format!("`{:?}` is not a texture", kind.kind),
         })?;
@@ -763,6 +784,10 @@ impl<'m> Writer<'m> {
             self.capability(cap::ImageMSArray);
         }
         let sampled = if shape.storage { 2 } else { 1 };
+        if self.texel_bits(kind)? == 64 {
+            self.capability(cap::Int64ImageEXT);
+            self.extension("SPV_EXT_shader_image_int64");
+        }
         Ok(self.once(
             "",
             op::TypeImage,
@@ -773,7 +798,7 @@ impl<'m> Writer<'m> {
                 shape.array as u32,
                 shape.multisampled as u32,
                 sampled,
-                0,
+                format,
             ],
         ))
     }

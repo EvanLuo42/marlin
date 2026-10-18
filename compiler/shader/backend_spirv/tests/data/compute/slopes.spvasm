@@ -1,0 +1,29 @@
+; SPIR-V 1.6, bound 14
+OpCapability 1
+OpCapability 51
+OpMemoryModel 0 1
+OpEntryPoint 4 1 "main" 8 10
+OpExecutionMode 1 7
+OpName 8 "Game.Slopes.position"
+OpName 10 "Game.Slopes.target"
+OpName 1 "Game.Slopes"
+OpDecorate 8 11 15
+OpDecorate 10 30 0
+%3 = OpTypeVoid
+%4 = OpTypeFunction 3
+%5 = OpTypeFloat 32
+%6 = OpTypeVector 5 4
+%7 = OpTypePointer 1 6
+%8 = OpVariable %7 1
+%9 = OpTypePointer 3 6
+%10 = OpVariable %9 3
+
+%1 = OpFunction %3 0 4
+
+%2 = OpLabel
+%11 = OpLoad %6 8
+%12 = OpDPdxCoarse %6 11
+%13 = OpDPdyFine %6 12
+OpStore 10 13
+OpReturn
+OpFunctionEnd

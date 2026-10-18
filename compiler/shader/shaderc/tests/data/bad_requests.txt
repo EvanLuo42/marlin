@@ -85,3 +85,13 @@ error[E1309]: a gather's channel is a constant
 176 |     a.Output.Store4(0, AsUInt(a.Texture.Gather(a.Sampler, float2(0.5, 0.5), a.Which)));
     |                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+== a derivative in a compute entry
+error[E1309]: `Game.SlopesInCompute(@Game.DerivArgs)` takes a derivative (`Ddx`, `Ddy`, `Fwidth`), which only pixel entries can so far
+
+== an atomic on a float texture
+error[E1309]: texture atomics are on `int`, `uint`, `long` and `ulong` textures
+  --> Game/Visibility.mshader:61:61
+   |
+61 | public void FloatTexelAtomic([Push] in FloatTexelArgs a) => a.T.AtomicAdd(int2(0, 0), 1.0f);
+   |                                                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+

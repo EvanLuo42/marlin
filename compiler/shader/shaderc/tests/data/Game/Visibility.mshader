@@ -1,0 +1,75 @@
+namespace Game;
+
+// What the visibility-buffer renderer needs (0009 §4.3): derivatives in pixel entries, 64-bit
+// integers, and their atomics on buffers and storage textures.
+
+/// The derivatives of the pixel's position, coarse and fine, as a color.
+[Pixel]
+public float4 Slopes([Position] float4 position)
+{
+    float2 p = position.xy * position.xy;
+    float2 coarse = float2(Ddx(p.x), Ddy(p.y)) + float2(DdxCoarse(p.y), DdyCoarse(p.x));
+    float2 fine = float2(DdxFine(p.x), DdyFine(p.y));
+    return float4(coarse + fine, Fwidth(p.x) + FwidthFine(p.y), FwidthCoarse(position.x));
+}
+
+public struct WideArgs
+{
+    public Buffer<ulong> Words;
+    public StorageTexture2D<ulong> Vis;
+    public StorageTexture2DArray<uint> Counts;
+    public StorageTexture3D<int> Signed;
+}
+
+/// 64-bit arithmetic and every atomic kind the renderer uses: the nearest depth above a
+/// triangle id wins (an atomic max, as reverse-Z depth grows towards the camera).
+[Compute(8, 8, 1)]
+public void Rasterize([DispatchThreadId] uint3 id, [Push] in WideArgs a)
+{
+    ulong packed = ((ulong)id.x << 32) | (ulong)id.y;
+    long signed = -(long)id.x * 3 + 7;
+    a.Words.AtomicMax(0, packed);
+    a.Words.AtomicMin(1, packed / 3 + (ulong)(signed & 15));
+    a.Words.AtomicAdd(2, 1);
+    a.Words.AtomicCompareExchange(3, 0, packed);
+    int2 px = (int2)id.xy;
+    ulong before = a.Vis.AtomicMax(px, packed);
+    a.Vis.AtomicExchange(px + int2(1, 0), before);
+    a.Vis[px + int2(0, 1)] = a.Vis[px] >> 1;
+    a.Counts.AtomicAdd(px, 1, 1);
+    a.Counts.AtomicCompareExchange(px, 0, 0u, 5u);
+    a.Signed.AtomicMin(int3(px, 0), (int)id.x - 4);
+    a.Signed.AtomicMax(int3(px, 1), -(int)id.y);
+}
+
+public struct DerivArgs
+{
+    public Buffer<float> Out;
+}
+
+/// Derivatives are for pixel entries (E1309).
+[Compute(1, 1, 1)]
+public void SlopesInCompute([Push] in DerivArgs a) => a.Out[0] = Ddx(a.Out[1]);
+
+public struct FloatTexelArgs
+{
+    public StorageTexture2D<float> T;
+}
+
+/// Texture atomics take integer texels (E1309).
+[Compute(1, 1, 1)]
+public void FloatTexelAtomic([Push] in FloatTexelArgs a) => a.T.AtomicAdd(int2(0, 0), 1.0f);
+
+public struct CountingArgs
+{
+    public StorageTexture2D<uint> Counts;
+    public Buffer<ulong> Totals;
+}
+
+/// 64-bit arithmetic with 32-bit atomics: `Int64` alone.
+[Compute(8, 8, 1)]
+public void Counting([DispatchThreadId] uint3 id, [Push] in CountingArgs a)
+{
+    uint before = a.Counts.AtomicAdd((int2)id.xy, 1);
+    a.Totals[id.x] = (ulong)before << 40;
+}

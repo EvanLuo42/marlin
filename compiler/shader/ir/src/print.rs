@@ -632,6 +632,18 @@ impl<'a> FuncText<'a> {
             Op::MeshDispatch => format!("mesh.dispatch {}", self.values(ops)),
             Op::TexLoad(a) => format!("tex.load {}", self.tex(ops, 2, a)),
             Op::TexStore(a) => format!("tex.store {}", self.tex(ops, 3, a)),
+            Op::TexAtomic {
+                op,
+                scope,
+                order,
+                args,
+            } => format!(
+                "tex.atomic.{} {} scope({}) order({})",
+                op.name(),
+                self.tex(ops, 2 + op.values(), args),
+                scope.name(),
+                order.name()
+            ),
             Op::TexGather { channel, args } => format!(
                 "tex.gather.{} {}",
                 ["r", "g", "b", "a"][*channel as usize & 3],

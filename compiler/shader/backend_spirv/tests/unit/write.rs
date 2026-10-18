@@ -66,6 +66,18 @@ fn external_check(words: &[u32], what: &str) {
     );
 }
 
+/// 64-bit integers, their buffer and texel atomics, 32-bit texel atomics, and derivatives (0009
+/// §4.3).
+#[test]
+fn visibility_buffer_operations_become_spirv() {
+    for name in ["wide", "slopes"] {
+        let words = check(name);
+        let problems = validate(&words);
+        assert!(problems.is_empty(), "{name}: {problems:#?}");
+        external_check(&words, name);
+    }
+}
+
 #[test]
 fn random_programs_become_spirv() {
     use marlin_shaderc_opt::{Options, Profile, pipeline};

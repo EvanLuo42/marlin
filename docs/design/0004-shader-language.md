@@ -43,7 +43,7 @@
 | push constants | 入口参数标 `[Push]`，最多一个 | 11.3 |
 | 模板入口 | 泛型入口，cook 时给出类型实参 | 11.4 |
 | groupshared | namespace 级的 `[GroupShared]` 字段 | 12.1 |
-| wave、barrier、原子 | 按功能分 namespace：`Wave.Sum`、`Barrier.Group`；原子操作是资源上的方法：`buf.AtomicAdd(i, v)` | 12.2 |
+| wave、barrier、原子 | 按功能分 namespace：`Wave.Sum`、`Barrier.Group`；原子操作是资源上的方法：`buf.AtomicAdd(i, v)`，存储纹理按纹素：`tex.AtomicMax(px, v)` | 12.2 |
 | capability | 由编译器推断；public API 可以用 `[Requires]` 声明成契约 | 12.3 |
 | 预处理器 | 完全没有 | 13 |
 | 编译期分支 | 普通 `if` 遇到常量条件时保证折叠；`const if` 被裁掉的分支不做 capability 检查 | 13.2 |
@@ -53,7 +53,7 @@
 | 自定义导数 | 两个方向的标注都支持：`[ForwardDerivative(nameof(F))]` 和 `[ForwardDerivativeOf(nameof(G))]` | 15.4 |
 | 内存布局 | 全部用 scalar 布局；`Uniform<T>` 另外要求字段不跨 16 字节行 | 16 |
 | 16 位与 bool | `half`/`short`/`ushort` 是真正的 16 位类型；bool 不能放进 buffer | 3.1 |
-| 64 位与 8 位 | 有 `long`/`ulong`（需要 Int64 capability）；没有 `byte`/`sbyte` | 3.1 |
+| 64 位与 8 位 | 有 `long`/`ulong`（需要 Int64 capability，64 位原子操作另要 Int64Atomics 或 Int64TextureAtomics）；没有 `byte`/`sbyte` | 3.1 |
 | 整数语义 | C# 的 unchecked 语义；整数除零的结果固定为 0 | 9.6 |
 | lambda 参数 | 直接写 `Func<...>`/`Action<...>`，编译器把它当作隐式的泛型参数 | 9.2 |
 | 标准库导入 | 核心部分隐式导入，另支持 `global using` | 7.1 |
@@ -110,7 +110,7 @@ C# 的数值关键字：`bool`、`int`、`uint`、`float`、`double`，另有 16
 
 - `half`、`short` 和 `ushort` 是**真正的** 16 位类型，需要 native 16-bit capability（§12.3）。没有 `min16float` 这类宽松精度类型。
 - `bool` 只能用在寄存器里。要放进 buffer 的 struct 如果含有 `bool` 字段就报错，应改用 `uint` 或 `[Flags]` enum，这样就不存在 bool 在内存里占几个字节的歧义。
-- `long` 和 `ulong` 需要 Int64 capability，以后用 compute 软件光栅写 visbuffer 时会用到 64 位原子操作。`double` 需要 Float64 capability。
+- `long` 和 `ulong` 需要 Int64 capability。它们的原子操作另有两个 capability（2026-10-18 定）：buffer 和 groupshared 上的要 `Int64Atomics`，存储纹理上的要 `Int64TextureAtomics`（compute 软件光栅写 visbuffer 用的就是后者，§12.2）。分开是因为硬件上这三个是独立的特性，没有纹理 64 位原子的设备还能退回 `Buffer<ulong>`。`double` 需要 Float64 capability。
 - 没有 `byte` 和 `sbyte`，因为 D3D12 没有 8 位算术。打包数据用 `uint` 加位运算，或者用标准库里的打包类型（例如 `Unorm8x4`）。
 
 ### 3.2 向量与矩阵
@@ -764,6 +764,19 @@ Tile.AtomicMax(i, v);
 - `Wave.*`：`Sum`、`Ballot`、`ReadLane`、`IsFirstLane`……
 - `Barrier.*`：`Group`、`Device`……
 - 原子操作是资源和 groupshared 数组上的方法。它们都按下标访问，所以不需要对 buffer 元素取真正的 `ref`（§6）。
+- 存储纹理（`StorageTexture2D`、`StorageTexture2DArray`、`StorageTexture3D`）有和 `Buffer` 同一套原子方法，第一个参数是纹素坐标，数组纹理再跟一个 `layer`，返回原来的值（2026-10-18 定）：
+
+```csharp
+StorageTexture2D<ulong> vis;
+ulong old = vis.AtomicMax(px, packed);     // visbuffer：深度在高 32 位，最近的赢
+vis.AtomicCompareExchange(px, cmp, v);
+StorageTexture2DArray<uint> counts;
+counts.AtomicAdd(px, layer, 1);
+```
+
+  - 方法是 `AtomicAdd`、`AtomicSub`、`AtomicAnd`、`AtomicOr`、`AtomicXor`、`AtomicMin`、`AtomicMax`、`AtomicExchange`、`AtomicCompareExchange`。`Min`/`Max` 按纹素类型选有符号或无符号。
+  - 纹素类型只能是 `int`、`uint`、`long`、`ulong`，别的类型报 E1309（浮点原子以后再说）。
+  - 64 位的要 `Int64TextureAtomics`，纹理格式是 `R64Uint`（§3.1、0016 §3）。
 - 等整个 group 的 barrier（`Barrier.Group()` 等）必须是整个 group 都会走到的：放在线程之间可能不一致的条件下（包括有的线程已经 `return` 之后、在这样的条件下调用的函数里），编译报错，并指出线程分开的那个条件（2026-10-17 定）。在那个值上写 `[Uniform]` 断言它一致，就不再报错。
 - 导数（`Ddx`、`Fwidth`、隐式 LOD 的 `Sample`）在 2×2 quad 内不一致的控制流里结果未定义，但照 HLSL 允许（2026-10-17 定）。
 
@@ -778,7 +791,8 @@ else { ... }
 ```
 
 - 编译器从函数体推断出每个函数需要哪些 capability，并沿调用图向上传播。
-  - 来源：用到的类型（`half`、`short`、`ushort` → `Native16Bit`；`long`、`ulong` → `Int64`；`double` → `Float64`），以及核心库里标了 `[Requires(...)]` 的内建函数和类型（wave、mesh、ray query……）。
+  - 来源：用到的类型（`half`、`short`、`ushort` → `Native16Bit`；`long`、`ulong` → `Int64`；`double` → `Float64`），64 位整数上的原子操作（buffer 和 groupshared 上 → `Int64Atomics`，存储纹理上 → `Int64TextureAtomics`；2026-10-18），以及核心库里标了 `[Requires(...)]` 的内建函数和类型（wave、mesh、ray query……）。
+    - 原子操作的 capability 看调用处的元素类型。泛型代码里的 `T` 要等实例化才知道，类型检查阶段推断不出来；这种情况由后端照样写出 64 位原子，target 检查漏掉它（待做：在 IR 上补查）。
   - 推断和 `[Requires]` 契约检查在类型检查阶段做；和具体 target 对照、`const if` 裁掉的分支不检查，要等 target 描述（0005 §11 第 9 步）。
 - public 函数可以标 `[Requires(...)]` 作为契约，推断结果超出声明就报错。
 - 当 target 不满足入口需要的 capability 时报错，并给出调用链。
@@ -959,7 +973,9 @@ BackwardDiff(Shade)(ref dn2, ref dl, rough, dOut);
 ### 15.3 隐式的屏幕空间导数
 
 - `Ddx`、`Ddy`、`Fwidth`，以及隐式选择 LOD 的 `Sample`，在任何 stage 都能用。
+  - 名字照 HLSL：`Ddx`、`Ddy`、`Fwidth`，加上 `DdxCoarse`、`DdyCoarse`、`FwidthCoarse` 和 `DdxFine`、`DdyFine`、`FwidthFine`。不带后缀的就是 coarse（大多数硬件默认如此）；fine 在 quad 里每个像素用自己那一行或那一列。`Fwidth(x)` 是 `Abs(Ddx(x)) + Abs(Ddy(x))`，在核心库里用 Marlin 写成（2026-10-18 定）。
   - pixel stage 里用硬件 quad 导数；
+  - 目前只实现了 pixel stage：在别的 stage 的入口能走到的代码里求导报 E1309，等自动微分（0005 §4.4 的 0.3）来了再放开。
   - compute 里（visbuffer resolve、光线命中点），编译器从入口声明的导数源出发，对用到的代码**自动**做前向微分。导数源是 UV 和位置的解析导数，或者 ray cone。
 - 材质代码**不需要**标 `[Differentiable]`。
 - 不可微的操作导数视为 0，并给出警告。

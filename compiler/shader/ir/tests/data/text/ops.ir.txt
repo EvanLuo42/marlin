@@ -2,7 +2,7 @@ format 0 = "acc = {} at {}"
 format 1 = "bad \"index\"\n"
 struct @Light { Color: f32x3, Intensity: f32, Albedo: res<Texture2D<f32x4>> }
 struct @"Game.Grid<4>" { Cells: [f32; 8], Inner: @Light }
-struct @TexArgs { Albedo: res<Texture2D<f32x4>>, Layers: res<Texture2DArray<f32>>, Ms: res<Texture2DMS<f32x4>>, Cubes: res<TextureCubeArray<f32x4>>, Volume: res<StorageTexture3D<i32>>, Linear: res<Sampler>, Depth: res<Texture2D<f32>>, Shadow: res<ComparisonSampler>, Ids: res<Texture2D<signed i32>> }
+struct @TexArgs { Albedo: res<Texture2D<f32x4>>, Layers: res<Texture2DArray<f32>>, Ms: res<Texture2DMS<f32x4>>, Cubes: res<TextureCubeArray<f32x4>>, Volume: res<StorageTexture3D<i32>>, Linear: res<Sampler>, Depth: res<Texture2D<f32>>, Shadow: res<ComparisonSampler>, Ids: res<Texture2D<signed i32>>, Vis: res<StorageTexture2D<i64>>, Counts: res<StorageTexture2DArray<signed i32>> }
 global @lights : ptr<push, res<Buffer<@Light>>>
 global @raw : ptr<push, res<ByteBuffer>>
 global @params : ptr<push, res<Uniform<@Light>>>
@@ -263,6 +263,10 @@ block0:
     %shadow = desc.get %7
     %8 = extract.field %a, .Ids
     %ids = desc.get %8
+    %9 = extract.field %a, .Vis
+    %vis = desc.get %9
+    %10 = extract.field %a, .Counts
+    %counts = desc.get %10
     %uv = load @uv
     %c0 = tex.sample %albedo, %s, %uv
     %c1 = tex.sample %albedo, %s, %uv { lod: f32 2.0 }
@@ -284,6 +288,10 @@ block0:
     %mips = tex.mips %albedo
     %samples = tex.samples %ms
     %id = tex.load %ids, i32x2 (0, 0)
+    %nearest = tex.atomic.umax %vis, i32x2 (1, 2), i64 7 scope(device) order(relaxed)
+    %swapped = tex.atomic.cmpxchg %vis, i32x2 (1, 2), i64 0, %nearest scope(device) order(acq_rel)
+    %lowest = tex.atomic.smin %counts, i32x2 (0, 0), i32 -3 { layer: i32 1 } scope(group) order(relaxed)
+    tex.atomic.store %vis, i32x2 (0, 0), i64 1 scope(device) order(release)
     store @color, %c1
     return
 }

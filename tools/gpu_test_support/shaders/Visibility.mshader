@@ -1,0 +1,109 @@
+namespace Test;
+
+// What the visibility-buffer renderer needs (0009 §4.3): derivatives in pixel entries, 64-bit
+// integers, and 32- and 64-bit atomics on buffers and storage textures.
+
+/// The derivatives of x·y at the pixel's center, doubled to stay integers: fine along x and y,
+/// then coarse along x and y.
+[Pixel]
+public uint4 Slopes([Position] float4 position)
+{
+    float f = position.x * position.y;
+    return (uint4)(float4(DdxFine(f), DdyFine(f), DdxCoarse(f), DdyCoarse(f)) * 2);
+}
+
+/// As `Slopes`: `Fwidth`, `FwidthFine`, `Ddx` and `Ddy`.
+[Pixel]
+public uint4 SlopeWidths([Position] float4 position)
+{
+    float f = position.x * position.y;
+    return (uint4)(float4(Fwidth(f), FwidthFine(f), Ddx(f), Ddy(f)) * 2);
+}
+
+public struct WideArgs
+{
+    /// Elements 0 to 63: each thread's arithmetic; 64 on: the atomics (as unsigned).
+    public Buffer<ulong> Out;
+    /// The same view, as signed.
+    public Buffer<long> Signed;
+    public uint Seed;
+}
+
+/// Thread i's 64-bit value: above 32 bits, different in every thread.
+public ulong WideValue(uint i, uint seed) =>
+    ((ulong)(i + 1) << 35) | (ulong)((i * 2654435761u) ^ seed);
+
+/// 64-bit arithmetic of thread i's value to element i, and every 64-bit buffer atomic on
+/// elements 64 to 73.
+[Compute(64, 1, 1)]
+public void Wide([DispatchThreadId] uint3 id, [Push] in WideArgs a)
+{
+    uint i = id.x;
+    ulong v = WideValue(i, a.Seed);
+    ulong mixed = (v * 0x9E3779B97F4A7C15) ^ (v >> 29);
+    long negative = -(long)mixed;
+    a.Out[i] = mixed / ((ulong)i + 3) + (ulong)(negative >> 7);
+    a.Out.AtomicMax(64, v);
+    a.Out.AtomicMin(65, v);
+    a.Out.AtomicAdd(66, v);
+    a.Out.AtomicSub(67, v);
+    a.Out.AtomicOr(68, v);
+    a.Out.AtomicAnd(69, ~(v & 0xF0F0F0F0F0F0F0F0));
+    a.Out.AtomicXor(70, v);
+    a.Out.AtomicExchange(71, v);
+    a.Out.AtomicCompareExchange(72, 0, v);
+    a.Signed.AtomicMin(73, -(long)v);
+    a.Signed.AtomicMax(74, -(long)v);
+}
+
+/// A texel's pseudo-random depth for layer `z` of a raster dispatch.
+public uint TexelDepth(uint3 id) => (id.x * 73856093u) ^ (id.y * 19349663u) ^ (id.z * 83492791u);
+
+public struct VisClearArgs
+{
+    public StorageTexture2D<ulong> Vis;
+    public StorageTexture2D<ulong> Sums;
+}
+
+/// Clears the visibility texture to its id 0 and depth 0 (the far plane under reverse-Z) above a
+/// marker, and the sums to `2^32 - 1` (64-bit storage writes).
+[Compute(8, 8, 1)]
+public void VisClear([DispatchThreadId] uint3 id, [Push] in VisClearArgs a)
+{
+    a.Vis[(int2)id.xy] = 0x7;
+    a.Sums[(int2)id.xy] = 0xFFFFFFFF;
+}
+
+public struct VisRasterArgs
+{
+    public StorageTexture2D<ulong> Vis;
+    public StorageTexture2D<ulong> Sums;
+}
+
+/// Layer z of the dispatch is triangle z + 1: it keeps its depth above its id at texel (x, y)
+/// with an atomic max (the nearest wins under reverse-Z), and adds `2^32 + z` to the sums.
+[Compute(8, 8, 4)]
+public void VisRaster([DispatchThreadId] uint3 id, [Push] in VisRasterArgs a)
+{
+    int2 px = (int2)id.xy;
+    a.Vis.AtomicMax(px, ((ulong)TexelDepth(id) << 32) | (ulong)(id.z + 1));
+    a.Sums.AtomicAdd(px, 0x100000000 + (ulong)id.z);
+}
+
+public struct Atomic32Args
+{
+    public StorageTexture2DArray<uint> Counts;
+    public StorageTexture3D<int> Lowest;
+}
+
+/// 32-bit texture atomics: layer z % 2 of the counts counts its threads, and slice 0 of the
+/// volume keeps the lowest of `-(depth % 1000)`; the volume starts at 0 (a clear), then the
+/// thread with z = 3 swaps its texel of slice 1 for 5 when it is 0.
+[Compute(8, 8, 4)]
+public void Atomic32([DispatchThreadId] uint3 id, [Push] in Atomic32Args a)
+{
+    int2 px = (int2)id.xy;
+    a.Counts.AtomicAdd(px, (int)(id.z % 2), 1);
+    a.Lowest.AtomicMin(int3(px, 0), -(int)(TexelDepth(id) % 1000));
+    if (id.z == 3) a.Lowest.AtomicCompareExchange(int3(px, 1), 0, 5);
+}

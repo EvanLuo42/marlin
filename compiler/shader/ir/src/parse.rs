@@ -1609,15 +1609,25 @@ impl Parser {
                         _ => 2,
                     };
                     let operands = self.operands(b, line, n)?;
-                    let scope = self.paren_word("scope")?;
-                    let Some(scope) = Scope::from_name(&scope) else {
-                        return self.error(format!("unknown scope `{scope}`"));
-                    };
-                    let order = self.paren_word("order")?;
-                    let Some(order) = MemOrder::from_name(&order) else {
-                        return self.error(format!("unknown ordering `{order}`"));
-                    };
+                    let (scope, order) = self.scope_order()?;
                     (Op::Atomic { op, scope, order }, operands, None)
+                }
+                w if w.starts_with("tex.atomic.") => {
+                    let Some(op) = AtomicOp::from_name(&w["tex.atomic.".len()..]) else {
+                        return self.error(format!("unknown atomic `{w}`"));
+                    };
+                    let (mut tex_op, operands, _) =
+                        self.tex(b, line, 2 + op.values(), |args| Op::TexAtomic {
+                            op,
+                            scope: Scope::Device,
+                            order: MemOrder::Relaxed,
+                            args,
+                        })?;
+                    let (s, o) = self.scope_order()?;
+                    if let Op::TexAtomic { scope, order, .. } = &mut tex_op {
+                        (*scope, *order) = (s, o);
+                    }
+                    (tex_op, operands, None)
                 }
                 w if w.starts_with("wave.") => self.wave(b, line, &w["wave.".len()..])?,
                 _ => {
@@ -1667,6 +1677,19 @@ impl Parser {
 
     /// `tex.* operands { arg: v, grad: (dx, dy) }`: `n` operands, then the arguments, in the
     /// order `TexArg` lists them.
+    /// `scope(s) order(o)` after an atomic.
+    fn scope_order(&mut self) -> R<(Scope, MemOrder)> {
+        let scope = self.paren_word("scope")?;
+        let Some(scope) = Scope::from_name(&scope) else {
+            return self.error(format!("unknown scope `{scope}`"));
+        };
+        let order = self.paren_word("order")?;
+        let Some(order) = MemOrder::from_name(&order) else {
+            return self.error(format!("unknown ordering `{order}`"));
+        };
+        Ok((scope, order))
+    }
+
     fn tex(
         &mut self,
         b: &mut Body,

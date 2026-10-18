@@ -89,6 +89,15 @@ impl Validator {
         self.problems.push(message.into());
     }
 
+    /// The execution models of the entry points.
+    pub fn stage_models(&self) -> Vec<u32> {
+        self.insts
+            .iter()
+            .filter(|i| i.opcode == op::EntryPoint)
+            .map(|i| i.ops[0])
+            .collect()
+    }
+
     fn run(&mut self, words: &[u32]) {
         if words.len() < 5 {
             return self.error("too short for a SPIR-V header");
@@ -373,6 +382,12 @@ impl Validator {
     fn capability_rules(&mut self) {
         let mut need: Vec<(u32, &'static str, String)> = Vec::new();
         let mut ext: Vec<(&str, String)> = Vec::new();
+        // The type of an id, and the format word of an image's type.
+        let type_of = |id: u32| self.defs.get(&id).and_then(|&k| self.insts[k].result_type);
+        let image_format = |id: u32| match type_of(id).and_then(|t| self.types.get(t)) {
+            Some(Ty::Image(words)) => words.get(6).copied(),
+            _ => None,
+        };
         for i in &self.insts {
             let name = i.name();
             let mut req = |c: u32, why: &'static str| need.push((c, why, name.clone()));
@@ -407,19 +422,60 @@ impl Validator {
                     if ms == 1 && arrayed == 1 {
                         req(cap::ImageMSArray, "multisampled arrays");
                     }
+                    if matches!(self.types.get(i.ops[1]), Some(Ty::Int { width: 64, .. })) {
+                        req(cap::Int64ImageEXT, "64-bit integer images");
+                        ext.push(("SPV_EXT_shader_image_int64", name.clone()));
+                    }
                 }
                 op::TypeRayQueryKHR | op::TypeAccelerationStructureKHR => {
                     req(cap::RayQueryKHR, "ray queries");
                     ext.push(("SPV_KHR_ray_query", name.clone()));
                 }
-                op::ImageRead => req(
+                op::ImageRead if image_format(i.ops[2]) == Some(0) => req(
                     cap::StorageImageReadWithoutFormat,
                     "reading storage images without a format",
                 ),
-                op::ImageWrite => req(
+                op::ImageWrite if image_format(i.ops[0]) == Some(0) => req(
                     cap::StorageImageWriteWithoutFormat,
                     "writing storage images without a format",
                 ),
+                op::UntypedImageTexelPointerEXT => {
+                    req(
+                        cap::DescriptorHeapEXT,
+                        "texel pointers into descriptor heaps",
+                    );
+                    ext.push(("SPV_EXT_descriptor_heap", name.clone()));
+                }
+                op::AtomicLoad
+                | op::AtomicStore
+                | op::AtomicExchange
+                | op::AtomicCompareExchange
+                | op::AtomicIAdd
+                | op::AtomicISub
+                | op::AtomicSMin
+                | op::AtomicUMin
+                | op::AtomicSMax
+                | op::AtomicUMax
+                | op::AtomicAnd
+                | op::AtomicOr
+                | op::AtomicXor => {
+                    // The value's type: the result's, or a store's value.
+                    let ty = match i.result_type {
+                        Some(t) => Some(t),
+                        None => type_of(i.ops[3]),
+                    };
+                    if ty.is_some_and(|t| {
+                        matches!(self.types.get(t), Some(Ty::Int { width: 64, .. }))
+                    }) {
+                        req(cap::Int64Atomics, "64-bit atomics");
+                    }
+                }
+                op::DPdxFine
+                | op::DPdyFine
+                | op::FwidthFine
+                | op::DPdxCoarse
+                | op::DPdyCoarse
+                | op::FwidthCoarse => req(cap::DerivativeControl, "fine and coarse derivatives"),
                 op::ImageQuerySizeLod
                 | op::ImageQuerySize
                 | op::ImageQueryLevels

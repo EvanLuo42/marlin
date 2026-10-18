@@ -50,7 +50,14 @@
 //! 0 or 1); signed integer images (bitcast to and from the IR's signless integers); `Dref`
 //! sampling and gathers, `ConstOffset`, and `OpImageQuery*` with the `ImageQuery` capability.
 //!
-//! Still to come: ray tracing pipelines, gathers of integer textures, texture atomics.
+//! Step 10g, for the visibility-buffer renderer: derivatives (`OpDPdx*Coarse` and `*Fine`, with
+//! `DerivativeControl`); 64-bit integers and their atomics (`Int64Atomics`); 64-bit storage images
+//! named `R64ui`/`R64i` (`Int64ImageEXT`); texture atomics through
+//! `OpUntypedImageTexelPointerEXT` into the heap slot, with an image type that names the format
+//! atomics need. `Int64`, `Int64Atomics` and `Int64TextureAtomics` are optional capabilities of
+//! the target, as `RayQuery` is.
+//!
+//! Still to come: ray tracing pipelines, gathers of integer textures.
 
 mod body;
 mod dis;
@@ -68,11 +75,15 @@ pub use validate::validate;
 pub fn vulkan_1_4() -> Target {
     Target {
         name: "vulkan-1.4".into(),
-        version: 1,
-        // Beyond the baseline every device the RHI accepts has: inline ray queries, which a
-        // device without them skips (reflection lists the capability). 16-bit and 64-bit types
-        // come when the RHI checks for them.
-        capabilities: ["RayQuery".into()].into_iter().collect(),
+        version: 2,
+        // Beyond the baseline every device the RHI accepts has: inline ray queries and 64-bit
+        // integers with their atomics, which a device without them skips (reflection lists the
+        // capabilities; the RHI reports them in `Features`). 16-bit types come when the RHI
+        // checks for them.
+        capabilities: ["RayQuery", "Int64", "Int64Atomics", "Int64TextureAtomics"]
+            .into_iter()
+            .map(Into::into)
+            .collect(),
         wave_sizes: (4, 128),
         calls: true,
         vectors: true,

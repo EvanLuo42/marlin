@@ -519,6 +519,7 @@ impl<'m, 'r> Machine<'m, 'r> {
             Op::TexSample(_)
             | Op::TexLoad(_)
             | Op::TexStore(_)
+            | Op::TexAtomic { .. }
             | Op::TexGather { .. }
             | Op::TexQuery(_) => {
                 return Err(self.error(fr, Some(inst), "textures are not interpreted yet"));

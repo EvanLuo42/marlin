@@ -145,6 +145,31 @@ impl Collector<'_, '_> {
         }
         Ok(())
     }
+
+    /// A 64-bit atomic (`ty` is what it gives, its element's type) needs `Int64Atomics` on
+    /// buffers and groupshared memory, `Int64TextureAtomics` on textures (2026-10-18).
+    fn atomic(&mut self, callee: ItemId, ty: &Ty, conditional: bool) -> Result<(), Cancelled> {
+        let types = self.cx.get::<ItemTypesQuery>(&callee)?;
+        let Some(intrinsic) = types.intrinsic.as_deref() else {
+            return Ok(());
+        };
+        let cap = if intrinsic.starts_with("atomic.") {
+            "Int64Atomics"
+        } else if intrinsic.starts_with("tex.atomic.") {
+            "Int64TextureAtomics"
+        } else {
+            return Ok(());
+        };
+        let wide = matches!(ty, Ty::Adt { item, .. }
+            if matches!(self.builtins.kind(*item), Some(BuiltinKind::Scalar(Scalar::I64 | Scalar::U64))));
+        if wide {
+            let name = item_name(self.cx, callee)?;
+            self.add(conditional, cap, || {
+                format!("calls `{name}` on 64-bit integers")
+            });
+        }
+        Ok(())
+    }
 }
 
 fn item_name(cx: &Cx<'_>, item: ItemId) -> Result<String, Cancelled> {
@@ -235,6 +260,9 @@ impl Query for CapabilitiesQuery {
                     && callee != item
                 {
                     c.call(*callee, in_branch(e))?;
+                    if let Some(ty) = infer.expr_types.get(e) {
+                        c.atomic(*callee, ty, in_branch(e))?;
+                    }
                 }
             }
         }

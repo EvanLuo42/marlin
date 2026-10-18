@@ -123,6 +123,18 @@ words! {
     }
 }
 
+impl AtomicOp {
+    /// How many values it takes after its pointer (or texel): none to load, two to compare and
+    /// exchange.
+    pub fn values(self) -> usize {
+        match self {
+            AtomicOp::Load => 0,
+            AtomicOp::CmpXchg => 2,
+            _ => 1,
+        }
+    }
+}
+
 words! {
     Scope { Lane = "lane", Wave = "wave", Group = "group", Device = "device" }
 }
@@ -332,6 +344,14 @@ pub enum Op {
     TexLoad(Vec<TexArg>),
     /// Operands: the storage texture, the integer coordinate, the value, then `layer`.
     TexStore(Vec<TexArg>),
+    /// Operands: the storage texture, the integer coordinate, the values (as for `atomic`), then
+    /// `layer`. Result: the texel before, an integer scalar of 32 or 64 bits (§8.4).
+    TexAtomic {
+        op: AtomicOp,
+        scope: Scope,
+        order: MemOrder,
+        args: Vec<TexArg>,
+    },
     /// Operands: the texture, the sampler, the coordinate, then `layer`, `offset` and
     /// `compare`. Result: one channel (0 to 3, red to alpha) of the four texels a bilinear
     /// sample would use; with `compare`, their comparison results (channel 0).

@@ -4,16 +4,19 @@
 //! optional arguments are the parameters named `lod`, `bias`, `grad`, `layer`, `mip`, `sample`
 //! and `offset` (a constant in -8..7), passed to the operation only when the call gives them;
 //! `grad` is a pair of derivatives; `reference` is the comparison's depth; a gather's
-//! `channel` is a constant.
+//! `channel` is a constant. Storage textures' atomics (`AtomicMax(px, v)`) are `tex.atomic.*`.
 
 use marlin_front_hir_def::ItemId;
 use marlin_front_hir_def::store::{Arg, ExprId};
 use marlin_shaderc_hir_ty::{InferLoc, ItemTypesQuery};
-use marlin_shaderc_ir::{Const, ConstValue, Op, TexArg, TexQuery, Value, ValueDef};
+use marlin_shaderc_ir::{
+    AtomicOp, Const, ConstValue, MemOrder, Op, Scalar, Scope, TexArg, TexQuery, TypeData, Value,
+    ValueDef,
+};
 
-use crate::R;
 use crate::expr::Receiver;
 use crate::func::FnCx;
+use crate::{LowerError, R};
 
 impl FnCx<'_, '_, '_> {
     /// `tex.sample`, `tex.load` and `tex.texel` (a storage texture's indexer: a load, or with
@@ -71,6 +74,20 @@ impl FnCx<'_, '_, '_> {
         if let Some(v) = store {
             operands.push(v);
         }
+        // An atomic's values: `compare`, then `v`.
+        let atomic = match name.strip_prefix("tex.atomic.") {
+            Some(op) => Some(AtomicOp::from_name(op).ok_or_else(|| {
+                LowerError::unsupported(format!("intrinsic `{name}`"), self.owner(), loc.clone())
+            })?),
+            None => None,
+        };
+        if atomic.is_some() {
+            for param in ["compare", "v"] {
+                if let Some((_, v)) = given[lead..].iter().find(|(n, _)| n == param) {
+                    operands.push(*v);
+                }
+            }
+        }
         let mut tex_args = Vec::new();
         for &arg in TexArg::ALL {
             // The comparison's depth is the `reference` parameter.
@@ -103,6 +120,15 @@ impl FnCx<'_, '_, '_> {
         }
         let op = match (name, store) {
             _ if let Some(q) = query => Op::TexQuery(q),
+            _ if let Some(op) = atomic => {
+                self.texel_atomic_ok(texture, loc.clone())?;
+                Op::TexAtomic {
+                    op,
+                    scope: Scope::Device,
+                    order: MemOrder::Relaxed,
+                    args: tex_args,
+                }
+            }
             ("tex.sample", _) => Op::TexSample(tex_args),
             ("tex.gather", _) => {
                 let channel = match given[lead..].iter().find(|(n, _)| n == "channel") {
@@ -130,6 +156,29 @@ impl FnCx<'_, '_, '_> {
             .emit(op, operands, None)
             .map_err(|err| err.located(self.owner(), loc))?;
         Ok(self.f.insts[inst].results.first().copied())
+    }
+
+    /// Texture atomics take `int`, `uint`, `long` and `ulong` texels (E1309 otherwise).
+    fn texel_atomic_ok(&self, texture: Value, loc: InferLoc) -> R<()> {
+        let element = match self.l.module.data(self.f.ty(texture)) {
+            TypeData::Handle(kind) => kind.element,
+            _ => None,
+        };
+        let int = element.is_some_and(|e| {
+            matches!(
+                self.l.module.data(e),
+                TypeData::Scalar(Scalar::I32 | Scalar::I64)
+            )
+        });
+        if int {
+            Ok(())
+        } else {
+            Err(self.error(
+                "E1309",
+                "texture atomics are on `int`, `uint`, `long` and `ulong` textures",
+                loc,
+            ))
+        }
     }
 
     /// Whether `v` is a constant integer (vector) with every component in -8..7, as texture

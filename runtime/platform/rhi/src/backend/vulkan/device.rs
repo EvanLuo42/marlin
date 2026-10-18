@@ -38,6 +38,7 @@ pub(crate) struct DeviceExtensions {
     pub(crate) acceleration_structure: bool,
     pub(crate) deferred_host_operations: bool,
     pub(crate) ray_query: bool,
+    pub(crate) shader_image_atomic_int64: bool,
     pub(crate) fragment_shading_rate: bool,
     pub(crate) conservative_rasterization: bool,
     pub(crate) fragment_shader_barycentric: bool,
@@ -57,7 +58,7 @@ pub(crate) struct DeviceExtensions {
 }
 
 impl DeviceExtensions {
-    fn table(&mut self) -> [(&'static CStr, &mut bool); 28] {
+    fn table(&mut self) -> [(&'static CStr, &mut bool); 29] {
         [
             (c"VK_EXT_descriptor_heap", &mut self.descriptor_heap),
             (
@@ -86,6 +87,10 @@ impl DeviceExtensions {
                 &mut self.deferred_host_operations,
             ),
             (c"VK_KHR_ray_query", &mut self.ray_query),
+            (
+                c"VK_EXT_shader_image_atomic_int64",
+                &mut self.shader_image_atomic_int64,
+            ),
             (
                 c"VK_KHR_fragment_shading_rate",
                 &mut self.fragment_shading_rate,
@@ -264,6 +269,7 @@ struct FeatureChain {
     dgc: VkPhysicalDeviceDeviceGeneratedCommandsFeaturesEXT,
     acceleration: VkPhysicalDeviceAccelerationStructureFeaturesKHR,
     ray_query: VkPhysicalDeviceRayQueryFeaturesKHR,
+    image_int64: VkPhysicalDeviceShaderImageAtomicInt64FeaturesEXT,
     shading_rate: VkPhysicalDeviceFragmentShadingRateFeaturesKHR,
     barycentric: VkPhysicalDeviceFragmentShaderBarycentricFeaturesKHR,
     conditional: VkPhysicalDeviceConditionalRenderingFeaturesEXT,
@@ -319,6 +325,9 @@ impl FeatureChain {
         }
         if ext.ray_query {
             push!(ray_query);
+        }
+        if ext.shader_image_atomic_int64 {
+            push!(image_int64);
         }
         if ext.acceleration_structure {
             push!(acceleration);
@@ -592,6 +601,9 @@ fn report_features(
         gpu_upload_heap: memory.resizable_bar(),
         atomic_int64: on(chain.v12.shaderBufferInt64Atomics)
             && on(chain.v12.shaderSharedInt64Atomics),
+        // The extension makes `R64_UINT` storage images with atomics a must.
+        texture_atomic_int64: ext.shader_image_atomic_int64
+            && on(chain.image_int64.shaderImageInt64Atomics),
         copy_queue_timestamps,
         mixed_heaps: true,
         wave_size_range: match subgroup_control {

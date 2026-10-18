@@ -1386,9 +1386,11 @@ impl<'v, 'a> FunctionVerifier<'v, 'a> {
                 (!index_ok(args[1])).then(|| "the index is an integer scalar".into())
             }
             Op::UniformPtr | Op::BufferLength | Op::DescGet { .. } => count(1),
-            Op::TexSample(a) | Op::TexLoad(a) | Op::TexStore(a) | Op::TexGather { args: a, .. } => {
-                tex_problem(v, op, a, args)
-            }
+            Op::TexSample(a)
+            | Op::TexLoad(a)
+            | Op::TexStore(a)
+            | Op::TexGather { args: a, .. }
+            | Op::TexAtomic { args: a, .. } => tex_problem(v, op, a, args),
             Op::TexQuery(q) => query_problem(v, *q, args),
             Op::RqInit | Op::RqProceed | Op::RqGet { .. } | Op::RqCommitTriangle => {
                 let n = if matches!(op, Op::RqInit) { 8 } else { 1 };
@@ -1938,6 +1940,7 @@ impl<'v, 'a> FunctionVerifier<'v, 'a> {
 fn tex_problem(v: &Verifier<'_>, op: &Op, a: &[TexArg], args: &[Type]) -> Option<String> {
     let lead = match op {
         Op::TexLoad(_) => 2,
+        Op::TexAtomic { op, .. } => 2 + op.values(),
         _ => 3,
     };
     let want = lead
@@ -1987,7 +1990,7 @@ fn tex_problem(v: &Verifier<'_>, op: &Op, a: &[TexArg], args: &[Type]) -> Option
             "`layer` is for array textures".into()
         });
     }
-    if has(TexArg::Offset) && (shape.cube || matches!(op, Op::TexStore(_))) {
+    if has(TexArg::Offset) && (shape.cube || matches!(op, Op::TexStore(_) | Op::TexAtomic { .. })) {
         return Some("`offset` is for reading 2D and 3D textures".into());
     }
     let compare = has(TexArg::Compare);
@@ -2041,7 +2044,7 @@ fn tex_problem(v: &Verifier<'_>, op: &Op, a: &[TexArg], args: &[Type]) -> Option
                 return Some("`mip` and `sample` are for loads".into());
             }
         }
-        Op::TexLoad(_) | Op::TexStore(_) => {
+        Op::TexLoad(_) | Op::TexStore(_) | Op::TexAtomic { .. } => {
             if shape.cube {
                 return Some("cube textures are sampled, not loaded".into());
             }
@@ -2068,6 +2071,37 @@ fn tex_problem(v: &Verifier<'_>, op: &Op, a: &[TexArg], args: &[Type]) -> Option
                 }
                 if Some(args[2]) != kind.element {
                     return Some("the value is the texture's texel type".into());
+                }
+            }
+            if let Op::TexAtomic {
+                op, scope, order, ..
+            } = op
+            {
+                if !shape.storage {
+                    return Some("atomics work on storage textures".into());
+                }
+                let int = kind
+                    .element
+                    .is_some_and(|e| v.is_scalar(e, Scalar::I32) || v.is_scalar(e, Scalar::I64));
+                if !int {
+                    return Some("texture atomics take 32- or 64-bit integer texels".into());
+                }
+                if args[2..2 + op.values()]
+                    .iter()
+                    .any(|&a| Some(a) != kind.element)
+                {
+                    return Some("the values are the texture's texel type".into());
+                }
+                if *scope == Scope::Lane {
+                    return Some("an atomic's scope is wave, group or device".into());
+                }
+                let bad_order = match op {
+                    AtomicOp::Load => matches!(order, MemOrder::Release | MemOrder::AcqRel),
+                    AtomicOp::Store => matches!(order, MemOrder::Acquire | MemOrder::AcqRel),
+                    _ => false,
+                };
+                if bad_order {
+                    return Some(format!("`{}` is not an ordering for this", order.name()));
                 }
             }
         }

@@ -256,6 +256,7 @@ barrier exec(none) mem(device) spaces(buffer, image)
 ### 8.5 导数
 
 - `deriv.ddx` 和 `deriv.ddy` 都带 `coarse` 或 `fine`，是 convergent 的，只能在 pixel stage 里出现。
+- 第 10g 步（2026-10-18）：源语言里不带后缀的 `Ddx`、`Ddy` 降低成 `coarse`；`Fwidth` 不是 op，核心库把它写成 `abs` 加 `fadd`。
 - compute 里的导数已经在自动微分阶段（0005 §4.4 的 0.3）变成了普通算术，后端 IR 里不会出现。
 
 ### 8.6 纹理
@@ -283,6 +284,12 @@ tex.store %st, %coord, %v
   - `tex.gather.r` 到 `tex.gather.a` 取一个通道，结果是四个该通道的值。带 `compare` 时只能写 `.r`。gather 不能用 `lod`、`bias`、`grad`，也不能用于 3D 纹理。
   - 查询：`tex.size %t[, %mip]` 返回 `i32x2` 或 `i32x3`，cube 是一个面的尺寸；`mip` 只用于有 mip 的纹理。`tex.layers`、`tex.mips`、`tex.samples` 分别要求数组纹理、有 mip 的纹理和多重采样纹理。
   - 有符号整数纹理写成 `res<Texture2D<signed i32>>`。IR 的整数不带符号，但图像类型带，所以由纹理类型来记录。
+- 第 10g 步（2026-10-18）加了 `tex.atomic.<op>`：
+  - 写法是 `tex.atomic.umax %st, %coord, %v { layer: %l } scope(device) order(relaxed)`。
+  - 操作数依次是存储纹理、整数坐标、值（个数和 `atomic.<op>` 一样：`load` 没有，`cmpxchg` 两个，先比较值后新值），最后是操作数包。包里只能有数组纹理的 `layer`。
+  - 结果是原来的纹素；`store` 没有结果。
+  - verifier 检查：只能用于存储纹理，纹素是 32 或 64 位整数标量，值是纹素的类型，scope 和 ordering 的规则同 `atomic`。
+  - `Int64TextureAtomics`（0004 §12.3）由前端推断，IR 里不重复记录。
 
 ### 8.7 wave
 

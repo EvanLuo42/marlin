@@ -29,6 +29,12 @@ const ENTRIES: &[(&str, &str)] = &[
     ("Queries", "Compute"),
     ("TraceRays", "Compute"),
     ("Prints", "Compute"),
+    ("Slopes", "Pixel"),
+    ("SlopeWidths", "Pixel"),
+    ("Wide", "Compute"),
+    ("VisClear", "Compute"),
+    ("VisRaster", "Compute"),
+    ("Atomic32", "Compute"),
 ];
 
 /// Every entry of the engine's package, with its stage.

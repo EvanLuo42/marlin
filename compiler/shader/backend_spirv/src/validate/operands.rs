@@ -91,7 +91,16 @@ pub fn layout(opcode: u32) -> Option<&'static str> {
         | op::IsNan
         | op::IsInf
         | op::BitReverse
-        | op::BitCount => "tri",
+        | op::BitCount
+        | op::DPdx
+        | op::DPdy
+        | op::Fwidth
+        | op::DPdxFine
+        | op::DPdyFine
+        | op::FwidthFine
+        | op::DPdxCoarse
+        | op::DPdyCoarse
+        | op::FwidthCoarse => "tri",
         op::IAdd
         | op::FAdd
         | op::ISub
@@ -196,6 +205,7 @@ pub fn layout(opcode: u32) -> Option<&'static str> {
         op::UntypedArrayLengthKHR => "triil",
         op::TypeBufferEXT => "rl",
         op::BufferPointerEXT => "tri",
+        op::UntypedImageTexelPointerEXT => "triiii",
         op::ConstantSizeOfEXT => "tri",
         op::SetMeshOutputsEXT => "ii",
         op::TypeRayQueryKHR | op::TypeAccelerationStructureKHR => "r",

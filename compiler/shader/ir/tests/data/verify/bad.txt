@@ -61,6 +61,17 @@ runtime recursion: @Ping -> @Pong -> @Ping (recursion must unroll at compile tim
 @Textures: `%nosamples = tex.samples %albedo`: only multisampled textures have samples
 @Textures: `tex.store %store, i32x2 (0, 0), f32x4 zero { offset: i32x2 (1, 0) }`: `offset` is for reading 2D and 3D textures
 @Textures: `@Textures` uses a pixel-only operation, reached from a compute entry point
+== texture atomics
+@TextureAtomics: `%float = tex.atomic.add %floats, i32x2 (0, 0), f32 1.0 scope(device) order(relaxed)`: texture atomics take 32- or 64-bit integer texels
+@TextureAtomics: `%sampled = tex.atomic.umax %albedo, i32x2 (0, 0), i32 1 scope(device) order(relaxed)`: atomics work on storage textures
+@TextureAtomics: `%narrow = tex.atomic.umax %wide, i32x2 (0, 0), i32 1 scope(device) order(relaxed)`: the values are the texture's texel type
+@TextureAtomics: `%nolayer = tex.atomic.add %layers, i32x2 (0, 0), i32 1 scope(device) order(relaxed)`: an array texture takes `layer`
+@TextureAtomics: `%lane = tex.atomic.add %wide, i32x2 (0, 0), i64 1 scope(lane) order(relaxed)`: an atomic's scope is wave, group or device
+@TextureAtomics: `%release = tex.atomic.load %wide, i32x2 (0, 0) scope(device) order(release)`: `release` is not an ordering for this
+@TextureAtomics: `%offset = tex.atomic.xchg %wide, i32x2 (0, 0), i64 1 { offset: i32x2 (1, 0) } scope(device) order(relaxed)`: `offset` is for reading 2D and 3D textures
+== derivatives outside pixel entries
+@Slopes: `%int = deriv.ddy coarse i32 1`: takes floats
+@Slopes: `@Slopes` uses a pixel-only operation, reached from a compute entry point
 == mesh operations outside their stages
 @MeshInCompute: `@MeshInCompute` uses `mesh.set_counts`, reached from a compute entry point
 @MeshInCompute: `@MeshInCompute` uses `mesh.dispatch`, reached from a compute entry point

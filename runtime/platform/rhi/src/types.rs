@@ -213,7 +213,7 @@ pub struct Features {
     pub ray_query: bool,
     /// 16-bit float and integer shader arithmetic (`float16_t`, `int16_t`).
     pub shader_float16_int16: bool,
-    /// 64-bit integer shader arithmetic.
+    /// 64-bit integer shader arithmetic (the shader capability `Int64`).
     pub shader_int64: bool,
     /// Pixel shaders read barycentric coordinates (`SV_Barycentrics`).
     pub barycentrics: bool,
@@ -244,8 +244,13 @@ pub struct Features {
     pub sparse_volumes: bool,
     /// [`MemoryLocation::GpuUpload`]: CPU-writable device-local memory (resizable BAR).
     pub gpu_upload_heap: bool,
-    /// 64-bit atomics on typed resources and in shared memory (software rasterization).
+    /// 64-bit atomics on buffers and in groupshared memory (the shader capability
+    /// `Int64Atomics`).
     pub atomic_int64: bool,
+    /// 64-bit atomics on [`Format::R64Uint`] storage textures, the visibility buffer of software
+    /// rasterization (the shader capability `Int64TextureAtomics`; Vulkan
+    /// `VK_EXT_shader_image_atomic_int64`).
+    pub texture_atomic_int64: bool,
     /// Timestamps can be written on the copy queue.
     pub copy_queue_timestamps: bool,
     /// Heaps may hold buffers and every kind of texture together (always on Vulkan; D3D12
@@ -319,6 +324,10 @@ pub enum Format {
     Rgba32Uint,
     Rgba32Sint,
     Rgba32Float,
+    /// One 64-bit unsigned integer: the visibility buffer written with 64-bit atomics (depth above
+    /// the cluster and triangle ids; [`Features::texture_atomic_int64`]). Storage, copies and
+    /// clears only: not sampled, rendered to or blended.
+    R64Uint,
     /// 16-bit depth: shadow maps that need the bandwidth more than the precision.
     D16Unorm,
     /// The depth format: reverse-Z wants float precision.
@@ -433,6 +442,7 @@ impl Format {
                 | R32Uint
                 | Rg32Uint
                 | Rgba32Uint
+                | R64Uint
         )
     }
 
@@ -497,7 +507,7 @@ impl Format {
             | Rg16Unorm | Rg16Snorm | Rg16Uint | Rg16Sint | Rg16Float | R32Uint | R32Sint
             | R32Float | D32Float => 4,
             Rgba16Unorm | Rgba16Snorm | Rgba16Uint | Rgba16Sint | Rgba16Float | Rg32Uint
-            | Rg32Sint | Rg32Float | D32FloatS8 => 8,
+            | Rg32Sint | Rg32Float | D32FloatS8 | R64Uint => 8,
             Rgba32Uint | Rgba32Sint | Rgba32Float => 16,
             Bc1Unorm | Bc1UnormSrgb | Bc4Unorm | Bc4Snorm | Etc2Rgb8Unorm | Etc2Rgb8UnormSrgb
             | Etc2Rgb8A1Unorm | Etc2Rgb8A1UnormSrgb | EacR11Unorm | EacR11Snorm => 8,
@@ -526,7 +536,7 @@ flags! {
         STORAGE_WRITE = 0x8,
         /// Loads through writable shader views (typed UAV loads).
         STORAGE_READ = 0x10,
-        /// 32-bit atomics through writable views.
+        /// Atomics through writable views (32-bit ones; 64-bit ones on [`Format::R64Uint`]).
         STORAGE_ATOMIC = 0x20,
         RENDER_TARGET = 0x40,
         /// Blending as a render target.

@@ -264,7 +264,7 @@ visbuffer ─▶ "Classify"：每个像素 → 材质 permutation id，统计每
 
 ## 11. RHI 需要的改动
 
-- 64 位 typed UAV 原子：特性查询，加上 `R64Uint` 的纹理和视图格式（D3D12 的 `AtomicInt64OnTypedResourceSupported`，Vulkan 的 `shaderImageInt64Atomics`）。
+- 64 位 typed UAV 原子：特性查询，加上 `R64Uint` 的纹理和视图格式（D3D12 的 `AtomicInt64OnTypedResourceSupported`，Vulkan 的 `shaderImageInt64Atomics`）。已做（2026-10-18）：`Features::texture_atomic_int64` 和 `Format::R64Uint`，shader 侧是存储纹理的 `AtomicMax` 等方法（0004 §12.2、0016 §3）。
 - 带计数 buffer 的 indirect（`ExecuteIndirect` 的 count buffer，Vulkan 的 `vkCmdDispatchIndirectCount` 等价物），可见 cluster 数要用。
 - mesh pipeline 允许没有颜色附件和深度附件、只写 UAV。
 - 加速结构：按 0007 §11.3。

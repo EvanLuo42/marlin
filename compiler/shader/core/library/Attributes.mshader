@@ -106,8 +106,12 @@ public enum Capability
 {
     /// `half`, `short`, `ushort`.
     Native16Bit,
-    /// `long`, `ulong` and their atomics.
+    /// `long`, `ulong`.
     Int64,
+    /// Atomics on 64-bit integers in buffers and groupshared memory (2026-10-18).
+    Int64Atomics,
+    /// Atomics on 64-bit integer storage textures (2026-10-18).
+    Int64TextureAtomics,
     /// `double`.
     Float64,
     WaveMatrix,

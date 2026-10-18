@@ -6,7 +6,7 @@
 //! declaration covers every scalar and vector type.
 
 use marlin_shaderc_ir::{
-    BinaryOp, MathOp, Op, QuadOp, ReduceOp, Scope, Space, UnaryOp, VoteOp, WaveOp,
+    Axis, BinaryOp, MathOp, Op, QuadOp, ReduceOp, Scope, Space, UnaryOp, VoteOp, WaveOp,
 };
 
 pub(crate) fn op(name: &str) -> Option<Op> {
@@ -40,7 +40,21 @@ pub(crate) fn op(name: &str) -> Option<Op> {
             mem: Scope::Device,
             spaces: vec![Space::Buffer],
         },
-        _ => return wave(name),
+        _ => return deriv(name).or_else(|| wave(name)),
+    })
+}
+
+/// `deriv.ddx.coarse`, `deriv.ddy.fine` and the like.
+fn deriv(name: &str) -> Option<Op> {
+    let (axis, precision) = name.strip_prefix("deriv.")?.split_once('.')?;
+    let fine = match precision {
+        "fine" => true,
+        "coarse" => false,
+        _ => return None,
+    };
+    Some(Op::Deriv {
+        axis: Axis::from_name(axis)?,
+        fine,
     })
 }
 

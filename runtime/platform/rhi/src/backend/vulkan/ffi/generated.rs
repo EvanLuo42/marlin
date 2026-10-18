@@ -1255,6 +1255,24 @@ impl Default for VkPhysicalDeviceRayQueryFeaturesKHR {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
+pub(crate) struct VkPhysicalDeviceShaderImageAtomicInt64FeaturesEXT {
+    pub sType: VkStructureType,
+    pub pNext: *mut c_void,
+    pub shaderImageInt64Atomics: VkBool32,
+    pub sparseImageInt64Atomics: VkBool32,
+}
+
+impl Default for VkPhysicalDeviceShaderImageAtomicInt64FeaturesEXT {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000234000; // VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_IMAGE_ATOMIC_INT64_FEATURES_EXT
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
 pub(crate) struct VkPhysicalDeviceFragmentShadingRateFeaturesKHR {
     pub sType: VkStructureType,
     pub pNext: *mut c_void,
@@ -5492,6 +5510,7 @@ pub(crate) const VK_FORMAT_R32G32_SFLOAT: VkFormat = 103;
 pub(crate) const VK_FORMAT_R32G32B32A32_UINT: VkFormat = 107;
 pub(crate) const VK_FORMAT_R32G32B32A32_SINT: VkFormat = 108;
 pub(crate) const VK_FORMAT_R32G32B32A32_SFLOAT: VkFormat = 109;
+pub(crate) const VK_FORMAT_R64_UINT: VkFormat = 110;
 pub(crate) const VK_FORMAT_D16_UNORM: VkFormat = 124;
 pub(crate) const VK_FORMAT_D32_SFLOAT: VkFormat = 126;
 pub(crate) const VK_FORMAT_D32_SFLOAT_S8_UINT: VkFormat = 130;

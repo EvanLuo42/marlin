@@ -53,6 +53,7 @@ fn source(m: &Module, f: &Function, inst: Inst, level: Level) -> Option<bool> {
         Op::AssumeUniform => return Some(false),
         Op::AssumeNonUniform
         | Op::Atomic { .. }
+        | Op::TexAtomic { .. }
         | Op::Call(_)
         | Op::Deriv { .. }
         | Op::IsHelper => true,

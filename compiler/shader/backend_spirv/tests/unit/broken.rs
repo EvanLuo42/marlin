@@ -2,7 +2,9 @@
 //! break must be reported (the golden file lists what is said); with `MARLIN_SPIRV_VAL`, Khronos'
 //! `spirv-val` must reject each one too, so the rules agree with theirs.
 
-use marlin_shaderc_backend_spirv::spirv::{capability, decoration, execution_mode, op};
+use marlin_shaderc_backend_spirv::spirv::{
+    capability, decoration, execution_mode, image_format, op,
+};
 use marlin_shaderc_backend_spirv::{disassemble, from_bytes, to_bytes, validate, write_module};
 use marlin_shaderc_ir::parse_module;
 use marlin_test_support::{data_path, golden};
@@ -193,6 +195,23 @@ fn breaks() -> Vec<(&'static str, &'static str, Break)> {
         ("an instruction after the terminator", "move", |s| {
             let k = s.find(op::Return, |_| true);
             s.insts.insert(k + 1, (op::Return, vec![]));
+        }),
+        ("64-bit atomics without their capability", "wide", |s| {
+            let k = s.find(op::Capability, |o| o[0] == capability::Int64Atomics);
+            s.insts.remove(k);
+        }),
+        ("a 64-bit image without its capability", "wide", |s| {
+            let k = s.find(op::Capability, |o| o[0] == capability::Int64ImageEXT);
+            s.insts.remove(k);
+        }),
+        ("a texel pointer into a four-channel image", "wide", |s| {
+            // The `R32i` image type the second texel pointer names, as `Rgba32i`.
+            let k = s.find(op::TypeImage, |o| o[7] == image_format::R32i);
+            s.insts[k].1[7] = image_format::Rgba32i;
+        }),
+        ("fine derivatives without their capability", "slopes", |s| {
+            let k = s.find(op::Capability, |o| o[0] == capability::DerivativeControl);
+            s.insts.remove(k);
         }),
     ]
 }

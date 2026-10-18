@@ -77,6 +77,23 @@ public Vector<bool, N> IsNan<T, const int N>(Vector<T, N> x) where T : IFloat<T>
 [Intrinsic("isinf")]
 public Vector<bool, N> IsInf<T, const int N>(Vector<T, N> x) where T : IFloat<T>;
 
+// ---- derivatives (0004 §15.3) ----
+// How `x` changes from this pixel to its neighbour in the 2×2 quad, along x or y: pixel entries
+// only for now. The unsuffixed forms are the coarse ones; `Fine` ones differ per pixel of the
+// quad (2026-10-18).
+
+[Intrinsic("deriv.ddx.coarse")] public T Ddx<T>(T x) where T : IFloat<T>;
+[Intrinsic("deriv.ddy.coarse")] public T Ddy<T>(T x) where T : IFloat<T>;
+[Intrinsic("deriv.ddx.coarse")] public T DdxCoarse<T>(T x) where T : IFloat<T>;
+[Intrinsic("deriv.ddy.coarse")] public T DdyCoarse<T>(T x) where T : IFloat<T>;
+[Intrinsic("deriv.ddx.fine")] public T DdxFine<T>(T x) where T : IFloat<T>;
+[Intrinsic("deriv.ddy.fine")] public T DdyFine<T>(T x) where T : IFloat<T>;
+
+/// `Abs(Ddx(x)) + Abs(Ddy(x))`.
+public T Fwidth<T>(T x) where T : IFloat<T> => Abs(Ddx(x)) + Abs(Ddy(x));
+public T FwidthCoarse<T>(T x) where T : IFloat<T> => Abs(DdxCoarse(x)) + Abs(DdyCoarse(x));
+public T FwidthFine<T>(T x) where T : IFloat<T> => Abs(DdxFine(x)) + Abs(DdyFine(x));
+
 // ---- vectors ----
 
 [Intrinsic("dot")]

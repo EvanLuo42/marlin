@@ -51,3 +51,11 @@ block %5 ends without a terminator
 OpBranch (word 318): %9 is not a block of this function
 == an instruction after the terminator
 OpReturn (word 460): after block %5's terminator
+== 64-bit atomics without their capability
+%47 = OpAtomicUMax: 64-bit atomics need the `Int64Atomics` capability, which is not declared
+== a 64-bit image without its capability
+%49 = OpTypeImage: 64-bit integer images need the `Int64ImageEXT` capability, which is not declared
+== a texel pointer into a four-channel image
+%66 = OpUntypedImageTexelPointerEXT: an untyped `Image` pointer from an untyped image pointer, with an image type of a format atomics take (`R32i`, `R32ui`, `R64i`, `R64ui`)
+== fine derivatives without their capability
+%12 = OpDPdxCoarse: fine and coarse derivatives need the `DerivativeControl` capability, which is not declared

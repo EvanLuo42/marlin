@@ -76,6 +76,8 @@ pub(super) fn dxgi_format(format: Format) -> u32 {
         Rgba32Uint => DXGI_FORMAT_R32G32B32A32_UINT,
         Rgba32Sint => DXGI_FORMAT_R32G32B32A32_SINT,
         Rgba32Float => DXGI_FORMAT_R32G32B32A32_FLOAT,
+        // D3D12 has no 64-bit format: 64-bit typed atomics go through `R32G32_UINT` views.
+        R64Uint => DXGI_FORMAT_R32G32_UINT,
         D16Unorm => DXGI_FORMAT_D16_UNORM,
         D32Float => DXGI_FORMAT_D32_FLOAT,
         D32FloatS8 => DXGI_FORMAT_D32_FLOAT_S8X24_UINT,

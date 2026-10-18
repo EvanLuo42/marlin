@@ -71,7 +71,9 @@
 | `depth_bounds` | `depthBounds` |
 | `barycentrics` | `VK_KHR_fragment_shader_barycentric` |
 | `sampler_min_max` | 1.2 `samplerFilterMinmax` |
-| `shader_float16_int16` / `shader_int64` / `atomic_int64` | 核心特性位 |
+| `shader_float16_int16` / `shader_int64` | 核心特性位 `shaderFloat16` + `shaderInt16` / `shaderInt64` |
+| `atomic_int64` | 1.2 `shaderBufferInt64Atomics` + `shaderSharedInt64Atomics` |
+| `texture_atomic_int64` | `VK_EXT_shader_image_atomic_int64` 的 `shaderImageInt64Atomics` |
 | `sparse_resources` / `sparse_volumes` | `sparseBinding` + `sparseResidencyBuffer` + `sparseResidencyImage2D` / `Image3D` |
 | `buffer_markers` | `VK_AMD_buffer_marker`（NVIDIA 也有） |
 | `pipeline_statistics` | `pipelineStatisticsQuery` |
@@ -81,6 +83,12 @@
 | `wave_size_range` | subgroup size control 的 min/max |
 | `tearing` | surface 支持 `IMMEDIATE` |
 | 其他扩展 | `VK_EXT_memory_budget`、`VK_EXT_pageable_device_local_memory`、`VK_EXT_calibrated_timestamps`/`KHR`、`VK_EXT_device_fault`、`VK_NV_device_diagnostic_checkpoints`、`VK_EXT_conditional_rendering`、`VK_EXT_hdr_metadata`、`VK_EXT_swapchain_colorspace`、外部内存/信号量（`_win32` / `_fd`） |
+
+64 位整数（2026-10-18，visbuffer 渲染器要用，0009 §4.3）：
+- `shader_int64`、`atomic_int64`、`texture_atomic_int64` 分别对应 shader 的 capability `Int64`、`Int64Atomics`、`Int64TextureAtomics`（0004 §3.1、§12.3）。`vulkan-1.4` target 把三个都当作可选 capability，设备没有就跳过，和 `RayQuery` 一样。
+- 特性链里查到就启用；`VK_EXT_shader_image_atomic_int64` 也是查到就开。
+- `Format::R64Uint` 是 `VK_FORMAT_R64_UINT`，用作 visbuffer：只做存储纹理、拷贝和清除。有 `shaderImageInt64Atomics` 时，Vulkan 保证这个格式能做存储图像和原子操作。shader 给 64 位存储图像写明格式（`R64ui`），所以 `format_support` 不看它的无格式读写位。
+- D3D12 没有 64 位格式，`R64Uint` 映射到 `R32G32_UINT`，这是 64 位 typed 原子操作要求的视图格式。
 
 adapter：`AdapterPreference::HighPerformance` 选独显优先、然后显存最大；`Software` 选 `CPU` 类型（lavapipe），测试不用它。adapter 不满足基线就跳过（例如本机 AMD 核显只有 1.3）。
 

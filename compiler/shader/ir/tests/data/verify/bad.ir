@@ -172,6 +172,38 @@ block0:
     return
 }
 
+// ==== texture atomics
+struct @Atom { Wide: res<StorageTexture2D<i64>>, Layers: res<StorageTexture2DArray<i32>>, Floats: res<StorageTexture2D<f32>>, Albedo: res<Texture2D<i32>> }
+global @atomargs : ptr<push, @Atom>
+
+entry compute(1, 1, 1) @TextureAtomics uses(@atomargs) {
+block0:
+    %a = load @atomargs
+    %wide = desc.get (extract.field %a, .Wide)
+    %layers = desc.get (extract.field %a, .Layers)
+    %floats = desc.get (extract.field %a, .Floats)
+    %albedo = desc.get (extract.field %a, .Albedo)
+    %float = tex.atomic.add %floats, i32x2 (0, 0), f32 1.0 scope(device) order(relaxed)
+    %sampled = tex.atomic.umax %albedo, i32x2 (0, 0), i32 1 scope(device) order(relaxed)
+    %narrow = tex.atomic.umax %wide, i32x2 (0, 0), i32 1 scope(device) order(relaxed)
+    %nolayer = tex.atomic.add %layers, i32x2 (0, 0), i32 1 scope(device) order(relaxed)
+    %lane = tex.atomic.add %wide, i32x2 (0, 0), i64 1 scope(lane) order(relaxed)
+    %release = tex.atomic.load %wide, i32x2 (0, 0) scope(device) order(release)
+    %offset = tex.atomic.xchg %wide, i32x2 (0, 0), i64 1 { offset: i32x2 (1, 0) } scope(device) order(relaxed)
+    return
+}
+
+// ==== derivatives outside pixel entries
+global @dargs : ptr<push, f32>
+
+entry compute(1, 1, 1) @Slopes uses(@dargs) {
+block0:
+    %x = load @dargs
+    %dx = deriv.ddx fine %x
+    %int = deriv.ddy coarse i32 1
+    return
+}
+
 // ==== mesh operations outside their stages
 entry compute(1, 1, 1) @MeshInCompute uses() {
 block0:

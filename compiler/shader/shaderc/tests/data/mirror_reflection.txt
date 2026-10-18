@@ -192,6 +192,11 @@ ShaderReflection {
         },
         SourceHash {
             package: "Game",
+            path: "Visibility.mshader",
+            hash: 0,
+        },
+        SourceHash {
+            package: "Game",
             path: "Wide.mshader",
             hash: 0,
         },

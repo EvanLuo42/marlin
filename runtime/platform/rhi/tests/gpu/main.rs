@@ -20,3 +20,4 @@ mod shader_output;
 mod sparse;
 mod textures;
 mod views;
+mod visibility;

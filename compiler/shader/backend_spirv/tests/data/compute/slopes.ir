@@ -1,0 +1,11 @@
+global @Game.Slopes.position : ptr<input, f32x4> builtin(Position)
+global @Game.Slopes.target : ptr<output, f32x4> target(0)
+
+entry pixel @Game.Slopes uses(@Game.Slopes.position, @Game.Slopes.target) {
+block0:
+    %0 = load @Game.Slopes.position
+    %1 = deriv.ddx coarse %0
+    %2 = deriv.ddy fine %1
+    store @Game.Slopes.target, %2
+    return
+}

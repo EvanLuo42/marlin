@@ -10,9 +10,9 @@
 use std::collections::{HashMap, HashSet};
 
 use marlin_shaderc_ir::{
-    AccessStep, AtomicOp, BinaryOp, Block, Builtin, ConvertOp, FloatCmp, Function, Inst, IntCmp,
-    MathOp, MemOrder, Op, QuadOp, ReduceOp, Scalar, Scope, Space, Stage, TexArg, Type, TypeData,
-    UnaryOp, Value, ValueDef, VoteOp, WaveOp,
+    AccessStep, AtomicOp, Axis, BinaryOp, Block, Builtin, ConvertOp, FloatCmp, Function, Inst,
+    IntCmp, MathOp, MemOrder, Op, QuadOp, ReduceOp, Scalar, Scope, Space, Stage, TexArg, Type,
+    TypeData, UnaryOp, Value, ValueDef, VoteOp, WaveOp,
 };
 
 use crate::spirv::{builtin, capability as cap, glsl, group_operation, op, scope, semantics};
@@ -38,6 +38,8 @@ pub(crate) struct Body<'w, 'm> {
     via: HashMap<(Block, usize), u32>,
     /// `OpEmitMeshTasksEXT` was just written: it ends the block, so its `return` is not.
     dispatched: bool,
+    /// The heap pointer each texture handle was loaded from, for texel pointers (atomics).
+    image_ptrs: HashMap<Value, u32>,
 }
 
 impl<'w, 'm> Body<'w, 'm> {
@@ -53,6 +55,7 @@ impl<'w, 'm> Body<'w, 'm> {
             stub_continues: HashMap::new(),
             via: HashMap::new(),
             dispatched: false,
+            image_ptrs: HashMap::new(),
         }
     }
 
@@ -650,6 +653,11 @@ impl<'w, 'm> Body<'w, 'm> {
                 } else {
                     p
                 };
+                if kind.kind.texture().is_some()
+                    && let Some(r) = result
+                {
+                    self.image_ptrs.insert(r, p);
+                }
                 if *nonuniform {
                     self.w.capability(cap::ShaderNonUniform);
                     for id in [index, p, v] {
@@ -723,6 +731,12 @@ impl<'w, 'm> Body<'w, 'm> {
                 self.tex_store(&ops, targs)?;
                 None
             }
+            Op::TexAtomic {
+                op: aop,
+                scope: s,
+                order,
+                args,
+            } => self.tex_atomic(*aop, *s, *order, &ops, args, rt)?,
             Op::BufferElem => {
                 let (bp, readonly) = self.buffer_pointer(ops[0])?;
                 let _ = readonly;
@@ -780,6 +794,17 @@ impl<'w, 'm> Body<'w, 'm> {
                     None => self.emit(op::MemoryBarrier, &[mem_scope, sem]),
                 }
                 None
+            }
+            Op::Deriv { axis, fine } => {
+                self.w.capability(cap::DerivativeControl);
+                let opcode = match (axis, fine) {
+                    (Axis::X, false) => op::DPdxCoarse,
+                    (Axis::X, true) => op::DPdxFine,
+                    (Axis::Y, false) => op::DPdyCoarse,
+                    (Axis::Y, true) => op::DPdyFine,
+                };
+                let x = a(self, 0)?;
+                Some(self.value(rt.unwrap_or(0), opcode, &[x]))
             }
             Op::Wave { op: w, cluster } => Some(self.wave(*w, *cluster, &ops, rt.unwrap_or(0))?),
             Op::AssumeUniform | Op::AssumeNonUniform => {
@@ -1114,17 +1139,40 @@ impl<'w, 'm> Body<'w, 'm> {
         rt: Option<u32>,
     ) -> R<Option<u32>> {
         let ptr = self.val(ops[0])?;
-        let sc = self.w.uint(scope_of(s)?);
-        let sem_bits = match order {
-            MemOrder::Relaxed => 0,
-            _ => semantics::AcquireRelease,
-        };
-        let sem = self.w.uint(sem_bits);
         let mut vals = Vec::new();
         for &v in &ops[1..] {
             vals.push(self.val(v)?);
         }
-        let rt = rt.unwrap_or(0);
+        let ty = match self.w.m.data(self.f.ty(ops[0])) {
+            TypeData::Ptr { pointee, .. } => Some(*pointee),
+            _ => None,
+        };
+        if ty.is_some_and(|t| self.scalar_of(t) == Some(Scalar::I64)) {
+            self.w.capability(cap::Int64Atomics);
+        }
+        self.atomic_on(ptr, a, s, order, 0, &vals, rt.unwrap_or(0))
+    }
+
+    /// An atomic through `ptr` with the value ids `vals`; `memory` the semantics bit of what
+    /// it points into, for orderings stronger than relaxed (0 for buffers and groupshared, as
+    /// their barriers name them).
+    #[allow(clippy::too_many_arguments)]
+    fn atomic_on(
+        &mut self,
+        ptr: u32,
+        a: AtomicOp,
+        s: Scope,
+        order: MemOrder,
+        memory: u32,
+        vals: &[u32],
+        rt: u32,
+    ) -> R<Option<u32>> {
+        let sc = self.w.uint(scope_of(s)?);
+        let sem_bits = match order {
+            MemOrder::Relaxed => 0,
+            _ => semantics::AcquireRelease | memory,
+        };
+        let sem = self.w.uint(sem_bits);
         Ok(Some(match a {
             AtomicOp::Load => self.value(rt, op::AtomicLoad, &[ptr, sc, sem]),
             AtomicOp::Store => {
@@ -1155,6 +1203,70 @@ impl<'w, 'm> Body<'w, 'm> {
                 self.value(rt, opcode, &[ptr, sc, sem, vals[0]])
             }
         }))
+    }
+
+    /// `tex.atomic.*`: a texel pointer (`OpUntypedImageTexelPointerEXT` into the heap slot the
+    /// texture was loaded from, with an image type that names the format atomics need), then
+    /// the atomic. A signed texture's integers are signed for SPIR-V and the IR's on either
+    /// side.
+    fn tex_atomic(
+        &mut self,
+        a: AtomicOp,
+        s: Scope,
+        order: MemOrder,
+        ops: &[Value],
+        targs: &[TexArg],
+        rt: Option<u32>,
+    ) -> R<Option<u32>> {
+        use crate::spirv::{image_format, storage_class as sc};
+        let kind = self.texture_kind(ops[0])?;
+        let Some(&heap_ptr) = self.image_ptrs.get(&ops[0]) else {
+            return unsupported("a texture atomic on a texture not loaded from the heap");
+        };
+        let n = a.values();
+        let args = self.tex_args(ops, 2 + n, targs)?;
+        let layer = args
+            .iter()
+            .find(|(t, _)| *t == TexArg::Layer)
+            .map(|(_, ids)| ids[0]);
+        let coord = self.val(ops[1])?;
+        let coord = self.with_layer(coord, self.f.ty(ops[1]), layer, false)?;
+        let wide = self.w.texel_bits(&kind)? == 64;
+        let format = match (wide, kind.signed) {
+            (true, true) => image_format::R64i,
+            (true, false) => image_format::R64ui,
+            (false, true) => image_format::R32i,
+            (false, false) => image_format::R32ui,
+        };
+        if wide {
+            self.w.capability(cap::Int64Atomics);
+        }
+        let image_ty = self.w.image_ty_with(&kind, format)?;
+        let ptr_t = self.w.untyped_ptr_ty(sc::Image);
+        let sample = self.w.uint(0);
+        let ptr = self.value(
+            ptr_t,
+            op::UntypedImageTexelPointerEXT,
+            &[image_ty, heap_ptr, coord, sample],
+        );
+        let (s_ir, _) = self.texel_shape(&kind)?;
+        let mut vals = Vec::new();
+        for &v in &ops[2..2 + n] {
+            vals.push(self.val(v)?);
+        }
+        let ir_t = self.w.scalar(s_ir);
+        let image_t = self.w.image_scalar(&kind)?;
+        if kind.signed {
+            for v in &mut vals {
+                *v = self.value(image_t, op::Bitcast, &[*v]);
+            }
+        }
+        let image_memory = crate::spirv::semantics::ImageMemory;
+        let r = self.atomic_on(ptr, a, s, order, image_memory, &vals, image_t)?;
+        Ok(match r {
+            Some(r) if kind.signed => Some(self.value(rt.unwrap_or(ir_t), op::Bitcast, &[r])),
+            other => other,
+        })
     }
 
     fn wave(&mut self, w: WaveOp, cluster: Option<u32>, ops: &[Value], rt: u32) -> R<u32> {
@@ -1632,7 +1744,10 @@ impl Body<'_, '_> {
             parts.push((CONST_OFFSET, vec![o]));
         }
         let r4 = if shape.storage {
-            self.w.capability(cap::StorageImageReadWithoutFormat);
+            // 64-bit images name their format (`image_ty`).
+            if self.w.texel_bits(&kind)? != 64 {
+                self.w.capability(cap::StorageImageReadWithoutFormat);
+            }
             self.value(v4, op::ImageRead, &[image, coord])
         } else {
             if shape.multisampled {
@@ -1674,7 +1789,9 @@ impl Body<'_, '_> {
             let image_v4 = self.w.image_texel4(&kind)?;
             texel = self.value(image_v4, op::Bitcast, &[texel]);
         }
-        self.w.capability(cap::StorageImageWriteWithoutFormat);
+        if self.w.texel_bits(&kind)? != 64 {
+            self.w.capability(cap::StorageImageWriteWithoutFormat);
+        }
         self.emit(op::ImageWrite, &[image, coord, texel]);
         Ok(())
     }

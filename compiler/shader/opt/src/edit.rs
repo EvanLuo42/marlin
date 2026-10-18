@@ -18,6 +18,7 @@ pub(crate) fn is_pure(op: &Op) -> bool {
                 | Op::RqProceed
                 | Op::RqCommitTriangle
                 | Op::TexStore(_)
+                | Op::TexAtomic { .. }
                 | Op::Atomic { .. }
                 | Op::Barrier { .. }
                 | Op::Discard

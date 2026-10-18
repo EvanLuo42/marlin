@@ -6,7 +6,7 @@ use marlin_shaderc_ir::cfg::{dominates, dominators};
 
 use super::types::Ty;
 use super::{Inst, Validator};
-use crate::spirv::{op, storage_class as sc};
+use crate::spirv::{execution_model, op, storage_class as sc};
 
 pub(crate) fn functions(v: &mut Validator) {
     let mut k = 0;
@@ -392,6 +392,30 @@ impl Func<'_> {
                     self.error(format!("{name}: float operands and result of one type"));
                 }
             }
+            op::DPdx
+            | op::DPdy
+            | op::Fwidth
+            | op::DPdxFine
+            | op::DPdyFine
+            | op::FwidthFine
+            | op::DPdxCoarse
+            | op::DPdyCoarse
+            | op::FwidthCoarse => {
+                let float = rt
+                    .and_then(|t| self.numeric(t))
+                    .is_some_and(|(_, c)| matches!(c, Ty::Float { .. }));
+                if !float || !same(types[0], rt) {
+                    self.error(format!("{name}: a float operand of the result's type"));
+                }
+                if self
+                    .v
+                    .stage_models()
+                    .iter()
+                    .any(|&m| m != execution_model::Fragment)
+                {
+                    self.error(format!("{name}: derivatives are for fragment entry points"));
+                }
+            }
             op::SNegate | op::Not | op::FNegate => {
                 if !same(types[0], rt) {
                     self.error(format!("{name}: the operand has the result's type"));
@@ -542,6 +566,23 @@ impl Func<'_> {
                 {
                     self.error(format!(
                         "{name}: a heap descriptor's untyped pointer in, a `StorageBuffer` or `Uniform` pointer out"
+                    ));
+                }
+            }
+            op::UntypedImageTexelPointerEXT => {
+                use crate::spirv::image_format as f;
+                let result_ok =
+                    rt.and_then(|t| self.ty(t).cloned()) == Some(Ty::Untyped { class: sc::Image });
+                // Vulkan: the formats atomics take.
+                let format_ok = matches!(self.ty(ops[0]), Some(Ty::Image(words))
+                    if matches!(words.get(6), Some(&(f::R32i | f::R32ui | f::R64i | f::R64ui))));
+                let image_ok =
+                    matches!(types[1].and_then(|t| self.ty(t)), Some(Ty::Untyped { .. }));
+                if !result_ok || !format_ok || !image_ok {
+                    self.error(format!(
+                        "{name}: an untyped `Image` pointer from an untyped image pointer, \
+                         with an image type of a format atomics take (`R32i`, `R32ui`, `R64i`, \
+                         `R64ui`)"
                     ));
                 }
             }

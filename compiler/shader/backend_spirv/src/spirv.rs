@@ -55,6 +55,8 @@ table! {
         ShiftRightLogical = 194, ShiftRightArithmetic = 195, ShiftLeftLogical = 196,
         BitwiseOr = 197, BitwiseXor = 198, BitwiseAnd = 199, Not = 200, BitFieldInsert = 201,
         BitFieldSExtract = 202, BitFieldUExtract = 203, BitReverse = 204, BitCount = 205,
+        DPdx = 207, DPdy = 208, Fwidth = 209, DPdxFine = 210, DPdyFine = 211, FwidthFine = 212,
+        DPdxCoarse = 213, DPdyCoarse = 214, FwidthCoarse = 215,
         ControlBarrier = 224, MemoryBarrier = 225, AtomicLoad = 227, AtomicStore = 228,
         AtomicExchange = 229, AtomicCompareExchange = 230, AtomicIAdd = 234, AtomicISub = 235,
         AtomicSMin = 236, AtomicUMin = 237, AtomicSMax = 238, AtomicUMax = 239,
@@ -78,7 +80,7 @@ table! {
         UntypedArrayLengthKHR = 4425, TypeBufferEXT = 5115,
         TypeRayQueryKHR = 4472, RayQueryInitializeKHR = 4473, RayQueryConfirmIntersectionKHR = 4476,
         RayQueryProceedKHR = 4477, RayQueryGetIntersectionTypeKHR = 4479,
-        BufferPointerEXT = 5119, ConstantSizeOfEXT = 5129, EmitMeshTasksEXT = 5294,
+        BufferPointerEXT = 5119, UntypedImageTexelPointerEXT = 5126, ConstantSizeOfEXT = 5129, EmitMeshTasksEXT = 5294,
         SetMeshOutputsEXT = 5295, TypeAccelerationStructureKHR = 5341,
         RayQueryGetIntersectionTKHR = 6018, RayQueryGetIntersectionInstanceCustomIndexKHR = 6019,
         RayQueryGetIntersectionInstanceIdKHR = 6020, RayQueryGetIntersectionGeometryIndexKHR = 6022,
@@ -91,13 +93,13 @@ table! {
     capability {
         Matrix = 0, Shader = 1, Float16 = 9, Float64 = 10, Int64 = 11, Int64Atomics = 12,
         Int16 = 22, SampleRateShading = 35, SampledCubeArray = 45, ImageMSArray = 48,
-        ImageQuery = 50,
+        ImageQuery = 50, DerivativeControl = 51,
         StorageImageReadWithoutFormat = 55, StorageImageWriteWithoutFormat = 56, GroupNonUniform = 61, GroupNonUniformVote = 62,
         GroupNonUniformArithmetic = 63, GroupNonUniformBallot = 64,
         GroupNonUniformShuffle = 65, GroupNonUniformClustered = 67, GroupNonUniformQuad = 68,
         DrawParameters = 4427, RayQueryKHR = 4472, ShaderNonUniform = 5301, StorageBuffer16BitAccess = 4433, StoragePushConstant16 = 4435,
         UntypedPointersKHR = 4473, DescriptorHeapEXT = 5128, MeshShadingEXT = 5283,
-        RuntimeDescriptorArray = 5302,
+        RuntimeDescriptorArray = 5302, Int64ImageEXT = 5016,
     }
 }
 
@@ -126,8 +128,13 @@ table! {
 table! {
     storage_class {
         UniformConstant = 0, Input = 1, Uniform = 2, Output = 3, Workgroup = 4, Private = 6,
-        Function = 7, PushConstant = 9, StorageBuffer = 12, TaskPayloadWorkgroupEXT = 5402,
+        Function = 7, PushConstant = 9, Image = 11, StorageBuffer = 12, TaskPayloadWorkgroupEXT = 5402,
     }
+}
+
+table! {
+    /// Image formats (`Unknown` for storage images read and written without one).
+    image_format { Unknown = 0, Rgba32i = 21, R32i = 24, R32ui = 33, R64ui = 40, R64i = 41 }
 }
 
 table! {
@@ -137,7 +144,7 @@ table! {
 table! {
     /// Memory semantics bits.
     semantics {
-        AcquireRelease = 0x8, UniformMemory = 0x40, WorkgroupMemory = 0x100,
+        AcquireRelease = 0x8, UniformMemory = 0x40, WorkgroupMemory = 0x100, ImageMemory = 0x800,
     }
 }
 

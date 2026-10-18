@@ -131,6 +131,7 @@ fn an_entry_compiles_to_spirv_with_its_reflection() {
             SourcePath::new("Game", "Meshes.mshader"),
             SourcePath::new("Game", "Rays.mshader"),
             SourcePath::new("Game", "Textures.mshader"),
+            SourcePath::new("Game", "Visibility.mshader"),
             SourcePath::new("Game", "Wide.mshader"),
         ]
     );
@@ -250,6 +251,14 @@ fn bad_requests_are_diagnostics() {
         (
             "a gather channel known at run time",
             request("Game.RuntimeChannel", &[]),
+        ),
+        (
+            "a derivative in a compute entry",
+            request("Game.SlopesInCompute", &[]),
+        ),
+        (
+            "an atomic on a float texture",
+            request("Game.FloatTexelAtomic", &[]),
         ),
     ];
     let mut text = String::new();
@@ -425,6 +434,26 @@ fn sessions_are_shared_across_threads() {
     });
 }
 
+/// 64-bit atomics need their own capabilities, on buffers and on textures (2026-10-18).
+#[test]
+fn wide_atomics_need_their_capabilities() {
+    let (sources, targets) = (Memory::new(), default_targets());
+    let s = session(&sources, &targets);
+    let caps = |entry: &str| {
+        s.compile(&request(entry, &[]))
+            .unwrap_or_else(|e| panic!("{entry}: {}", errors(&s, &e)))
+            .reflection
+            .capabilities
+    };
+    assert_eq!(
+        caps("Game.Rasterize"),
+        ["Int64", "Int64Atomics", "Int64TextureAtomics"]
+    );
+    assert_eq!(caps("Game.Counting"), ["Int64"]);
+    assert!(caps("Game.Kernel").is_empty());
+    assert!(caps("Game.Slopes").is_empty());
+}
+
 /// Khronos' spirv-val on `bytes`, when `MARLIN_SPIRV_VAL` names it (0014 §6.1).
 fn external_check(bytes: &[u8], what: &str) {
     let Ok(tool) = std::env::var("MARLIN_SPIRV_VAL") else {
@@ -480,6 +509,8 @@ fn the_core_library_compiles_for_vulkan() {
         "Game.MeshAmplified",
         "Game.Trace",
         "Game.Shadowed",
+        "Game.Slopes",
+        "Game.Rasterize",
     ] {
         let mut req = request(entry, &[]);
         req.profile = Profile::Shipping;

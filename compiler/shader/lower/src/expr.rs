@@ -1542,6 +1542,7 @@ impl FnCx<'_, '_, '_> {
         let picked = self.by_kind(name, args)?;
         let name = picked.unwrap_or(name);
         if matches!(name, "tex.sample" | "tex.load" | "tex.texel" | "tex.gather")
+            || name.starts_with("tex.atomic.")
             || name
                 .strip_prefix("tex.")
                 .and_then(marlin_shaderc_ir::TexQuery::from_name)
@@ -1777,6 +1778,14 @@ const BY_KIND: &[(&str, [Option<&str>; 3])] = &[
         [None, Some("atomic.smax"), Some("atomic.umax")],
     ),
     (
+        "tex.atomic.min",
+        [None, Some("tex.atomic.smin"), Some("tex.atomic.umin")],
+    ),
+    (
+        "tex.atomic.max",
+        [None, Some("tex.atomic.smax"), Some("tex.atomic.umax")],
+    ),
+    (
         "wave.reduce.sum",
         [
             Some("wave.reduce.fadd"),
@@ -1833,7 +1842,7 @@ impl FnCx<'_, '_, '_> {
         let Some((_, ops)) = BY_KIND.iter().find(|(n, _)| *n == name) else {
             return Ok(None);
         };
-        let arg = if name.starts_with("atomic.") {
+        let arg = if name.starts_with("atomic.") || name.starts_with("tex.atomic.") {
             args.last()
         } else {
             args.first()

@@ -174,6 +174,19 @@ public readonly struct StorageTexture2D<T>
     [Intrinsic("tex.texel")] public T this[int2 px] { get; set; }
 
     [Intrinsic("tex.size")] public uint2 Size { get; }
+
+    // Atomics on the texel at `px`, giving the value before (0004 §12.2); `T` is `int`, `uint`,
+    // `long` or `ulong` (2026-10-18).
+    [Intrinsic("tex.atomic.add")] public T AtomicAdd(int2 px, T v);
+    [Intrinsic("tex.atomic.sub")] public T AtomicSub(int2 px, T v);
+    [Intrinsic("tex.atomic.and")] public T AtomicAnd(int2 px, T v);
+    [Intrinsic("tex.atomic.or")] public T AtomicOr(int2 px, T v);
+    [Intrinsic("tex.atomic.xor")] public T AtomicXor(int2 px, T v);
+    [Intrinsic("tex.atomic.min")] public T AtomicMin(int2 px, T v);
+    [Intrinsic("tex.atomic.max")] public T AtomicMax(int2 px, T v);
+    [Intrinsic("tex.atomic.xchg")] public T AtomicExchange(int2 px, T v);
+    /// Writes `v` if the texel is `compare`.
+    [Intrinsic("tex.atomic.cmpxchg")] public T AtomicCompareExchange(int2 px, T compare, T v);
 }
 
 [Builtin("storage_texture2d_array")]
@@ -183,6 +196,20 @@ public readonly struct StorageTexture2DArray<T>
 
     [Intrinsic("tex.size")] public uint2 Size { get; }
     [Intrinsic("tex.layers")] public uint LayerCount { get; }
+
+    // Atomics on the texel at `px` of `layer`, giving the value before (0004 §12.2); `T` is
+    // `int`, `uint`, `long` or `ulong` (2026-10-18).
+    [Intrinsic("tex.atomic.add")] public T AtomicAdd(int2 px, int layer, T v);
+    [Intrinsic("tex.atomic.sub")] public T AtomicSub(int2 px, int layer, T v);
+    [Intrinsic("tex.atomic.and")] public T AtomicAnd(int2 px, int layer, T v);
+    [Intrinsic("tex.atomic.or")] public T AtomicOr(int2 px, int layer, T v);
+    [Intrinsic("tex.atomic.xor")] public T AtomicXor(int2 px, int layer, T v);
+    [Intrinsic("tex.atomic.min")] public T AtomicMin(int2 px, int layer, T v);
+    [Intrinsic("tex.atomic.max")] public T AtomicMax(int2 px, int layer, T v);
+    [Intrinsic("tex.atomic.xchg")] public T AtomicExchange(int2 px, int layer, T v);
+    /// Writes `v` if the texel is `compare`.
+    [Intrinsic("tex.atomic.cmpxchg")]
+    public T AtomicCompareExchange(int2 px, int layer, T compare, T v);
 }
 
 /// One mip of a volume texture, every slice.
@@ -192,4 +219,17 @@ public readonly struct StorageTexture3D<T>
     [Intrinsic("tex.texel")] public T this[int3 p] { get; set; }
 
     [Intrinsic("tex.size")] public uint3 Size { get; }
+
+    // Atomics on the texel at `p`, giving the value before (0004 §12.2); `T` is `int`, `uint`,
+    // `long` or `ulong` (2026-10-18).
+    [Intrinsic("tex.atomic.add")] public T AtomicAdd(int3 p, T v);
+    [Intrinsic("tex.atomic.sub")] public T AtomicSub(int3 p, T v);
+    [Intrinsic("tex.atomic.and")] public T AtomicAnd(int3 p, T v);
+    [Intrinsic("tex.atomic.or")] public T AtomicOr(int3 p, T v);
+    [Intrinsic("tex.atomic.xor")] public T AtomicXor(int3 p, T v);
+    [Intrinsic("tex.atomic.min")] public T AtomicMin(int3 p, T v);
+    [Intrinsic("tex.atomic.max")] public T AtomicMax(int3 p, T v);
+    [Intrinsic("tex.atomic.xchg")] public T AtomicExchange(int3 p, T v);
+    /// Writes `v` if the texel is `compare`.
+    [Intrinsic("tex.atomic.cmpxchg")] public T AtomicCompareExchange(int3 p, T compare, T v);
 }
