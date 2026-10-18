@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use marlin_front_hir_def::store::{BindingId, BindingKind, LambdaBody, RefKind};
+use marlin_front_hir_def::store::{BindingId, BindingKind, Expr, LambdaBody, RefKind, Stmt};
 use marlin_front_hir_def::{Body, BodyOwner, BodyPart, BodyQuery, ItemKind, ItemTreeQuery};
 use marlin_shaderc_hir_ty::{
     InferLoc, InferQuery, InferenceResult, ItemTypesQuery, Subst, Ty, self_ty,
@@ -20,6 +20,7 @@ use marlin_shaderc_ir::{
     Block, FuncId, Function, Inst, Op, Space, SwitchCase, Type, Value, result_types,
 };
 
+use crate::closures::{Capture, Inner, func_result};
 use crate::ssa::{Ssa, Var};
 use crate::{Instance, LowerError, Lowering, R};
 
@@ -42,6 +43,9 @@ pub(crate) struct Signature {
 }
 
 pub(crate) fn signature(l: &mut Lowering<'_, '_>, instance: &Instance) -> R<Signature> {
+    if let Some(inner) = &instance.inner {
+        return inner_signature(l, instance, inner);
+    }
     let item = instance.owner.item;
     let tree = l.cx.get::<ItemTreeQuery>(&item.file)?;
     let data = &tree.items[item.local];
@@ -54,15 +58,25 @@ pub(crate) fn signature(l: &mut Lowering<'_, '_>, instance: &Instance) -> R<Sign
         result: None,
         is_constructor: data.kind == ItemKind::Constructor,
     };
+    // Property and indexer accessors: a getter returns the value, a setter takes it last.
+    let accessor = matches!(data.kind, ItemKind::Property | ItemKind::Indexer);
+    let mut setter = false;
     match (data.kind, instance.owner.part) {
         (ItemKind::Field | ItemKind::EnumMember, _) | (_, BodyPart::Initializer) => {
-            sig.result = types.ty.as_ref().map(|t| subst.ty(t));
+            sig.result = types.ty.as_ref().map(|t| l.resolve_assoc(&subst.ty(t)));
             return Ok(sig);
         }
         (
             ItemKind::Function | ItemKind::Operator | ItemKind::Conversion | ItemKind::Constructor,
             _,
         ) => {}
+        (ItemKind::Property | ItemKind::Indexer, _) => {
+            let body = l.cx.get::<BodyQuery>(&instance.owner)?;
+            setter = body
+                .params
+                .iter()
+                .any(|&b| body.store.bindings[b].kind == BindingKind::SetterValue);
+        }
         (kind, part) => {
             return Err(LowerError::new(
                 "E1301",
@@ -75,9 +89,10 @@ pub(crate) fn signature(l: &mut Lowering<'_, '_>, instance: &Instance) -> R<Sign
             file: item.file,
             local: p,
         };
-        if pdata.kind.is_type() && !data.is_static && data.kind == ItemKind::Function {
-            let this = subst.ty(&self_ty(l.cx, parent_id)?);
-            let pass = if data.is_readonly || pdata.is_readonly {
+        let member = data.kind == ItemKind::Function || accessor;
+        if pdata.kind.is_type() && !data.is_static && member {
+            let this = l.resolve_assoc(&subst.ty(&self_ty(l.cx, parent_id)?));
+            let pass = if (data.is_readonly || pdata.is_readonly || accessor) && !setter {
                 Pass::Value
             } else {
                 Pass::Pointer
@@ -87,7 +102,7 @@ pub(crate) fn signature(l: &mut Lowering<'_, '_>, instance: &Instance) -> R<Sign
         if pdata.kind == ItemKind::Extension {
             let ext = l.cx.get::<ItemTypesQuery>(&parent_id)?;
             if let Some(r) = &ext.receiver {
-                sig.this = Some((subst.ty(r), Pass::Value));
+                sig.this = Some((l.resolve_assoc(&subst.ty(r)), Pass::Value));
             }
         }
     }
@@ -96,17 +111,82 @@ pub(crate) fn signature(l: &mut Lowering<'_, '_>, instance: &Instance) -> R<Sign
             Some(RefKind::Out | RefKind::Ref) => Pass::Pointer,
             _ => Pass::Value,
         };
-        sig.params.push((subst.ty(&p.ty), pass));
+        sig.params.push((l.resolve_assoc(&subst.ty(&p.ty)), pass));
+    }
+    if accessor {
+        let value = types.ty.as_ref().map(|t| l.resolve_assoc(&subst.ty(t)));
+        if setter {
+            sig.params.extend(value.map(|v| (v, Pass::Value)));
+        } else {
+            sig.result = value;
+        }
+        return Ok(sig);
     }
     sig.result = if sig.is_constructor {
-        types.ty.as_ref().map(|t| subst.ty(t))
+        types.ty.as_ref().map(|t| l.resolve_assoc(&subst.ty(t)))
     } else {
         types
             .ty
             .as_ref()
-            .map(|t| subst.ty(t))
+            .map(|t| l.resolve_assoc(&subst.ty(t)))
             .filter(|t| *t != Ty::Void)
     };
+    Ok(sig)
+}
+
+/// A lambda's or local function's parameters and result (its environment comes before them).
+fn inner_signature(l: &mut Lowering<'_, '_>, instance: &Instance, inner: &Inner) -> R<Signature> {
+    let body = l.cx.get::<BodyQuery>(&instance.owner)?;
+    let infer = l.cx.get::<InferQuery>(&instance.owner)?;
+    let concrete = |l: &Lowering<'_, '_>, t: &Ty| l.resolve_assoc(&instance.subst.ty(t));
+    let (params, result) = match inner {
+        Inner::Lambda(e) => {
+            let Expr::Lambda { params, .. } = &body.store.exprs[*e] else {
+                return Err(LowerError::new("E1305", "not a lambda"));
+            };
+            let func = concrete(l, &infer.type_of(*e));
+            (params.clone(), func_result(l, &func))
+        }
+        Inner::LocalFn { stmt, ret } => {
+            let Stmt::LocalFunction(f) = &body.store.stmts[*stmt] else {
+                return Err(LowerError::new("E1305", "not a local function"));
+            };
+            if !f.generic_params.is_empty() {
+                return Err(LowerError::new(
+                    "E1301",
+                    "generic local functions are not lowered yet",
+                ));
+            }
+            (f.params.clone(), ret.clone())
+        }
+        Inner::Method { .. } => {
+            return Err(LowerError::new(
+                "E1305",
+                "a method group has no function of its own",
+            ));
+        }
+    };
+    let mut sig = Signature {
+        this: None,
+        params: Vec::new(),
+        result,
+        is_constructor: false,
+    };
+    for p in params {
+        let ty = concrete(
+            l,
+            &infer
+                .binding_types
+                .get(p.binding)
+                .cloned()
+                .unwrap_or(Ty::Error),
+        );
+        let pass = match p.modifier {
+            Some(RefKind::Out | RefKind::Ref) => Pass::Pointer,
+            _ => Pass::Value,
+        };
+        sig.params.push((ty, pass));
+    }
     Ok(sig)
 }
 
@@ -126,10 +206,27 @@ pub(crate) fn declare(l: &mut Lowering<'_, '_>, instance: &Instance) -> R<FuncId
 fn declare_signature(l: &mut Lowering<'_, '_>, instance: &Instance) -> R<FuncId> {
     let sig = signature(l, instance)?;
     let mut params = Vec::new();
+    // A lambda or local function takes its environment first.
+    if instance.inner.is_some() {
+        params.push(l.env_type(instance)?);
+    }
     if let Some(this) = &sig.this {
         params.push(ir_param(l, this)?);
     }
-    for p in &sig.params {
+    for (i, p) in sig.params.iter().enumerate() {
+        // A `Func` parameter holds the environment of the lambda it is bound to.
+        if crate::closures::is_func(l, &p.0) {
+            let closure = instance
+                .closures
+                .iter()
+                .find(|(k, _)| *k as usize == i)
+                .map(|(_, c)| c.clone())
+                .ok_or_else(|| {
+                    LowerError::new("E1301", "a `Func` parameter without a lambda bound to it")
+                })?;
+            params.push(l.env_type(&closure)?);
+            continue;
+        }
         params.push(ir_param(l, p)?);
     }
     let results = match &sig.result {
@@ -142,7 +239,7 @@ fn declare_signature(l: &mut Lowering<'_, '_>, instance: &Instance) -> R<FuncId>
         f.add_param(entry, t, None);
     }
     let id = l.module.add_function(f);
-    let name = l.function_name(instance.owner.item, &params, id)?;
+    let name = l.function_name(instance, &params, id)?;
     l.module.funcs[id].name = name.into();
     Ok(id)
 }
@@ -277,7 +374,7 @@ impl FnCx<'_, '_, '_> {
 
     /// A front-end type of this body made concrete.
     pub(crate) fn concrete(&self, ty: &Ty) -> Ty {
-        self.subst().ty(ty)
+        self.l.resolve_assoc(&self.subst().ty(ty))
     }
 
     pub(crate) fn binding_ty(&self, b: BindingId) -> Ty {
@@ -292,6 +389,9 @@ impl FnCx<'_, '_, '_> {
     }
 
     fn lower(&mut self, sig: &Signature) -> R<()> {
+        if let Some(inner) = self.instance.inner.clone() {
+            return self.lower_inner(sig, &inner);
+        }
         let params: Vec<Value> = self.f.params().to_vec();
         let mut next = 0;
         if let Some((ty, pass)) = &sig.this {
@@ -315,6 +415,8 @@ impl FnCx<'_, '_, '_> {
         for &b in &bindings {
             match self.body.store.bindings[b].kind {
                 BindingKind::Param(i) => declared.push((i as usize, b)),
+                // A setter's `value` comes after the indexer's parameters.
+                BindingKind::SetterValue => declared.push((sig.params.len().saturating_sub(1), b)),
                 BindingKind::Receiver => {
                     if let Some((local, _)) = self.this {
                         self.locals.insert(b, local);
@@ -356,7 +458,79 @@ impl FnCx<'_, '_, '_> {
                 self.write_var(var, v);
             }
         }
-        match self.body.root {
+        let root = self.body.root;
+        self.lower_root(root)
+    }
+
+    /// A lambda or local function: its environment, then its parameters.
+    fn lower_inner(&mut self, sig: &Signature, inner: &Inner) -> R<()> {
+        let params: Vec<Value> = self.f.params().to_vec();
+        let env = params[0];
+        self.f.set_name(env, Some("env"));
+        let captures = self.l.captures(&self.instance)?;
+        for (k, c) in captures.into_iter().enumerate() {
+            let v = self.op(Op::ExtractField(k as u32), vec![env], None)?;
+            let t = self.f.ty(v);
+            let var = self.ssa.new_var(t, None);
+            self.write_var(var, v);
+            match c {
+                Capture::This => {
+                    let outer = Instance {
+                        inner: None,
+                        ..self.instance.clone()
+                    };
+                    let outer_sig = signature(self.l, &outer)?;
+                    let ty = match (outer_sig.this, outer_sig.is_constructor) {
+                        (Some((t, _)), _) => t,
+                        (None, _) => outer_sig.result.unwrap_or(Ty::Error),
+                    };
+                    self.this = Some((Local::Var(var), ty));
+                }
+                Capture::Binding(b) => {
+                    self.locals.insert(b, Local::Var(var));
+                }
+            }
+        }
+        let (bindings, root): (Vec<(BindingId, Option<RefKind>)>, Option<LambdaBody>) = match inner
+        {
+            Inner::Lambda(e) => match &self.body.store.exprs[*e] {
+                Expr::Lambda { params, body } => (
+                    params.iter().map(|p| (p.binding, p.modifier)).collect(),
+                    Some(*body),
+                ),
+                _ => (Vec::new(), None),
+            },
+            Inner::LocalFn { stmt, .. } => match &self.body.store.stmts[*stmt] {
+                Stmt::LocalFunction(f) => (
+                    f.params.iter().map(|p| (p.binding, p.modifier)).collect(),
+                    f.body,
+                ),
+                _ => (Vec::new(), None),
+            },
+            Inner::Method { .. } => (Vec::new(), None),
+        };
+        for (i, (b, _)) in bindings.into_iter().enumerate() {
+            let Some(&v) = params.get(1 + i) else {
+                continue;
+            };
+            let name = self.body.store.bindings[b].name.to_string();
+            self.f.set_name(v, Some(&name));
+            let local = match sig.params.get(i).map(|p| p.1) {
+                Some(Pass::Pointer) => Local::Ptr(v),
+                _ => {
+                    let t = self.f.ty(v);
+                    let var = self.ssa.new_var(t, Some(&name));
+                    self.write_var(var, v);
+                    Local::Var(var)
+                }
+            };
+            self.locals.insert(b, local);
+        }
+        self.lower_root(root)
+    }
+
+    fn lower_root(&mut self, root: Option<LambdaBody>) -> R<()> {
+        match root {
             Some(LambdaBody::Expr(e)) => {
                 let v = self.expr(e)?;
                 if self.block.is_some() {
@@ -453,6 +627,9 @@ impl FnCx<'_, '_, '_> {
 
     /// [`emit`](Self::emit) for an instruction with one result.
     pub(crate) fn op(&mut self, op: Op, operands: Vec<Value>, explicit: Option<Type>) -> R<Value> {
+        if let Some(v) = self.fold(&op, &operands, explicit)? {
+            return Ok(v);
+        }
         let inst = self.emit(op, operands, explicit)?;
         self.f.insts[inst]
             .results
@@ -582,5 +759,60 @@ impl FnCx<'_, '_, '_> {
             self.f.append_inst(b, inst);
         }
         Ok(())
+    }
+}
+
+impl FnCx<'_, '_, '_> {
+    /// An operation on constants computed now, the way the interpreter computes it; `None`
+    /// when the operation is not a pure one or an operand is not a constant.
+    fn fold(&mut self, op: &Op, operands: &[Value], explicit: Option<Type>) -> R<Option<Value>> {
+        let pure = matches!(
+            op,
+            Op::Binary(_)
+                | Op::Unary(_)
+                | Op::Icmp(_)
+                | Op::Fcmp(_)
+                | Op::Select
+                | Op::Convert(_)
+                | Op::Math(_)
+                | Op::Splat
+                | Op::Extract(_)
+                | Op::Insert(_)
+                | Op::Shuffle(_)
+                | Op::MatMul
+                | Op::Transpose
+                | Op::MatColumn(_)
+                | Op::MatRow(_)
+                | Op::MatExtract(..)
+                | Op::Construct
+                | Op::ExtractField(_)
+                | Op::InsertField(_)
+                | Op::ExtractElem(_)
+                | Op::InsertElem(_)
+        );
+        if !pure || operands.is_empty() {
+            return Ok(None);
+        }
+        let mut vals = Vec::new();
+        for &v in operands {
+            match self.f.values[v].def {
+                marlin_shaderc_ir::ValueDef::Const(c) => vals.push(self.l.const_val(c)?),
+                _ => return Ok(None),
+            }
+        }
+        let types: Vec<Type> = operands.iter().map(|&v| self.f.ty(v)).collect();
+        let Ok(results) = result_types(&mut self.l.module, op, &types, explicit) else {
+            return Ok(None);
+        };
+        let [result] = results[..] else {
+            return Ok(None);
+        };
+        let Ok(val) =
+            marlin_shaderc_ir::evaluate_op(&self.l.module, op, &vals, &types, Some(result))
+        else {
+            return Ok(None);
+        };
+        let c = self.l.val_const(&val, result)?;
+        Ok(Some(self.f.const_value(c, result)))
     }
 }

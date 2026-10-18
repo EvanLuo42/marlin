@@ -302,6 +302,14 @@ impl<'c, 'a, 'b> Rules<'c, 'a, 'b> {
                     None
                 }
             }
+            Root::ConstParam { owner, index } => {
+                let types = cx.get::<ItemTypesQuery>(&owner)?;
+                let name = types
+                    .generics
+                    .get(index as usize)
+                    .map_or(String::new(), |g| g.name.to_string());
+                Some(format!("`{name}`, a constant generic parameter"))
+            }
         };
         if root.is_some() {
             return Ok(root);

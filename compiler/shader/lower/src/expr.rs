@@ -14,6 +14,7 @@ use marlin_shaderc_ir::{
     UnaryOp as IrUn, Value, ValueDef,
 };
 
+use crate::dispatch::Resolved;
 use crate::func::{FnCx, Local, Pass, Term, signature};
 use crate::types::{Num, Shape};
 use crate::{Instance, LowerError, R};
@@ -283,6 +284,27 @@ impl FnCx<'_, '_, '_> {
 
     fn root_value(&mut self, root: &Root, e: ExprId) -> R<(Value, Ty)> {
         Ok(match root {
+            Root::ConstParam { owner, index } => {
+                let types = self.l.cx.get::<ItemTypesQuery>(owner)?;
+                let ty = types
+                    .generics
+                    .get(*index as usize)
+                    .and_then(|g| g.const_ty.clone())
+                    .unwrap_or(Ty::Error);
+                let value = self.subst().konst(&ConstTy::Param {
+                    owner: *owner,
+                    index: *index,
+                });
+                let ConstTy::Value(v) = value else {
+                    return Err(self.error(
+                        "E1307",
+                        "a constant generic parameter without a value here",
+                        Self::loc(e),
+                    ));
+                };
+                let t = self.l.ty(&ty)?;
+                (self.int_const(t, v as i64), ty)
+            }
             Root::Local(b) => {
                 let ty = self.binding_ty(*b);
                 let v = match self.local(*b)? {
@@ -404,13 +426,7 @@ impl FnCx<'_, '_, '_> {
                 let i32_ty = self.l.ty(&self.expr_ty(e))?;
                 (self.int_const(i32_ty, len as i64), self.expr_ty(e))
             }
-            Step::Property(_) => {
-                return Err(LowerError::unsupported(
-                    "a property",
-                    self.owner(),
-                    Self::loc(e),
-                ));
-            }
+            Step::Property(p) => self.property_get(*p, v, ty, e)?,
         })
     }
 
@@ -458,6 +474,13 @@ impl FnCx<'_, '_, '_> {
                 // width for the shuffle.
                 let padded = self.pad_vector(value, n)?;
                 self.op(Op::Shuffle(picks), vec![old, padded], None)
+            }
+            Step::Property(p) if rest.is_empty() => self.property_set(*p, old, ty, value, e),
+            Step::Property(p) => {
+                // `a.P.x = v`: get, change the part, set.
+                let (inner, pty) = self.property_get(*p, old, ty, e)?;
+                let new_inner = self.rebuild(inner, &pty, rest, value, e)?;
+                self.property_set(*p, old, ty, new_inner, e)
             }
             _ => Err(LowerError::unsupported(
                 "this assignment",
@@ -540,6 +563,9 @@ impl FnCx<'_, '_, '_> {
                     self.owner(),
                     Self::loc(e),
                 ));
+            }
+            Root::ConstParam { .. } => {
+                return Err(self.error("E1305", "a constant cannot be assigned", Self::loc(e)));
             }
         };
         let (place, ty) = local;
@@ -735,21 +761,40 @@ impl FnCx<'_, '_, '_> {
         self.op(ir, vec![l, r], None)
     }
 
+    /// The declared operator `e` calls, if it calls one: resolved on the type of its first
+    /// operand, so an interface operator on a scalar or vector is the built-in one.
+    fn user_operator(
+        &mut self,
+        e: ExprId,
+        first: ExprId,
+    ) -> R<Option<(marlin_front_hir_def::ItemId, Subst)>> {
+        let Some(Callee::Item { item, subst }) = self.infer.callees.get(e).cloned() else {
+            return Ok(None);
+        };
+        let subst = self.concrete_subst(&subst);
+        let on = self.final_ty(first);
+        Ok(
+            match self.resolve_callee(item, &subst, Some(&on), Self::loc(e))? {
+                Resolved::Item(item, subst) => Some((item, subst)),
+                Resolved::Builtin => None,
+            },
+        )
+    }
+
     fn binary(&mut self, e: ExprId, op: BinaryOp, lhs: ExprId, rhs: ExprId) -> R<Value> {
-        match self.infer.callees.get(e).cloned() {
-            Some(Callee::Item { item, subst }) => {
-                let (a, b) = (self.value(lhs)?, self.value(rhs)?);
-                self.call_function(
+        let user = self.user_operator(e, lhs)?;
+        let (l, r) = (self.value(lhs)?, self.value(rhs)?);
+        match user {
+            Some((item, subst)) => self
+                .call_function(
                     e,
                     item,
                     &subst,
                     None,
-                    vec![CallArg::Value(a), CallArg::Value(b)],
+                    vec![CallArg::Value(l), CallArg::Value(r)],
                 )?
-                .ok_or_else(|| self.error("E1305", "an operator without a result", Self::loc(e)))
-            }
-            _ => {
-                let (l, r) = (self.value(lhs)?, self.value(rhs)?);
+                .ok_or_else(|| self.error("E1305", "an operator without a result", Self::loc(e))),
+            None => {
                 let (lt, rt) = (self.final_ty(lhs), self.final_ty(rhs));
                 self.builtin_binary(op, (l, &lt), (r, &rt), e)
             }
@@ -812,7 +857,7 @@ impl FnCx<'_, '_, '_> {
     }
 
     fn unary(&mut self, e: ExprId, op: UnaryOp, operand: ExprId) -> R<Value> {
-        if let Some(Callee::Item { item, subst }) = self.infer.callees.get(e).cloned() {
+        if let Some((item, subst)) = self.user_operator(e, operand)? {
             let a = self.value(operand)?;
             return self
                 .call_function(e, item, &subst, None, vec![CallArg::Value(a)])?
@@ -869,8 +914,8 @@ impl FnCx<'_, '_, '_> {
                 self.value(value)?
             }
             Some(op) => {
-                match self.infer.callees.get(e).cloned() {
-                    Some(Callee::Item { item, subst }) => {
+                match self.user_operator(e, target)? {
+                    Some((item, subst)) => {
                         let (a, b) = (self.value(target)?, self.value(value)?);
                         self.call_function(
                             e,
@@ -968,12 +1013,10 @@ impl FnCx<'_, '_, '_> {
     }
 
     fn index_read(&mut self, e: ExprId, base: ExprId, args: &[Arg]) -> R<Value> {
-        if let Some(Callee::Item { .. }) = self.infer.callees.get(e) {
-            return Err(LowerError::unsupported(
-                "an indexer",
-                self.owner(),
-                Self::loc(e),
-            ));
+        if let Some(Callee::Item { item, subst }) = self.infer.callees.get(e).cloned() {
+            let subst = self.concrete_subst(&subst);
+            let b = self.value(base)?;
+            return self.indexer_get(e, b, args, item, &subst);
         }
         let b = self.value(base)?;
         let bty = self.final_ty(base);
@@ -995,12 +1038,11 @@ impl FnCx<'_, '_, '_> {
     }
 
     fn index_write(&mut self, e: ExprId, base: ExprId, args: &[Arg], value: Value) -> R<()> {
-        if let Some(Callee::Item { .. }) = self.infer.callees.get(e) {
-            return Err(LowerError::unsupported(
-                "an indexer",
-                self.owner(),
-                Self::loc(e),
-            ));
+        if let Some(Callee::Item { item, subst }) = self.infer.callees.get(e).cloned() {
+            let subst = self.concrete_subst(&subst);
+            let b = self.value(base)?;
+            let new = self.indexer_set(e, b, args, value, item, &subst)?;
+            return self.assign_place(base, new);
         }
         let b = self.value(base)?;
         let bty = self.final_ty(base);
@@ -1046,17 +1088,13 @@ impl FnCx<'_, '_, '_> {
                 let ty = self.concrete(&ty);
                 self.default_value(&ty, Self::loc(e)).map(Some)
             }
-            Some(Callee::Invoke(_)) => Err(LowerError::unsupported(
-                "calling a `Func`",
-                self.owner(),
-                Self::loc(e),
-            )),
+            Some(Callee::Invoke(b)) => self.invoke(e, b, args),
             _ => Err(self.error("E1305", "a call to nothing", Self::loc(e))),
         }
     }
 
     /// The callee's substitution with this instance's arguments put in.
-    fn concrete_subst(&self, subst: &Subst) -> Subst {
+    pub(crate) fn concrete_subst(&self, subst: &Subst) -> Subst {
         let mut s = subst.clone();
         for (_, args) in &mut s.entries {
             for a in args.iter_mut().flatten() {
@@ -1075,6 +1113,18 @@ impl FnCx<'_, '_, '_> {
         subst: &Subst,
     ) -> R<Option<Value>> {
         let subst = self.concrete_subst(subst);
+        // An interface member: the one the concrete receiver type implements.
+        let on = self.infer.receivers.get(e).map(|t| self.concrete(t));
+        let (item, subst) = match self.resolve_callee(item, &subst, on.as_ref(), Self::loc(e))? {
+            Resolved::Item(i, s) => (i, s),
+            Resolved::Builtin => {
+                return Err(LowerError::unsupported(
+                    "this call on a built-in type",
+                    self.owner(),
+                    Self::loc(e),
+                ));
+            }
+        };
         // Arguments in source order.
         let mut evaluated: Vec<Option<CallArg>> = Vec::new();
         // The receiver first, for instance methods.
@@ -1083,7 +1133,31 @@ impl FnCx<'_, '_, '_> {
         if let Some(op) = types.intrinsic.clone() {
             return self.intrinsic(e, &op, item, &subst, receiver, args);
         }
-        for a in args {
+        // Arguments that go to `Func`/`Action` parameters pass a closure, not a value.
+        let func_args: Vec<bool> = {
+            let slots = self
+                .infer
+                .call_args
+                .get(e)
+                .cloned()
+                .unwrap_or_else(|| (0..args.len() as u32).map(Some).collect());
+            let mut out = vec![false; args.len()];
+            for (p, slot) in slots.iter().enumerate() {
+                if let (Some(a), Some(param)) = (slot, types.params.get(p)) {
+                    let ty = self.l.resolve_assoc(&subst.ty(&param.ty));
+                    if let Some(x) = out.get_mut(*a as usize) {
+                        *x = crate::closures::is_func(self.l, &ty);
+                    }
+                }
+            }
+            out
+        };
+        for (i, a) in args.iter().enumerate() {
+            if func_args[i] {
+                let (closure, env) = self.closure_arg(a.expr)?;
+                evaluated.push(Some(CallArg::Closure(closure, env)));
+                continue;
+            }
             evaluated.push(Some(match a.modifier {
                 Some(RefKind::Out) => CallArg::Out(a.expr),
                 Some(RefKind::Ref) => CallArg::Ref(a.expr, self.value(a.expr)?),
@@ -1144,13 +1218,38 @@ impl FnCx<'_, '_, '_> {
         receiver: Option<Receiver>,
         args: Vec<CallArg>,
     ) -> R<Option<Value>> {
-        let instance = Instance {
-            owner: BodyOwner {
-                item,
-                part: BodyPart::Main,
-            },
-            subst: subst.clone(),
+        let owner = BodyOwner {
+            item,
+            part: BodyPart::Main,
         };
+        Ok(self.call_body(e, owner, subst, receiver, args)?.0)
+    }
+
+    /// Calls a body (a function or an accessor): its result, and, for a receiver passed by
+    /// value to a `this` taken by pointer, the receiver as the call left it.
+    pub(crate) fn call_body(
+        &mut self,
+        e: ExprId,
+        owner: BodyOwner,
+        subst: &Subst,
+        receiver: Option<Receiver>,
+        args: Vec<CallArg>,
+    ) -> R<(Option<Value>, Option<Value>)> {
+        let closures: Vec<(u32, Instance)> = args
+            .iter()
+            .enumerate()
+            .filter_map(|(i, a)| match a {
+                CallArg::Closure(c, _) => Some((i as u32, c.clone())),
+                _ => None,
+            })
+            .collect();
+        let instance = Instance {
+            owner,
+            subst: subst.clone(),
+            closures,
+            inner: None,
+        };
+        let mut changed_receiver = None;
         let sig =
             signature(self.l, &instance).map_err(|err| err.located(self.owner(), Self::loc(e)))?;
         let id = self
@@ -1172,8 +1271,9 @@ impl FnCx<'_, '_, '_> {
                         let var = self.temp_var(t)?;
                         self.emit(Op::Store { aligned: None }, vec![var, v], None)?;
                         operands.push(var);
-                        if let Some(p) = place {
-                            write_back.push((WriteBack::Path(p), var));
+                        match place {
+                            Some(p) => write_back.push((WriteBack::Path(p), var)),
+                            None => changed_receiver = Some(var),
                         }
                     }
                 }
@@ -1189,7 +1289,7 @@ impl FnCx<'_, '_, '_> {
         }
         for (arg, (ty, _)) in args.into_iter().zip(&sig.params) {
             match arg {
-                CallArg::Value(v) => operands.push(v),
+                CallArg::Value(v) | CallArg::Closure(_, v) => operands.push(v),
                 CallArg::Out(x) | CallArg::Ref(x, _) => {
                     let t = self.l.ty(ty)?;
                     let var = self.temp_var(t)?;
@@ -1210,7 +1310,11 @@ impl FnCx<'_, '_, '_> {
                 WriteBack::Path(p) => self.write_path(&p, v, e)?,
             }
         }
-        Ok(result)
+        let changed = match changed_receiver {
+            Some(var) => Some(self.op(Op::Load { aligned: None }, vec![var], None)?),
+            None => None,
+        };
+        Ok((result, changed))
     }
 
     /// A parameter's default (literals for now).
@@ -1351,6 +1455,8 @@ impl FnCx<'_, '_, '_> {
 /// An argument ready to pass.
 pub(crate) enum CallArg {
     Value(Value),
+    /// A lambda for a `Func`/`Action` parameter, and its environment.
+    Closure(Instance, Value),
     /// `out x`: the place written after the call.
     Out(ExprId),
     /// `ref x`: the place, and its value before the call.

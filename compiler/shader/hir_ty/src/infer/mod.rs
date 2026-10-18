@@ -9,6 +9,7 @@
 mod call;
 mod conv;
 mod expr;
+mod group;
 mod member;
 mod ops;
 mod stmt;
@@ -42,6 +43,11 @@ pub enum Root {
     This,
     /// A namespace-level or static field, a constant, an enum member.
     Item(ItemId),
+    /// A constant generic parameter (`N` of `Sum<T, const int N>`).
+    ConstParam {
+        owner: ItemId,
+        index: u32,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -99,6 +105,11 @@ pub struct InferenceResult {
     pub call_args: ArenaMap<Expr, Vec<Option<u32>>>,
     /// What each `.name` member expression reads (also where its receiver has no path).
     pub member_steps: ArenaMap<Expr, Step>,
+    /// For method calls (`r.M()`, `T.M()`): the type the method was looked up on.
+    pub receivers: ArenaMap<Expr, Ty>,
+    /// Functions passed as a `Func` or `Action` (`Integrate(2, Square)`), with their type
+    /// arguments.
+    pub method_groups: ArenaMap<Expr, (ItemId, Subst)>,
     /// What the body produces: a function's result, `void` for constructors and setters,
     /// `None` for initializers.
     pub body_ty: Option<Ty>,

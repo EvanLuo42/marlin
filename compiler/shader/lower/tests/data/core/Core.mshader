@@ -18,7 +18,11 @@ public struct IntrinsicAttribute : IAttribute
 }
 
 public interface IScalar<T> where T : IScalar<T> { }
-public interface IArithmetic<T> where T : IArithmetic<T> { }
+public interface IArithmetic<T> where T : IArithmetic<T>
+{
+    static abstract T operator +(T a, T b);
+    static abstract T operator *(T a, T b);
+}
 
 [Builtin("bool")] public struct Bool : IScalar<Bool> { }
 [Builtin("i32")] public struct Int : IScalar<Int>, IArithmetic<Int> { }

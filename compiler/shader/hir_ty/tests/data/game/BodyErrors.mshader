@@ -13,6 +13,8 @@ void Errors(uint3 id, int n)
     bool b = 1 && true;
     if (id.x) { }
     var lambda = x => x;
+    var wrongGroup = TakesFunc(TwoArgs);
+    var notCalled = TwoArgs;
     var unknown = default;
     var cast = (bool)f;
     var noDot = Dot(1, 2);
@@ -20,3 +22,6 @@ void Errors(uint3 id, int n)
     var noMember = f.Nope;
     return 1;
 }
+
+float TakesFunc(Func<float, float> f) => f(1);
+float TwoArgs(float a, float b) => a;

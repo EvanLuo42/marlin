@@ -1,0 +1,45 @@
+namespace Game;
+
+public struct Box
+{
+    public float Width;
+    public float Area => Width * Width;
+    public float Side
+    {
+        get => Width;
+        set { Width = value; }
+    }
+    public float this[int i]
+    {
+        get => Width * i;
+        set { Width = value / i; }
+    }
+}
+
+public float UseProps(float w)
+{
+    Box b = default;
+    b.Width = w;
+    b.Side = b.Side + 1;
+    return b.Area + b[2];
+}
+
+public float UseIndexerSet()
+{
+    Box b = default;
+    b[2] = 8;
+    return b.Width;
+}
+
+extension(float3 c)
+{
+    public float Sum => c.x + c.y + c.z;
+    public float Scaled(float k) => (c.x + c.y + c.z) * k;
+}
+
+extension<T>(Vector<T, 3> v) where T : IArithmetic<T>
+{
+    public T First => v.x;
+}
+
+public float UseExtensions(float3 v) => v.Sum + v.Scaled(2) + v.First;

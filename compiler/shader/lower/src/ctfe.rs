@@ -93,6 +93,7 @@ impl Lowering<'_, '_> {
             names: HashMap::new(),
             consts: self.consts.clone(),
             evaluating: self.evaluating.iter().copied().chain([item]).collect(),
+            envs: HashMap::new(),
         };
         let f = scratch.function(item)?;
         scratch.run()?;
@@ -235,6 +236,21 @@ impl Lowering<'_, '_> {
             self.module.constant(t, IrConst::Composite(parts))
         } else {
             self.module.constant(t, IrConst::Zero)
+        })
+    }
+}
+
+impl Lowering<'_, '_> {
+    /// A constant of this module as an interpreter value.
+    pub(crate) fn const_val(&self, c: Const) -> R<Val> {
+        let data = &self.module.consts[c];
+        Ok(match &data.value {
+            IrConst::Int(b) | IrConst::Float(b) => Val::Bits(*b),
+            IrConst::Zero | IrConst::Any => Val::zero(&self.module, data.ty)
+                .map_err(|e| LowerError::new("E1306", e.to_string()))?,
+            IrConst::Composite(items) => {
+                Val::Agg(items.iter().map(|&i| self.const_val(i)).collect::<R<_>>()?)
+            }
         })
     }
 }

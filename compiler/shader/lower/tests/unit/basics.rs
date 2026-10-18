@@ -128,10 +128,10 @@ fn what_is_not_lowered_yet_is_a_located_error() {
     let w = world(&["game/Later.mshader"]);
     let snapshot = w.db.snapshot();
     for (path, want) in [
-        ("Game.UsesProperty", "a property is not lowered yet"),
+        ("Game.UsesProperty", "an auto-property is not lowered yet"),
         (
             "Game.Apply",
-            "`Func` and `Action` parameters are not lowered yet",
+            "a `Func` parameter without a lambda bound to it",
         ),
     ] {
         let mut l = Lowering::new(&snapshot, w.game).unwrap();

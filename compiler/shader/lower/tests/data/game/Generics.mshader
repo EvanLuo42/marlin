@@ -1,0 +1,90 @@
+namespace Game;
+
+public T Twice<T>(T x) where T : IArithmetic<T> => x + x;
+
+public int TwiceInt(int x) => Twice(x);
+public float TwiceFloat(float x) => Twice(x);
+public float3 TwiceVec(float3 v) => Twice(v);
+
+public int Sum<const int N>(Vector<int, N> v)
+{
+    int s = 0;
+    foreach (var i in 0..N) s += v[i];
+    return s;
+}
+
+public int SumOf3(int a, int b, int c) => Sum(Vector<int, 3>(a, b, c));
+
+public int Fact<const int N>()
+{
+    if (N <= 1) return 1;
+    return N * Fact<N - 1>();
+}
+
+public int Fact5() => Fact<5>();
+
+public struct Box<T>
+{
+    public T Value;
+    public T Get() => Value;
+}
+
+public float UseBox(float x)
+{
+    Box<float> b = default;
+    b.Value = x;
+    return b.Get() + Box<int> { Value = 2 }.Get();
+}
+
+public interface IShape
+{
+    float Area();
+}
+
+public struct Square : IShape
+{
+    public float Side;
+    public float Area() => Side * Side;
+}
+
+public struct Rect : IShape
+{
+    public float W;
+    public float H;
+    public float Area() => W * H;
+}
+
+public float AreaOf<S>(S s) where S : IShape => s.Area();
+
+public float Areas(float a, float b)
+{
+    Square q = default;
+    q.Side = a;
+    Rect r = default;
+    r.W = a;
+    r.H = b;
+    return AreaOf(q) + AreaOf(r);
+}
+
+public struct Money : IArithmetic<Money>
+{
+    public int Cents;
+    public static Money operator +(Money a, Money b) => Money { Cents = a.Cents + b.Cents };
+    public static Money operator *(Money a, Money b) => Money { Cents = a.Cents * b.Cents };
+}
+
+public int TwiceMoney(int cents) => Twice(Money { Cents = cents }).Cents;
+
+public interface IHas
+{
+    type Item;
+}
+
+public struct HasFloat : IHas
+{
+    public type Item = float;
+}
+
+public M.Item Make<M>() where M : IHas => default;
+
+public float MakeFloat() => Make<HasFloat>() + 1;

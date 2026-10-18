@@ -58,38 +58,50 @@ error[E1110]: a lambda can only be passed to a `Func` or `Action` parameter
 15 |     var lambda = x => x;
    |                  ^^^^^^
 
-error[E1117]: the type of `default` cannot be inferred here; write `default(T)`
-  --> game/BodyErrors.mshader:16:19
+error[E1110]: no overload of `TwoArgs` has the parameters and result of `Func<float, float>`
+  --> game/BodyErrors.mshader:16:32
    |
-16 |     var unknown = default;
+16 |     var wrongGroup = TakesFunc(TwoArgs);
+   |                                ^^^^^^^
+
+error[E1115]: `TwoArgs` is a function; call it
+  --> game/BodyErrors.mshader:17:21
+   |
+17 |     var notCalled = TwoArgs;
+   |                     ^^^^^^^
+
+error[E1117]: the type of `default` cannot be inferred here; write `default(T)`
+  --> game/BodyErrors.mshader:18:19
+   |
+18 |     var unknown = default;
    |                   ^^^^^^^
 
 error[E1108]: cannot convert `float` to `bool`
-  --> game/BodyErrors.mshader:17:16
+  --> game/BodyErrors.mshader:19:16
    |
-17 |     var cast = (bool)f;
+19 |     var cast = (bool)f;
    |                ^^^^^^^
 
 error[E1104]: no overload of `Dot` takes (int, int)
-  --> game/BodyErrors.mshader:18:17
+  --> game/BodyErrors.mshader:20:17
    |
-18 |     var noDot = Dot(1, 2);
+20 |     var noDot = Dot(1, 2);
    |                 ^^^^^^^^^
 
 error[E1107]: this cannot be assigned to
-  --> game/BodyErrors.mshader:19:5
+  --> game/BodyErrors.mshader:21:5
    |
-19 |     3 = n;
+21 |     3 = n;
    |     ^
 
 error[E1111]: `float` has no member `Nope`
-  --> game/BodyErrors.mshader:20:20
+  --> game/BodyErrors.mshader:22:20
    |
-20 |     var noMember = f.Nope;
+22 |     var noMember = f.Nope;
    |                    ^^^^^^
 
 error[E1124]: this function returns nothing
-  --> game/BodyErrors.mshader:21:12
+  --> game/BodyErrors.mshader:23:12
    |
-21 |     return 1;
+23 |     return 1;
    |            ^

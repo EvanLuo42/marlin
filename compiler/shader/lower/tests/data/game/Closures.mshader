@@ -1,0 +1,58 @@
+namespace Game;
+
+public float Integrate(int n, Func<float, float> f)
+{
+    float s = 0;
+    foreach (var i in 0..n) s += f((i + 0.5) / n);
+    return s / n;
+}
+
+// The mean of k * x over [0, 1) is k / 2.
+public float MeanOfScaled(float k) => Integrate(4, x => x * k);
+
+// Forwards its `Func` to another function that takes one.
+public float Twice(Func<float, float> f) => Integrate(2, x => f(x) + f(x));
+public float ForwardsFunc(float k) => Twice(x => k);
+
+public float Square(float x) => x * x;
+public float PassesMethodGroup() => Integrate(2, Square);
+
+public int LocalFunctions(int a)
+{
+    int AddA(int x) => x + a;
+    int Both(int x) => AddA(AddA(x));
+    return Both(1) + AddA(10);
+}
+
+public struct Counter
+{
+    public int Step;
+    public int Add(int x) => Apply(y => y + Step, x);
+    public int AddByName(int x) => Apply(Plus, x);
+    int Plus(int y) => y + Step;
+    int Apply(Func<int, int> f, int x) => f(x);
+}
+
+public int UsesThis(int step)
+{
+    Counter c = default;
+    c.Step = step;
+    return c.Add(5);
+}
+
+public int CapturesByValue()
+{
+    int seen = 1;
+    int got = Map(x => x + seen, 1);
+    seen = 100;
+    return got + Map(x => x + seen, 0);
+}
+
+int Map(Func<int, int> f, int x) => f(x);
+
+public int UsesMethodGroupOfThis(int step)
+{
+    Counter c = default;
+    c.Step = step;
+    return c.AddByName(1);
+}

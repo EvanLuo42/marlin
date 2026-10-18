@@ -57,7 +57,9 @@ pub use display::{display_const, display_ty};
 pub use infer::{
     Callee, InferDiagnostic, InferLoc, InferQuery, InferenceResult, Root, Step, ValuePath,
 };
-pub use item::{AliasTargetQuery, GenericParamTy, ItemTypes, ItemTypesQuery, ParamTy, self_ty};
+pub use item::{
+    AliasTargetQuery, GenericParamTy, ItemTypes, ItemTypesQuery, ParamTy, normalize_assoc, self_ty,
+};
 pub use layout::{FieldLayout, Layout, fields_of, layout_of};
 pub use lower::parse_int;
 pub use subst::Subst;

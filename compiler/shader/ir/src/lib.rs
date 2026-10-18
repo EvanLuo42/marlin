@@ -63,7 +63,9 @@ pub use func::{
     Block, BlockData, FuncId, Function, Inst, InstData, InstIter, Use, Value, ValueData, ValueDef,
 };
 pub use infer::{Existing, Types, result_types, result_types_in, step_type, step_type_in};
-pub use interp::{ExecError, Interpreter, Options, Output, Print, Ptr, Resources, Root, Val};
+pub use interp::{
+    ExecError, Interpreter, Options, Output, Print, Ptr, Resources, Root, Val, evaluate_op,
+};
 pub use module::{
     Binding, Builtin, Const, ConstData, ConstValue, Entry, GlobalData, GlobalId, Interp, Module,
     Stage, StructData,

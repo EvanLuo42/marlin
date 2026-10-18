@@ -12,4 +12,7 @@ static HEAP: MemCap<std::alloc::System> = MemCap::new(std::alloc::System, 1 << 3
 mod support;
 
 mod basics;
+mod closures;
+mod generics;
+mod members;
 mod robustness;

@@ -246,3 +246,15 @@ impl<'m> Interpreter<'m> {
         Ok(out)
     }
 }
+
+/// Evaluates a side-effect-free operation on known values, exactly as the interpreter would:
+/// what constant folding uses, so folded and executed code agree.
+pub fn evaluate_op(
+    m: &Module,
+    op: &crate::op::Op,
+    args: &[Val],
+    arg_types: &[Type],
+    result: Option<Type>,
+) -> Result<Val, ExecError> {
+    eval::eval(m, op, args, arg_types, result)
+}

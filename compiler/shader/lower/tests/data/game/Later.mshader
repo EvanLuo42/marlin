@@ -3,7 +3,7 @@ namespace Game;
 public struct Box
 {
     public float Width;
-    public float Area => Width * Width;
+    public float Area { get; }
 }
 
 public float UsesProperty(Box b) => b.Area;

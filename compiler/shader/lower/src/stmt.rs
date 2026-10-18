@@ -102,6 +102,16 @@ impl FnCx<'_, '_, '_> {
 
     fn if_stmt(&mut self, cond: ExprId, then: StmtId, otherwise: Option<StmtId>) -> R<()> {
         let c = self.value(cond)?;
+        // A constant condition takes one side only (0004 §13.2): this is also what ends
+        // compile-time recursion over constant parameters.
+        if let Some(bits) = self.const_bits(c) {
+            if bits & 1 == 1 {
+                self.stmt(then)?;
+            } else if let Some(o) = otherwise {
+                self.stmt(o)?;
+            }
+            return Ok(());
+        }
         let (tb, merge) = (self.new_block(), self.new_block());
         let eb = match otherwise {
             Some(_) => self.new_block(),

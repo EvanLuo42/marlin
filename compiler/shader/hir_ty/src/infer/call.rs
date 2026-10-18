@@ -191,7 +191,7 @@ impl InferCtx<'_, '_> {
         let mut arg_refs = vec![None; args.len()];
         for (p, slot) in slots.iter().enumerate() {
             if let Some(a) = slot {
-                arg_params[*a] = subst.ty(&params[p].ty);
+                arg_params[*a] = crate::item::normalize_assoc(self.cx, &subst.ty(&params[p].ty))?;
                 arg_refs[*a] = params[p].ref_kind;
             }
         }
@@ -232,7 +232,7 @@ impl InferCtx<'_, '_> {
         target: &Ty,
     ) -> Result<Option<Ty>, Cancelled> {
         let Expr::Lambda { .. } = &self.body.store.exprs[expr] else {
-            return Ok(None);
+            return self.method_group_result_for_inference(expr, target);
         };
         let Some((params, _)) = self.func_signature(target) else {
             return Ok(None);
@@ -293,6 +293,7 @@ impl InferCtx<'_, '_> {
                     | Expr::DeclVar { ty: None, .. }
                     | Expr::DeclTuple(_)
             );
+            let target_typed = target_typed || self.method_group_items(arg.expr)?.is_some();
             let ty = if target_typed {
                 None
             } else {
@@ -385,10 +386,11 @@ impl InferCtx<'_, '_> {
         }
         let types = self.cx.get::<ItemTypesQuery>(&chosen.item)?;
         let kind = self.item_kind(chosen.item)?;
-        let ret = if kind == ItemKind::Constructor {
-            types.ty.clone().map(|t| chosen.subst.ty(&t))
-        } else {
-            types.ty.clone().map(|t| chosen.subst.ty(&t))
+        let _ = kind;
+        // Associated types of the concrete arguments become what they stand for.
+        let ret = match types.ty.clone() {
+            Some(t) => Some(crate::item::normalize_assoc(self.cx, &chosen.subst.ty(&t))?),
+            None => None,
         };
         self.result.call_args.insert(
             call,

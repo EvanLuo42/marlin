@@ -325,3 +325,11 @@ fn resource_kind(r: Resource) -> ResourceKind {
         Resource::AccelerationStructure => ResourceKind::AccelerationStructure,
     }
 }
+
+impl Lowering<'_, '_> {
+    /// `ty` with every associated type of a concrete type replaced by what the type says it is
+    /// (`M.Params` with `M = Rock` becomes `Rock.Params`' target).
+    pub(crate) fn resolve_assoc(&self, ty: &Ty) -> Ty {
+        marlin_shaderc_hir_ty::normalize_assoc(self.cx, ty).unwrap_or_else(|_| ty.clone())
+    }
+}

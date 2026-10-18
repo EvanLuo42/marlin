@@ -21,6 +21,7 @@ public struct Lamp
 }
 
 float Luma(float3 c) => Dot(c, float3(0.2126, 0.7152, 0.0722));
+float Luma1(float x) => x;
 
 T Twice<T>(T v) where T : IArithmetic<T> => v + v;
 
@@ -71,6 +72,7 @@ void Body(uint3 id, Texture2D<float4> tex, Sampler smp, float4x4 mvp)
     uint asUint = r;
     var next = r.Next();
     var integral = Accumulate(64, x => x * 2);
+    var byName = Accumulate(4, Luma1);
     var texel = tex.Sample(smp, float2(0.5, 0.5));
     var texel2 = tex.Sample(smp, xy, lod: 2);
     var cond = i > 0 ? 1.0 : 2.0;

@@ -15,12 +15,24 @@
 //! - Calls to declared functions, `[Intrinsic("op")]` functions as IR operations (0004 §17.2).
 //! - Compile-time evaluation of `const` fields, enum members and field defaults: their
 //!   initializers are lowered and run in the IR interpreter (0006 §11).
+//!
+//! Step 7b: instances.
+//! - Generic functions and types, with type and constant arguments, one IR function or struct
+//!   per instance; compile-time recursion (`Fact<N - 1>`) up to a bound on instances.
+//! - Interface members and operators called on concrete types resolve to the implementing
+//!   member, or to the built-in operator for scalars and vectors (0004 §8.5).
+//! - Properties, indexers and extension members call their accessor bodies.
+//! - Lambdas, local functions and method groups passed to `Func`/`Action` parameters, with
+//!   captures by value in an environment struct (0004 §9.2, 0006 §2).
 
+mod closures;
 mod ctfe;
+mod dispatch;
 mod error;
 mod expr;
 mod func;
 mod intrinsic;
+mod members;
 mod pat;
 mod ssa;
 mod stmt;
@@ -40,11 +52,17 @@ pub use error::LowerError;
 
 pub(crate) type R<T> = Result<T, LowerError>;
 
-/// A function body with concrete arguments for every generic parameter in scope.
+/// A function body with concrete arguments for every generic parameter in scope, and the
+/// lambdas its `Func`/`Action` parameters are bound to (0004 §9.2: one instance per lambda).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct Instance {
     pub owner: BodyOwner,
     pub subst: Subst,
+    /// By parameter index: the lambda or local function instance each `Func`/`Action`
+    /// parameter calls.
+    pub closures: Vec<(u32, Instance)>,
+    /// A lambda or local function inside `owner`'s body, rather than the body itself.
+    pub inner: Option<closures::Inner>,
 }
 
 /// Lowers functions into one module. Functions are declared when first referenced and their
@@ -63,6 +81,8 @@ pub struct Lowering<'a, 'b> {
     pub(crate) consts: HashMap<ItemId, ctfe::ConstValue>,
     /// Constants being evaluated, to report cycles.
     pub(crate) evaluating: Vec<ItemId>,
+    /// The environment struct of each lambda and local function instance.
+    pub(crate) envs: HashMap<Instance, Type>,
 }
 
 impl<'a, 'b> Lowering<'a, 'b> {
@@ -79,6 +99,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
             names: HashMap::new(),
             consts: HashMap::new(),
             evaluating: Vec::new(),
+            envs: HashMap::new(),
         })
     }
 
@@ -96,6 +117,8 @@ impl<'a, 'b> Lowering<'a, 'b> {
                 part: BodyPart::Main,
             },
             subst: Subst::new(),
+            closures: Vec::new(),
+            inner: None,
         })
     }
 
@@ -115,8 +138,17 @@ impl<'a, 'b> Lowering<'a, 'b> {
 
     /// The IR function of an instance, declared (and queued) the first time.
     pub(crate) fn instance(&mut self, instance: Instance) -> R<FuncId> {
+        let instance = self.normalize(instance)?;
         if let Some(&id) = self.funcs.get(&instance) {
             return Ok(id);
+        }
+        if self.funcs.len() >= MAX_INSTANCES {
+            return Err(LowerError::new(
+                "E1307",
+                format!(
+                    "more than {MAX_INSTANCES} function instances: compile-time recursion that does not end?"
+                ),
+            ));
         }
         let id = func::declare(self, &instance)?;
         self.funcs.insert(instance.clone(), id);
@@ -126,12 +158,13 @@ impl<'a, 'b> Lowering<'a, 'b> {
 
     /// A unique function name: the item's path, with the parameter types when overloads share
     /// it.
-    pub(crate) fn function_name(&mut self, item: ItemId, params: &[Type], id: FuncId) -> R<String> {
-        let tree = self.cx.get::<ItemTreeQuery>(&item.file)?;
-        let base = match tree.items[item.local].kind {
-            ItemKind::Constructor => format!("{}.ctor", item_path(self.cx, item)?),
-            _ => item_path(self.cx, item)?.to_string(),
-        };
+    pub(crate) fn function_name(
+        &mut self,
+        instance: &Instance,
+        params: &[Type],
+        id: FuncId,
+    ) -> R<String> {
+        let base = self.instance_base(instance)?;
         let mut name = base.clone();
         if self.names.contains_key(&name) {
             let shown: Vec<String> = params
@@ -147,5 +180,82 @@ impl<'a, 'b> Lowering<'a, 'b> {
         }
         self.names.insert(name.clone(), id);
         Ok(name)
+    }
+
+    /// An instance's name before overloads are told apart: the item's path, its type
+    /// arguments, then the lambda or local function (`Game.Outer<float>.lambda`).
+    pub(crate) fn instance_base(&self, instance: &Instance) -> R<String> {
+        let item = instance.owner.item;
+        let tree = self.cx.get::<ItemTreeQuery>(&item.file)?;
+        let mut base = match tree.items[item.local].kind {
+            ItemKind::Constructor => format!("{}.ctor", item_path(self.cx, item)?),
+            _ => item_path(self.cx, item)?.to_string(),
+        };
+        let args: Vec<String> = instance
+            .subst
+            .entries
+            .iter()
+            .flat_map(|(_, args)| args.iter().flatten())
+            .map(|a| match a {
+                marlin_shaderc_hir_ty::GenericArgTy::Type(t) => self.show(t),
+                marlin_shaderc_hir_ty::GenericArgTy::Const(c) => {
+                    marlin_shaderc_hir_ty::display_const(self.cx, c).unwrap_or_else(|_| "?".into())
+                }
+            })
+            .collect();
+        if !args.is_empty() {
+            base = format!("{base}<{}>", args.join(", "));
+        }
+        if let Some(inner) = &instance.inner {
+            base = format!("{base}.{}", self.inner_name(instance, inner)?);
+        }
+        Ok(base)
+    }
+}
+
+/// More function instances than this in one module means compile-time recursion that does
+/// not end (0004 §6).
+const MAX_INSTANCES: usize = 4096;
+
+impl Lowering<'_, '_> {
+    /// The instance with arguments for exactly the generic parameters in scope of its item
+    /// (its own and those of the types around it), outermost first; an error when one is
+    /// missing.
+    fn normalize(&self, mut instance: Instance) -> R<Instance> {
+        let item = instance.owner.item;
+        let tree = self.cx.get::<ItemTreeQuery>(&item.file)?;
+        let mut chain = Vec::new();
+        let mut at = Some(item.local);
+        while let Some(local) = at {
+            chain.push(ItemId {
+                file: item.file,
+                local,
+            });
+            at = tree.items[local].parent;
+        }
+        chain.reverse();
+        let mut entries = Vec::new();
+        for owner in chain {
+            if tree.items[owner.local].generic_params.is_empty() {
+                continue;
+            }
+            let args = instance
+                .subst
+                .entries
+                .iter()
+                .find(|(o, _)| *o == owner)
+                .map(|(_, a)| a.clone())
+                .filter(|a| a.iter().all(Option::is_some));
+            let Some(args) = args else {
+                let path = item_path(self.cx, owner)?;
+                return Err(LowerError::new(
+                    "E1307",
+                    format!("the generic arguments of `{path}` are not known here"),
+                ));
+            };
+            entries.push((owner, args));
+        }
+        instance.subst = Subst { entries };
+        Ok(instance)
     }
 }

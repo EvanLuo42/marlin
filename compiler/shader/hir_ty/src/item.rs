@@ -361,3 +361,63 @@ fn in_attribute_declaration(
     }
     Ok(false)
 }
+
+/// `ty` with each associated type of a concrete type (`HasFloat.Item`, after `M = HasFloat`)
+/// replaced by what that type declares: an alias's target, or a nested type.
+pub fn normalize_assoc(cx: &Cx<'_>, ty: &Ty) -> Result<Ty, Cancelled> {
+    Ok(match ty {
+        Ty::Assoc { base, name } => {
+            let base = normalize_assoc(cx, base)?;
+            let Ty::Adt { item, args } = &base else {
+                return Ok(Ty::Assoc {
+                    base: base.into(),
+                    name: name.clone(),
+                });
+            };
+            let tree = cx.get::<ItemTreeQuery>(&item.file)?;
+            for &m in &tree.items[item.local].members {
+                let d = &tree.items[m];
+                if d.name.as_ref() != Some(name) {
+                    continue;
+                }
+                let member = ItemId {
+                    file: item.file,
+                    local: m,
+                };
+                if matches!(d.kind, ItemKind::AssocType | ItemKind::TypeAlias) {
+                    if let Some(target) = cx.get::<AliasTargetQuery>(&member)? {
+                        let target = crate::Subst::new().with_args(*item, args).ty(&target);
+                        return normalize_assoc(cx, &target);
+                    }
+                } else if d.kind.is_type() {
+                    return Ok(Ty::adt(member));
+                }
+            }
+            Ty::Assoc {
+                base: base.into(),
+                name: name.clone(),
+            }
+        }
+        Ty::Adt { item, args } => Ty::Adt {
+            item: *item,
+            args: args
+                .iter()
+                .map(|a| match a {
+                    GenericArgTy::Type(t) => normalize_assoc(cx, t).map(GenericArgTy::Type),
+                    c => Ok(c.clone()),
+                })
+                .collect::<Result<_, _>>()?,
+        },
+        Ty::Array { element, len } => Ty::Array {
+            element: normalize_assoc(cx, element)?.into(),
+            len: len.clone(),
+        },
+        Ty::Tuple(items) => Ty::Tuple(
+            items
+                .iter()
+                .map(|t| normalize_assoc(cx, t))
+                .collect::<Result<_, _>>()?,
+        ),
+        _ => ty.clone(),
+    })
+}

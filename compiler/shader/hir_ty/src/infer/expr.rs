@@ -73,7 +73,18 @@ impl InferCtx<'_, '_> {
                     .item(BuiltinKind::String)
                     .map_or(Ty::Error, Ty::adt)
             }
-            Expr::Path(path) => self.path_value(e, &path)?,
+            Expr::Path(path) => match expected {
+                Some(target) if self.func_signature(target).is_some() => {
+                    match self.method_group_items(e)? {
+                        Some(items) => {
+                            let target = target.clone();
+                            self.method_group(e, &items, &target)?
+                        }
+                        None => self.path_value(e, &path)?,
+                    }
+                }
+                _ => self.path_value(e, &path)?,
+            },
             Expr::Type(_) => {
                 self.report(InferLoc::Expr(e), "E1115", "a type is not a value here");
                 Ty::Error
@@ -409,6 +420,29 @@ impl InferCtx<'_, '_> {
         let resolution =
             self.resolver
                 .resolve_in_body(self.cx, &def_path, true, &self.scopes, scope)?;
+        // A constant generic parameter is a value of its type (`N * 2`, `0..N`).
+        if let Resolution::TypeParam { owner, index } = &resolution
+            && def_path.segments.len() == 1
+        {
+            let types = self.cx.get::<ItemTypesQuery>(owner)?;
+            if let Some(ty) = types
+                .generics
+                .get(*index as usize)
+                .and_then(|g| g.const_ty.clone())
+            {
+                self.result.paths.insert(
+                    e,
+                    ValuePath {
+                        root: Root::ConstParam {
+                            owner: *owner,
+                            index: *index,
+                        },
+                        steps: vec![],
+                    },
+                );
+                return Ok(ty);
+            }
+        }
         let (mut ty, mut value, mut statics, start) = match resolution {
             Resolution::Local(b) => {
                 let ty = self.binding_ty(b);
@@ -765,6 +799,7 @@ impl InferCtx<'_, '_> {
         explicit: Option<&[GenericArgTy]>,
         args: &[marlin_front_hir_def::store::Arg],
     ) -> Result<Ty, Cancelled> {
+        self.result.receivers.insert(e, recv.clone());
         match self.lookup_member(recv, name, statics)? {
             Member::Methods(methods) => {
                 let infos = self.arg_infos(args)?;
