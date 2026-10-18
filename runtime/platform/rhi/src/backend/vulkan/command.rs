@@ -100,7 +100,7 @@ impl Drop for CommandPool {
 }
 
 pub(crate) struct CommandList {
-    shared: Arc<Shared>,
+    pub(crate) shared: Arc<Shared>,
     /// The command buffer of the current (or last) recording, from the pool it began with.
     raw: VkCommandBuffer,
     pub(crate) ty: QueueType,
@@ -150,7 +150,7 @@ impl CommandList {
         s.lost.result(r)?;
         self.raw = raw;
         self.ty = pool.ty;
-        self.draw = DrawState::default();
+        self.draw.reset();
         self.query = QueryState::default();
         if self.ty != QueueType::Copy {
             let resources = s.bindless.resources.bind_info();
@@ -271,6 +271,7 @@ impl CommandList {
     }
 
     pub(crate) fn set_compute_pipeline(&mut self, pipeline: &ComputePipeline) {
+        self.draw.compute_pipeline = pipeline.raw();
         // SAFETY: a recording buffer and a live pipeline of this device.
         unsafe {
             (self.shared.fns.vkCmdBindPipeline)(
