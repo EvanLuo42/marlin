@@ -82,7 +82,7 @@ impl Lists<'_> {
 pub(crate) struct RenderPass<'a> {
     pub colors: ArrayVec<ColorAttachment<'a>, MAX_COLOR_ATTACHMENTS>,
     pub depth: Option<DepthAttachment<'a>>,
-    /// The first attachment's size: the default viewport and scissor.
+    /// The first attachment's size, or the declared area: the default viewport and scissor.
     pub size: Option<(u32, u32)>,
     /// Recorded in sub-lists ([`PassContext::parallel`]): no render pass in the pass's own list.
     pub parallel: bool,
@@ -115,9 +115,11 @@ impl<'a> RenderPass<'a> {
             }
             d
         });
+        let area = self.size.filter(|_| colors.is_empty() && depth.is_none());
         list.begin_render_pass(&RenderPassDesc {
             color: &colors,
             depth,
+            area,
         });
         if let Some((w, h)) = self.size {
             list.set_viewport(&Viewport::full(w, h));

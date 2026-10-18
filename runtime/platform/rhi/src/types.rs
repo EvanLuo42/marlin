@@ -1802,6 +1802,10 @@ pub struct RenderPassDesc<'a> {
     pub color: &'a [ColorAttachment<'a>],
     /// Must be in [`Layout::DepthStencilWrite`] (or `DepthStencilRead` for a read-only view).
     pub depth: Option<DepthAttachment<'a>>,
+    /// The render area's width and height: `None` covers the first attachment. A pass without
+    /// attachments (one that writes only through storage views, like a visibility buffer) must
+    /// give it.
+    pub area: Option<(u32, u32)>,
 }
 
 // --- Presentation ---

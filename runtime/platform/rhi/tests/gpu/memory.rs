@@ -337,6 +337,7 @@ fn placed_targets_alias() {
                     stencil_load: LoadOp::DontCare,
                     stencil_store: StoreOp::DontCare,
                 }),
+                area: None,
             });
             list.end_render_pass();
             list.texture_barriers(&[TextureBarrier::new(

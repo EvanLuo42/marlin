@@ -449,6 +449,7 @@ fn cleared_texel(device: &Device, format: Format, color: [f32; 4]) -> Vec<u8> {
                 store: StoreOp::Store,
             }],
             depth: None,
+            area: None,
         });
         list.end_render_pass();
         barrier(
@@ -843,6 +844,7 @@ fn begin(
             stencil_load: clear_stencil.map_or(LoadOp::Load, LoadOp::Clear),
             stencil_store: StoreOp::Store,
         }),
+        area: None,
     });
     let (w, h) = (COLUMNS * COLUMN_WIDTH, COLUMN_HEIGHT);
     list.set_viewport(&Viewport::full(w, h));

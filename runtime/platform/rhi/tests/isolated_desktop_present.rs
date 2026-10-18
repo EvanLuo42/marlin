@@ -68,6 +68,7 @@ fn clear_and_present(device: &Device) {
                 store: StoreOp::Store,
             }],
             depth: None,
+            area: None,
         });
         list.end_render_pass();
         list.texture_barriers(&[TextureBarrier::new(

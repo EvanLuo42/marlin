@@ -196,6 +196,7 @@ fn cleared_depth(
             stencil_load: LoadOp::Clear(stencil),
             stencil_store: StoreOp::Store,
         }),
+        area: None,
     });
     list.end_render_pass();
     list.texture_barriers(&[TextureBarrier::new(

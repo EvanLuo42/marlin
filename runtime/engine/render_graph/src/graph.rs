@@ -149,6 +149,8 @@ pub(crate) struct PassNode<'g, B: Backend> {
     pub side_effect: bool,
     /// A raster pass recording its draws in [`PassContext::parallel`] sub-lists.
     pub parallel: bool,
+    /// A raster pass's render area when it has no attachments ([`PassBuilder::area`]).
+    pub area: Option<(u32, u32)>,
     /// Recording cost hint, microseconds.
     pub cost_us: Option<u32>,
     /// Range into [`RenderGraph::accesses`].
@@ -434,6 +436,7 @@ impl<'g, B: Backend> RenderGraph<'g, B> {
             queue: QueueType::Graphics,
             side_effect: false,
             parallel: false,
+            area: None,
             cost_us: None,
             accesses: start..start,
             colors: ArrayVec::new(),
@@ -705,6 +708,13 @@ impl<'g, B: Backend> PassBuilder<'_, 'g, B> {
     /// opens no render pass, each sub-list opens one.
     pub fn record_in_parallel(&mut self) {
         self.graph.passes[self.pass].parallel = true;
+    }
+
+    /// The render area of a raster pass without attachments, which writes only through storage
+    /// views (a visibility buffer): its viewport and scissor. Ignored when the pass has
+    /// attachments.
+    pub fn area(&mut self, width: u32, height: u32) {
+        self.graph.passes[self.pass].area = Some((width, height));
     }
 
     /// Keeps the pass even when nothing reads what it writes: readbacks, presents, captures.

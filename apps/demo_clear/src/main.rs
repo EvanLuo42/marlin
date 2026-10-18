@@ -164,6 +164,7 @@ fn run() -> Result<(), Failure> {
                 store: StoreOp::Store,
             }],
             depth: None,
+            area: None,
         });
         list.end_render_pass();
         list.texture_barriers(&[TextureBarrier::new(

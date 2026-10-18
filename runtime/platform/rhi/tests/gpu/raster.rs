@@ -373,6 +373,7 @@ fn depth_bounds_discard_pixels_outside_the_range() {
                         stencil_load: LoadOp::DontCare,
                         stencil_store: StoreOp::DontCare,
                     }),
+                    area: None,
                 });
                 list.set_viewport(&Viewport::full(4, 4));
                 list.set_scissor(&Rect {

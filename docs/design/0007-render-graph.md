@@ -587,6 +587,9 @@ R1g 做完时（2026-10-18）定下的细节（§11.2 的第 2 条验收）：
 R1h（GPU Scene，0009 §13）对本文的修正：
 - `ctx.upload_slice` 的起点按 stride 和 `marlin_rhi::STORAGE_ALIGNMENT`（256，Vulkan 允许的 `minStorageBufferOffsetAlignment` 上限）的最小公倍数对齐。之前只按 stride 对齐，元素是 16 字节倍数时碰巧没事；GPU Scene 上传 `u32` 列表后，验证层报了 storage 视图地址不对齐。RHI 的 `create_buffer_view` 现在对 structured 和 raw 视图检查这个对齐，以后同样的错误在创建视图时就返回 `InvalidInput`。
 
+R1j（可见性管线，0009 §13）对本文的补充：
+- 没有附件的 raster pass（只通过 storage 视图写，比如 visbuffer）用 `b.area(width, height)` 给出渲染区域，默认的 viewport 和 scissor 也取它；有附件时忽略。它进拓扑键。RHI 的 `RenderPassDesc` 相应地多了 `area`。
+
 ## 12. 测试
 
 测试放在各 crate 的 `tests/` 里。

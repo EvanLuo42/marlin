@@ -235,6 +235,10 @@ pub(crate) fn begin_render_pass(list: &mut CommandList, desc: &RenderPassDesc<'_
         None => (None, None),
     };
     let extent = match (desc.color.first(), &desc.depth) {
+        _ if desc.area.is_some() => {
+            let (width, height) = desc.area.unwrap_or_default();
+            VkExtent2D { width, height }
+        }
         (Some(c), _) => VkExtent2D {
             width: c.view.raw.width,
             height: c.view.raw.height,

@@ -223,6 +223,7 @@ impl ColumnTarget {
                 store: StoreOp::Store,
             }],
             depth: None,
+            area: None,
         });
         let (w, h) = (COLUMNS * COLUMN_WIDTH, COLUMN_HEIGHT);
         list.set_viewport(&Viewport::full(w, h));
@@ -373,6 +374,7 @@ impl ColorTarget {
                 store: StoreOp::Store,
             }],
             depth: None,
+            area: None,
         });
         list.set_viewport(&Viewport::full(self.size, self.size));
         list.set_scissor(&Rect {

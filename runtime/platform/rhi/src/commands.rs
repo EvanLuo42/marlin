@@ -154,6 +154,10 @@ impl CommandList {
     pub fn begin_render_pass(&mut self, desc: &RenderPassDesc<'_>) {
         self.graphics("a render pass");
         assert!(desc.color.len() <= MAX_COLOR_ATTACHMENTS);
+        assert!(
+            desc.area.is_some() || !desc.color.is_empty() || desc.depth.is_some(),
+            "a render pass without attachments needs an area"
+        );
         Backend::begin_render_pass(&mut self.raw, desc);
     }
 

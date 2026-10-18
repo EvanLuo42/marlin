@@ -1391,12 +1391,14 @@ fn render_pass_of<'a>(
         .first()
         .map(|c| (c.texture, c.mip))
         .or(pass.depth.map(|d| (d.texture, d.mip)));
-    let size = first.map(|(t, mip)| {
-        textures[t as usize]
-            .expect("an attachment")
-            .desc()
-            .mip_size(mip)
-    });
+    let size = first
+        .map(|(t, mip)| {
+            textures[t as usize]
+                .expect("an attachment")
+                .desc()
+                .mip_size(mip)
+        })
+        .or(pass.area);
     RenderPass {
         colors,
         depth,
