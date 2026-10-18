@@ -551,8 +551,20 @@ impl<'m> Writer<'m> {
                         match b {
                             Builtin::InstanceId => self.capability(cap::DrawParameters),
                             Builtin::SampleIndex => self.capability(cap::SampleRateShading),
+                            // A pixel entry's primitive id (DXC's choice for `SV_PrimitiveID` too;
+                            // mesh entries have `MeshShadingEXT`).
+                            Builtin::PrimitiveId if self.stage == Stage::Pixel => {
+                                self.capability(cap::Geometry)
+                            }
                             Builtin::Depth => self.depth = true,
                             _ => {}
+                        }
+                        // A pixel entry's integer inputs are `Flat`, built-ins too.
+                        if self.stage == Stage::Pixel
+                            && space == Space::Input
+                            && matches!(b, Builtin::PrimitiveId | Builtin::SampleIndex)
+                        {
+                            self.decorate(var, decoration::Flat, &[]);
                         }
                     }
                     Binding::Location(l) => self.decorate(var, decoration::Location, &[l]),

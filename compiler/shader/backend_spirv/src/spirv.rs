@@ -91,7 +91,7 @@ table! {
 
 table! {
     capability {
-        Matrix = 0, Shader = 1, Float16 = 9, Float64 = 10, Int64 = 11, Int64Atomics = 12,
+        Matrix = 0, Shader = 1, Geometry = 2, Float16 = 9, Float64 = 10, Int64 = 11, Int64Atomics = 12,
         Int16 = 22, SampleRateShading = 35, SampledCubeArray = 45, ImageMSArray = 48,
         ImageQuery = 50, DerivativeControl = 51,
         StorageImageReadWithoutFormat = 55, StorageImageWriteWithoutFormat = 56, GroupNonUniform = 61, GroupNonUniformVote = 62,

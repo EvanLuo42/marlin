@@ -82,3 +82,8 @@ public void GenericRaise<T>([DispatchThreadId] uint3 id, [Push] in GenericWideAr
     Raise(a.Words, id.x, a.Words[0]);
     a.Vis.AtomicMax((int2)id.xy, a.Words[1]);
 }
+
+/// The primitive a pixel belongs to: an integer built-in input of a pixel entry, which needs the
+/// `Geometry` capability and `Flat` (2026-10-18).
+[Pixel]
+public uint4 Primitive([PrimitiveId] uint id) => uint4(id, 0, 0, 1);

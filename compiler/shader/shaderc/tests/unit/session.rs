@@ -692,3 +692,33 @@ fn differentiation_errors_are_diagnostics() {
         &errors(&s, &e),
     );
 }
+
+/// A pixel entry's `PrimitiveId` declares the `Geometry` capability (what DXC does for
+/// `SV_PrimitiveID`) and is `Flat`, as Vulkan requires of a fragment shader's integer inputs;
+/// the validator checks both (2026-10-18).
+#[test]
+fn a_pixel_entrys_primitive_id_is_flat_and_declares_geometry() {
+    let (sources, targets) = (Memory::new(), default_targets());
+    let s = session(&sources, &targets);
+    let code = s
+        .compile(&request("Game.Primitive", &[]))
+        .unwrap_or_else(|e| panic!("{}", errors(&s, &e)))
+        .code
+        .bytes;
+    external_check(&code, "primitive");
+    let words: Vec<u32> = code
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|w| u32::from_le_bytes(*w))
+        .collect();
+    // OpCapability Geometry; OpDecorate %v BuiltIn PrimitiveId and OpDecorate %v Flat.
+    let has = |ops: &[u32]| words.windows(ops.len()).any(|w| w == ops);
+    assert!(has(&[(2 << 16) | 17, 2]), "OpCapability Geometry");
+    let var = words
+        .windows(4)
+        .find(|w| w[0] == ((4 << 16) | 71) && w[2] == 11 && w[3] == 7)
+        .map(|w| w[1])
+        .expect("a PrimitiveId built-in");
+    assert!(has(&[(3 << 16) | 71, var, 14]), "Flat");
+}

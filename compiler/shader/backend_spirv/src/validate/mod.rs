@@ -794,7 +794,17 @@ impl Validator {
                         mesh && class == sc::Output
                             && matches!(pointee.and_then(|t| self.types.get(t)), Some(Ty::Bool))
                     }
-                    builtin::PrimitiveId => uint(self, pointee, 1),
+                    builtin::PrimitiveId => {
+                        if !self.capabilities.contains(&cap::Geometry)
+                            && !self.capabilities.contains(&cap::MeshShadingEXT)
+                        {
+                            self.error(format!(
+                                "%{id}: its built-in needs the `Geometry` or `MeshShadingEXT` \
+                                 capability"
+                            ));
+                        }
+                        uint(self, pointee, 1)
+                    }
                     builtin::FragCoord => class == sc::Input && float(self, pointee, 4),
                     builtin::FragDepth => class == sc::Output && float(self, pointee, 1),
                     builtin::FrontFacing => {
@@ -842,10 +852,8 @@ impl Validator {
                 continue;
             }
             let has = |v: &Self, d: u32| v.decorated(id, d).is_some();
-            if has(self, decoration::BuiltIn) {
-                continue;
-            }
-            if !has(self, decoration::Location) {
+            let builtin = has(self, decoration::BuiltIn);
+            if !builtin && !has(self, decoration::Location) {
                 self.error(format!("%{id}: a stage input or output has no `Location`"));
             }
             let pointee = match self.types.get(ptr) {
