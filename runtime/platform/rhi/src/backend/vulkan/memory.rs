@@ -100,7 +100,6 @@ pub(crate) enum Dedicated {
 pub(crate) struct Memory {
     shared: Arc<Shared>,
     pub(crate) raw: VkDeviceMemory,
-    pub(crate) size: u64,
     pub(crate) memory_type: u32,
     /// The whole allocation's CPU mapping, for host-visible memory.
     pub(crate) mapped: Option<NonNull<u8>>,
@@ -181,7 +180,6 @@ impl Memory {
         let mut memory = Self {
             shared: shared.clone(),
             raw,
-            size,
             memory_type,
             mapped: None,
             // SAFETY: the caller's chain, which the allocation just accepted.

@@ -179,16 +179,13 @@ pub(crate) struct Properties {
     pub(crate) limits: VkPhysicalDeviceLimits,
     pub(crate) sparse: VkPhysicalDeviceSparseProperties,
     pub(crate) heap: VkPhysicalDeviceDescriptorHeapPropertiesEXT,
-    pub(crate) mesh: VkPhysicalDeviceMeshShaderPropertiesEXT,
     pub(crate) shading_rate: VkPhysicalDeviceFragmentShadingRatePropertiesKHR,
-    pub(crate) conservative: VkPhysicalDeviceConservativeRasterizationPropertiesEXT,
     pub(crate) subgroup_size: u32,
     pub(crate) min_subgroup_size: u32,
     pub(crate) max_subgroup_size: u32,
     pub(crate) pipeline_cache_uuid: [u8; VK_UUID_SIZE],
     pub(crate) vendor_id: u32,
     pub(crate) device_id: u32,
-    pub(crate) driver_version: u32,
 }
 
 /// What every object of a device shares; the `VkDevice` is destroyed when the last goes.
@@ -433,24 +430,17 @@ fn properties(
     ext: &DeviceExtensions,
 ) -> Properties {
     let mut heap = VkPhysicalDeviceDescriptorHeapPropertiesEXT::default();
-    let mut mesh = VkPhysicalDeviceMeshShaderPropertiesEXT::default();
     let mut shading_rate = VkPhysicalDeviceFragmentShadingRatePropertiesKHR::default();
-    let mut conservative = VkPhysicalDeviceConservativeRasterizationPropertiesEXT::default();
     let mut v11 = VkPhysicalDeviceVulkan11Properties::default();
     let mut v13 = VkPhysicalDeviceVulkan13Properties {
         pNext: (&raw mut v11).cast(),
         ..Default::default()
     };
     heap.pNext = (&raw mut v13).cast();
-    mesh.pNext = (&raw mut heap).cast();
-    let mut next: *mut core::ffi::c_void = (&raw mut mesh).cast();
+    let mut next: *mut core::ffi::c_void = (&raw mut heap).cast();
     if ext.fragment_shading_rate {
         shading_rate.pNext = next;
         next = (&raw mut shading_rate).cast();
-    }
-    if ext.conservative_rasterization {
-        conservative.pNext = next;
-        next = (&raw mut conservative).cast();
     }
     let mut props = VkPhysicalDeviceProperties2 {
         pNext: next,
@@ -463,16 +453,13 @@ fn properties(
         limits: p.limits,
         sparse: p.sparseProperties,
         heap,
-        mesh,
         shading_rate,
-        conservative,
         subgroup_size: v11.subgroupSize,
         min_subgroup_size: v13.minSubgroupSize,
         max_subgroup_size: v13.maxSubgroupSize,
         pipeline_cache_uuid: p.pipelineCacheUUID,
         vendor_id: p.vendorID,
         device_id: p.deviceID,
-        driver_version: p.driverVersion,
     }
 }
 
@@ -725,13 +712,9 @@ pub(crate) fn create(instance: &Instance, desc: &DeviceDesc) -> Result<(Device, 
     });
     shared.lost.attach(&shared);
     let queues = Queues {
-        graphics: Queue::new(&shared, QueueType::Graphics, families.graphics),
-        compute: families
-            .compute
-            .map(|f| Queue::new(&shared, QueueType::Compute, f)),
-        copy: families
-            .copy
-            .map(|f| Queue::new(&shared, QueueType::Copy, f)),
+        graphics: Queue::new(&shared, families.graphics),
+        compute: families.compute.map(|f| Queue::new(&shared, f)),
+        copy: families.copy.map(|f| Queue::new(&shared, f)),
     };
     let _ = desc.disable_enhanced_barriers; // one barrier path: synchronization2
     Ok((Device { shared }, queues))

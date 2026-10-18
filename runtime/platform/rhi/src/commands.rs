@@ -102,8 +102,10 @@ impl CommandList {
     }
 
     /// Finishes recording. Reports errors the API detected while recording; a list that failed
-    /// to end cannot be submitted until recorded again.
+    /// to end cannot be submitted until recorded again. `InvalidInput` if the list is not
+    /// recording (never begun, or already ended).
     pub fn end(&mut self) -> Result<()> {
+        crate::api::ensure(self.recording)?;
         Backend::end(&mut self.raw)?;
         self.recording = false;
         Ok(())

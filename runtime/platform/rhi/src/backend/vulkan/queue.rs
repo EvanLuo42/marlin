@@ -11,7 +11,7 @@ use marlin_sync::Mutex;
 use super::device::{Device, Shared};
 use super::ffi::*;
 use super::{error, unsupported};
-use crate::{Fence as PublicFence, FenceWait, QueueType, Result, SubmitDesc};
+use crate::{Fence as PublicFence, FenceWait, Result, SubmitDesc};
 
 /// What `vkQueue*` calls share: the lock they need (queues are externally synchronized) and the
 /// binary semaphores the next submission waits on (swapchain acquires, 0016 §7.1).
@@ -24,7 +24,6 @@ pub(crate) struct Queue {
     shared: Arc<Shared>,
     raw: VkQueue,
     pub(crate) family: u32,
-    pub(crate) ty: QueueType,
     pub(crate) state: Arc<Mutex<QueueState>>,
 }
 
@@ -38,7 +37,6 @@ unsafe impl Sync for Queue {}
 #[derive(Clone)]
 pub(crate) struct QueueHandle {
     pub(crate) raw: VkQueue,
-    pub(crate) family: u32,
     state: Arc<Mutex<QueueState>>,
 }
 
@@ -60,7 +58,7 @@ fn timeout_ns(timeout: Option<Duration>) -> u64 {
 }
 
 impl Queue {
-    pub(crate) fn new(shared: &Arc<Shared>, ty: QueueType, family: u32) -> Self {
+    pub(crate) fn new(shared: &Arc<Shared>, family: u32) -> Self {
         let info = VkDeviceQueueInfo2 {
             queueFamilyIndex: family,
             queueIndex: 0,
@@ -73,7 +71,6 @@ impl Queue {
             shared: shared.clone(),
             raw,
             family,
-            ty,
             state: Arc::new(Mutex::new(QueueState::default())),
         }
     }
@@ -146,7 +143,6 @@ impl Queue {
     pub(crate) fn handle(&self) -> QueueHandle {
         QueueHandle {
             raw: self.raw,
-            family: self.family,
             state: self.state.clone(),
         }
     }

@@ -425,10 +425,6 @@ impl Descriptor {
         self.index
     }
 
-    pub(crate) fn table(&self) -> Table {
-        self.table
-    }
-
     /// Writes a resource descriptor (buffer range, image view, acceleration structure) into
     /// the slot.
     pub(crate) fn write_resource(&self, info: &VkResourceDescriptorInfoEXT) -> Result<()> {

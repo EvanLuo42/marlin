@@ -80,9 +80,7 @@ fn set_priority(device: &Device, objects: &[Pageable<'_>], priority: f32) -> Res
             Pageable::Heap(h) => Some(h.raw.raw()),
             Pageable::Buffer(b) => b.raw.memory().map(|m| m.raw),
             Pageable::AccelerationStructure(a) => a.buffer().raw.memory().map(|m| m.raw),
-            // TEMPORARY: textures' memory is the resource area's (0016 §2); they page at the
-            // default priority until `Texture` exposes it.
-            Pageable::Texture(_) => None,
+            Pageable::Texture(t) => t.raw.memory().map(|m| m.raw),
         };
         if let Some(memory) = memory {
             // SAFETY: live memory of this device (committed resources own theirs; `api.rs`

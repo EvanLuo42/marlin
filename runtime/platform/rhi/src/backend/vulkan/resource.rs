@@ -335,7 +335,6 @@ pub(crate) fn create_buffer_view(
 
 // --- Textures (resource area) ---
 
-
 use alloc::vec::Vec;
 
 use marlin_sync::Mutex;
@@ -963,7 +962,6 @@ pub(crate) struct RenderTargetView {
     pub(crate) format: VkFormat,
     pub(crate) width: u32,
     pub(crate) height: u32,
-    pub(crate) samples: u32,
 }
 
 impl Drop for RenderTargetView {
@@ -978,10 +976,8 @@ impl Drop for RenderTargetView {
 pub(crate) struct DepthStencilView {
     pub(crate) texture: Texture,
     pub(crate) view: VkImageView,
-    pub(crate) format: VkFormat,
     pub(crate) width: u32,
     pub(crate) height: u32,
-    pub(crate) samples: u32,
     /// The format has a stencil plane.
     pub(crate) stencil: bool,
     /// Depth tests without writes, the texture also sampled: rendered in
@@ -1068,12 +1064,16 @@ pub(crate) fn render_target_view(
         format,
         width,
         height,
-        samples: desc.sample_count,
     })
 }
 
+/// A committed texture; `TextureUsage::SHARED` ones get exportable memory.
 pub(crate) fn create_texture(device: &Device, desc: &TextureDesc) -> Result<Texture> {
-    create_texture_with(device, desc, ptr::null(), ptr::null())
+    let external = External::export(&device.shared, desc.usage.contains(TextureUsage::SHARED));
+    let (image_next, memory_next) = external.as_ref().map_or((ptr::null(), ptr::null()), |e| {
+        (e.image_info(), e.memory_info())
+    });
+    create_texture_with(device, desc, image_next, memory_next)
 }
 
 /// A committed texture in its own (dedicated) allocation, of the same memory type for the same
@@ -1204,10 +1204,8 @@ pub(crate) fn create_depth_stencil_view(
     Ok(DepthStencilView {
         texture: texture.raw.clone(),
         view,
-        format,
         width,
         height,
-        samples: t.sample_count,
         stencil: t.format.has_stencil(),
         read_only: desc.read_only,
     })

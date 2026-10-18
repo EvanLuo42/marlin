@@ -7,9 +7,6 @@
 //!
 //! The contract impls below only forward: each function lives in the file of its area (0016 §2).
 
-// TEMPORARY: helpers of areas still being written (0016 §10) are unused until they land.
-#![allow(dead_code)]
-
 mod command;
 mod copy;
 mod descriptor;

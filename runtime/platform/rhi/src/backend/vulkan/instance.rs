@@ -69,7 +69,6 @@ impl InstanceExtensions {
 pub(crate) struct InstanceShared {
     pub(crate) raw: VkInstance,
     pub(crate) fns: InstanceFns,
-    pub(crate) get_instance_proc_addr: PFN_vkGetInstanceProcAddr,
     pub(crate) ext: InstanceExtensions,
     /// `InstanceDesc::crash_diagnostics`: devices record checkpoints and report device faults.
     pub(crate) crash_diagnostics: bool,
@@ -90,12 +89,6 @@ impl InstanceShared {
     /// Validation errors the messenger has counted (0 without validation).
     pub(crate) fn validation_errors(&self) -> u64 {
         self.validation.as_ref().map_or(0, |v| v.errors())
-    }
-
-    /// A device-level function's address through the instance (for debug utils).
-    pub(crate) fn proc_addr(&self, name: &CStr) -> PFN_vkVoidFunction {
-        // SAFETY: a live instance and a NUL-terminated name.
-        unsafe { (self.get_instance_proc_addr)(self.raw, name.as_ptr()) }
     }
 }
 
@@ -298,7 +291,6 @@ impl Instance {
         let shared = Arc::new(InstanceShared {
             raw,
             fns,
-            get_instance_proc_addr: get,
             ext,
             crash_diagnostics: desc.crash_diagnostics,
             messenger,
