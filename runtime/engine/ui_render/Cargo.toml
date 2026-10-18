@@ -16,7 +16,6 @@ marlin-serial.workspace = true
 [dev-dependencies]
 marlin-cook-font.workspace = true
 marlin-gpu-test-support.workspace = true
-marlin-render-graph.workspace = true
 
 [lints]
 workspace = true

@@ -187,6 +187,11 @@ impl UiFrameData {
     pub fn glyph_table(&self) -> &[GlyphRecord] {
         &self.glyphs
     }
+
+    /// The glyph bitmaps the frame adds to the cache's pages.
+    pub fn uploads(&self) -> &[GlyphUpload] {
+        &self.uploads
+    }
 }
 
 /// What [`UiRenderer::add_passes`] declared.

@@ -127,7 +127,7 @@ fn random_commands_bin_like_the_reference() {
                         &RectStyle {
                             fill: color(&mut rng),
                             corners: Corners::all(rng.range_f32(0.0, 12.0)),
-                            stroke: rng.bool().then(|| Stroke {
+                            stroke: rng.bool().then_some(Stroke {
                                 width: 1.5,
                                 color: Color::WHITE,
                             }),
@@ -155,7 +155,6 @@ fn random_commands_bin_like_the_reference() {
                 ),
             }
         }
-        drop(p);
         compare(&mut r, &mut frames, &list, w, h);
     }
     finish(&mut frames, &r);
