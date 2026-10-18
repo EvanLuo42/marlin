@@ -615,12 +615,28 @@ fn pages_hold_every_cluster_within_limits() {
         assert_eq!(clusters, expected);
         assert_eq!(group.error, dag.groups[g].error);
     }
+    let mut splits = 0;
     for (i, record) in packed.page_records.iter().enumerate() {
         let deps = &packed.dependencies[record.first_dependency as usize..]
             [..record.dependency_count as usize];
+        let groups_here: Vec<u32> = (0..record.cluster_count as usize)
+            .map(|k| views[i].cluster(k).group)
+            .collect();
+        let mut split = false;
         for &d in deps {
             assert!(d < packed.pages.len() as u32 && d != i as u32);
+            // A later page only for another part of a group split across pages.
+            if d > i as u32 {
+                split = true;
+                assert!(
+                    packed
+                        .parts
+                        .iter()
+                        .any(|p| p.page == d && groups_here.contains(&p.group))
+                );
+            }
         }
+        splits += usize::from(split);
         // The coarser clusters of this page's groups are on pages it depends on.
         for k in 0..record.cluster_count as usize {
             let g = views[i].cluster(k).group as usize;
@@ -631,6 +647,7 @@ fn pages_hold_every_cluster_within_limits() {
             }
         }
     }
+    assert!(splits > 0, "groups split across pages");
 
     // The hierarchy: every part reached once, spheres and errors enclose what is below.
     let mut reached = vec![0u32; packed.parts.len()];

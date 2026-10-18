@@ -43,7 +43,7 @@ pub struct MeshCooker;
 
 impl Cooker for MeshCooker {
     fn version(&self) -> u32 {
-        1
+        2
     }
 
     fn cook(&self, object: &SourceObject<'_>, ctx: &mut CookContext<'_>) -> Result<Cooked, String> {

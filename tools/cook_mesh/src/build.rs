@@ -4,6 +4,7 @@
 use core::mem::offset_of;
 
 use marlin_render::asset::Mesh;
+use marlin_render::asset::cluster::{ClusterDag, RtLod, RtSection};
 use marlin_render::asset::mesh::{
     CookedMesh, LodSection, MESHLET_MAX_TRIANGLES, MESHLET_MAX_VERTICES, MeshFlags, MeshJoint,
     MeshLod, MeshSection, Meshlet, PageRange, PositionPrecision, encode_tangent_frame, f32_to_f16,
@@ -15,14 +16,19 @@ use crate::import::Geometry;
 use crate::meshlet;
 use crate::optimize;
 use crate::simplify;
+use crate::{dag, page, quantize, rt};
 
-/// What [`build`] made: the payload and one page per LOD.
+/// What [`build`] made: the payload and the bulk blobs: one page per LOD, then with the cluster
+/// DAG its pages and the RT LOD.
 pub struct Built {
     pub payload: Vec<u8>,
     pub pages: Vec<Vec<u8>>,
     /// Triangles per LOD, finest first.
     pub lod_triangles: Vec<usize>,
     pub lod_errors: Vec<f32>,
+    /// Cluster DAG levels and clusters (0 without the DAG).
+    pub dag_levels: u32,
+    pub dag_clusters: usize,
 }
 
 /// A LOD stops the chain when it removes less than this fraction of the previous one's
@@ -61,6 +67,24 @@ fn quantize_influences(inf: &[(u16, f32); 8]) -> ([u16; 4], [u8; 4]) {
     }
     let joints = std::array::from_fn(|i| if q[i] > 0 { top[i].0 } else { 0 });
     (joints, q)
+}
+
+/// Geometry vertex `v` in the LOD attribute layout: tangent frame, f16 UVs, RGBA8 color.
+fn write_attributes(
+    out: &mut Vec<u8>,
+    g: &Geometry,
+    v: usize,
+    uv_sets: usize,
+    colors: Option<&Vec<[f32; 4]>>,
+) {
+    let t = g.tangents[v];
+    out.extend(encode_tangent_frame(g.normals[v], [t[0], t[1], t[2]], t[3]).to_le_bytes());
+    for set in &g.uvs[..uv_sets] {
+        out.extend(set[v].iter().flat_map(|c| f32_to_f16(*c).to_le_bytes()));
+    }
+    if let Some(c) = colors {
+        out.extend(c[v].map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8));
+    }
 }
 
 fn align16(v: &mut Vec<u8>) -> u32 {
@@ -268,17 +292,7 @@ pub fn build(geometry: &Geometry, settings: &Mesh) -> Result<Built, String> {
         });
         let attributes_range = range(&mut page, &|out| {
             for &w in &old_of {
-                let v = source(w as usize);
-                let t = g.tangents[v];
-                out.extend(
-                    encode_tangent_frame(g.normals[v], [t[0], t[1], t[2]], t[3]).to_le_bytes(),
-                );
-                for set in &g.uvs[..uv_sets] {
-                    out.extend(set[v].iter().flat_map(|c| f32_to_f16(*c).to_le_bytes()));
-                }
-                if let Some(c) = colors {
-                    out.extend(c[v].map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8));
-                }
+                write_attributes(out, g, source(w as usize), uv_sets, colors);
             }
         });
         let skin_range = range(&mut page, &|out| {
@@ -366,6 +380,107 @@ pub fn build(geometry: &Geometry, settings: &Mesh) -> Result<Built, String> {
         pages.push(page);
     }
 
+    // The cluster DAG: its pages, then the RT LOD's blob, after the LOD pages.
+    let cluster_dag = if settings.cluster_dag {
+        let normals: Vec<[f32; 3]> = (0..unique).map(|w| g.normals[source(w)]).collect();
+        let tangents: Vec<[f32; 4]> = (0..unique).map(|w| g.tangents[source(w)]).collect();
+        let uvs: Vec<Vec<[f32; 2]>> = g.uvs[..uv_sets]
+            .iter()
+            .map(|set| (0..unique).map(|w| set[source(w)]).collect())
+            .collect();
+        let welded_colors: Option<Vec<[f32; 4]>> =
+            colors.map(|c| (0..unique).map(|w| c[source(w)]).collect());
+        let welded_skin: Option<Vec<([u16; 4], [u8; 4])>> =
+            skinned.then(|| (0..unique).map(|w| skin_q[source(w)]).collect());
+        let dag = dag::build(&dag::Input {
+            positions: &positions,
+            attributes: &attributes,
+            attribute_count,
+            indices: &indices,
+            sections: &g.triangle_sections,
+        });
+        let packed = page::pack(
+            &dag,
+            &quantize::Vertices {
+                positions: &positions,
+                normals: &normals,
+                tangents: &tangents,
+                uvs: &uvs,
+                colors: welded_colors.as_deref(),
+                skin: welded_skin.as_deref(),
+            },
+            if position_float {
+                quantize::Positions::Float
+            } else {
+                quantize::Positions::Quantized { min: lo, scale }
+            },
+        );
+        let lod = rt::build(&dag, indices.len() / 3, settings.rt_fraction, section_count);
+
+        let first_bulk = pages.len() as u32;
+        let mut packed = packed;
+        for p in &mut packed.page_records {
+            p.bulk += first_bulk;
+        }
+        pages.append(&mut packed.pages);
+        let mut blob: Vec<u8> = Vec::new();
+        let range = |blob: &mut Vec<u8>, bytes: Vec<u8>| {
+            let offset = align16(blob);
+            blob.extend_from_slice(&bytes);
+            PageRange {
+                offset,
+                size: bytes.len() as u32,
+            }
+        };
+        let rt_positions = range(
+            &mut blob,
+            lod.vertices
+                .iter()
+                .flat_map(|&w| positions[w as usize])
+                .flat_map(f32::to_le_bytes)
+                .collect(),
+        );
+        let mut rt_attributes = Vec::new();
+        for &w in &lod.vertices {
+            write_attributes(&mut rt_attributes, g, source(w as usize), uv_sets, colors);
+        }
+        let rt_attributes = range(&mut blob, rt_attributes);
+        let rt_skin = range(
+            &mut blob,
+            lod.vertices
+                .iter()
+                .filter(|_| skinned)
+                .flat_map(|&w| {
+                    let (j, wt) = skin_q[source(w as usize)];
+                    j.iter()
+                        .flat_map(|c| c.to_le_bytes())
+                        .chain(wt)
+                        .collect::<Vec<u8>>()
+                })
+                .collect(),
+        );
+        let rt_indices = range(
+            &mut blob,
+            lod.indices.iter().flat_map(|i| i.to_le_bytes()).collect(),
+        );
+        align16(&mut blob);
+        let rt_record = RtLod {
+            bulk: pages.len() as u32,
+            vertex_count: lod.vertices.len() as u32,
+            triangle_count: (lod.indices.len() / 3) as u32,
+            error: lod.error,
+            positions: rt_positions,
+            attributes: rt_attributes,
+            skin: rt_skin,
+            indices: rt_indices,
+            sections: RelSlice::EMPTY,
+        };
+        pages.push(blob);
+        Some((dag, packed, lod, rt_record))
+    } else {
+        None
+    };
+
     // The payload.
     let mut b = CookedBuilder::new();
     let rt_lod = settings
@@ -396,6 +511,7 @@ pub fn build(geometry: &Geometry, settings: &Mesh) -> Result<Built, String> {
         sections: RelSlice::EMPTY,
         lods: RelSlice::EMPTY,
         joints: RelSlice::EMPTY,
+        cluster_dag: RelSlice::EMPTY,
     });
     let err = |e: marlin_serial::cooked::LayoutError| e.to_string();
     let section_records = b.push_slice(&vec![
@@ -465,10 +581,71 @@ pub fn build(geometry: &Geometry, settings: &Mesh) -> Result<Built, String> {
             .map_err(err)?;
         }
     }
+    let mut dag_levels = 0;
+    let mut dag_clusters = 0;
+    if let Some((dag, packed, lod, rt_record)) = &cluster_dag {
+        dag_levels = dag.levels;
+        dag_clusters = dag.clusters.len();
+        let d = b.push_slice(&[ClusterDag {
+            root_page_count: packed.root_page_count,
+            level_count: dag.levels,
+            cluster_count: dag.clusters.len() as u32,
+            source_triangles: (indices.len() / 3) as u32,
+            pages: RelSlice::EMPTY,
+            dependencies: RelSlice::EMPTY,
+            groups: RelSlice::EMPTY,
+            parts: RelSlice::EMPTY,
+            nodes: RelSlice::EMPTY,
+            rt: *rt_record,
+        }]);
+        b.link_slice(
+            root.field(offset_of!(CookedMesh, cluster_dag), |m| &m.cluster_dag),
+            d,
+        )
+        .map_err(err)?;
+        let at = d.at(0);
+        let s = b.push_slice(&packed.page_records);
+        b.link_slice(at.field(offset_of!(ClusterDag, pages), |d| &d.pages), s)
+            .map_err(err)?;
+        let s = b.push_slice(&packed.dependencies);
+        b.link_slice(
+            at.field(offset_of!(ClusterDag, dependencies), |d| &d.dependencies),
+            s,
+        )
+        .map_err(err)?;
+        let s = b.push_slice(&packed.groups);
+        b.link_slice(at.field(offset_of!(ClusterDag, groups), |d| &d.groups), s)
+            .map_err(err)?;
+        let s = b.push_slice(&packed.parts);
+        b.link_slice(at.field(offset_of!(ClusterDag, parts), |d| &d.parts), s)
+            .map_err(err)?;
+        let s = b.push_slice(&packed.nodes);
+        b.link_slice(at.field(offset_of!(ClusterDag, nodes), |d| &d.nodes), s)
+            .map_err(err)?;
+        let sections: Vec<RtSection> = lod
+            .sections
+            .iter()
+            .map(|&(first_index, index_count)| RtSection {
+                first_index,
+                index_count,
+            })
+            .collect();
+        let s = b.push_slice(&sections);
+        b.link_slice(
+            at.field(
+                offset_of!(ClusterDag, rt) + offset_of!(RtLod, sections),
+                |d| &d.rt.sections,
+            ),
+            s,
+        )
+        .map_err(err)?;
+    }
     Ok(Built {
         payload: b.bytes().to_vec(),
         pages,
         lod_triangles: lods.iter().map(|l| l.0.len() / 3).collect(),
         lod_errors: lods.iter().map(|l| l.2).collect(),
+        dag_levels,
+        dag_clusters,
     })
 }

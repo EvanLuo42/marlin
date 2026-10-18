@@ -6,9 +6,9 @@
 //!   of its groups' spheres. Pages fill in that order, so the coarse levels come first (the
 //!   root pages, always resident) and a page holds neighboring groups of one level.
 //! - **Parts**: pages fill completely; a group that does not fit is split, and each piece is a
-//!   part. A page lists as dependencies the other pages of its groups and the pages of the
-//!   clusters its groups were simplified to, which are always earlier pages: streaming loads
-//!   pages coarse to fine and evicts fine to coarse.
+//!   part. A page lists as dependencies the other pages of its groups (a split group streams in
+//!   and out as a whole) and the pages of the clusters its groups were simplified to, which are
+//!   always earlier pages: streaming loads pages coarse to fine and evicts fine to coarse.
 //! - **Hierarchy**: a BVH over the parts of each level (8 children per node, split by the
 //!   longest axis of the sphere centers), the levels' subtrees under one root, coarsest first.
 //!   Each child has a sphere enclosing its groups' spheres and the largest group error below.

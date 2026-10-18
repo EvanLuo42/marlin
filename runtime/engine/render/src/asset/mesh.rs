@@ -12,6 +12,11 @@
 //! | meshlet vertices    | u32 index into the LOD's vertex streams                        |
 //! | meshlet triangles   | 3×u8 indices into the meshlet's vertices                       |
 //! | indices             | the LOD's triangle list (u16 or u32), for BLAS builds and paths without mesh shaders |
+//!
+//! With [`Mesh::cluster_dag`] (the default), the payload also holds a [`ClusterDag`]: its pages
+//! are the bulk blobs after the LOD pages, followed by one blob for its RT LOD (see
+//! [`super::cluster`]). The LOD chain stays until the visibility buffer replaces the forward
+//! renderer.
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -22,6 +27,8 @@ use marlin_math::scalar::{atan2, cos, sin, sqrt};
 pub use marlin_math::scalar::{f16_to_f32, f32_to_f16};
 use marlin_reflect::Reflect;
 use marlin_serial::cooked::{CookedView, LayoutError, Pod, RelSlice};
+
+use super::cluster::{ClusterDag, ClusterDagView, PageLayout};
 
 /// How the LOD chain is generated.
 #[derive(Clone, Copy, PartialEq, Debug, Reflect)]
@@ -85,8 +92,14 @@ pub struct Mesh {
     pub vertex_colors: bool,
     pub precision: PositionPrecision,
     /// The LOD ray tracing builds its BLAS from. `None`: one coarser than the LOD whose error
-    /// reaches a pixel at the typical viewing distance, picked by the cooker.
+    /// reaches a pixel at the typical viewing distance, picked by the cooker. With the cluster
+    /// DAG, ray tracing uses the DAG's RT LOD instead.
     pub rt_lod: Option<u32>,
+    /// Build the cluster DAG (0009 §3): continuous LOD for the visibility buffer, streamed by
+    /// page.
+    pub cluster_dag: bool,
+    /// The share of the source triangles the DAG's RT LOD keeps.
+    pub rt_fraction: f32,
 }
 
 impl Default for Mesh {
@@ -102,6 +115,8 @@ impl Default for Mesh {
             vertex_colors: true,
             precision: PositionPrecision::Quantized,
             rt_lod: None,
+            cluster_dag: true,
+            rt_fraction: 0.25,
         }
     }
 }
@@ -147,9 +162,11 @@ pub struct CookedMesh {
     pub lods: RelSlice<MeshLod>,
     /// The skin's joints, which skin indices refer to (empty without [`MeshFlags::SKIN`]).
     pub joints: RelSlice<MeshJoint>,
+    /// The cluster DAG: one entry, or none when the mesh was cooked without it.
+    pub cluster_dag: RelSlice<ClusterDag>,
 }
 
-// SAFETY: 22 4-byte scalars and three RelSlices: 112 bytes, align 4, no padding.
+// SAFETY: 22 4-byte scalars and four RelSlices: 120 bytes, align 4, no padding.
 unsafe impl Pod for CookedMesh {}
 
 #[derive(Clone, Copy, Debug)]
@@ -277,6 +294,8 @@ pub struct MeshView<'a> {
     pub sections: &'a [MeshSection],
     pub lods: &'a [MeshLod],
     pub joints: &'a [MeshJoint],
+    /// The cluster DAG, checked but for its pages ([`ClusterDagView::page`]).
+    pub cluster_dag: Option<ClusterDagView<'a>>,
 }
 
 impl<'a> MeshView<'a> {
@@ -350,12 +369,29 @@ impl<'a> MeshView<'a> {
                 return Err(MeshError::Malformed);
             }
         }
+        let cluster_dag = match view.slice(&header.cluster_dag)? {
+            [] => None,
+            [dag] => Some(ClusterDagView::new(
+                &view,
+                dag,
+                PageLayout {
+                    uv_sets: header.uv_sets,
+                    position_stride: header.position_stride,
+                    attribute_stride: header.attribute_stride,
+                    skin_stride: header.skin_stride,
+                    mesh_sections: sections.len() as u32,
+                },
+                bulk_sizes,
+            )?),
+            _ => return Err(MeshError::Malformed),
+        };
         Ok(Self {
             view,
             header,
             sections,
             lods,
             joints,
+            cluster_dag,
         })
     }
 

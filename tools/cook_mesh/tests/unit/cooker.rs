@@ -128,6 +128,59 @@ fn check_mesh(unit: &CookedBuffer) {
     }
     assert_eq!(h.flags & MeshFlags::SKIN, 0);
     assert!(mesh.joints.is_empty());
+
+    // The cluster DAG: its pages after the LOD pages, then the RT LOD.
+    let dag = mesh.cluster_dag.expect("the cluster DAG");
+    assert!(dag.header.level_count >= 2);
+    assert_eq!(dag.pages[0].bulk as usize, mesh.lods.len());
+    assert_eq!(
+        dag.header.rt.bulk as usize,
+        mesh.lods.len() + dag.pages.len()
+    );
+    let mut clusters = 0;
+    let mut sections_seen = [false; 2];
+    for (i, record) in dag.pages.iter().enumerate() {
+        let page = dag.page(i, pages[record.bulk as usize]).unwrap();
+        for c in 0..page.header.cluster_count as usize {
+            let r = page.cluster(c);
+            for v in 0..r.vertex_count as usize {
+                let p = page.position(
+                    r.vertex_offset as usize + v,
+                    h.position_offset,
+                    h.position_scale,
+                );
+                let r = ((p[0] - 10.0).powi(2) + p[1] * p[1] + p[2] * p[2]).sqrt();
+                assert!(abs_diff_eq(r, 1.0, 1e-3), "cluster vertex at radius {r}");
+            }
+            for s in 0..r.section_count as usize {
+                sections_seen[page.section(r.section_offset as usize + s) as usize] = true;
+            }
+        }
+        clusters += page.header.cluster_count;
+    }
+    assert_eq!(clusters, dag.header.cluster_count);
+    assert_eq!(sections_seen, [true, true]);
+    let rt = &dag.header.rt;
+    dag.check_rt(pages[rt.bulk as usize]).unwrap();
+    let source = dag.header.source_triangles;
+    assert!(
+        rt.triangle_count >= source / 8 && rt.triangle_count <= source / 2,
+        "RT LOD of {} triangles for {source}",
+        rt.triangle_count
+    );
+    assert_eq!(dag.rt_sections.len(), 2);
+
+    // Damage is refused, never a panic.
+    let mut rng = marlin_math::Rng::new(1);
+    for _ in 0..300 {
+        let mut bad = marlin_serial::cooked::CookedBuffer::copy_from(payload, 16);
+        let bytes = bad.as_mut_slice();
+        for _ in 0..3 {
+            let at = (rng.f32() * bytes.len() as f32) as usize % bytes.len();
+            bytes[at] = (rng.f32() * 256.0) as u8;
+        }
+        let _ = MeshView::new(bytes, &sizes);
+    }
 }
 
 #[test]

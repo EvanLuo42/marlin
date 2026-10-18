@@ -17,7 +17,7 @@
 //! [`quantize_position`]: super::mesh::quantize_position
 //! [`encode_tangent_frame`]: super::mesh::encode_tangent_frame
 
-use marlin_serial::cooked::Pod;
+use marlin_serial::cooked::{CookedView, Pod, RelSlice};
 
 use super::mesh::{
     MeshError, PageRange, VertexAttributes, decode_tangent_frame, dequantize_position,
@@ -193,7 +193,8 @@ pub struct ClusterPage {
     pub bulk: u32,
     pub cluster_count: u32,
     /// The pages that must be resident before this one is used: the other pages of its groups
-    /// and the pages of the clusters its groups were simplified to. Always earlier pages.
+    /// and the pages of the clusters its groups were simplified to (always earlier pages). A
+    /// group split across pages needs all of them, so its pages stream in and out together.
     pub first_dependency: u32,
     pub dependency_count: u32,
 }
@@ -417,5 +418,223 @@ impl<'a> PageView<'a> {
                 core::array::from_fn(|i| u16::from_le_bytes([p[at + i * 2], p[at + i * 2 + 1]]));
             dequantize_position(q, offset, scale)
         }
+    }
+}
+
+/// A mesh section's triangles in the RT LOD's index stream.
+#[derive(Pod, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[repr(C)]
+pub struct RtSection {
+    pub first_index: u32,
+    pub index_count: u32,
+}
+
+/// The RT LOD (0009 §3.1 item 7): a cut of the DAG with about a quarter of the source
+/// triangles, unquantized, for building the BLAS. Its bulk blob holds, each 16-byte aligned:
+/// positions as 3×f32, attributes and skin in the mesh's LOD layout (f16 UVs), and u32 indices
+/// sorted by section.
+#[derive(Pod, Clone, Copy, Debug)]
+#[repr(C)]
+pub struct RtLod {
+    pub bulk: u32,
+    pub vertex_count: u32,
+    pub triangle_count: u32,
+    /// The cut's object-space error threshold.
+    pub error: f32,
+    pub positions: PageRange,
+    pub attributes: PageRange,
+    pub skin: PageRange,
+    pub indices: PageRange,
+    /// One per mesh section.
+    pub sections: RelSlice<RtSection>,
+}
+
+/// A mesh's cluster DAG, in the mesh payload: what stays resident. Pages are bulk blobs.
+#[derive(Pod, Clone, Copy, Debug)]
+#[repr(C)]
+pub struct ClusterDag {
+    /// Pages always resident: the first ones (they hold the root groups).
+    pub root_page_count: u32,
+    pub level_count: u32,
+    pub cluster_count: u32,
+    pub source_triangles: u32,
+    pub pages: RelSlice<ClusterPage>,
+    /// [`ClusterPage::first_dependency`] indexes this.
+    pub dependencies: RelSlice<u32>,
+    pub groups: RelSlice<ClusterGroup>,
+    /// In group order: [`ClusterGroup::first_part`] indexes this.
+    pub parts: RelSlice<GroupPart>,
+    pub nodes: RelSlice<HierarchyNode>,
+    pub rt: RtLod,
+}
+
+/// A checked [`ClusterDag`].
+#[derive(Clone, Copy, Debug)]
+pub struct ClusterDagView<'a> {
+    pub header: &'a ClusterDag,
+    pub pages: &'a [ClusterPage],
+    pub dependencies: &'a [u32],
+    pub groups: &'a [ClusterGroup],
+    pub parts: &'a [GroupPart],
+    pub nodes: &'a [HierarchyNode],
+    pub rt_sections: &'a [RtSection],
+    pub layout: PageLayout,
+}
+
+impl<'a> ClusterDagView<'a> {
+    /// Checks the resident part against itself and the bulk sizes: pages and the RT LOD in
+    /// range, dependencies on other existing pages, every group's parts its own and within their pages,
+    /// the hierarchy a tree whose leaves are parts. Pages are checked by [`page`] once loaded.
+    ///
+    /// [`page`]: ClusterDagView::page
+    pub fn new(
+        view: &CookedView<'a>,
+        dag: &'a ClusterDag,
+        layout: PageLayout,
+        bulk_sizes: &[u64],
+    ) -> Result<Self, MeshError> {
+        let bad = MeshError::Malformed;
+        let pages = view.slice(&dag.pages)?;
+        let dependencies = view.slice(&dag.dependencies)?;
+        let groups = view.slice(&dag.groups)?;
+        let parts = view.slice(&dag.parts)?;
+        let nodes = view.slice(&dag.nodes)?;
+        let rt_sections = view.slice(&dag.rt.sections)?;
+        if pages.is_empty()
+            || dag.root_page_count == 0
+            || dag.root_page_count as usize > pages.len()
+            || nodes.is_empty()
+        {
+            return Err(bad);
+        }
+        for (i, p) in pages.iter().enumerate() {
+            let size = *bulk_sizes.get(p.bulk as usize).ok_or(bad)?;
+            let deps = dependencies
+                .get(p.first_dependency as usize..)
+                .and_then(|d| d.get(..p.dependency_count as usize))
+                .ok_or(bad)?;
+            if size > PAGE_SIZE as u64
+                || deps
+                    .iter()
+                    .any(|&d| d as usize >= pages.len() || d as usize == i)
+            {
+                return Err(bad);
+            }
+        }
+        for (g, group) in groups.iter().enumerate() {
+            let own = parts
+                .get(group.first_part as usize..)
+                .and_then(|p| p.get(..group.part_count as usize))
+                .ok_or(bad)?;
+            if own.is_empty() || own.iter().any(|p| p.group as usize != g) {
+                return Err(bad);
+            }
+        }
+        for p in parts {
+            let page = pages.get(p.page as usize).ok_or(bad)?;
+            if p.group as usize >= groups.len()
+                || p.first_cluster as u64 + p.cluster_count as u64 > page.cluster_count as u64
+            {
+                return Err(bad);
+            }
+        }
+        // A tree: the root unreferenced, every other node referenced at most once, so a
+        // traversal from the root visits each node at most once.
+        let mut referenced = alloc::vec![false; nodes.len()];
+        for node in nodes {
+            for c in &node.children {
+                if c.child == HIERARCHY_NONE {
+                    continue;
+                }
+                if c.child & HIERARCHY_LEAF != 0 {
+                    if (c.child & !HIERARCHY_LEAF) as usize >= parts.len() {
+                        return Err(bad);
+                    }
+                } else {
+                    let n = c.child as usize;
+                    if n == 0 || n >= nodes.len() || referenced[n] {
+                        return Err(bad);
+                    }
+                    referenced[n] = true;
+                }
+            }
+        }
+        // The RT LOD.
+        let rt = &dag.rt;
+        let size = *bulk_sizes.get(rt.bulk as usize).ok_or(bad)?;
+        let fits = |r: &PageRange, len: u64| {
+            r.size as u64 == len && r.offset as u64 + r.size as u64 <= size && r.offset % 16 == 0
+        };
+        let v = rt.vertex_count as u64;
+        if !(fits(&rt.positions, v * 12)
+            && fits(&rt.attributes, v * layout.attribute_stride as u64)
+            && fits(&rt.skin, v * layout.skin_stride as u64)
+            && fits(&rt.indices, rt.triangle_count as u64 * 12))
+            || rt_sections.len() != layout.mesh_sections as usize
+        {
+            return Err(bad);
+        }
+        let mut next = 0u64;
+        for s in rt_sections {
+            if s.first_index as u64 != next || s.index_count % 3 != 0 {
+                return Err(bad);
+            }
+            next += s.index_count as u64;
+        }
+        if next != rt.triangle_count as u64 * 3 {
+            return Err(bad);
+        }
+        Ok(Self {
+            header: dag,
+            pages,
+            dependencies,
+            groups,
+            parts,
+            nodes,
+            rt_sections,
+            layout,
+        })
+    }
+
+    /// The dependencies of page `page`.
+    pub fn page_dependencies(&self, page: usize) -> &'a [u32] {
+        let p = &self.pages[page];
+        // Checked in `new`.
+        &self.dependencies[p.first_dependency as usize..][..p.dependency_count as usize]
+    }
+
+    /// Checks loaded page `page` ([`PageView::new`]) and that its clusters agree with the
+    /// resident part: their count, and groups that exist.
+    pub fn page(&self, page: usize, bytes: &'a [u8]) -> Result<PageView<'a>, MeshError> {
+        let view = PageView::new(bytes, self.layout)?;
+        let groups = self.groups.len() as u32;
+        let ok = view.header.cluster_count == self.pages[page].cluster_count
+            && (0..view.header.cluster_count as usize).all(|i| {
+                let c = view.cluster(i);
+                c.group < groups && (c.source_group < groups || c.source_group == u32::MAX)
+            });
+        if ok {
+            Ok(view)
+        } else {
+            Err(MeshError::Malformed)
+        }
+    }
+
+    /// Checks the RT LOD's blob: every index below its vertex count.
+    pub fn check_rt(&self, blob: &[u8]) -> Result<(), MeshError> {
+        let r = &self.header.rt.indices;
+        let indices = blob
+            .get(r.offset as usize..r.offset as usize + r.size as usize)
+            .ok_or(MeshError::Malformed)?;
+        let count = self.header.rt.vertex_count;
+        if indices
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|i| u32::from_le_bytes(*i) >= count)
+        {
+            return Err(MeshError::Malformed);
+        }
+        Ok(())
     }
 }
