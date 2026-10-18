@@ -302,6 +302,8 @@ pub(crate) fn create_buffer_view(
 
 // --- Textures (resource area) ---
 
+use core::ffi::c_void;
+
 use alloc::vec::Vec;
 
 use marlin_sync::Mutex;
@@ -639,13 +641,15 @@ fn image_usage(shared: &Shared, desc: &TextureDesc) -> VkImageUsageFlags {
     usage
 }
 
-/// Runs `f` with the `VkImageCreateInfo` of `desc` (`flags`: sparse creation flags). Formats
+/// Runs `f` with the `VkImageCreateInfo` of `desc` (`flags`: sparse creation flags; `next`: a
+/// structure chained last, such as the sharing area's external memory info, or null). Formats
 /// with an sRGB twin are mutable between the two (and say so, which keeps their compression);
 /// square 2D textures of 6 layers or more may be viewed as cubes.
 fn with_image_info<R>(
     shared: &Shared,
     desc: &TextureDesc,
     flags: VkImageCreateFlags,
+    next: *const c_void,
     f: impl FnOnce(&VkImageCreateInfo) -> R,
 ) -> R {
     let linear = desc.format.linear();
@@ -655,6 +659,7 @@ fn with_image_info<R>(
         twin.map_or(VK_FORMAT_UNDEFINED, vk_format),
     ];
     let list = VkImageFormatListCreateInfo {
+        pNext: next,
         viewFormatCount: 2,
         pViewFormats: formats.as_ptr(),
         ..Default::default()
@@ -671,7 +676,7 @@ fn with_image_info<R>(
     let info = VkImageCreateInfo {
         pNext: match twin {
             Some(_) => (&raw const list).cast(),
-            None => ptr::null(),
+            None => next,
         },
         flags,
         imageType: match d2 {
@@ -699,9 +704,14 @@ fn with_image_info<R>(
     f(&info)
 }
 
-fn create_image(shared: &Shared, desc: &TextureDesc, flags: VkImageCreateFlags) -> Result<VkImage> {
+fn create_image(
+    shared: &Shared,
+    desc: &TextureDesc,
+    flags: VkImageCreateFlags,
+    next: *const c_void,
+) -> Result<VkImage> {
     let mut raw = 0;
-    let r = with_image_info(shared, desc, flags, |info| {
+    let r = with_image_info(shared, desc, flags, next, |info| {
         // SAFETY: a valid create info chain and out pointer.
         unsafe { (shared.fns.vkCreateImage)(shared.raw, info, ptr::null(), &mut raw) }
     });
@@ -762,12 +772,14 @@ pub(crate) struct TextureInner {
     desc: TextureDesc,
     /// Committed memory, or the heap a placed texture lives in; `None` for sparse and wrapped
     /// textures.
-    _memory: Option<Arc<Memory>>,
+    memory: Option<Arc<Memory>>,
     sparse: Option<SparseImage>,
     /// Destroy `image` on drop (false for images wrapped from other owners).
     owned: bool,
     /// Queued to leave UNDEFINED for GENERAL ([`InternalWork`]).
     initial_layout: bool,
+    /// The attachment view of a `TextureUsage::SHADING_RATE` texture, else 0.
+    shading_rate_view: VkImageView,
 }
 
 // SAFETY: Vulkan images may be used from any thread.
@@ -777,8 +789,12 @@ unsafe impl Sync for TextureInner {}
 
 impl Drop for TextureInner {
     fn drop(&mut self) {
+        let s = &self.shared;
+        if self.shading_rate_view != 0 {
+            // SAFETY: no pending submission uses the view (the public API's contract).
+            unsafe { (s.fns.vkDestroyImageView)(s.raw, self.shading_rate_view, ptr::null()) };
+        }
         if self.owned {
-            let s = &self.shared;
             if self.initial_layout {
                 s.internal.forget(s, self.image);
             }
@@ -817,10 +833,22 @@ impl Texture {
         &self.0.desc
     }
 
+    /// The committed allocation, or the heap of a placed texture; `None` for swapchain, sparse
+    /// and wrapped textures.
+    pub(crate) fn memory(&self) -> Option<&Memory> {
+        self.0.memory.as_deref()
+    }
+
+    /// The view `vkCmdBeginRendering` attaches as the shading-rate image (mip 0, layer 0): 0
+    /// (`VK_NULL_HANDLE`) unless the texture has `TextureUsage::SHADING_RATE`.
+    pub(crate) fn shading_rate_view(&self) -> VkImageView {
+        self.0.shading_rate_view
+    }
+
     /// Wraps an image this backend did not create from a `TextureDesc`: swapchain images
-    /// (swapchain area) and native images (`texture_from_native`, sharing area). `owned`: destroy
-    /// the image on drop. The image is taken to be in `Layout::Common` (GENERAL) or, for swapchain
-    /// images, undefined until their first barrier.
+    /// (swapchain area; the presentation engine hands them over in `Layout::Present`) and native
+    /// images (`texture_from_native`, sharing area; in `Layout::Common`, GENERAL). `owned`:
+    /// destroy the image on drop.
     pub(crate) fn from_image(
         shared: &Arc<Shared>,
         image: VkImage,
@@ -845,15 +873,17 @@ impl Texture {
             aspect: aspect_of(desc.format),
             depth: desc.format.is_depth(),
             desc: *desc,
-            _memory: memory,
+            memory,
             sparse: None,
             owned,
             initial_layout: false,
+            shading_rate_view: 0,
         }))
     }
 
     /// A texture this backend created (and owns), in `Layout::Common` before any work using it
-    /// runs: queued for [`InternalWork`] unless `initial_layout` is false.
+    /// runs: queued for [`InternalWork`] unless `initial_layout` is false. Destroys `image` if it
+    /// fails.
     fn created(
         shared: &Arc<Shared>,
         image: VkImage,
@@ -861,22 +891,35 @@ impl Texture {
         memory: Option<Arc<Memory>>,
         sparse: Option<SparseImage>,
         initial_layout: bool,
-    ) -> Self {
+    ) -> Result<Self> {
         let aspect = aspect_of(desc.format);
+        let mut shading_rate_view = 0;
+        if desc.usage.contains(TextureUsage::SHADING_RATE) && shared.ext.fragment_shading_rate {
+            let usage = VK_IMAGE_USAGE_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR;
+            let format = vk_format(desc.format);
+            match attachment_view(shared, image, format, aspect, 0, 0, usage) {
+                Ok(view) => shading_rate_view = view,
+                Err(e) => {
+                    destroy_image(shared, image);
+                    return Err(e);
+                }
+            }
+        }
         if initial_layout {
             shared.internal.add(image, aspect);
         }
-        Self(Arc::new(TextureInner {
+        Ok(Self(Arc::new(TextureInner {
             shared: shared.clone(),
             image,
             aspect,
             depth: desc.format.is_depth(),
             desc: *desc,
-            _memory: memory,
+            memory,
             sparse,
             owned: true,
             initial_layout,
-        }))
+            shading_rate_view,
+        })))
     }
 }
 
@@ -998,9 +1041,21 @@ pub(crate) fn render_target_view(
 }
 
 pub(crate) fn create_texture(device: &Device, desc: &TextureDesc) -> Result<Texture> {
+    create_texture_with(device, desc, ptr::null(), ptr::null())
+}
+
+/// A committed texture in its own (dedicated) allocation, of the same memory type for the same
+/// `desc` every time. `image_next` is chained last onto the `VkImageCreateInfo` and
+/// `memory_next` onto the allocation (the sharing area's external memory structures), or null.
+pub(crate) fn create_texture_with(
+    device: &Device,
+    desc: &TextureDesc,
+    image_next: *const c_void,
+    memory_next: *const c_void,
+) -> Result<Texture> {
     let s = &device.shared;
     s.lost.check()?;
-    let raw = create_image(s, desc, 0)?;
+    let raw = create_image(s, desc, 0, image_next)?;
     let r = image_requirements(s, raw);
     let Some(memory_type) = s
         .memory
@@ -1009,7 +1064,7 @@ pub(crate) fn create_texture(device: &Device, desc: &TextureDesc) -> Result<Text
         destroy_image(s, raw);
         return Err(unsupported());
     };
-    let memory = match Memory::allocate(s, r.size, memory_type, Dedicated::Image(raw), ptr::null())
+    let memory = match Memory::allocate(s, r.size, memory_type, Dedicated::Image(raw), memory_next)
     {
         Ok(m) => m,
         Err(e) => {
@@ -1021,20 +1076,13 @@ pub(crate) fn create_texture(device: &Device, desc: &TextureDesc) -> Result<Text
         destroy_image(s, raw);
         return Err(e);
     }
-    Ok(Texture::created(
-        s,
-        raw,
-        desc,
-        Some(Arc::new(memory)),
-        None,
-        true,
-    ))
+    Texture::created(s, raw, desc, Some(Arc::new(memory)), None, true)
 }
 
 pub(crate) fn texture_requirements(device: &Device, desc: &TextureDesc) -> MemoryRequirements {
     let s = &device.shared;
     let mut req = VkMemoryRequirements2::default();
-    with_image_info(s, desc, 0, |create| {
+    with_image_info(s, desc, 0, ptr::null(), |create| {
         let info = VkDeviceImageMemoryRequirements {
             pCreateInfo: create,
             ..Default::default()
@@ -1059,7 +1107,7 @@ pub(crate) fn create_placed_texture(
 ) -> Result<Texture> {
     let s = &device.shared;
     s.lost.check()?;
-    let raw = create_image(s, desc, 0)?;
+    let raw = create_image(s, desc, 0, ptr::null())?;
     let memory = &heap.memory;
     if image_requirements(s, raw).memoryTypeBits & (1 << memory.memory_type) == 0 {
         destroy_image(s, raw);
@@ -1069,14 +1117,7 @@ pub(crate) fn create_placed_texture(
         destroy_image(s, raw);
         return Err(e);
     }
-    Ok(Texture::created(
-        s,
-        raw,
-        desc,
-        Some(memory.clone()),
-        None,
-        false,
-    ))
+    Texture::created(s, raw, desc, Some(memory.clone()), None, false)
 }
 
 pub(crate) fn create_render_target_view(
@@ -1309,7 +1350,7 @@ pub(crate) fn create_sparse_texture(device: &Device, desc: &TextureDesc) -> Resu
     let s = &device.shared;
     s.lost.check()?;
     let flags = VK_IMAGE_CREATE_SPARSE_BINDING_BIT | VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT;
-    let raw = create_image(s, desc, flags)?;
+    let raw = create_image(s, desc, flags, ptr::null())?;
     let fail = |e| {
         destroy_image(s, raw);
         Err(e)
@@ -1359,7 +1400,7 @@ pub(crate) fn create_sparse_texture(device: &Device, desc: &TextureDesc) -> Resu
         size: req.size,
         memory_type_bits: req.memoryTypeBits,
     };
-    Ok(Texture::created(s, raw, desc, None, Some(sparse), true))
+    Texture::created(s, raw, desc, None, Some(sparse), true)
 }
 
 pub(crate) fn sparse_texture_layout(texture: &Texture) -> SparseTextureLayout {
