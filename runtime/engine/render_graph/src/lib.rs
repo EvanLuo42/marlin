@@ -18,9 +18,9 @@
 //! [`FrameContext`] runs frames on the RHI: it declares each frame's graph through a closure,
 //! compiles it or takes the cached plan, places the plan's transients in the frame slot's heaps,
 //! records the passes and submits them. A [`StateTable`] carries imported objects' states from
-//! frame to frame. The async compute and copy queues and parallel recording come in the next
-//! records each queue's work in parallel as jobs, times every pass on the GPU, dumps the plan as
-//! JSON and captures resources for debug views (0007 §10).
+//! frame to frame. It spreads passes over the compute and copy queues, records each queue's work
+//! in parallel as jobs, times every pass on the GPU, dumps the plan as JSON and captures
+//! resources for debug views (0007 §4.3, §6, §10).
 //!
 //! The graph is generic over a [`Backend`]: [`Rhi`] in the engine, [`recording::Recording`] in
 //! tests that run without a GPU.
