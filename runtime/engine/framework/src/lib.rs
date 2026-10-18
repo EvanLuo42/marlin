@@ -31,6 +31,6 @@ pub use level::{Component, Level, LevelEntity, LevelEnvironment, TransformDesc};
 pub use offscreen::{OFFSCREEN_FORMAT, Offscreen};
 pub use run::{RunError, run};
 pub use shaders::{
-    ShaderError, lighting_shader, load_default_resolve, load_engine_shaders, material_shaders,
-    post_shaders, resolve_shader, scatter_shader, visibility_shaders,
+    ShaderError, UI_FONT, lighting_shader, load_default_resolve, load_engine_shaders, load_ui_font,
+    material_shaders, post_shaders, resolve_shader, scatter_shader, ui_shaders, visibility_shaders,
 };

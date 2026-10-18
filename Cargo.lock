@@ -615,11 +615,13 @@ dependencies = [
  "marlin-config",
  "marlin-containers",
  "marlin-cook-core",
+ "marlin-cook-font",
  "marlin-cookd",
  "marlin-cooker",
  "marlin-diag",
  "marlin-ecs",
  "marlin-error",
+ "marlin-font",
  "marlin-gpu-test-support",
  "marlin-input",
  "marlin-io",
@@ -637,6 +639,7 @@ dependencies = [
  "marlin-sync",
  "marlin-test-support",
  "marlin-time",
+ "marlin-ui-render",
 ]
 
 [[package]]

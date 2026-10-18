@@ -11,6 +11,10 @@ use marlin_render::{PostShaders, VisibilityShaders};
 use marlin_rhi::ShaderModule;
 use marlin_shader::asset::{LibraryEntry, ShaderLibrary};
 use marlin_shader::reflect::Stage;
+use marlin_ui_render::UiShaders;
+
+use crate::loaders::InPlace;
+use marlin_font::Font;
 
 /// The engine's shader package.
 pub const ENGINE_SHADERS: &str = "Marlin.Engine";
@@ -276,3 +280,63 @@ pub fn resolve_shader(permutation: &ShaderLibrary) -> Result<ShaderModule<'_>, S
 
 /// The material resolve entry every permutation instantiates.
 pub const RESOLVE: &str = "Marlin.Engine.Material.ResolvePixel";
+
+/// The UI renderer's shaders from the engine's library (`Marlin.Engine.Ui`), checked for their
+/// stages and the push constants marlin-ui-render sets.
+pub fn ui_shaders(library: &ShaderLibrary) -> Result<UiShaders<'_>, ShaderError> {
+    use marlin_ui_render::{UI_ENTRIES, UI_PUSH_BYTES};
+    const STAGES: [Stage; 7] = [
+        Stage::Compute,
+        Stage::Compute,
+        Stage::Compute,
+        Stage::Compute,
+        Stage::Compute,
+        Stage::Vertex,
+        Stage::Pixel,
+    ];
+    let get = |i: usize| {
+        let name = UI_ENTRIES[i];
+        let e = library.entry(name).ok_or(ShaderError::MissingEntry(name))?;
+        let mismatch = |problem| ShaderError::Mismatch {
+            entry: name,
+            problem,
+        };
+        if e.reflection.entry.stage != STAGES[i] {
+            return Err(mismatch("not the stage the UI renderer uses it as"));
+        }
+        if e.reflection.push.as_ref().map(|p| p.size) != UI_PUSH_BYTES[i] {
+            return Err(mismatch(
+                "its push constants are not what the UI renderer sets",
+            ));
+        }
+        Ok(module(e))
+    };
+    Ok(UiShaders {
+        glyph_upload: get(0)?,
+        bounds: get(1)?,
+        bin: get(2)?,
+        coarse: get(3)?,
+        fine: get(4)?,
+        encode_vs: get(5)?,
+        encode_ps: get(6)?,
+    })
+}
+
+/// The engine's UI font (`content/engine/fonts/Inter.masset`).
+pub const UI_FONT: &str = "Marlin.Engine.Fonts.Inter";
+
+/// Loads the engine's UI font ([`UI_FONT`]), blocking like [`load_engine_shaders`].
+pub fn load_ui_font(
+    assets: &mut AssetServer,
+    vfs: &Vfs,
+    jobs: Option<&JobSystem>,
+) -> Result<Handle<InPlace<Font>>, AssetError> {
+    let uuid = vfs.named(UI_FONT).ok_or(AssetError::NotFound)?;
+    let handle = assets.load::<InPlace<Font>>(uuid);
+    assets.update_blocking(vfs, jobs);
+    match assets.state(&handle) {
+        LoadState::Loaded => Ok(handle),
+        LoadState::Failed(e) => Err(e),
+        LoadState::Loading => Err(AssetError::NotFound),
+    }
+}

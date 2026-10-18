@@ -13,6 +13,7 @@ marlin-config.workspace = true
 marlin-containers.workspace = true
 marlin-diag.workspace = true
 marlin-ecs.workspace = true
+marlin-font.workspace = true
 marlin-error.workspace = true
 marlin-input.workspace = true
 marlin-io.workspace = true
@@ -27,6 +28,7 @@ marlin-render-graph.workspace = true
 marlin-rhi.workspace = true
 marlin-serial.workspace = true
 marlin-shader.workspace = true
+marlin-ui-render.workspace = true
 marlin-sync.workspace = true
 marlin-time.workspace = true
 
@@ -39,6 +41,8 @@ marlin-cook-core.workspace = true
 marlin-config.workspace = true
 marlin-cookd = { path = "../../../tools/cookd" }
 marlin-cooker.workspace = true
+# The UI font test cooks the engine's Inter.
+marlin-cook-font.workspace = true
 
 [lints]
 workspace = true

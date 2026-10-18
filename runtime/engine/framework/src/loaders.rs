@@ -4,7 +4,7 @@
 //! - `ShaderLibrary` (a cooked `ShaderPackage`): as cooked (marlin-serial); see [`crate::shaders`].
 //! - `Mesh` → [`LoadedMesh`]: the cooked mesh in place, shared with the render side (which uploads
 //!   its LOD pages as they are) through an `Arc`.
-//! - `Texture`, `Skeleton`, `AnimationClip` → [`InPlace`]: the cooked layout checked once and
+//! - `Texture`, `Skeleton`, `AnimationClip`, `Font` → [`InPlace`]: the cooked layout checked once and
 //!   kept in the unit's bytes, read through its view without copying. Texture upload arrives
 //!   with the renderer that samples textures.
 
@@ -15,6 +15,7 @@ use core::ops::Range;
 
 use marlin_anim::asset::{AnimationClip, AnimationView, Skeleton, SkeletonView};
 use marlin_asset::{LoadContext, Loaders, UnitBytes};
+use marlin_font::{Font, FontView};
 use marlin_reflect::type_info;
 use marlin_render::asset::mesh::MeshView;
 use marlin_render::asset::texture::TextureView;
@@ -96,6 +97,12 @@ impl InPlace<Mesh> {
     }
 }
 
+impl InPlace<Font> {
+    pub fn view(&self) -> FontView<'_> {
+        FontView::new(self.payload()).expect("checked at load")
+    }
+}
+
 impl InPlace<Skeleton> {
     pub fn view(&self) -> SkeletonView<'_> {
         SkeletonView::new(self.payload()).expect("checked at load")
@@ -123,6 +130,10 @@ pub fn engine_loaders() -> Loaders {
     l.register::<InPlace<Texture>>(type_info::<Texture>().id.0, |ctx| {
         let sizes: Vec<u64> = ctx.bulk.iter().map(|(_, b)| b.len() as u64).collect();
         TextureView::new(ctx.payload, &sizes).map_err(|e| alloc::format!("{e:?}"))?;
+        Ok(InPlace::new(ctx))
+    });
+    l.register::<InPlace<Font>>(type_info::<Font>().id.0, |ctx| {
+        FontView::new(ctx.payload).map_err(|e| alloc::format!("{e:?}"))?;
         Ok(InPlace::new(ctx))
     });
     l.register::<InPlace<Skeleton>>(type_info::<Skeleton>().id.0, |ctx| {

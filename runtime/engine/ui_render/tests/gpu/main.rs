@@ -39,3 +39,13 @@ pub fn finish(frames: &mut FrameContext, renderer: &UiRenderer) {
     renderer.forget(frames);
     assert_eq!(hardware_device().validation_errors(), 0);
 }
+
+/// The compiled entries take the push constants the renderer sets (what the engine checks when
+/// it loads the cooked library).
+#[test]
+fn entries_take_the_push_constants_the_renderer_sets() {
+    for (name, push) in UI_ENTRIES.iter().zip(marlin_ui_render::UI_PUSH_BYTES) {
+        let reflection = marlin_gpu_test_support::Shader::new(name).reflection();
+        assert_eq!(reflection.push.as_ref().map(|p| p.size), push, "{name}");
+    }
+}
