@@ -423,7 +423,7 @@ bulk        GPU 数据（顶点、纹理 mip），对齐到 4 KiB，直接上传
     - 构建清单（MMAN）同时写入 DDC 与 `.marlin/build/<platform>.manifest`。
   - 资产类型与 cooked 布局都是 marlin-serial cooked 布局（相对指针、就地读取），带校验的 view：
     - `marlin-render::asset::Texture`：用法、格式、立方体、mip、`MaxSize`、alpha 覆盖率。cooked 为 RHI 拷贝布局（行 256、子资源 512 对齐）；mip 尾以上每级一个 bulk（流送页），64 KiB 以下的级别合成常驻的 mip 尾。
-    - `marlin-render::asset::Mesh`：16 位量化位置；法线、切线和副切线符号打包进 32 位（八面体法线 2×10 位，切线角 11 位）；UV 为 f16；蒙皮为 4×u16 加 unorm8 权重，和为 255；每个 LOD 一页，含 meshlet、meshlet 顶点与三角形，以及给 BLAS 和无 mesh shader 路径用的索引。
+    - `marlin-render::asset::Mesh`：16 位量化位置；法线、切线和副切线符号打包进 32 位（八面体法线 2×10 位，切线角 11 位）；UV 为 f16；蒙皮为 4×u16 加 unorm8 权重，和为 255；每个 LOD 一页，含 meshlet、meshlet 顶点与三角形，以及给 BLAS 和无 mesh shader 路径用的索引；另有 cluster DAG：128 KiB 的页、常驻的 group 层级和不量化的 RT LOD（0009 §13）。
     - `marlin-anim::asset::{Skeleton, AnimationClip}`：关节按父先子后排列；动画按固定采样率重采样，常量通道只存一个键，旋转用 48 位 smallest-three 量化（误差 < 0.01°）。网格的蒙皮关节和动画轨道都**按名字**绑定骨骼，所以网格、骨骼和动画可以来自不同文件。
   - `tools/cook_texture`：解码 PNG/TGA/JPEG/EXR/HDR（解析用 `image`），经纬图转立方体（线性空间超采样），然后生成 mip 并做 BC 编码（这两步是 P1 的成果）。
   - `tools/cook_mesh`（glTF 2.0 用 `gltf` 解析；以下算法全部自研）：

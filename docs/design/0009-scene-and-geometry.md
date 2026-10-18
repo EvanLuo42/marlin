@@ -97,7 +97,7 @@ pub struct SceneUpdates {
 3. 重复，直到只剩一个根 group。
 4. 每个 group 记录简化误差和包围球；误差沿 DAG 单调（父 ≥ 子），这样运行时的 LOD 选择在每个 group 上独立判断，结果自然没有裂缝。
 5. 顶点量化：位置按网格包围盒量化，法线和切线用八面体编码，UV 按范围量化。
-6. 按 group 打成**页**（128 KiB）。页是流送和驻留的单位。用 GDeflate 压缩，主机和 DirectStorage 可以硬件解压。
+6. 按 group 打成**页**（128 KiB）。页是流送和驻留的单位。用 GDeflate 压缩，主机和 DirectStorage 可以硬件解压（每页一个 bulk blob，由打包器压缩，§13）。
 7. 另选一个**RT LOD**：DAG 中某一层的切割（默认取三角形数约为原网格 1/4 的那一层），单独存一份不量化的顶点和索引，用来构建 BLAS（§7）。
 
 - cluster 最多 128 个三角形，同时满足 mesh shader 的输出限制和 DXR 2.0 CLAS 的上限（256），以后可以直接把 cluster 交给 CLAS（§10）。
@@ -277,3 +277,43 @@ visbuffer ─▶ "Classify"：每个像素 → 材质 permutation id，统计每
 - §5 的稀疏 Resolve。
 - 材质 section 很多的网格（> 64 个）怎么处理。
 - 植被的远景 LOD（体素或聚合体），见 0013 §5。
+
+## 13. 实现顺序
+
+R2（0008 §8）里只有 cook 侧（§3.1）不依赖 R1 的 GPU Scene 和可见性管线，先做了。每步单独提交、带测试：
+
+| 步 | 内容 |
+|---|---|
+| 1 | 分 cluster（`cook_mesh::cluster`） |
+| 2 | DAG：分组、组内锁边简化、重新分 cluster、误差和包围球（`cook_mesh::dag`） |
+| 3 | 顶点量化（`cook_mesh::quantize`，解码在 `marlin_render::asset::cluster`） |
+| 4 | 打页、页依赖、group 层级（`cook_mesh::page`）；第 6 步的材质 section 表也在这一步，因为它就在三角形的编码里 |
+| 5 | RT LOD（`cook_mesh::rt`） |
+| 7 | cooked 格式：`CookedMesh::cluster_dag`，运行时读取和校验（`MeshView`、`ClusterDagView`、`PageView`） |
+
+R2 的运行时部分（页流送和反馈、两遍 HZB、软光栅、VSM）要等 R1h–R1l 的 GPU Scene、meshlet 可见性管线和 visbuffer。
+
+cook 侧做完时（2026-10-18）定下的细节：
+- **分 cluster** 直接用 meshlet 生成器（§3.1 第 1 条要的空间加法线锥的生长），参数换成 128 顶点、128 三角形。每次调用先把顶点压缩成局部编号，所以高层可以一个 group 一个 group 地重新切。在 2 万三角形的球上平均每个 cluster 112 个三角形。
+- **不产生新顶点**：简化是半边折叠，顶点只会移到已有的顶点上，所以 DAG 的每一层都引用源网格的顶点。页里每个 cluster 有自己的一份顶点（两个 cluster 共用的顶点存两次），这样一个 cluster 只靠自己的页就能解码。
+- **分组**：每层把 cluster 按共享边（按位置）建图，边权是共享边的条数，递归二分到每份不超过 32 个。二分是平衡的（按最终份数分配两边的大小），所以除了顶部剩下不多的几层，group 都在 16–32 个之间。二分先从最长轴一端的 cluster 开始按割边增益贪心生长，不连通时接最近的 cluster，再成对交换改进割边。没有用 METIS（第三方，0003）。
+- **组内简化**：只把这个 group 的三角形交给简化器，group 的外边界就是简化器眼里的开放边界，所以被锁住。目标是一半三角形，误差不设上限。少于 15% 的削减算简化失败，这个 group 成为根（误差 +∞，永远不被替换）；它的邻居继续简化时共享边仍然锁住，所以切割照样水密。材质 section 的边界和 LOD 链一样锁住，section 很多的网格因此会有较多的根（§12 已列为待定）。
+- **误差**：group 的误差 = 它的 cluster 中最大的 LOD 误差 + 这次简化新增的几何误差（距离）。属性误差只参与选择折叠，不计入记录的误差，因为运行时比较的是屏幕上的几何误差。group 的包围球包住它的 cluster 的 LOD 包围球；简化出来的 cluster 的 LOD 误差和 LOD 包围球就是这个 group 的。这样误差和包围球都从子到父单调，任何"投影误差和阈值比较"的单调判据得到的切割都一致、都水密。
+- **选择规则**（写在 `ClusterRecord` 的文档里）：cluster 所在 group 的投影误差超过阈值（这个 group 不够好，要细化），而 cluster 自己的投影 LOD 误差不超过阈值，或者生成它的 group（`source_group`）没有驻留时，画这个 cluster。
+- **量化**：位置按整个网格的包围盒 16 位量化（每顶点 8 字节，`Float` 精度时 3×f32），不按 cluster 量化，这样两个 cluster 共用的位置解码后逐位相同，切割才水密。法线和切线沿用网格已有的 32 位编码：八面体法线 2×10 位，切线是在法线平面里的角度（11 位），比八面体编码切线在同样位数下更准。UV 按每个 cluster、每个 UV 集的范围做 unorm16（`UvRange`），平铺的 UV 也不丢精度。颜色 RGBA8，蒙皮和网格相同。往返误差：位置半步以内，法线 < 0.25°，切线 < 0.5°，UV 半步以内。
+- **页**：最多 128 KiB。页头之后是 16 字节对齐的几段：cluster 记录（64 字节：剔除球、法线锥、LOD 球和误差、所在 group、来源 group、各段的偏移和数量、层级）、每个 cluster 每个 UV 集的范围、位置、属性、蒙皮、三角形、section 表。三角形是一个 u32：三个 cluster 内的顶点下标加上它在 cluster 的 section 表里的下标。section 表每项是 u16 的网格 section 下标。
+- **打页的顺序**：先放根 group，再按层级从粗到细，同一层按 group 包围球中心的 Morton 序。页装满为止，装不下的 group 拆开，每一段是一个 part。常驻的根页是开头到最后一个含根 group 的页。页的依赖是它的 group 的其他页（拆开的 group 整体进出）加上这些 group 简化出的 cluster 所在的页（总在前面），所以流送从粗到细加载、从细到粗淘汰。
+- **压缩不在页里做**：每页是一个单独的 bulk blob，打包器把它放在自己的 chunk 里，用平台的 bulk codec 压缩（0003 P4，blob 起点 4 KiB 对齐）。GDeflate 编码器在 `marlin-compress` 里已经有了，所以页格式不需要压缩标志。要让 GPU 或 DirectStorage 解压，平台的 `bulk-codec` 要设成 `gdeflate`；Windows 现在是 `zstd`，等流送实现时再改。
+- **group 层级**：每一层的 part 建一棵 8 叉 BVH（按球心最长轴连续三次对半分成 8 份），各层的子树按从粗到细挂在根节点（节点 0）下，超过 8 层时再按 8 个一组嵌套。每个子节点记录包住下面所有 group 球的球和下面最大的 group 误差；叶子是 part。
+- **RT LOD**：对象空间的均匀切割，在所有 group 误差里二分查找，取三角形数最接近 `RtFraction`（默认 0.25）乘源三角形数的阈值。均匀切割一定水密。存成不量化的 3×f32 位置、LOD 布局的属性（f16 UV）和蒙皮、按 section 排好的 u32 索引，每个 section 一段。`Mesh::rt_lod` 仍然只管离散 LOD 链。
+- **格式**：`CookedMesh::cluster_dag` 是 0 或 1 个 `ClusterDag`（常驻部分：页表和依赖、group、part、层级节点、RT LOD）。bulk blob 的顺序是离散 LOD 页、DAG 页、RT LOD。`Mesh::cluster_dag` 默认打开。离散 LOD 链先保留，前向渲染器还在用，visbuffer 接手后删掉。网格 cooker 版本升到 2。
+- **校验**：`MeshView::new` 检查常驻部分（页和 RT LOD 在 bulk 范围内、页不超过 128 KiB、依赖、part、层级是以节点 0 为根的树）；页在加载时用 `ClusterDagView::page` 检查一次（各段大小、每个 cluster 的范围、三角形下标、section 下标），RT LOD 用 `check_rt`。随机破坏的页和 payload 只返回错误。
+- 测试（`tools/cook_mesh/tests/unit/clusters.rs`）：cluster 覆盖每个三角形一次且在限制内，法线锥保守；误差和包围球单调，闭合的球收敛到一个根；group 边界在简化前后不变；随机阈值的对象空间切割和随机相机的投影切割都水密；量化往返；页的限制和填充率、每个 cluster 恰好一次且解码回原三角形和 section、part 和依赖、层级的球和误差、只从页解码出来的切割水密、损坏的页被拒绝；RT LOD 约 1/4、水密、section 正确。
+- 规模：32.8 万三角形的球，release 下 1.9 秒，6076 个 cluster、13 层。
+
+运行时（R2 后半）要从这个格式用到的东西：
+- 页池按 128 KiB 切槽；GPU 读页头找各段，cluster 下标 = 槽位基址 + 页内下标（visbuffer 的 25 位 cluster id 是全局可见 cluster 的编号，三角形 7 位正好放下 128）。
+- 页表和每个 group 的驻留位：group 的所有 part 的页都驻留才算驻留，`source_group` 的判断要用。
+- 请求一个页时把依赖一起请求，依赖没到就不用这个页；根页在网格加载时上传并钉住。
+- 遍历从层级节点 0 开始，子节点的 `max_error` 投影后不超过阈值就跳过。
+- BLAS 用 RT LOD 的 blob 构建（§7），按 section 分成几何。
