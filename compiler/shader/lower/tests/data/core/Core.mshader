@@ -1,0 +1,48 @@
+// A small stand-in for the core library: intrinsics name IR operations (0004 §17.2).
+namespace Marlin;
+
+public interface IAttribute { }
+
+[Builtin("string")] public struct String { }
+
+public struct BuiltinAttribute : IAttribute
+{
+    public string Name;
+    public BuiltinAttribute(string name) { Name = name; }
+}
+
+public struct IntrinsicAttribute : IAttribute
+{
+    public string Op;
+    public IntrinsicAttribute(string op) { Op = op; }
+}
+
+public interface IScalar<T> where T : IScalar<T> { }
+public interface IArithmetic<T> where T : IArithmetic<T> { }
+
+[Builtin("bool")] public struct Bool : IScalar<Bool> { }
+[Builtin("i32")] public struct Int : IScalar<Int>, IArithmetic<Int> { }
+[Builtin("u32")] public struct UInt : IScalar<UInt>, IArithmetic<UInt> { }
+[Builtin("f16")] public struct Half : IScalar<Half>, IArithmetic<Half> { }
+[Builtin("f32")] public struct Float : IScalar<Float>, IArithmetic<Float> { }
+[Builtin("f64")] public struct Double : IScalar<Double>, IArithmetic<Double> { }
+
+[Builtin("vector")] public struct Vector<T, const int N> where T : IScalar<T> { }
+[Builtin("matrix")] public struct Matrix<T, const int R, const int C> where T : IScalar<T> { }
+
+public type float2 = Vector<float, 2>;
+public type float3 = Vector<float, 3>;
+public type float4 = Vector<float, 4>;
+public type int2 = Vector<int, 2>;
+public type uint3 = Vector<uint, 3>;
+public type float4x4 = Matrix<float, 4, 4>;
+
+[Builtin("func")] public struct Func<T, TResult> { }
+
+[Intrinsic("dot")]
+public T Dot<T, const int N>(Vector<T, N> a, Vector<T, N> b) where T : IArithmetic<T>;
+
+[Intrinsic("sqrt")] public float Sqrt(float x);
+[Intrinsic("fmax")] public float Max(float a, float b);
+[Intrinsic("smax")] public int Max(int a, int b);
+[Intrinsic("umax")] public uint Max(uint a, uint b);

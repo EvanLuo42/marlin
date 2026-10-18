@@ -13,7 +13,7 @@
 |---|---|---|
 | 形态 | 纯 Rust 库，没有 CLI；shader 专有的 crate 放在 `compiler/shader/`，和 VM 语言共用的前端放在 `compiler/common/`、`compiler/front/`（0015）；主机平台的后端放在 `platforms/<p>/shader/` | 2 |
 | 前端 | 由 query 驱动，增量编译；query 引擎自己写一个精简版 | 2 |
-| IR | 两层：前端产出泛型的 MIR，单态化之后是后端的 SSA IR；两层共用同一套指令（0006） | 3 |
+| IR | 按实例降低：每个实例（函数加具体实参）直接从 HIR 降低成具体的 SSA IR，IR 里没有泛型（0006 §2，2026-10-17 改） | 3 |
 | 后端 IR 控制流 | CFG + SSA；分支和循环的终结指令带 merge 块和 continue 块，结构和 SPIR-V 同构，pass 必须保持 | 3.2 |
 | 后端 | pass 流水线（LLVM 新 pass manager 式），所有后端共用一条流水线；后端只负责最后的 lower 和写出 | 4 |
 | pass 清单 | 保留 DXC 有用的 pass；DXC 因为缺 GPU 语义而关掉的 LICM、unswitch、sinking，补上相应的 analysis 后重新打开；再加上 uniformity、资源别名、值域分析，以及 barrier、groupshared、原子聚合、描述符外提这些 GPU 专用的优化 | 4.4 |
@@ -32,7 +32,7 @@
 
 | 参照 | 借鉴的部分 | 避开的部分 |
 |---|---|---|
-| rustc | query 驱动的前端；泛型 MIR 上的 CTFE；单态化时收集实例；与后端无关的 codegen trait；span、errors、session 等基础设施拆成独立的 crate | 体量（宏展开、借用检查这些我们都不需要） |
+| rustc | query 驱动的前端；单态化时收集实例；与后端无关的 codegen trait；span、errors、session 等基础设施拆成独立的 crate | 体量（宏展开、借用检查这些我们都不需要） |
 | rust-analyzer | 无损 CST 加上能容错的 parser；同一份前端同时服务 IDE 和编译 | — |
 | 参考实现 | 在 IR 上做自动微分；capability 推断；带 merge 标注的结构化 CFG；按 target 参数化的 legalize | 预处理器；泛型直接留在 IR 上（让 pass 变复杂）；以文本 emitter 为主的后端 |
 | DXC | LLVM 风格的 pass 流水线；DXIL 的容器和验证哈希 | SPIR-V 是另一条从 AST 出发的路，两条路的功能长期对不齐 |
@@ -59,8 +59,7 @@ compiler/front/           （0015 §1，包名 marlin-front-*）
 compiler/shader/          （包名 marlin-shaderc-*）
   syntax        shader 的 Dialect（0015 §2.2）和解析入口
   hir_ty        类型检查与推断、泛型与约束求解、capability 推断、const 求值的入口
-  mir           从 HIR 降低到泛型 MIR（与 ir 共用指令集，0006 §2）；直接构造 SSA
-  mono          从 EntryRequest 收集实例，单态化，产出后端 IR
+  lower         从 EntryRequest 收集实例，把每个实例从 HIR 直接降低成 IR（直接构造 SSA）；CTFE（0006 §2、§11）
   ir            指令集、类型、builder、verifier、打印器和解析器；IR 解释器（CTFE 和差分测试都用它）
   opt           pass manager 和各个 pass
   target        target 描述（capability、布局规则、资源模型、支持的操作）
@@ -76,20 +75,17 @@ platforms/<p>/shader/  主机平台的后端（在 cook 平台 cfg 下通过 #[p
 
 依赖方向：
 - `common` ← `front` ← `shader`（0015 §1）；
-- `syntax` → `hir_def` → `hir_ty` → `mir` → `mono` → `ir`，每一层都只依赖它前面的层；`opt` 只依赖 `ir` 和 `target`；
+- `syntax` → `hir_def` → `hir_ty` → `lower`，每一层都只依赖它前面的层；`lower` 还依赖 `ir`；`opt` 只依赖 `ir` 和 `target`；
 - 每个后端只依赖 `ir`、`target` 和 `reflect`；
 - `marlin-shaderc` 把上面这些组装起来。
 
 ## 3. IR
 
-### 3.1 两层
+### 3.1 按实例降低
 
-| 层 | 特点 | 上面做的事 |
-|---|---|---|
-| **MIR** | 前端的产物：泛型的、按函数做 query 的。指令集和后端 IR 相同，但类型里可以有类型参数、关联类型投影和还没求值的 const 表达式，接口调用也还没解析（0006 §2） | 热重载时只重算改动了的函数；作为单态化的输入 |
-| **IR** | 单态化之后的 SSA；类型都是具体的；按入口组织成 module | 自动微分、uniformity 和 NonUniform 分析、legalize、所有优化 |
-
-- 单态化（`mono`）从 `EntryRequest` 出发，收集所有用到的实例，包括泛型函数、`Func` 参数和 lambda（0004 §9.2）。
+- `lower` 从 `EntryRequest` 出发，收集所有用到的实例，包括泛型函数、`Func` 参数和 lambda（0004 §9.2）。每个实例直接降低成具体的 SSA IR，按入口组织成 module（0006 §2；2026-10-17 改，原来是"泛型 MIR + 单态化"两层）。
+- 每个实例是一个 query，热重载时只重算改动了的函数的实例。
+- IR 上做的事：自动微分、uniformity 和 NonUniform 分析、legalize、所有优化。
 - 编译期递归在单态化时展开，运行时递归在这里报错（0004 §6）。
 
 ### 3.2 后端 IR 的控制流
@@ -163,7 +159,7 @@ DXC **故意关掉**了以下几项：
 
 | # | pass | 来源 | 说明 |
 |---|---|---|---|
-| 0.1 | 单态化 | — | MIR 本身就是 SSA：HIR 降低到 MIR 时，用 Braun 等人的"简单高效的 SSA 构造"直接构造，局部变量不经过 alloca + mem2reg 绕一圈。这一步把 MIR 拷贝一份、代入类型实参、解析接口调用、求出 const 表达式的值（0006 §2、§11） |
+| 0.1 | 按实例降低 | — | 每个实例从 HIR 直接降低成 SSA：用 Braun 等人的"简单高效的 SSA 构造"，局部变量不经过 alloca + mem2reg 绕一圈；降低时代入类型实参、解析接口调用、求出 const 表达式的值（0006 §2、§11） |
 | 0.2 | 除零检查插入 | 新增 | 0004 §9.6：除数不是常量时，插入 `d == 0 ? 0 : n / d`。放在优化之前，值域分析可以把多余的检查消掉 |
 | 0.3 | 自动微分 | 新增（参考实现） | 前向模式：对 `ForwardDiff` 的调用点生成导数函数；对 `Derivatives.Seed` 出发的数据流，生成 x、y 两个方向的切向量（0004 §15.3）。只为确实用到的导数生成代码。反向模式以后在这里加。放在优化之前，生成的导数代码可以和原代码一起被优化 |
 | 0.4 | `Debug.*` 删除或降低 | 新增 | Shipping 构建删除；Development 构建降低成写调试 buffer（0004 §12.5） |
@@ -427,7 +423,7 @@ public const ClosureInfo Flatten<M>() where M : IMaterial { ... }
 | 4 | `front/hir_def`：4a 是 item tree、def map、名字解析；4b 是函数体降低成 HIR 和局部作用域 | 包内跨文件、跨 namespace 的名字都能解析 |
 | 5 | `shader/hir_ty`：5a 是类型表示、内建类型（0004 §17）、类型降低和签名；5b 是表达式的类型推断、转换、运算符、成员查找和重载；5c 是其余语义检查（确定赋值、readonly、穷尽、接口实现、入口和系统值、push 大小、scalar 布局、capability 推断和 `[Requires]` 契约） | 0004 的类型规则都有诊断 |
 | 6 | `ir`：6a 是类型、指令集、函数和 module 的表示、builder、文本打印和解析；6b 是 verifier；6c 是解释器 | 文本能往返；解释器能跑 compute 语义 |
-| 7 | `mir`、`mono`：降低到 SSA、单态化、CTFE | 泛型入口能单态化，`const` 函数能在编译期求值 |
+| 7 | `lower`：7a 是非泛型代码降低成 SSA IR（表达式、语句、结构化控制流、调用、内建函数）；7b 是实例收集、泛型、接口调用、lambda；7c 是入口（系统值、push、资源）和 CTFE（const 字段、静态参数、数组长度、const 函数） | 泛型入口能单态化，`const` 函数能在编译期求值 |
 | 8 | `opt`：pass manager 和阶段 0–1 的 pass，再加上 SCCP、DCE、CFG 化简 | 第一个 compute 入口能走完整条流水线 |
 | 9 | `target`、`backend_spirv`（SPIR-V 1.6 / Vulkan 1.3 环境）、`reflect`、facade `Session`、真正的核心库 | 第一个 compute shader 生成的 SPIR-V 通过我们自己的验证器；Vulkan RHI 就绪后在真实 GPU 上跑通 |
 | 10 | 补齐其余 stage、资源、wave、纹理；cook 和 build.rs 接入；随 Vulkan RHI 替换占位 shader | |

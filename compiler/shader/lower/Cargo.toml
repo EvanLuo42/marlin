@@ -1,0 +1,22 @@
+[package]
+name = "marlin-shaderc-lower"
+description = "Marlin shader compiler: lowering type-checked HIR to IR, one instance at a time, with compile-time evaluation."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+marlin-front-hir-def.workspace = true
+marlin-lang-arena.workspace = true
+marlin-lang-diag.workspace = true
+marlin-lang-query.workspace = true
+marlin-shaderc-hir-ty.workspace = true
+marlin-shaderc-ir.workspace = true
+
+[dev-dependencies]
+marlin-lang-span.workspace = true
+marlin-math.workspace = true
+marlin-test-support.workspace = true
+
+[lints]
+workspace = true

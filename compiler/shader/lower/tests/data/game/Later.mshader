@@ -1,0 +1,11 @@
+namespace Game;
+
+public struct Box
+{
+    public float Width;
+    public float Area => Width * Width;
+}
+
+public float UsesProperty(Box b) => b.Area;
+
+public float Apply(Func<float, float> f) => f(1);

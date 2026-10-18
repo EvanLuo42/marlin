@@ -11,7 +11,7 @@
 | 维度 | 决定 | § |
 |---|---|---|
 | 目标 | 同一套 IR 能 lower 到 DXIL、SPIR-V、Metal AIR，以及主机平台（Switch 2、PS5、Xbox）的格式 | 1 |
-| 两层 | MIR 和后端 IR 共用同一套指令；MIR 允许泛型类型和未解析的接口调用，单态化之后就是后端 IR | 2 |
+| 降低 | 按实例降低：每个实例（函数加具体的类型和 const 实参）直接从 HIR 降低成具体的 IR，IR 里没有泛型 | 2 |
 | SSA | 用块参数表示汇合点的值，不用 phi；写出时机械地转成 phi | 4 |
 | 控制流 | 结构化的终结指令：`cond_br`/`switch` 带 merge，`loop` 带 header、continue 和 merge | 5 |
 | convergence | 由结构隐式决定，lane 在 merge 块汇合；convergent 操作带标记，不能移到控制依赖不同的位置 | 5.3 |
@@ -45,17 +45,16 @@
 
 IR 停在比这几个 target 都高一层的位置：内存是逻辑的，资源是抽象的，控制流是结构化的。最后一步由各个后端各自 lower（§14）。
 
-## 2. 两层共用一套指令
+## 2. 按实例降低
 
-- **MIR** 是前端的产物，按函数做 query。它和后端 IR 用同一个 op enum、同样的块参数 SSA 和结构化 CFG，只在三处不同：
-  - 类型里可以有类型参数、关联类型投影（`M.Params`），以及还没求值的 const 表达式（`[f32; N * 2]`）；
-  - 接口方法的调用还没有解析：`call_iface IMaterial.Surface<M>`；
-  - 还没有做 inline。
-- 从 HIR 降低到 MIR 时，用 Braun 等人的算法直接构造 SSA，局部变量不经过 alloca。
-- **单态化**：把用到的函数拷贝一份，代入类型实参，把 `call_iface` 解析成具体的 `call`，把 const 表达式求值成常量（§11）。
-- builder、打印器、解析器和 verifier 两层共用。verifier 有两档：
-  - MIR 档允许泛型；
-  - 后端 IR 档要求所有类型都是具体的。
+（2026-10-17 改：原来是"泛型 MIR + 单态化"两层。）
+
+- `lower` 从入口出发，收集用到的**实例**：函数加上具体的类型实参和 const 实参（包括 `Func` 参数传进来的 lambda，0004 §9.2）。
+- 每个实例直接从带类型的 HIR 降低成具体的 IR，降低时就代入类型、把接口调用解析成具体的 `call`、把 const 表达式求出值（§11）。
+- 每个实例是一个 query：热重载时只重算改动过的函数的实例。泛型函数的每个实例各降低一次，降低本身很便宜。
+- 所以 IR 里没有类型参数、关联类型投影、符号形式的数组长度和 `call_iface`；builder、打印器、解析器和 verifier 只有一档。
+- 降低时用 Braun 等人的算法直接构造 SSA，局部变量不经过 alloca 再 mem2reg。
+- 编译期递归在收集实例时展开；运行时递归由 verifier 报错（0004 §6）。
 
 ## 3. 类型
 
@@ -70,7 +69,6 @@ IR 停在比这几个 target 都高一层的位置：内存是逻辑的，资源
 | 资源下标 | `res<K>` | K 是资源种类和元素类型，比如 `res<Texture2D<f32x4>>`、`res<Buffer<@Light>>`、`res<Sampler>` |
 | handle | `handle<K>` | 物化之后的描述符（§7） |
 | 不透明类型 | `rayquery`、`accel` | 只能存在于变量里，或者作为 handle 的种类 |
-| 泛型（只在 MIR 里） | `param T`、`proj M.Params`、`const_expr` | 单态化时消掉 |
 
 ## 4. 值与 SSA
 
@@ -288,7 +286,7 @@ tex.store %st, %coord, %v
 
 ### 8.8 调用
 
-- `call @f(args)` 调用已知的函数，`call_iface`（只在 MIR 里）调用接口方法。
+- `call @f(args)` 调用已知的函数；接口方法的调用在降低时就解析成具体的 `call`（§2）。
 - 默认全部 inline（0005 §4.4 的 1.1），之后只有 target 支持函数调用时才会留下 `call`。
 - 后端 IR 里没有间接调用。
 
@@ -345,7 +343,7 @@ mesh.dispatch %x, %y, %z          // amplification；payload 是 @payload 变量
   - `[Export]`（0004 §13.4）。
 - 编译器先把用到的 `const` 函数单态化成后端 IR，再用 **IR 解释器**执行。这个解释器也是 0005 §4.6 用来做差分测试的那一个。
 - 只有一个解释器，它的语义就是 IR 的语义，所以编译期算出来的结果和 GPU 上跑出来的不会不一致。
-- 依赖泛型参数的 const 表达式在 MIR 里保持符号形式，到单态化时再求值。
+- 依赖泛型参数的 const 表达式在降低每个实例时求值（§2）。
 - `const` 函数不能访问资源、groupshared、入口 I/O 和 `debug.*`，由 verifier 检查。
 - 解释器的执行模型（2026-10-17 定）：
   - 一个 group 的所有 lane 按结构化控制流一起锁步执行，维护活动掩码：分支两边的 lane 先后各跑一遍（条件为真的一边先跑），在 merge 块汇合；只要还有 lane 留在循环里，循环就继续（§5.3）；

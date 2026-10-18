@@ -1,0 +1,586 @@
+//! One function instance: its signature, and the context that lowers its body.
+//!
+//! - Parameters: `in` and plain parameters by value; `out` and `ref` as pointers to a variable
+//!   of the caller (who copies in and out, 0004 §6).
+//! - Instance methods of structs take `this` first: by value in `readonly` members, by pointer
+//!   otherwise. Extension members take the receiver by value. Constructors take no `this`:
+//!   they start from the field defaults and return the value they built.
+//! - Field and enum member initializers lower to functions without parameters that return the
+//!   value (compile-time evaluation runs them).
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use marlin_front_hir_def::store::{BindingId, BindingKind, LambdaBody, RefKind};
+use marlin_front_hir_def::{Body, BodyOwner, BodyPart, BodyQuery, ItemKind, ItemTreeQuery};
+use marlin_shaderc_hir_ty::{
+    InferLoc, InferQuery, InferenceResult, ItemTypesQuery, Subst, Ty, self_ty,
+};
+use marlin_shaderc_ir::{
+    Block, FuncId, Function, Inst, Op, Space, SwitchCase, Type, Value, result_types,
+};
+
+use crate::ssa::{Ssa, Var};
+use crate::{Instance, LowerError, Lowering, R};
+
+/// How a parameter is passed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Pass {
+    Value,
+    /// A pointer to the caller's variable.
+    Pointer,
+}
+
+/// A function instance's signature, in the front end's terms.
+pub(crate) struct Signature {
+    /// `this` (or an extension's receiver) first, if there is one: its type and how it passes.
+    pub this: Option<(Ty, Pass)>,
+    pub params: Vec<(Ty, Pass)>,
+    /// `None` for `void`.
+    pub result: Option<Ty>,
+    pub is_constructor: bool,
+}
+
+pub(crate) fn signature(l: &mut Lowering<'_, '_>, instance: &Instance) -> R<Signature> {
+    let item = instance.owner.item;
+    let tree = l.cx.get::<ItemTreeQuery>(&item.file)?;
+    let data = &tree.items[item.local];
+    let types = l.cx.get::<ItemTypesQuery>(&item)?;
+    let subst = &instance.subst;
+    let parent = data.parent.map(|p| (p, &tree.items[p]));
+    let mut sig = Signature {
+        this: None,
+        params: Vec::new(),
+        result: None,
+        is_constructor: data.kind == ItemKind::Constructor,
+    };
+    match (data.kind, instance.owner.part) {
+        (ItemKind::Field | ItemKind::EnumMember, _) | (_, BodyPart::Initializer) => {
+            sig.result = types.ty.as_ref().map(|t| subst.ty(t));
+            return Ok(sig);
+        }
+        (
+            ItemKind::Function | ItemKind::Operator | ItemKind::Conversion | ItemKind::Constructor,
+            _,
+        ) => {}
+        (kind, part) => {
+            return Err(LowerError::new(
+                "E1301",
+                format!("lowering the {part:?} body of a {kind:?} is not done yet"),
+            ));
+        }
+    }
+    if let Some((p, pdata)) = parent {
+        let parent_id = marlin_front_hir_def::ItemId {
+            file: item.file,
+            local: p,
+        };
+        if pdata.kind.is_type() && !data.is_static && data.kind == ItemKind::Function {
+            let this = subst.ty(&self_ty(l.cx, parent_id)?);
+            let pass = if data.is_readonly || pdata.is_readonly {
+                Pass::Value
+            } else {
+                Pass::Pointer
+            };
+            sig.this = Some((this, pass));
+        }
+        if pdata.kind == ItemKind::Extension {
+            let ext = l.cx.get::<ItemTypesQuery>(&parent_id)?;
+            if let Some(r) = &ext.receiver {
+                sig.this = Some((subst.ty(r), Pass::Value));
+            }
+        }
+    }
+    for p in &types.params {
+        let pass = match p.ref_kind {
+            Some(RefKind::Out | RefKind::Ref) => Pass::Pointer,
+            _ => Pass::Value,
+        };
+        sig.params.push((subst.ty(&p.ty), pass));
+    }
+    sig.result = if sig.is_constructor {
+        types.ty.as_ref().map(|t| subst.ty(t))
+    } else {
+        types
+            .ty
+            .as_ref()
+            .map(|t| subst.ty(t))
+            .filter(|t| *t != Ty::Void)
+    };
+    Ok(sig)
+}
+
+fn ir_param(l: &mut Lowering<'_, '_>, (ty, pass): &(Ty, Pass)) -> R<Type> {
+    let t = l.ty(ty)?;
+    Ok(match pass {
+        Pass::Value => t,
+        Pass::Pointer => l.module.ptr(Space::Function, false, t),
+    })
+}
+
+/// Declares the IR function of an instance: name, parameters (on its entry block), results.
+pub(crate) fn declare(l: &mut Lowering<'_, '_>, instance: &Instance) -> R<FuncId> {
+    declare_signature(l, instance).map_err(|e| e.located(instance.owner, InferLoc::Owner))
+}
+
+fn declare_signature(l: &mut Lowering<'_, '_>, instance: &Instance) -> R<FuncId> {
+    let sig = signature(l, instance)?;
+    let mut params = Vec::new();
+    if let Some(this) = &sig.this {
+        params.push(ir_param(l, this)?);
+    }
+    for p in &sig.params {
+        params.push(ir_param(l, p)?);
+    }
+    let results = match &sig.result {
+        Some(t) => vec![l.ty(t)?],
+        None => Vec::new(),
+    };
+    let mut f = Function::new("", results);
+    let entry = f.add_block();
+    for &t in &params {
+        f.add_param(entry, t, None);
+    }
+    let id = l.module.add_function(f);
+    let name = l.function_name(instance.owner.item, &params, id)?;
+    l.module.funcs[id].name = name.into();
+    Ok(id)
+}
+
+/// A terminator before its jump arguments are known.
+#[derive(Clone, Debug)]
+pub(crate) enum Term {
+    Br(Block),
+    CondBr {
+        cond: Value,
+        then_block: Block,
+        else_block: Block,
+        merge: Block,
+    },
+    Switch {
+        value: Value,
+        cases: Vec<(u64, Block)>,
+        default: Block,
+        merge: Block,
+    },
+    Loop {
+        header: Block,
+        continuing: Block,
+        merge: Block,
+    },
+    Return(Vec<Value>),
+    Unreachable,
+}
+
+impl Term {
+    fn targets(&self) -> Vec<Block> {
+        match self {
+            Term::Br(b) => vec![*b],
+            Term::CondBr {
+                then_block,
+                else_block,
+                ..
+            } => vec![*then_block, *else_block],
+            Term::Switch { cases, default, .. } => {
+                cases.iter().map(|c| c.1).chain([*default]).collect()
+            }
+            Term::Loop { header, .. } => vec![*header],
+            Term::Return(_) | Term::Unreachable => Vec::new(),
+        }
+    }
+}
+
+/// Where a local lives.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Local {
+    Var(Var),
+    /// Behind a pointer: `out` and `ref` parameters.
+    Ptr(Value),
+}
+
+/// Where `break` and `continue` go.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Jumps {
+    pub brk: Block,
+    /// `None` for a `switch` (whose `continue` belongs to the loop around it).
+    pub cont: Option<Block>,
+}
+
+pub(crate) struct FnCx<'l, 'a, 'b> {
+    pub l: &'l mut Lowering<'a, 'b>,
+    pub instance: Instance,
+    pub f: Function,
+    pub body: Arc<Body>,
+    pub infer: Arc<InferenceResult>,
+    pub entry: Block,
+    pub block: Option<Block>,
+    pub ssa: Ssa,
+    pub terms: HashMap<Block, Term>,
+    pub locals: HashMap<BindingId, Local>,
+    /// `this`: a variable (by value, constructors) or the pointer parameter.
+    pub this: Option<(Local, Ty)>,
+    pub jumps: Vec<Jumps>,
+    pub results: Option<Ty>,
+    pub is_constructor: bool,
+}
+
+pub(crate) fn lower_body(l: &mut Lowering<'_, '_>, instance: &Instance, id: FuncId) -> R<()> {
+    let owner = instance.owner;
+    let body = l.cx.get::<BodyQuery>(&owner)?;
+    let infer = l.cx.get::<InferQuery>(&owner)?;
+    let sig = signature(l, instance)?;
+    // Work on the function outside the module; a stand-in keeps its name and results.
+    let stand_in = Function::new(&l.module.funcs[id].name, l.module.funcs[id].results.clone());
+    let f = std::mem::replace(&mut l.module.funcs[id], stand_in);
+    let entry = f.entry().expect("declared with an entry block");
+    let mut cx = FnCx {
+        l,
+        instance: instance.clone(),
+        f,
+        body: body.clone(),
+        infer,
+        entry,
+        block: Some(entry),
+        ssa: Ssa::default(),
+        terms: HashMap::new(),
+        locals: HashMap::new(),
+        this: None,
+        jumps: Vec::new(),
+        results: sig.result.clone(),
+        is_constructor: sig.is_constructor,
+    };
+    cx.ssa.seal(&mut cx.f, &mut cx.l.module, entry);
+    let result = cx.lower(&sig);
+    let FnCx { l, f, .. } = cx;
+    l.module.funcs[id] = f;
+    result
+}
+
+impl FnCx<'_, '_, '_> {
+    pub(crate) fn owner(&self) -> BodyOwner {
+        self.instance.owner
+    }
+
+    pub(crate) fn subst(&self) -> &Subst {
+        &self.instance.subst
+    }
+
+    /// An error at `loc` in this body.
+    pub(crate) fn error(
+        &self,
+        code: &'static str,
+        message: impl Into<String>,
+        loc: InferLoc,
+    ) -> LowerError {
+        LowerError::at(code, message, self.owner(), loc)
+    }
+
+    /// A front-end type of this body made concrete.
+    pub(crate) fn concrete(&self, ty: &Ty) -> Ty {
+        self.subst().ty(ty)
+    }
+
+    pub(crate) fn binding_ty(&self, b: BindingId) -> Ty {
+        self.concrete(
+            &self
+                .infer
+                .binding_types
+                .get(b)
+                .cloned()
+                .unwrap_or(Ty::Error),
+        )
+    }
+
+    fn lower(&mut self, sig: &Signature) -> R<()> {
+        let params: Vec<Value> = self.f.params().to_vec();
+        let mut next = 0;
+        if let Some((ty, pass)) = &sig.this {
+            let v = params[next];
+            next += 1;
+            let local = match pass {
+                Pass::Pointer => Local::Ptr(v),
+                Pass::Value => {
+                    let t = self.f.ty(v);
+                    let var = self.ssa.new_var(t, Some("this"));
+                    self.ssa.write(var, self.entry, v);
+                    Local::Var(var)
+                }
+            };
+            self.this = Some((local, ty.clone()));
+            self.f.set_name(v, Some("this"));
+        }
+        // The body's parameter bindings, in declaration order.
+        let bindings: Vec<BindingId> = self.body.params.clone();
+        let mut declared = Vec::new();
+        for &b in &bindings {
+            match self.body.store.bindings[b].kind {
+                BindingKind::Param(i) => declared.push((i as usize, b)),
+                BindingKind::Receiver => {
+                    if let Some((local, _)) = self.this {
+                        self.locals.insert(b, local);
+                    }
+                }
+                _ => {}
+            }
+        }
+        declared.sort_unstable_by_key(|(i, _)| *i);
+        for (i, b) in declared {
+            let Some(&v) = params.get(next + i) else {
+                continue;
+            };
+            let name = self.body.store.bindings[b].name.to_string();
+            self.f.set_name(v, Some(&name));
+            let local = match sig.params.get(i).map(|p| p.1) {
+                Some(Pass::Pointer) => Local::Ptr(v),
+                _ => {
+                    let t = self.f.ty(v);
+                    let var = self.ssa.new_var(t, Some(&name));
+                    self.ssa.write(var, self.entry, v);
+                    Local::Var(var)
+                }
+            };
+            self.locals.insert(b, local);
+        }
+        if self.is_constructor {
+            let ty = sig.result.clone().unwrap_or(Ty::Error);
+            let start = self.default_value(&ty, InferLoc::Owner)?;
+            let t = self.l.ty(&ty)?;
+            let var = self.ssa.new_var(t, Some("this"));
+            self.write_var(var, start);
+            self.this = Some((Local::Var(var), ty));
+        }
+        if let Some(init) = self.body.constructor_initializer {
+            // `: this(...)` builds the value the body continues from.
+            let v = self.value(init)?;
+            if let Some((Local::Var(var), _)) = self.this {
+                self.write_var(var, v);
+            }
+        }
+        match self.body.root {
+            Some(LambdaBody::Expr(e)) => {
+                let v = self.expr(e)?;
+                if self.block.is_some() {
+                    let vals = match (&self.results, v) {
+                        (Some(_), Some(v)) => vec![v],
+                        _ => Vec::new(),
+                    };
+                    self.ret(vals)?;
+                }
+            }
+            Some(LambdaBody::Block(s)) => {
+                self.stmt(s)?;
+                if self.block.is_some() {
+                    // Falling off the end: `void` functions and constructors return here.
+                    let vals = self.implicit_return()?;
+                    self.ret(vals)?;
+                }
+            }
+            None => {
+                return Err(self.error("E1301", "a function without a body", InferLoc::Owner));
+            }
+        }
+        self.finish()
+    }
+
+    fn implicit_return(&mut self) -> R<Vec<Value>> {
+        if self.is_constructor
+            && let Some((Local::Var(var), _)) = self.this
+        {
+            return Ok(vec![self.read_var(var)]);
+        }
+        Ok(Vec::new())
+    }
+
+    /// `return`: constructors return the value they built.
+    pub(crate) fn ret(&mut self, mut values: Vec<Value>) -> R<()> {
+        if self.is_constructor && values.is_empty() {
+            values = self.implicit_return()?;
+        }
+        self.terminate(Term::Return(values));
+        Ok(())
+    }
+
+    // ---- blocks and instructions ----
+
+    pub(crate) fn new_block(&mut self) -> Block {
+        self.f.add_block()
+    }
+
+    /// Instructions go to `b` from now on.
+    pub(crate) fn enter(&mut self, b: Block) {
+        self.block = Some(b);
+    }
+
+    /// The current block; code after a `return` or `break` goes to a fresh block nothing
+    /// reaches.
+    pub(crate) fn current(&mut self) -> Block {
+        match self.block {
+            Some(b) => b,
+            None => {
+                let b = self.new_block();
+                self.ssa.seal(&mut self.f, &mut self.l.module, b);
+                self.block = Some(b);
+                b
+            }
+        }
+    }
+
+    pub(crate) fn seal(&mut self, b: Block) {
+        self.ssa.seal(&mut self.f, &mut self.l.module, b);
+    }
+
+    /// Ends the current block with `term`.
+    pub(crate) fn terminate(&mut self, term: Term) {
+        let b = self.current();
+        for t in term.targets() {
+            self.ssa.add_pred(t, b);
+        }
+        self.terms.insert(b, term);
+        self.block = None;
+    }
+
+    /// Appends an instruction; its results are inferred (`explicit` for the ones that state
+    /// their type).
+    pub(crate) fn emit(&mut self, op: Op, operands: Vec<Value>, explicit: Option<Type>) -> R<Inst> {
+        let b = self.current();
+        let types: Vec<Type> = operands.iter().map(|&v| self.f.ty(v)).collect();
+        let results = result_types(&mut self.l.module, &op, &types, explicit)
+            .map_err(|e| LowerError::new("E1304", format!("lowering produced bad IR: {e}")))?;
+        let inst = self.f.create_inst(op, operands, &results);
+        self.f.append_inst(b, inst);
+        Ok(inst)
+    }
+
+    /// [`emit`](Self::emit) for an instruction with one result.
+    pub(crate) fn op(&mut self, op: Op, operands: Vec<Value>, explicit: Option<Type>) -> R<Value> {
+        let inst = self.emit(op, operands, explicit)?;
+        self.f.insts[inst]
+            .results
+            .first()
+            .copied()
+            .ok_or_else(|| LowerError::new("E1304", "an instruction without a result"))
+    }
+
+    /// A `function` variable of type `t`, made in the entry block.
+    pub(crate) fn temp_var(&mut self, t: Type) -> R<Value> {
+        let ptr = self.l.module.ptr(Space::Function, false, t);
+        let inst = self.f.create_inst(Op::Var, Vec::new(), &[ptr]);
+        match self.f.first_inst(self.entry) {
+            Some(first) => self.f.insert_before(first, inst),
+            None => self.f.append_inst(self.entry, inst),
+        }
+        Ok(self.f.result(inst))
+    }
+
+    // ---- variables ----
+
+    pub(crate) fn read_var(&mut self, var: Var) -> Value {
+        let b = self.current();
+        self.ssa.read(&mut self.f, &mut self.l.module, var, b)
+    }
+
+    pub(crate) fn write_var(&mut self, var: Var, value: Value) {
+        let b = self.current();
+        self.ssa.write(var, b, value);
+    }
+
+    /// The variable of a local binding, made on first use.
+    pub(crate) fn local(&mut self, b: BindingId) -> R<Local> {
+        if let Some(&l) = self.locals.get(&b) {
+            return Ok(l);
+        }
+        let ty = self.binding_ty(b);
+        let t = self
+            .l
+            .ty(&ty)
+            .map_err(|e| e.located(self.owner(), InferLoc::Binding(b)))?;
+        let name = self.body.store.bindings[b].name.to_string();
+        let var = self.ssa.new_var(t, Some(&name));
+        let local = Local::Var(var);
+        self.locals.insert(b, local);
+        Ok(local)
+    }
+
+    // ---- finishing ----
+
+    /// Seals every block, gives each jump its arguments, and makes the terminators.
+    fn finish(&mut self) -> R<()> {
+        let blocks: Vec<Block> = self.f.layout.clone();
+        for &b in &blocks {
+            self.seal(b);
+        }
+        for &b in &blocks {
+            let term = self.terms.get(&b).cloned().unwrap_or(Term::Unreachable);
+            let args = |cx: &Self, target: Block| -> Vec<Value> {
+                cx.f.blocks[target]
+                    .params
+                    .iter()
+                    .map(|p| cx.ssa.phi_args.get(p).and_then(|m| m.get(&b)).copied())
+                    .map(|v| v.expect("every predecessor passes every parameter"))
+                    .collect()
+            };
+            let (op, operands) = match term {
+                Term::Br(t) => (Op::Br(t), args(self, t)),
+                Term::CondBr {
+                    cond,
+                    then_block,
+                    else_block,
+                    merge,
+                } => {
+                    let (ta, ea) = (args(self, then_block), args(self, else_block));
+                    let op = Op::CondBr {
+                        then_block,
+                        then_args: ta.len() as u32,
+                        else_block,
+                        merge,
+                    };
+                    (op, [vec![cond], ta, ea].concat())
+                }
+                Term::Switch {
+                    value,
+                    cases,
+                    default,
+                    merge,
+                } => {
+                    let mut operands = vec![value];
+                    let mut ir_cases = Vec::new();
+                    for (v, target) in cases {
+                        let a = args(self, target);
+                        ir_cases.push(SwitchCase {
+                            value: v,
+                            block: target,
+                            args: a.len() as u32,
+                        });
+                        operands.extend(a);
+                    }
+                    let da = args(self, default);
+                    let op = Op::Switch {
+                        cases: ir_cases,
+                        default,
+                        default_args: da.len() as u32,
+                        merge,
+                    };
+                    operands.extend(da);
+                    (op, operands)
+                }
+                Term::Loop {
+                    header,
+                    continuing,
+                    merge,
+                } => (
+                    Op::Loop {
+                        header,
+                        continuing,
+                        merge,
+                    },
+                    args(self, header),
+                ),
+                Term::Return(values) => (Op::Return, values),
+                Term::Unreachable => (Op::Unreachable, Vec::new()),
+            };
+            let inst = self.f.create_inst(op, operands, &[]);
+            self.f.append_inst(b, inst);
+        }
+        Ok(())
+    }
+}

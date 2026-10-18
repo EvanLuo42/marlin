@@ -358,7 +358,7 @@ impl TyLowerer<'_, '_> {
 }
 
 /// An integer literal's value: decimal, `0x` or `0b`, with `_` separators and a `u`/`l` suffix.
-pub(crate) fn parse_int(text: &str) -> Option<i128> {
+pub fn parse_int(text: &str) -> Option<i128> {
     let lower = text.to_ascii_lowercase().replace('_', "");
     let (radix, digits) = if let Some(hex) = lower.strip_prefix("0x") {
         (16, hex)

@@ -85,6 +85,9 @@ impl InferCtx<'_, '_> {
                 }
                 let member = self.lookup_member(&recv, &name, false)?;
                 let (ty, step) = self.member_value(e, &recv, &name, member)?;
+                if let Some(step) = &step {
+                    self.result.member_steps.insert(e, step.clone());
+                }
                 if let Some(step) = step {
                     // Extend the receiver's path, if it has one.
                     let mut path = self

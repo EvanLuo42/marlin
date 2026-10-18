@@ -59,6 +59,7 @@ pub use infer::{
 };
 pub use item::{AliasTargetQuery, GenericParamTy, ItemTypes, ItemTypesQuery, ParamTy, self_ty};
 pub use layout::{FieldLayout, Layout, fields_of, layout_of};
+pub use lower::parse_int;
 pub use subst::Subst;
 pub use ty::{ConstExpr, ConstOp, ConstTy, GenericArgTy, Ty};
 

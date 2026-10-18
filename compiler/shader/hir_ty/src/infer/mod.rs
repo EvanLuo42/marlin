@@ -93,6 +93,12 @@ pub struct InferenceResult {
     pub callees: ArenaMap<Expr, Callee>,
     /// Expressions converted implicitly, to the type they were converted to.
     pub coercions: ArenaMap<Expr, Ty>,
+    /// For calls, constructors and indexers resolved to a declaration: per parameter of the
+    /// callee, the index of the argument passed to it, or `None` where its default is used.
+    /// (Operators take their operands in order.)
+    pub call_args: ArenaMap<Expr, Vec<Option<u32>>>,
+    /// What each `.name` member expression reads (also where its receiver has no path).
+    pub member_steps: ArenaMap<Expr, Step>,
     /// What the body produces: a function's result, `void` for constructors and setters,
     /// `None` for initializers.
     pub body_ty: Option<Ty>,

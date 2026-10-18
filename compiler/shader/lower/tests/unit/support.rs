@@ -1,0 +1,164 @@
+//! The stand-in core library plus user code in a fresh database, and running lowered code.
+
+use std::fs;
+use std::sync::Arc;
+
+use marlin_front_hir_def::{
+    FileId, FilePackage, FileText, ItemId, ItemTreeQuery, LanguageInput, PackageData, PackageId,
+    PackageInput, item_path,
+};
+use marlin_lang_diag::{SourceMap, render_all};
+use marlin_lang_query::{Db, Durability};
+use marlin_shaderc_hir_ty::{FileTyDiagnostics, SHADER_LANGUAGE};
+use marlin_shaderc_ir::{Interpreter, Module, Val, print_module, verify_module};
+use marlin_shaderc_lower::Lowering;
+use marlin_test_support::data_path;
+
+pub struct World {
+    pub db: Db,
+    /// `(name, text)` per file, indexed by `FileId`.
+    pub files: Vec<(String, Arc<str>)>,
+    pub game: PackageId,
+}
+
+fn read(rel: &str) -> Arc<str> {
+    fs::read_to_string(data_path(env!("CARGO_MANIFEST_DIR"), rel))
+        .unwrap()
+        .replace("\r\n", "\n")
+        .into()
+}
+
+/// Package `Marlin` (core/Core.mshader) and package `Game` (`game_files`), which uses it. The
+/// game files must type-check cleanly.
+pub fn world(game_files: &[&str]) -> World {
+    let db = Db::new();
+    let (core, game) = (PackageId(0), PackageId(1));
+    let mut files = Vec::new();
+    let (mut core_ids, mut game_ids) = (Vec::new(), Vec::new());
+    db.update(|u| {
+        u.set::<LanguageInput>((), &SHADER_LANGUAGE, Durability::High);
+        for (package, ids, names) in [
+            (core, &mut core_ids, &["core/Core.mshader"][..]),
+            (game, &mut game_ids, game_files),
+        ] {
+            for name in names {
+                let file = FileId(files.len() as u32);
+                let text = read(name);
+                u.set::<FileText>(file, text.clone(), Durability::Low);
+                u.set::<FilePackage>(file, package, Durability::Low);
+                files.push((name.to_string(), text));
+                ids.push(file);
+            }
+        }
+        for (package, name, ids, deps) in [
+            (core, "Marlin", &core_ids, vec![]),
+            (game, "Game", &game_ids, vec![core]),
+        ] {
+            u.set::<PackageInput>(
+                package,
+                Arc::new(PackageData {
+                    name: name.into(),
+                    files: ids.clone().into(),
+                    dependencies: deps.into(),
+                }),
+                Durability::Low,
+            );
+        }
+    });
+    let world = World { db, files, game };
+    let diagnostics = world.diagnostics(game_files);
+    assert!(
+        diagnostics.is_empty(),
+        "the test code has type errors:\n{diagnostics}"
+    );
+    world
+}
+
+impl World {
+    pub fn file(&self, name: &str) -> FileId {
+        FileId(self.files.iter().position(|(n, _)| n == name).unwrap() as u32)
+    }
+
+    pub fn diagnostics(&self, files: &[&str]) -> String {
+        let snapshot = self.db.snapshot();
+        let mut all = Vec::new();
+        for name in files {
+            all.extend(
+                snapshot
+                    .get::<FileTyDiagnostics>(&self.file(name))
+                    .unwrap()
+                    .iter()
+                    .cloned(),
+            );
+        }
+        render_all(&all, self)
+    }
+
+    /// The declaration whose full path is `path` (`Game.Sum`), in any file.
+    pub fn item(&self, path: &str) -> ItemId {
+        let snapshot = self.db.snapshot();
+        for i in 0..self.files.len() {
+            let file = FileId(i as u32);
+            let tree = snapshot.get::<ItemTreeQuery>(&file).unwrap();
+            for (local, _) in tree.items.iter() {
+                let item = ItemId { file, local };
+                if item_path(&snapshot, item).unwrap() == path {
+                    return item;
+                }
+            }
+        }
+        panic!("no item {path}")
+    }
+
+    /// Lowers the functions at `paths` (and what they call) into one verified module.
+    pub fn lower(&self, paths: &[&str]) -> Module {
+        let snapshot = self.db.snapshot();
+        let mut l = Lowering::new(&snapshot, self.game).unwrap();
+        for p in paths {
+            let item = self.item(p);
+            if let Err(e) = l.function(item) {
+                panic!("{p}: {}", self.render_error(&snapshot, &e));
+            }
+        }
+        let module = match l.finish() {
+            Ok(m) => m,
+            Err(e) => panic!("{}", self.render_error(&snapshot, &e)),
+        };
+        let errors = verify_module(&module);
+        assert!(
+            errors.is_empty(),
+            "lowered IR does not verify: {errors:#?}\n{}",
+            print_module(&module)
+        );
+        module
+    }
+
+    fn render_error(
+        &self,
+        cx: &marlin_lang_query::Cx<'_>,
+        e: &marlin_shaderc_lower::LowerError,
+    ) -> String {
+        match e.to_diagnostic(cx).unwrap() {
+            Some(d) => render_all(&[d], self),
+            None => e.to_string(),
+        }
+    }
+
+    /// Lowers `path` and calls it with `args`.
+    pub fn run(&self, path: &str, args: &[Val]) -> Vec<Val> {
+        let module = self.lower(&[path]);
+        let f = module.find_function(path).unwrap();
+        Interpreter::new(&module)
+            .call(f, args)
+            .unwrap_or_else(|e| panic!("{path}: {e}\n{}", print_module(&module)))
+    }
+}
+
+impl SourceMap for World {
+    fn name(&self, file: FileId) -> String {
+        self.files[file.0 as usize].0.clone()
+    }
+    fn text(&self, file: FileId) -> &str {
+        &self.files[file.0 as usize].1
+    }
+}

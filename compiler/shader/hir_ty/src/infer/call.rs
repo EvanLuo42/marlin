@@ -45,6 +45,8 @@ pub(crate) struct Mapped {
     pub(crate) arg_params: Vec<Ty>,
     pub(crate) generic: bool,
     pub(crate) defaults_used: usize,
+    /// For each parameter, the argument that goes to it (`None`: its default).
+    pub(crate) slots: Vec<Option<usize>>,
 }
 
 impl InferCtx<'_, '_> {
@@ -210,6 +212,7 @@ impl InferCtx<'_, '_> {
             arg_params,
             generic: generics > 0,
             defaults_used,
+            slots,
         }))
     }
 
@@ -387,6 +390,10 @@ impl InferCtx<'_, '_> {
         } else {
             types.ty.clone().map(|t| chosen.subst.ty(&t))
         };
+        self.result.call_args.insert(
+            call,
+            chosen.slots.iter().map(|s| s.map(|a| a as u32)).collect(),
+        );
         self.result.callees.insert(
             call,
             Callee::Item {

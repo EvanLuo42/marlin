@@ -917,6 +917,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "marlin-shaderc-lower"
+version = "0.1.0"
+dependencies = [
+ "marlin-front-hir-def",
+ "marlin-lang-arena",
+ "marlin-lang-diag",
+ "marlin-lang-query",
+ "marlin-lang-span",
+ "marlin-math",
+ "marlin-shaderc-hir-ty",
+ "marlin-shaderc-ir",
+ "marlin-test-support",
+]
+
+[[package]]
 name = "marlin-shaderc-syntax"
 version = "0.1.0"
 dependencies = [
