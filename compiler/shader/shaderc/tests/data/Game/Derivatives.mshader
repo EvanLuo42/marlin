@@ -1,0 +1,40 @@
+namespace Game;
+
+// Automatic differentiation in compute entries (0004 §15): screen-space derivatives and
+// sample levels from `Derivatives.Seed`, `ForwardDiff`, and a sample whose own derivative is
+// asked for (a warning).
+
+public struct ResolveArgs
+{
+    public Texture2D<float4> Texture;
+    public Sampler Sampler;
+    public Buffer<float4> Output;
+    public float2 Uv;
+    public float2 DUvDx;
+    public float2 DUvDy;
+}
+
+[Differentiable]
+float Bump(float2 uv) => Sin(uv.x * 8) * Cos(uv.y * 8);
+
+[Compute(8, 8, 1)]
+public void Resolve([DispatchThreadId] uint3 id, [Push] in ResolveArgs a)
+{
+    var uv = Derivatives.Seed(a.Uv + (float2)id.xy * a.DUvDx, a.DUvDx, a.DUvDy);
+    var color = a.Texture.Sample(a.Sampler, uv) + a.Texture.Sample(a.Sampler, uv * 2, bias: 1);
+    var slope = ForwardDiff(Bump)(DiffPair(uv, float2(1, 0))).Derivative;
+    a.Output[id.y * 8 + id.x] = color * slope + float4(Fwidth(uv), Ddx(uv.x), Ddy(uv.y));
+}
+
+// The derivative of a sample: 0, with a warning.
+[Compute(1, 1, 1)]
+public void SampleSlope([Push] in ResolveArgs a)
+{
+    var uv = Derivatives.Seed(a.Uv, a.DUvDx, a.DUvDy);
+    a.Output[0] = Ddx(a.Texture.Sample(a.Sampler, uv));
+}
+
+// Nothing seeded: derivatives are 0, and samples read mip 0.
+[Compute(1, 1, 1)]
+public void Unseeded([Push] in ResolveArgs a) =>
+    a.Output[0] = a.Texture.Sample(a.Sampler, a.Uv) + Ddx(a.Uv.x);

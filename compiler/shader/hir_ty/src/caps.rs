@@ -256,7 +256,8 @@ impl Query for CapabilitiesQuery {
                 c.ty(ty, in_branch(e))?;
             }
             for (e, callee) in infer.callees.iter() {
-                if let Callee::Item { item: callee, .. } = callee
+                if let Callee::Item { item: callee, .. } | Callee::ForwardDiff { item: callee, .. } =
+                    callee
                     && callee != item
                 {
                     c.call(*callee, in_branch(e))?;

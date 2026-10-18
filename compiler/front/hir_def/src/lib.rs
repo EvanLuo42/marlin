@@ -91,6 +91,9 @@ pub struct Language {
     pub implicit_usings: &'static [&'static str],
     /// Whether every file must declare a file-scoped `namespace`.
     pub require_namespace: bool,
+    /// Names a namespace may give both a generic type and functions; a call without type
+    /// arguments names the functions (the shader language's `DiffPair`, 0004 §15.2).
+    pub type_and_function_names: &'static [&'static str],
 }
 
 impl PartialEq for Language {

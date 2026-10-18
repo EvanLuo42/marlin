@@ -130,7 +130,8 @@ pub struct Dialect {
 `Language` 是每种语言的描述，定义在语言自己的 crate 里（shader 的在 `compiler/shader/syntax`）：
 - `dialect`：解析用的 `Dialect`（§2.2）；
 - `implicit_usings`：每个文件隐式 `using` 的 namespace（shader 是 `Marlin`，0004 §7.1）；
-- `require_namespace`：文件是否必须有 file-scoped `namespace`（shader 是）。
+- `require_namespace`：文件是否必须有 file-scoped `namespace`（shader 是）；
+- `type_and_function_names`：namespace 里可以同时是泛型类型和函数的名字，不写类型实参的调用找到函数（shader 只有 `DiffPair`，0004 §15.2，2026-10-18）。
 
 ### 3.2 query 与数据
 

@@ -49,7 +49,7 @@
 | 编译期分支 | 普通 `if` 遇到常量条件时保证折叠；`const if` 被裁掉的分支不做 capability 检查 | 13.2 |
 | 静态参数 | 带默认值的 `const` 字段，实例化时可以覆盖 | 13.3 |
 | attribute | 用户可以定义，有类型检查；内建 attribute 也用同一套机制声明 | 14 |
-| 自动微分 | 前向和反向的语法都定下来，编译器先实现前向；用 `[Differentiable]`、`[NoDiff]`、`Detach` 标记，用 `ForwardDiff(f)`/`BackwardDiff(f)` 求导，值和导数打包成 `DiffPair<T>`；材质代码里的屏幕空间导数由编译器自动传播 | 15 |
+| 自动微分 | 前向和反向的语法都定下来，编译器先实现前向；用 `[Differentiable]`、`[NoDiff]`、`Detach` 标记，用 `ForwardDiff(f)`/`BackwardDiff(f)` 求导，值和导数打包成 `DiffPair<T>`；材质代码里的屏幕空间导数由编译器自动传播；前向模式在第 11 步实现（2026-10-18） | 15 |
 | 自定义导数 | 两个方向的标注都支持：`[ForwardDerivative(nameof(F))]` 和 `[ForwardDerivativeOf(nameof(G))]` | 15.4 |
 | 内存布局 | 全部用 scalar 布局；`Uniform<T>` 另外要求字段不跨 16 字节行 | 16 |
 | 16 位与 bool | `half`/`short`/`ushort` 是真正的 16 位类型；bool 不能放进 buffer | 3.1 |
@@ -577,7 +577,7 @@ uint mips = t.MipCount;
   - 多重采样纹理有 `SampleCount`。
 - `offset:` 必须是编译期常量，每个分量在 −8 到 7 之间，否则报错（2026-10-18 定）。所有设备都支持这个范围，SPIR-V 用 `ConstOffset`。
 - `Gather(s, uv, Channel.G)` 取双线性采样会用到的四个纹素的某一个通道，`channel` 默认是 `Channel.R`，必须是常量。`GatherCompare(cs, uv, reference)` 返回这四个纹素和 `reference` 比较的结果，形式和 `SampleCompare` 一样（2026-10-18 定）。这一版的 gather 只用于浮点纹理，返回 `float4`。
-- `SampleCompare` 的级别参数和 `Sample` 一样：不写 `lod`、`grad` 时用隐式级别，只能在 pixel 入口里用。
+- `SampleCompare` 的级别参数和 `Sample` 一样：不写 `lod`、`grad` 时用隐式级别。隐式级别在任何 stage 都能用（2026-10-18 改，原来只能在 pixel 入口里用）：导数从哪里来见 §15.3。
 - 整数纹素的纹理可以是有符号的（`Texture2D<int>`），读写时保持符号（2026-10-18）。
 - `Buffer<T>` 的元素是变量，和数组元素一样（照 `Span<T>` 的规则，不照返回值的索引器）：`b[i].Pos.y += dt` 只写这一个分量。用户类型的索引器仍然返回值，不能这样给它的一部分赋值（2026-10-17 定）。
 
@@ -936,7 +936,10 @@ public struct Slab : IDifferentiable<Slab> { ... }
 ```
 
 - `[Differentiable]` 标记可微函数。可微函数调用不可微函数时，编译器报错。
+  - 只在有导数流过时才报错（2026-10-18 定）：调用的结果有导数，并且某个实参有导数、又没有包在 `Detach` 里，这时被调函数必须也是 `[Differentiable]`，否则报 E1138。运算符、构造函数和属性访问器不检查。
+  - 核心库里的数学函数（`Sin`、`Pow`、`Dot`、`Normalize`、`Saturate`、`Lerp`、`Clamp`……）和 `Detach` 都标了 `[Differentiable]`。`Floor`、`Step`、`Sign` 这类几乎处处平坦的函数也算可微，导数是 0。采样、wave 操作、`Ddx` 这些不是。
 - `[NoDiff]` 标记不参与微分的参数；`Detach(x)` 在表达式里截断导数。
+  - `[NoDiff]` 只能标在 `[Differentiable]` 函数的参数上（E1139）。每次调用时，传给它的实参都像 `Detach` 一样截断导数，包括 `Derivatives.Seed` 传下来的（2026-10-18 定）。
 - 可微类型实现 `IDifferentiable<TSelf>`，它带一个关联类型 `type Differential`。标量、向量、矩阵和数组都内建实现了这个接口。
 - 用户 struct 声明 `: IDifferentiable<Slab>` 后，编译器**逐字段合成** `Differential` 和它的运算（`Zero`、`Add`、`Scale`）：
 
@@ -953,6 +956,7 @@ public struct Slab : IDifferentiable<Slab>
 
 - 不可微的字段（整数、资源、enum）和标了 `[NoDiff]` 的字段会被跳过。
 - 特殊类型可以手写 `Differential` 和这些运算，覆盖合成的版本。
+- 第 11 步（2026-10-18）先实现内建的可微类型：浮点的标量、向量、矩阵，以及它们的数组。它们的 `Differential` 就是自己，所以 `DiffPair<T>` 的 `Derivative` 也是 `T`。用户 struct 的 `IDifferentiable` 和合成留到下一步。
 
 ### 15.2 求导调用
 
@@ -969,6 +973,12 @@ BackwardDiff(Shade)(ref dn2, ref dl, rough, dOut);
 
 - `ForwardDiff(f)` 和 `BackwardDiff(f)` 是内建的高阶函数，参数是一个方法组，返回导数函数。
 - `DiffPair<T>` 包含 `Value` 和 `Derivative`。
+- `DiffPair(x, dx)` 和 `DiffPair(x)`（导数为 0）是核心库里的泛型函数，返回 `DiffPair<T>`。C# 不从构造函数的实参推断泛型 struct 的类型实参，所以这里只给 `DiffPair` 开一个例外：同一个 namespace 里，一个泛型类型可以和同名的函数并存，不写类型实参的调用找到的是函数（2026-10-18 定）。其他泛型 struct 照 C# 要写类型实参。
+- 前向模式的规则（第 11 步，2026-10-18）：
+  - `ForwardDiff(f)` 要马上调用：`ForwardDiff(f)(...)`。不能存进变量或者传走（E1137）。
+  - `f` 用名字给出，是 `[Differentiable]` 的 namespace 函数或静态函数，没有 `ref`、`out` 参数，结果有导数（E1137）。重载和类型实参按"用各个 `DiffPair` 的值调用 `f`"来选。
+  - 类型可微、没有标 `[NoDiff]` 的参数接受对应类型的 `DiffPair`，其他参数照常传值；结果是结果类型的 `DiffPair`。
+  - `ForwardDiff` 可以嵌套（对导数函数再求导），得到二阶导数。
 
 ### 15.3 隐式的屏幕空间导数
 
@@ -977,8 +987,11 @@ BackwardDiff(Shade)(ref dn2, ref dl, rough, dOut);
   - pixel stage 里用硬件 quad 导数；
   - 目前只实现了 pixel stage：在别的 stage 的入口能走到的代码里求导报 E1309，等自动微分（0005 §4.4 的 0.3）来了再放开。
   - compute 里（visbuffer resolve、光线命中点），编译器从入口声明的导数源出发，对用到的代码**自动**做前向微分。导数源是 UV 和位置的解析导数，或者 ray cone。
+  - 按入口决定用哪一种（2026-10-18 定）：入口走得到 `Derivatives.Seed`，整个入口就都用解析导数，pixel 入口也一样；走不到的 pixel 入口用硬件导数；其他 stage 没有 seed 时导数都是 0，隐式 LOD 的采样读 mip 0。
 - 材质代码**不需要**标 `[Differentiable]`。
 - 不可微的操作导数视为 0，并给出警告。
+  - 警告是 E1402，严重级别是警告（2026-10-18 定：警告和错误共用 E 段，码按来源分，0015 §2.3）。只在确实需要穿过它的导数时才警告：比如求 `Ddx(t.Sample(s, uv))`，或者把 seed 过的值 bitcast 之后再求导。
+  - 没有导数的操作：采样和 gather 的结果、wave 操作、原子操作、bitcast、ray query 的结果。几乎处处平坦的操作（`Floor`、比较、转成整数、按下标读内存）导数是 0，不警告。
 - **导数源**用 `Derivatives.Seed(x, dx, dy)` 标记。入口或材质库的适配器调用它，它返回的值类型仍然是 `T`：
 
 ```csharp
@@ -990,7 +1003,9 @@ var o = material.Surface(ctx);   // 内部的 Ddx(...) 和 Sample(...) 都能用
 
 - 从导数源算出来的任何表达式都能求 `Ddx`/`Ddy`，采样也能隐式选 LOD。没有 seed 的值导数为 0。
 - 编译器只传播确实被用到的导数。
-- pixel stage 里不需要 seed，用的是硬件导数。
+- pixel stage 里不需要 seed：走不到 seed 的 pixel 入口用硬件导数。
+- 隐式 LOD 的采样变成带 `grad` 的采样，梯度是坐标沿 x、y 的导数；带 `bias` 的乘上 `2^bias`；两个导数都是 0 时改成 `lod: 0`。
+- `Ddx`、`Ddy` 不区分 coarse 和 fine。对 `Ddx`/`Ddy` 的结果再求屏幕空间导数得 0，这和硬件的 coarse 导数一致。
 
 ### 15.4 自定义导数
 
@@ -1007,6 +1022,7 @@ internal DiffPair<float> AcosFwd(DiffPair<float> x) => ...;
 
 - 反向模式对应的是 `[BackwardDerivative]` 和 `[BackwardDerivativeOf]`。
 - 编译器会检查导数函数的签名是否和原函数匹配。
+- 第 11 步没有实现自定义导数，留到下一步（2026-10-18）。
 
 ## 16. 内存布局
 

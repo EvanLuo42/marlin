@@ -1,0 +1,38 @@
+// Automatic differentiation (0004 §15), forward mode (0005 §4.4 pass 0.3): values with
+// derivatives, `ForwardDiff`, `Detach`, and the derivative sources of screen-space derivatives.
+// The attributes `[Differentiable]` and `[NoDiff]` are in `Attributes.mshader`.
+namespace Marlin;
+
+/// A value and its derivative (0004 §15.2). The derivative of a scalar, vector, matrix or array
+/// has the value's type.
+public struct DiffPair<T>
+{
+    public T Value;
+    public T Derivative;
+}
+
+/// `value` with the derivative `derivative`.
+public DiffPair<T> DiffPair<T>(T value, T derivative)
+    => DiffPair<T> { Value = value, Derivative = derivative };
+
+/// `value` with the derivative 0.
+public DiffPair<T> DiffPair<T>(T value) => DiffPair<T> { Value = value, Derivative = default };
+
+/// The derivative of the `[Differentiable]` function `f`, named without a call:
+/// `ForwardDiff(Shade)(DiffPair(n, dn), DiffPair(l, dl), roughness)` passes a `DiffPair` for
+/// each parameter that takes part (the others as they are) and gives the result as a
+/// `DiffPair`. It is called right away.
+[Intrinsic("diff.forward")] public void ForwardDiff<F>(F f);
+
+/// `x`, with derivative 0: differentiation stops here.
+[Intrinsic("diff.detach"), Differentiable] public T Detach<T>(T x);
+
+/// Derivative sources (0004 §15.3).
+public struct Derivatives
+{
+    /// `x`, whose derivatives along the screen's x and y are `dx` and `dy`. In an entry point
+    /// that reaches a seed, `Ddx`, `Ddy` and samples with an implicit level work from the seeds
+    /// in any stage (0 for values no seed reaches); a pixel entry that reaches none uses the
+    /// hardware's derivatives.
+    [Intrinsic("deriv.seed")] public static T Seed<T>(T x, T dx, T dy) where T : IFloat<T>;
+}

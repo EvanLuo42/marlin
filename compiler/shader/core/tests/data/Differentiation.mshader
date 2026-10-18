@@ -1,0 +1,95 @@
+namespace Game;
+
+// ---- ForwardDiff (0004 §15.2) ----
+
+[Differentiable]
+public float Poly(float x) => x * x * x - 2 * x;
+
+/// 3x² - 2.
+public float DPoly(float x) => ForwardDiff(Poly)(DiffPair(x, 1.0)).Derivative;
+
+/// The value comes back too.
+public float VPoly(float x) => ForwardDiff(Poly)(DiffPair(x, 1.0)).Value;
+
+[Differentiable]
+public float3 Shade(float3 n, float3 l, [NoDiff] float roughness)
+{
+    var ndl = Saturate(Dot(n, l));
+    return ndl * Normalize(n) * roughness;
+}
+
+public float3 DShade(float3 n, float3 dn, float3 l, float3 dl, float roughness)
+    => ForwardDiff(Shade)(DiffPair(n, dn), DiffPair(l, dl), roughness).Derivative;
+
+/// A library function, differentiated directly.
+public float DSin(float x) => ForwardDiff(Sin)(DiffPair(x)).Derivative
+    + ForwardDiff(Sin)(DiffPair(x, 1.0)).Derivative;
+
+/// d/dx (x · Detach(x)) = x.
+[Differentiable]
+public float Detached(float x) => x * Detach(x);
+
+public float DDetached(float x) => ForwardDiff(Detached)(DiffPair(x, 1.0)).Derivative;
+
+/// Σ x^k / k for k = 1..n: its derivative is Σ x^(k-1).
+[Differentiable]
+public float Series(float x, int n)
+{
+    float sum = 0;
+    float term = 1;
+    for (int i = 0; i < n; i++)
+    {
+        term = term * x;
+        sum += term / (i + 1);
+    }
+    return sum;
+}
+
+public float DSeries(float x, int n) => ForwardDiff(Series)(DiffPair(x, 1.0), n).Derivative;
+
+/// A branch picks the derivative too.
+[Differentiable]
+public float Piecewise(float x)
+{
+    if (x < 0.5)
+    {
+        return Sin(x);
+    }
+    return Exp(x) * Lerp(x, 2 * x, 0.25);
+}
+
+public float DPiecewise(float x) => ForwardDiff(Piecewise)(DiffPair(x, 1.0)).Derivative;
+
+/// d²/dx² x³ = 6x: `ForwardDiff` of a derivative.
+[Differentiable]
+public float Cube(float x) => x * x * x;
+
+[Differentiable]
+public float DCube(float x) => ForwardDiff(Cube)(DiffPair(x, 1.0)).Derivative;
+
+public float D2Cube(float x) => ForwardDiff(DCube)(DiffPair(x, 1.0)).Derivative;
+
+// ---- screen-space derivatives from seeds (0004 §15.3) ----
+
+/// (3 cos(3u) dx.x, 3 cos(3v) dy.y) + (|dx.x| + |dy.x|, 0).
+public float2 Screen(float2 uv0, float2 dx, float2 dy)
+{
+    var uv = Derivatives.Seed(uv0, dx, dy);
+    var w = Sin(uv * 3.0);
+    return float2(Ddx(w).x, Ddy(w).y) + float2(Fwidth(uv.x), 0);
+}
+
+public struct Surface
+{
+    public float2 Uv;
+    public float Scale;
+}
+
+float Pattern(Surface s) => Sin(s.Uv.x * s.Scale);
+
+/// Through a struct and a call: 4 cos(4u) dx.x; nothing seeded has 0.
+public float ScreenSurface(float2 uv0, float2 dx, float2 dy)
+{
+    var s = Surface { Uv = Derivatives.Seed(uv0, dx, dy), Scale = 4 };
+    return Ddx(Pattern(s)) + Ddy(uv0.x);
+}

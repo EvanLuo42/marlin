@@ -1,0 +1,38 @@
+namespace Game;
+
+// Mistakes with automatic differentiation (0004 §15), each reported once.
+
+public float Plain(float x) => x * 2;
+
+// E1138: a derivative flows into `Plain`; `Detach` and differentiable functions are fine.
+[Differentiable]
+public float CallsPlain(float x) => Plain(x) + Plain(Detach(x)) + Sin(x);
+
+// E1138: sampling is not differentiable.
+[Differentiable]
+public float Samples(Texture2D<float4> t, Sampler s, float2 uv) => t.Sample(s, uv, lod: 0).x;
+
+// E1139: `[NoDiff]` outside a differentiable function.
+public float Loose([NoDiff] float x) => x;
+
+// E1137: only `[Differentiable]` functions.
+public float OfPlain(float x) => ForwardDiff(Plain)(DiffPair(x, 1.0)).Derivative;
+
+// E1137: called right away.
+public float Alone(float x)
+{
+    ForwardDiff(Sin);
+    return x;
+}
+
+// E1137: a function by its name.
+public float NotByName(float x) => ForwardDiff(Sin(x))(DiffPair(x, 1.0)).Derivative;
+
+// A parameter that takes part takes a `DiffPair`.
+public float NoPair(float x) => ForwardDiff(Sin)(x).Derivative;
+
+// E1137: the result has no derivative.
+[Differentiable]
+public int Truncated(float x) => (int)x;
+
+public int OfTruncated(float x) => ForwardDiff(Truncated)(DiffPair(x, 1.0)).Value;

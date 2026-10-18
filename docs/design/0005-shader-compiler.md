@@ -163,7 +163,7 @@ DXC **故意关掉**了以下几项：
 |---|---|---|---|
 | 0.1 | 按实例降低 | — | 每个实例从 HIR 直接降低成 SSA：用 Braun 等人的"简单高效的 SSA 构造"，局部变量不经过 alloca + mem2reg 绕一圈；降低时代入类型实参、解析接口调用、求出 const 表达式的值（0006 §2、§11） |
 | 0.2 | 除零检查插入 | 新增 | 0004 §9.6：除数不是常量时，插入 `d == 0 ? 0 : n / d`。放在优化之前，值域分析可以把多余的检查消掉 |
-| 0.3 | 自动微分 | 新增（参考实现） | 前向模式：对 `ForwardDiff` 的调用点生成导数函数；对 `Derivatives.Seed` 出发的数据流，生成 x、y 两个方向的切向量（0004 §15.3）。只为确实用到的导数生成代码。反向模式以后在这里加。放在优化之前，生成的导数代码可以和原代码一起被优化 |
+| 0.3 | 自动微分 | 新增（参考实现） | 前向模式：`ForwardDiff` 的每个调用点是一个切向通道；`Derivatives.Seed` 出发的数据流有 x、y 两个通道（0004 §15.3）。只为确实用到的导数生成代码。反向模式以后在这里加。2026-10-18 改：降低时只留下标记（0006 §8.5），这个 pass 实际放在 1.3 mem2reg 之后、阶段 2 之前，在 inline 过的单个 SSA 函数里传播切向量，生成的导数代码仍然和原代码一起被优化；原来的设计是在 inline 之前为每个调用点生成导数函数 |
 | 0.4 | `Debug.*` 删除或降低 | 新增 | Shipping 构建删除；Development 构建保留 IR 里的 `debug.print`/`debug.assert`，由各后端降低（2026-10-17 定）：SPIR-V 直接用 `NonSemantic.DebugPrintf`（由验证层输出，第 10f 步实现），DXIL 和 Metal 没有对应的东西，写调试 buffer（0004 §12.5），buffer 的格式和绑定随 RHI 一起定 |
 
 **阶段 1：规范化**
@@ -453,7 +453,7 @@ Development 下的 `Debug.Print` 第 10f 步在 SPIR-V 上实现了，用 `NonSe
 
 第 10b 步加了纹理和采样器：
 - 核心库：`Textures.mshader` 里的十种纹理和两种采样器；`AsUInt`、`AsInt`、`AsFloat`；字节 buffer 的 `Load2`–`Load4`、`Store2`–`Store4`。
-- 降低：可选参数按形参名传，调用没写的就不传；`lod`、`bias`、`grad` 最多写一个；没有 `lod`/`grad` 的采样只在 pixel 入口里允许（E1309）。整数纹素按无符号读，有符号整数的纹理先报 E1301。
+- 降低：可选参数按形参名传，调用没写的就不传；`lod`、`bias`、`grad` 最多写一个；没有 `lod`/`grad` 的采样只在 pixel 入口里允许（E1309；第 11 步取消了这条限制，导数由自动微分给出）。整数纹素按无符号读，有符号整数的纹理先报 E1301。
 - SPIR-V 后端：纹理和采样器从 heap 里 `OpLoad` 出来；sampler heap 的槽宽是 `OpConstantSizeOfEXT(sampler)`；采样和 fetch 都取四个分量，再按纹素类型截短；storage 纹理用无格式的读写，也都按四个分量；`desc.get nonuniform` 加 `NonUniform` 装饰。
 - 比较采样、gather、偏移、尺寸查询和纹理原子操作，用到时再加（前四个第 10f 步加了，纹理原子操作第 10g 步）。
 
@@ -497,7 +497,7 @@ Development 下的 `Debug.Print` 第 10f 步在 SPIR-V 上实现了，用 `NonSe
 第 10g 步加了 visbuffer 渲染器（0009 §4.3、§11）要的东西（2026-10-18，决定记在 0004 §3.1、§12.2、§12.3、§15.3）：
 - 导数：
   - 核心库有 `Ddx`、`Ddy`、`Fwidth` 和它们的 `Coarse`、`Fine` 版本，不带后缀的是 coarse；`Fwidth*` 用 Marlin 写成 `Abs(Ddx) + Abs(Ddy)`。
-  - 降低成 `deriv.ddx`/`deriv.ddy`。非 pixel 入口走到的代码里求导报 E1309，和隐式 LOD 的采样一样，等自动微分。
+  - 降低成 `deriv.ddx`/`deriv.ddy`。第 10g 步时，非 pixel 入口走到的代码里求导报 E1309；第 11 步之后改由自动微分 pass 求出。
   - SPIR-V 用 `OpDPdxCoarse` 这一类，需要 `DerivativeControl`。
 - 64 位整数：
   - `vulkan-1.4` target 加了可选的 `Int64`、`Int64Atomics`、`Int64TextureAtomics`（target 版本升到 2）。和 `RayQuery` 一样，设备没有就跳过，RHI 在 `Features` 里报告（0016 §3）。
@@ -510,6 +510,26 @@ Development 下的 `Debug.Print` 第 10f 步在 SPIR-V 上实现了，用 `NonSe
 - 测试：
   - 编译器：`Game/Visibility.mshader` 走完整条流水线，并过 spirv-val；`bad_requests` 里加了两个用例；IR fixture 和 verifier 清单；验证器的破坏用例；capability 推断。
   - GPU（RTX 5060）：quad 导数的值；64 位算术和每一种 buffer 原子操作；`R64Uint` visbuffer 上的 `AtomicMax` 和带进位的 `AtomicAdd`；32 位纹理原子操作。
+
+第 11 步的自动微分（前向模式，2026-10-18；决定记在 0004 §15）：
+- 核心库：`Differentiation.mshader` 里的 `DiffPair<T>` 和同名的构造函数、`ForwardDiff`、`Detach`、`Derivatives.Seed`；`Attributes.mshader` 里的 `[Differentiable]`、`[NoDiff]`；数学函数标了 `[Differentiable]`。`Ddx`、`Ddy`、`Fwidth`（带 `Coarse`、`Fine`）和 derivatives 那一步的声明一致。
+- 前端：
+  - `ForwardDiff(f)(args)` 的类型规则（E1137）；
+  - `[Differentiable]` 函数里有导数流过的调用（E1138）；
+  - `[NoDiff]` 的位置（E1139）；
+  - 共享前端的 `Language::type_and_function_names`：shader 语言只列了 `DiffPair`，让泛型类型和同名函数并存。
+- 降低：`ForwardDiff` 的调用点变成 `diff.channel`、对每个参与微分的实参 `diff.seed`、照常调用、对结果 `diff.tangent`；`[NoDiff]` 的实参和 `Detach` 变成 `diff.detach`；`Derivatives.Seed` 是 `deriv.seed`。隐式 LOD 的采样和 `deriv.*` 在任何 stage 都能降低，verifier 也不再把它们限制在 pixel 入口。
+- `opt` 的 `Autodiff` pass（0.3，放在 mem2reg 之后）：
+  - 每个通道先算活跃（从 seed 出发、经过可微操作）和有用（从查询往回、经过要用的切向量），两者都满足的值才生成切向量；
+  - 块参数加切向量参数，剩下的 `function` 变量配一个影子变量；
+  - `ForwardDiff` 的通道先处理，内层先于外层，这样外层和屏幕空间的通道会对内层生成的代码再求导（二阶导数）；
+  - 没有导数又被需要的操作给出 E1402 警告。`PassManager` 的 `Problem` 加了 `warning`，facade 把它们放进输出的诊断。
+- 测试：
+  - `opt` 用解释器把每个可微操作和带循环、分支、内存的程序跟中心差分比较；
+  - 屏幕空间导数和嵌套通道有 golden；
+  - 核心库的测试从 Marlin 源码走完整条流水线；
+  - facade 有错误和警告的 golden，compute 入口里的 seed、采样和 `ForwardDiff` 能写出 SPIR-V。
+- 留到后面的：用户 struct 的 `IDifferentiable` 和合成、自定义导数（0004 §15.4）、反向模式、`ForwardDiff(f)` 存进变量、`ref`/`out` 参数。
 
 第 5c 步留到后面的：`[StructLayout]`/`[FieldOffset]`（0004 §16）；mesh 的 `MeshOutput`、`[Payload]` 和 `Mesh.Dispatch` 的检查（§11.6）；长度由 `const` 字段给出的数组，布局要等第 7 步的编译期求值；capability 和具体 target 的对照、`const if` 的裁剪，等第 9 步的 target 描述。
 

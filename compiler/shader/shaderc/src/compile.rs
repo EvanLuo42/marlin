@@ -134,29 +134,30 @@ fn run(s: &Session<'_>, cx: &Cx<'_>, req: &EntryRequest<'_>) -> Result<Outcome, 
         profile: req.profile,
         verify_each: false,
     };
+    let span = |at: Option<u32>| {
+        at.and_then(|i| module.locs.get(i as usize))
+            .map(|l| Span::new(FileId(l.file), TextRange::new(l.start.into(), l.end.into())))
+    };
+    let diagnostic = |p: &marlin_shaderc_opt::Problem| {
+        let mut d = if p.warning {
+            Diagnostic::warning(Code(p.code), p.message.clone())
+        } else {
+            Diagnostic::error(Code(p.code), p.message.clone())
+        };
+        if let Some(sp) = span(p.at) {
+            d = d.at(sp, "");
+        }
+        if let Some((why, at)) = &p.because
+            && let Some(sp) = span(*at)
+        {
+            d = d.label(sp, why.clone());
+        }
+        d
+    };
     match pipeline(&options).run(&mut optimized) {
-        Ok(_) => {}
+        Ok(report) => warnings.extend(report.warnings.iter().map(diagnostic)),
         Err(PassError::Rejected { problems, .. }) => {
-            let span = |at: Option<u32>| {
-                at.and_then(|i| module.locs.get(i as usize)).map(|l| {
-                    Span::new(FileId(l.file), TextRange::new(l.start.into(), l.end.into()))
-                })
-            };
-            let diagnostics = problems
-                .iter()
-                .map(|p| {
-                    let mut d = Diagnostic::error(Code(p.code), p.message.clone());
-                    if let Some(sp) = span(p.at) {
-                        d = d.at(sp, "");
-                    }
-                    if let Some((why, at)) = &p.because
-                        && let Some(sp) = span(*at)
-                    {
-                        d = d.label(sp, why.clone());
-                    }
-                    d
-                })
-                .collect();
+            let diagnostics = problems.iter().map(diagnostic).collect();
             return Ok(Err(CompileError { diagnostics }));
         }
         Err(e) => return Ok(Err(fail("E1506", format!("compiler bug: {e}")))),

@@ -668,6 +668,13 @@ pub(crate) fn eval(
         }
         Op::MatMul => matmul(m, args, tys),
         Op::AssumeUniform | Op::AssumeNonUniform => Ok(arg(0)?.clone()),
+        // Values only: the autodiff pass turns tangents into arithmetic before anything runs.
+        Op::DiffDetach | Op::DerivSeed => Ok(arg(0)?.clone()),
+        Op::DiffSeed => Ok(arg(1)?.clone()),
+        Op::DiffChannel => Ok(Val::Bits(0)),
+        Op::DiffTangent => Err(ExecError::new(
+            "`diff.tangent` before the autodiff pass made it arithmetic",
+        )),
         Op::Transpose => {
             let cols = parts(arg(0)?)?;
             let rows = cols.first().map_or(Ok(0), |c| parts(c).map(<[Val]>::len))?;

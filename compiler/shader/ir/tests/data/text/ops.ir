@@ -321,3 +321,16 @@ block0:
     %front = rq.get %q, committed.front_face
     return
 }
+
+// Automatic differentiation's marks (§8.5), which the autodiff pass resolves.
+func @Game.Marks(%x: f32, %dx: f32, %uv0: f32x2, %ddx: f32x2, %ddy: f32x2) -> f32 {
+block0:
+    %c = diff.channel
+    %s = diff.seed %c, %x, %dx
+    %y = fmul %s, %s
+    %dy = diff.tangent %c, %y
+    %k = diff.detach %y
+    %uv = deriv.seed %uv0, %ddx, %ddy
+    %r = fadd %dy, %k
+    return %r
+}

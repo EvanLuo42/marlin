@@ -57,8 +57,7 @@
 //! vector writes target 0.
 //!
 //! Step 10b: textures (`texture.rs`): `Sample`, `Load`, indexers and storage writes as
-//! `tex.*` operations, their optional arguments passed by name only when given; implicit
-//! levels only in pixel entries (E1309); bitcasts; byte buffers' `Load2`-`Store4`.
+//! `tex.*` operations, their optional arguments passed by name only when given; bitcasts; byte buffers' `Load2`-`Store4`.
 //!
 //! Step 10c: mesh and amplification entries (`mesh.rs`). A `MeshOutput` parameter becomes
 //! output arrays (one per field of the vertex and primitive types, and the index list); the
@@ -76,15 +75,20 @@
 //! `if (!c) print`); signed integer textures; `SampleCompare`, `Gather`, `GatherCompare`,
 //! constant offsets (E1309 otherwise) and the size queries (`texture.rs`).
 //!
-//! Step 10g: `Ddx`, `Ddy` and their `Coarse`/`Fine` forms as `deriv.*` (pixel entries only, E1309
-//! elsewhere until automatic differentiation); storage textures' atomics as `tex.atomic.*`
-//! (`texture.rs`), whose `Min`/`Max` pick their operation by the texel's kind.
+//! Step 10g: `Ddx`, `Ddy` and their `Coarse`/`Fine` forms as `deriv.*`; storage textures' atomics
+//! as `tex.atomic.*` (`texture.rs`), whose `Min`/`Max` pick their operation by the texel's kind.
+//!
+//! Step 11: automatic differentiation (`diff.rs`): `ForwardDiff(f)(args)` as a channel with
+//! seeds and a tangent, `Detach`, `[NoDiff]` arguments detached, `Derivatives.Seed`; `Ddx`,
+//! `Ddy` and samples with an implicit level in any stage, for the autodiff pass to resolve
+//! outside pixel entries (0005 §4.4 pass 0.3).
 //!
 //! Not lowered yet: auto-properties.
 
 mod closures;
 mod ctfe;
 mod debug;
+mod diff;
 mod dispatch;
 mod entry;
 mod error;
@@ -282,7 +286,6 @@ impl<'a, 'b> Lowering<'a, 'b> {
     pub fn finish(mut self) -> R<Module> {
         self.run()?;
         self.entry_uses();
-        self.implicit_levels()?;
         if let Some(f) = marlin_shaderc_ir::early_mesh_writes(&self.module).first() {
             return Err(LowerError::new(
                 "E1308",
@@ -290,52 +293,6 @@ impl<'a, 'b> Lowering<'a, 'b> {
             ));
         }
         Ok(self.module)
-    }
-
-    /// A sample without `lod:` or `grad:` takes its level from derivatives, which only pixel
-    /// entries have (0004 §10.4), and so do `Ddx` and the like: an error in code a module's
-    /// other entries run.
-    fn implicit_levels(&self) -> R<()> {
-        use marlin_shaderc_ir::{Op, Stage as IrStage, TexArg};
-        if self
-            .module
-            .entries
-            .iter()
-            .all(|e| e.stage == IrStage::Pixel)
-        {
-            return Ok(());
-        }
-        for (_, f) in self.module.funcs.iter() {
-            for &b in &f.layout {
-                for inst in f.insts(b) {
-                    // Compute derivatives come with automatic differentiation (0004 §15.3).
-                    if let Op::Deriv { .. } = &f.insts[inst].op {
-                        return Err(LowerError::new(
-                            "E1309",
-                            format!(
-                                "`{}` takes a derivative (`Ddx`, `Ddy`, `Fwidth`), which only \
-                                 pixel entries can so far",
-                                f.name
-                            ),
-                        ));
-                    }
-                    if let Op::TexSample(a) = &f.insts[inst].op
-                        && !a.contains(&TexArg::Lod)
-                        && !a.contains(&TexArg::Grad)
-                    {
-                        return Err(LowerError::new(
-                            "E1309",
-                            format!(
-                                "`{}` samples without `lod:` or `grad:`, which only pixel \
-                                 entries can (their level comes from derivatives)",
-                                f.name
-                            ),
-                        ));
-                    }
-                }
-            }
-        }
-        Ok(())
     }
 
     /// The IR function of an instance, declared (and queued) the first time.

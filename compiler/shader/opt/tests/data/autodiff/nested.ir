@@ -1,0 +1,54 @@
+// Channels that read each other's tangents: the inner one goes first, so the outer one
+// differentiates its tangent code (second derivatives).
+
+func @cube(%x: f64) -> f64 {
+block0:
+    %x2 = fmul %x, %x
+    %r = fmul %x2, %x
+    return %r
+}
+
+func @square(%x: f64) -> f64 {
+block0:
+    %r = fmul %x, %x
+    return %r
+}
+
+// d/dx x³ = 3x².
+func @first(%x: f64) -> f64 {
+block0:
+    %c = diff.channel
+    %s = diff.seed %c, %x, f64 1.0
+    %r = call @cube(%s)
+    %d = diff.tangent %c, %r
+    return %d
+}
+
+// d²/dx² x³ = 6x.
+func @second(%x: f64) -> f64 {
+block0:
+    %c = diff.channel
+    %s = diff.seed %c, %x, f64 1.0
+    %r = call @first(%s)
+    %d = diff.tangent %c, %r
+    return %d
+}
+
+// d/dx x² = 2x.
+func @dsquare(%x: f64) -> f64 {
+block0:
+    %c = diff.channel
+    %s = diff.seed %c, %x, f64 1.0
+    %r = call @square(%s)
+    %d = diff.tangent %c, %r
+    return %d
+}
+
+// The screen-space derivative of 2x, with x's derivative along the screen's x seeded: 2 dx.
+func @screen(%x: f64, %dx: f64) -> f64 {
+block0:
+    %u = deriv.seed %x, %dx, f64 0.0
+    %g = call @dsquare(%u)
+    %r = deriv.ddx coarse %g
+    return %r
+}

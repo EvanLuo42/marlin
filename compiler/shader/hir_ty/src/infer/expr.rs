@@ -704,6 +704,14 @@ impl InferCtx<'_, '_> {
         callee: ExprId,
         args: &[marlin_front_hir_def::store::Arg],
     ) -> Result<Ty, Cancelled> {
+        if let Expr::Call {
+            callee: inner,
+            args: inner_args,
+        } = self.body.store.exprs[callee].clone()
+            && self.names_forward_diff(inner)?
+        {
+            return self.forward_diff(e, callee, &inner_args, args);
+        }
         let callee_expr = self.body.store.exprs[callee].clone();
         match callee_expr {
             Expr::Path(path) => {
@@ -726,6 +734,9 @@ impl InferCtx<'_, '_> {
                         .resolve_in_body(self.cx, &def_path, true, &self.scopes, scope)?;
                 match resolution {
                     Resolution::Values(items) => {
+                        if self.names_forward_diff(callee)? {
+                            return self.forward_diff_alone(e, args);
+                        }
                         let functions: Vec<_> = items.iter().map(|&i| (i, Subst::new())).collect();
                         let infos = self.arg_infos(args)?;
                         let name = format!("`{def_path}`");

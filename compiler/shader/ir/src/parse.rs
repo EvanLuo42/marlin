@@ -1322,6 +1322,11 @@ impl Parser {
                 "transpose" => (Op::Transpose, self.operands(b, line, 1)?, None),
                 "assume.uniform" => (Op::AssumeUniform, self.operands(b, line, 1)?, None),
                 "assume.nonuniform" => (Op::AssumeNonUniform, self.operands(b, line, 1)?, None),
+                "diff.channel" => (Op::DiffChannel, Vec::new(), None),
+                "diff.seed" => (Op::DiffSeed, self.operands(b, line, 3)?, None),
+                "diff.tangent" => (Op::DiffTangent, self.operands(b, line, 2)?, None),
+                "diff.detach" => (Op::DiffDetach, self.operands(b, line, 1)?, None),
+                "deriv.seed" => (Op::DerivSeed, self.operands(b, line, 3)?, None),
                 "mat.column" | "mat.row" => {
                     let operands = self.operands(b, line, 1)?;
                     self.expect_punct(',')?;

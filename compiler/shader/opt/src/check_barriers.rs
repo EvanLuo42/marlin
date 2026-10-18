@@ -52,6 +52,7 @@ impl Pass for CheckBarriers {
                                 .into(),
                             at,
                         )),
+                        warning: false,
                     });
                 }
             }

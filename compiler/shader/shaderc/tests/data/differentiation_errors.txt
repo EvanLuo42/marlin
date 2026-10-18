@@ -1,0 +1,47 @@
+error[E1138]: `Game.CallsPlain` is `[Differentiable]`, but `Game.Plain` is not: mark it `[Differentiable]`, or pass `Detach(x)` to stop the derivative
+ --> Game/Broken.mshader:9:37
+  |
+9 | public float CallsPlain(float x) => Plain(x) + Plain(Detach(x)) + Sin(x);
+  |                                     ^^^^^^^^
+
+error[E1138]: `Game.Samples` is `[Differentiable]`, but `Marlin.Texture2D.Sample` is not: mark it `[Differentiable]`, or pass `Detach(x)` to stop the derivative
+  --> Game/Broken.mshader:13:68
+   |
+13 | public float Samples(Texture2D<float4> t, Sampler s, float2 uv) => t.Sample(s, uv, lod: 0).x;
+   |                                                                    ^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E1139]: `[NoDiff]` is for parameters of `[Differentiable]` functions
+  --> Game/Broken.mshader:16:29
+   |
+16 | public float Loose([NoDiff] float x) => x;
+   |                             ^^^^^
+
+error[E1137]: `Plain` is not `[Differentiable]`, so `ForwardDiff` cannot differentiate it
+  --> Game/Broken.mshader:19:46
+   |
+19 | public float OfPlain(float x) => ForwardDiff(Plain)(DiffPair(x, 1.0)).Derivative;
+   |                                              ^^^^^
+
+error[E1137]: `ForwardDiff(f)` is called right away: `ForwardDiff(f)(DiffPair(x, dx), ...)`
+  --> Game/Broken.mshader:24:5
+   |
+24 |     ForwardDiff(Sin);
+   |     ^^^^^^^^^^^^^^^^
+
+error[E1137]: `ForwardDiff` takes a function by its name, without calling it
+  --> Game/Broken.mshader:29:48
+   |
+29 | public float NotByName(float x) => ForwardDiff(Sin(x))(DiffPair(x, 1.0)).Derivative;
+   |                                                ^^^^^^
+
+error[E1103]: cannot convert `float` to `DiffPair<float>` implicitly
+  --> Game/Broken.mshader:32:50
+   |
+32 | public float NoPair(float x) => ForwardDiff(Sin)(x).Derivative;
+   |                                                  ^
+
+error[E1137]: `Truncated` returns `int`, which has no derivative for `ForwardDiff` to give
+  --> Game/Broken.mshader:38:48
+   |
+38 | public int OfTruncated(float x) => ForwardDiff(Truncated)(DiffPair(x, 1.0)).Value;
+   |                                                ^^^^^^^^^

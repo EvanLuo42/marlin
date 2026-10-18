@@ -8,5 +8,6 @@ use marlin_test_support::MemCap;
 #[global_allocator]
 static HEAP: MemCap<std::alloc::System> = MemCap::new(std::alloc::System, 1 << 30);
 
+mod diff;
 mod library;
 mod support;

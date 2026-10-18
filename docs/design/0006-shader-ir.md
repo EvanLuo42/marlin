@@ -255,9 +255,22 @@ barrier exec(none) mem(device) spaces(buffer, image)
 
 ### 8.5 导数
 
-- `deriv.ddx` 和 `deriv.ddy` 都带 `coarse` 或 `fine`，是 convergent 的，只能在 pixel stage 里出现。
+- `deriv.ddx` 和 `deriv.ddy` 都带 `coarse` 或 `fine`，是 convergent 的。
 - 第 10g 步（2026-10-18）：源语言里不带后缀的 `Ddx`、`Ddy` 降低成 `coarse`；`Fwidth` 不是 op，核心库把它写成 `abs` 加 `fadd`。
 - compute 里的导数已经在自动微分阶段（0005 §4.4 的 0.3）变成了普通算术，后端 IR 里不会出现。
+- 第 11 步（2026-10-18）：降低时留下自动微分的标记，由 0.3 的 pass 解掉，之后的 IR 里就没有它们了。
+
+```text
+%c  = diff.channel                    // 一个 `ForwardDiff` 调用点的通道，i32 记号
+%s  = diff.seed %c, %x, %dx           // 值是 %x，在通道 %c 里的切向量是 %dx
+%dy = diff.tangent %c, %y             // %y 在通道 %c 里的切向量
+%k  = diff.detach %x                  // 值是 %x，在所有通道里都没有切向量
+%uv = deriv.seed %uv0, %dudx, %dudy   // 值是 %uv0，`deriv.ddx`/`deriv.ddy` 读到的导数是后两个
+```
+
+  - 通道是 `diff.channel` 的结果值，所以 inline 复制一份函数，复制出来的调用点也各有各的通道。
+  - verifier 只检查操作数的类型：通道是 `i32`，值和切向量（导数）同类型，`deriv.seed` 取浮点。`deriv.*` 和隐式 LOD 的采样在任何入口里都合法：不是 pixel 的入口，或者走得到 `deriv.seed` 的 pixel 入口，由 0.3 换成算术和带 `grad` 的采样。`discard`、`is_helper` 仍然只能在 pixel 入口里。
+  - 解释器把 `diff.seed`、`diff.detach`、`deriv.seed` 当作取值，`diff.tangent` 报错：要先跑 0.3。
 
 ### 8.6 纹理
 
@@ -274,7 +287,7 @@ tex.store %st, %coord, %v
 
 - 操作数包里可以有：`lod`、`bias`、`grad`、`compare`、`offset`、`min_lod`、`sample`（MSAA）、`array`。其中 `lod`、`bias` 和 `grad` 互斥。
 - 第 10b 步实现了 `tex.sample`、`tex.load`、`tex.store`，操作数包是 `lod`、`bias`、`grad: (%dx, %dy)`、`layer`、`mip`、`sample`，必须按这个顺序写，每个最多一次。数组的层写成 `layer`（整数），不并进坐标；后端在需要时再并进去。`compare`、`offset`、`min_lod`、`tex.gather`、`tex.atomic` 和 `tex.query` 等用到时再加。
-- 纹理种类有：`Texture2D`、`Texture2DArray`、`Texture3D`、`TextureCube`、`TextureCubeArray`、`Texture2DMS`、`Texture2DMSArray`、`StorageTexture2D`、`StorageTexture2DArray`、`StorageTexture3D`。verifier 按种类检查坐标的维数、需要的参数（数组要 `layer`，多重采样要 `sample`），以及哪些操作可以做：cube 只能采样，storage 只能按纹素读写，没有 `lod`/`grad` 的采样只能在 pixel 入口里。
+- 纹理种类有：`Texture2D`、`Texture2DArray`、`Texture3D`、`TextureCube`、`TextureCubeArray`、`Texture2DMS`、`Texture2DMSArray`、`StorageTexture2D`、`StorageTexture2DArray`、`StorageTexture3D`。verifier 按种类检查坐标的维数、需要的参数（数组要 `layer`，多重采样要 `sample`），以及哪些操作可以做：cube 只能采样，storage 只能按纹素读写。没有 `lod`/`grad` 的采样原来只能在 pixel 入口里，第 11 步起在任何入口里都合法（§8.5）。
 - 只有隐式 LOD 的采样是 convergent 的。
 - `offset` 在 legalize 的 5.6 之后必须是常量。
 - 第 10 步补全时（2026-10-18）加了这些：

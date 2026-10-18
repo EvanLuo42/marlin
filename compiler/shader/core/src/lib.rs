@@ -9,6 +9,7 @@
 //! - `Math.mshader`: math functions, with HLSL's names in PascalCase (§17.2).
 //! - `Resources.mshader`: uniforms and buffers with their atomics (§10), `Func`/`Action`.
 //! - `Textures.mshader`: textures, storage textures and samplers (§10.4).
+//! - `Differentiation.mshader`: `DiffPair`, `ForwardDiff`, `Detach`, `Derivatives.Seed` (§15).
 //! - `Gpu.mshader`: `Barrier`, `Wave`, `Debug`, `NonUniform` (§10.3, §12).
 //! - `Mesh.mshader`: mesh outputs and `Mesh.Dispatch` (§11.6).
 //! - `RayTracing.mshader`: rays, inline ray queries and acceleration structures (§12.4).
@@ -21,6 +22,10 @@ pub const FILES: &[(&str, &str)] = &[
     (
         "Attributes.mshader",
         include_str!("../library/Attributes.mshader"),
+    ),
+    (
+        "Differentiation.mshader",
+        include_str!("../library/Differentiation.mshader"),
     ),
     ("Gpu.mshader", include_str!("../library/Gpu.mshader")),
     ("Math.mshader", include_str!("../library/Math.mshader")),

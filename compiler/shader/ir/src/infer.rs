@@ -109,7 +109,9 @@ pub fn result_types_in(
             one(vector(t, Scalar::I1, n))
         }
         Op::Select => one(arg(1)),
-        Op::AssumeUniform | Op::AssumeNonUniform => one(arg(0)),
+        Op::AssumeUniform | Op::AssumeNonUniform | Op::DiffDetach | Op::DerivSeed => one(arg(0)),
+        Op::DiffChannel => one(scalar(t, Scalar::I32)),
+        Op::DiffSeed | Op::DiffTangent => one(arg(1)),
         Op::Convert(_) | Op::Splat | Op::Construct | Op::Var => one(need_explicit()),
 
         Op::Math(math) => {

@@ -149,11 +149,6 @@ public void TexelLoad([DispatchThreadId] uint3 id, [Push] in TexelArgs a)
     a.Output.Store4(a.Offset + (id.y * a.Width + id.x) * 16, AsUInt(texel));
 }
 
-// An implicit level outside a pixel entry: an error.
-[Compute(1, 1, 1)]
-public void ImplicitInCompute([Push] in SampleArgs a) =>
-    a.Output.Store(0, AsUInt(a.Texture.Sample(a.Sampler, float2(a.U, a.V))));
-
 // Errors: offsets are constants in -8..7; a gather channel is a constant.
 [Compute(1, 1, 1)]
 public void RuntimeOffset([Push] in SampleArgs a) =>

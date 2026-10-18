@@ -116,7 +116,7 @@ impl Query for PackageDefMap {
             collector.trees.insert(file, tree.clone());
             trees.push((file, tree));
         }
-        collector.namespace_duplicates();
+        collector.namespace_duplicates(language.type_and_function_names);
         for (file, tree) in &trees {
             collector.member_duplicates(*file, tree);
         }
@@ -209,8 +209,8 @@ impl Collector {
     }
 
     /// Types defined twice, fields defined twice or next to functions, and names used by both a
-    /// type and a value or namespace.
-    fn namespace_duplicates(&mut self) {
+    /// type and a value or namespace (but for names in `shared`: generic types and functions).
+    fn namespace_duplicates(&mut self, shared: &[&str]) {
         let mut found = Vec::new();
         for scope in self.map.namespaces.values() {
             for ((name, _), items) in &scope.types {
@@ -231,7 +231,14 @@ impl Collector {
                     .iter()
                     .find(|((type_name, _), _)| type_name == name)
                     .map(|(_, items)| items[0]);
-                if let Some(first) = type_named {
+                // A generic type of a name the language lets functions share.
+                let shared_ok = shared.contains(&name.as_str())
+                    && kinds.iter().all(|&(_, f)| f)
+                    && scope
+                        .types
+                        .keys()
+                        .all(|(type_name, arity)| type_name != name || *arity > 0);
+                if let Some(first) = type_named.filter(|_| !shared_ok) {
                     for &dup in items {
                         found.push((dup, first, name.clone(), "name"));
                     }

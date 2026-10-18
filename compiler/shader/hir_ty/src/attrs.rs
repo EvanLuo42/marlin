@@ -58,6 +58,12 @@ pub enum KnownAttr {
     /// `[Payload]` on a mesh entry's parameter: what its amplification entry dispatched
     /// (0004 §11.6).
     Payload,
+    /// `[Differentiable]` on a function: `ForwardDiff` differentiates it, and it calls only
+    /// functions that are differentiable too (0004 §15.1).
+    Differentiable,
+    /// `[NoDiff]` on a parameter of a differentiable function: it takes no part in
+    /// differentiation (0004 §15.1).
+    NoDiff,
 }
 
 impl KnownAttr {
@@ -77,6 +83,8 @@ impl KnownAttr {
             "Uniform" => KnownAttr::Uniform,
             "Export" => KnownAttr::Export,
             "Payload" => KnownAttr::Payload,
+            "Differentiable" => KnownAttr::Differentiable,
+            "NoDiff" => KnownAttr::NoDiff,
             "Flat" | "NoPerspective" | "Centroid" | "Sample" => KnownAttr::Interpolation,
             _ => KnownAttr::SystemValue(match name {
                 "DispatchThreadId" => DispatchThreadId,

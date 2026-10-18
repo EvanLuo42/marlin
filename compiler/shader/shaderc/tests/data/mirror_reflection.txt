@@ -117,6 +117,11 @@ ShaderReflection {
         },
         SourceHash {
             package: "Marlin",
+            path: "Differentiation.mshader",
+            hash: 0,
+        },
+        SourceHash {
+            package: "Marlin",
             path: "Gpu.mshader",
             hash: 0,
         },
@@ -158,6 +163,11 @@ ShaderReflection {
         SourceHash {
             package: "Game",
             path: "Debug.mshader",
+            hash: 0,
+        },
+        SourceHash {
+            package: "Game",
+            path: "Derivatives.mshader",
             hash: 0,
         },
         SourceHash {

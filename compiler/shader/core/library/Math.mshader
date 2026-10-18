@@ -5,65 +5,69 @@ namespace Marlin;
 
 // ---- numbers ----
 
-[Intrinsic("min")] public T Min<T>(T a, T b) where T : IArithmetic<T>;
-[Intrinsic("max")] public T Max<T>(T a, T b) where T : IArithmetic<T>;
+[Intrinsic("min"), Differentiable] public T Min<T>(T a, T b) where T : IArithmetic<T>;
+[Intrinsic("max"), Differentiable] public T Max<T>(T a, T b) where T : IArithmetic<T>;
 
 /// `x` limited to `lo..hi`.
+[Differentiable]
 public T Clamp<T>(T x, T lo, T hi) where T : IArithmetic<T> => Min(Max(x, lo), hi);
 
 /// For floats and signed integers.
-[Intrinsic("abs")] public T Abs<T>(T x) where T : IArithmetic<T>;
+[Intrinsic("abs"), Differentiable] public T Abs<T>(T x) where T : IArithmetic<T>;
 
 /// -1, 0 or 1 (0 for NaN), as the argument's type; for floats and signed integers.
-[Intrinsic("sign")] public T Sign<T>(T x) where T : IArithmetic<T>;
+[Intrinsic("sign"), Differentiable] public T Sign<T>(T x) where T : IArithmetic<T>;
 
 // ---- floating point ----
 
 /// `x` limited to `0..1`.
+[Differentiable]
 public T Saturate<T>(T x) where T : IFloat<T> => Clamp(x, T.Zero, T.One);
 
 /// `a` at `t` = 0, `b` at `t` = 1.
+[Differentiable]
 public T Lerp<T>(T a, T b, T t) where T : IFloat<T> => a + (b - a) * t;
 
-[Intrinsic("floor")] public T Floor<T>(T x) where T : IFloat<T>;
-[Intrinsic("ceil")] public T Ceil<T>(T x) where T : IFloat<T>;
+[Intrinsic("floor"), Differentiable] public T Floor<T>(T x) where T : IFloat<T>;
+[Intrinsic("ceil"), Differentiable] public T Ceil<T>(T x) where T : IFloat<T>;
 /// Towards zero.
-[Intrinsic("ftrunc")] public T Trunc<T>(T x) where T : IFloat<T>;
+[Intrinsic("ftrunc"), Differentiable] public T Trunc<T>(T x) where T : IFloat<T>;
 /// To the nearest integer, halves to even.
-[Intrinsic("round_even")] public T Round<T>(T x) where T : IFloat<T>;
+[Intrinsic("round_even"), Differentiable] public T Round<T>(T x) where T : IFloat<T>;
 /// `x - Floor(x)`.
-[Intrinsic("fract")] public T Frac<T>(T x) where T : IFloat<T>;
+[Intrinsic("fract"), Differentiable] public T Frac<T>(T x) where T : IFloat<T>;
 
-[Intrinsic("sqrt")] public T Sqrt<T>(T x) where T : IFloat<T>;
+[Intrinsic("sqrt"), Differentiable] public T Sqrt<T>(T x) where T : IFloat<T>;
 /// `1 / Sqrt(x)`, approximate.
-[Intrinsic("rsqrt")] public T Rsqrt<T>(T x) where T : IFloat<T>;
+[Intrinsic("rsqrt"), Differentiable] public T Rsqrt<T>(T x) where T : IFloat<T>;
 /// `1 / x`, approximate.
-[Intrinsic("rcp")] public T Rcp<T>(T x) where T : IFloat<T>;
+[Intrinsic("rcp"), Differentiable] public T Rcp<T>(T x) where T : IFloat<T>;
 /// `a * b + c`, rounded once.
-[Intrinsic("fma")] public T Fma<T>(T a, T b, T c) where T : IFloat<T>;
+[Intrinsic("fma"), Differentiable] public T Fma<T>(T a, T b, T c) where T : IFloat<T>;
 
-[Intrinsic("pow")] public T Pow<T>(T x, T y) where T : IFloat<T>;
-[Intrinsic("exp")] public T Exp<T>(T x) where T : IFloat<T>;
-[Intrinsic("exp2")] public T Exp2<T>(T x) where T : IFloat<T>;
-[Intrinsic("log")] public T Log<T>(T x) where T : IFloat<T>;
-[Intrinsic("log2")] public T Log2<T>(T x) where T : IFloat<T>;
+[Intrinsic("pow"), Differentiable] public T Pow<T>(T x, T y) where T : IFloat<T>;
+[Intrinsic("exp"), Differentiable] public T Exp<T>(T x) where T : IFloat<T>;
+[Intrinsic("exp2"), Differentiable] public T Exp2<T>(T x) where T : IFloat<T>;
+[Intrinsic("log"), Differentiable] public T Log<T>(T x) where T : IFloat<T>;
+[Intrinsic("log2"), Differentiable] public T Log2<T>(T x) where T : IFloat<T>;
 
-[Intrinsic("sin")] public T Sin<T>(T x) where T : IFloat<T>;
-[Intrinsic("cos")] public T Cos<T>(T x) where T : IFloat<T>;
-[Intrinsic("tan")] public T Tan<T>(T x) where T : IFloat<T>;
-[Intrinsic("asin")] public T Asin<T>(T x) where T : IFloat<T>;
-[Intrinsic("acos")] public T Acos<T>(T x) where T : IFloat<T>;
-[Intrinsic("atan")] public T Atan<T>(T x) where T : IFloat<T>;
+[Intrinsic("sin"), Differentiable] public T Sin<T>(T x) where T : IFloat<T>;
+[Intrinsic("cos"), Differentiable] public T Cos<T>(T x) where T : IFloat<T>;
+[Intrinsic("tan"), Differentiable] public T Tan<T>(T x) where T : IFloat<T>;
+[Intrinsic("asin"), Differentiable] public T Asin<T>(T x) where T : IFloat<T>;
+[Intrinsic("acos"), Differentiable] public T Acos<T>(T x) where T : IFloat<T>;
+[Intrinsic("atan"), Differentiable] public T Atan<T>(T x) where T : IFloat<T>;
 /// The angle of `(x, y)`, in `-π..π`.
-[Intrinsic("atan2")] public T Atan2<T>(T y, T x) where T : IFloat<T>;
-[Intrinsic("sinh")] public T Sinh<T>(T x) where T : IFloat<T>;
-[Intrinsic("cosh")] public T Cosh<T>(T x) where T : IFloat<T>;
-[Intrinsic("tanh")] public T Tanh<T>(T x) where T : IFloat<T>;
+[Intrinsic("atan2"), Differentiable] public T Atan2<T>(T y, T x) where T : IFloat<T>;
+[Intrinsic("sinh"), Differentiable] public T Sinh<T>(T x) where T : IFloat<T>;
+[Intrinsic("cosh"), Differentiable] public T Cosh<T>(T x) where T : IFloat<T>;
+[Intrinsic("tanh"), Differentiable] public T Tanh<T>(T x) where T : IFloat<T>;
 
 /// 0 below `lo`, 1 above `hi`, a smooth Hermite curve between.
-[Intrinsic("smoothstep")] public T Smoothstep<T>(T lo, T hi, T x) where T : IFloat<T>;
+[Intrinsic("smoothstep"), Differentiable]
+public T Smoothstep<T>(T lo, T hi, T x) where T : IFloat<T>;
 /// 0 where `x < edge`, 1 elsewhere.
-[Intrinsic("step")] public T Step<T>(T edge, T x) where T : IFloat<T>;
+[Intrinsic("step"), Differentiable] public T Step<T>(T edge, T x) where T : IFloat<T>;
 
 [Intrinsic("isnan")] public bool IsNan(half x);
 [Intrinsic("isnan")] public bool IsNan(float x);
@@ -78,9 +82,10 @@ public Vector<bool, N> IsNan<T, const int N>(Vector<T, N> x) where T : IFloat<T>
 public Vector<bool, N> IsInf<T, const int N>(Vector<T, N> x) where T : IFloat<T>;
 
 // ---- derivatives (0004 §15.3) ----
-// How `x` changes from this pixel to its neighbour in the 2×2 quad, along x or y: pixel entries
-// only for now. The unsuffixed forms are the coarse ones; `Fine` ones differ per pixel of the
-// quad (2026-10-18).
+// How `x` changes from this pixel to its neighbour in the 2×2 quad, along x or y; outside pixel
+// entries, and in pixel entries that seed, from `Derivatives.Seed` (0 where no seed reaches).
+// The unsuffixed forms are the coarse ones; `Fine` ones differ per pixel of the quad
+// (2026-10-18).
 
 [Intrinsic("deriv.ddx.coarse")] public T Ddx<T>(T x) where T : IFloat<T>;
 [Intrinsic("deriv.ddy.coarse")] public T Ddy<T>(T x) where T : IFloat<T>;
@@ -96,32 +101,32 @@ public T FwidthFine<T>(T x) where T : IFloat<T> => Abs(DdxFine(x)) + Abs(DdyFine
 
 // ---- vectors ----
 
-[Intrinsic("dot")]
+[Intrinsic("dot"), Differentiable]
 public T Dot<T, const int N>(Vector<T, N> a, Vector<T, N> b) where T : IArithmetic<T>;
 
-[Intrinsic("cross")]
+[Intrinsic("cross"), Differentiable]
 public Vector<T, 3> Cross<T>(Vector<T, 3> a, Vector<T, 3> b) where T : IFloat<T>;
 
-[Intrinsic("length")]
+[Intrinsic("length"), Differentiable]
 public T Length<T, const int N>(Vector<T, N> v) where T : IFloat<T>;
 
-[Intrinsic("distance")]
+[Intrinsic("distance"), Differentiable]
 public T Distance<T, const int N>(Vector<T, N> a, Vector<T, N> b) where T : IFloat<T>;
 
-[Intrinsic("normalize")]
+[Intrinsic("normalize"), Differentiable]
 public Vector<T, N> Normalize<T, const int N>(Vector<T, N> v) where T : IFloat<T>;
 
 /// `i` reflected about the normal `n` (unit length).
-[Intrinsic("reflect")]
+[Intrinsic("reflect"), Differentiable]
 public Vector<T, N> Reflect<T, const int N>(Vector<T, N> i, Vector<T, N> n) where T : IFloat<T>;
 
 /// `i` refracted through the normal `n` with the index ratio `eta`; 0 on total reflection.
-[Intrinsic("refract")]
+[Intrinsic("refract"), Differentiable]
 public Vector<T, N> Refract<T, const int N>(Vector<T, N> i, Vector<T, N> n, T eta)
     where T : IFloat<T>;
 
 /// `n` if it faces away from `i` (judged by `ng`), `-n` otherwise.
-[Intrinsic("faceforward")]
+[Intrinsic("faceforward"), Differentiable]
 public Vector<T, N> FaceForward<T, const int N>(Vector<T, N> n, Vector<T, N> i, Vector<T, N> ng)
     where T : IFloat<T>;
 
@@ -136,14 +141,14 @@ public bool Any(bool3 v) => v.x || v.y || v.z;
 public bool Any(bool4 v) => v.x || v.y || v.z || v.w;
 
 /// `a` where `c`, `b` elsewhere; per component for a `bool` vector (0004 §9.4).
-[Intrinsic("select")] public T Select<T>(bool c, T a, T b);
-[Intrinsic("select")]
+[Intrinsic("select"), Differentiable] public T Select<T>(bool c, T a, T b);
+[Intrinsic("select"), Differentiable]
 public Vector<T, N> Select<T, const int N>(Vector<bool, N> c, Vector<T, N> a, Vector<T, N> b)
     where T : IScalar<T>;
 
 // ---- matrices ----
 
-[Intrinsic("transpose")]
+[Intrinsic("transpose"), Differentiable]
 public Matrix<T, C, R> Transpose<T, const int R, const int C>(Matrix<T, R, C> m)
     where T : IScalar<T>;
 

@@ -12,6 +12,7 @@ use marlin_front_hir_def::{
 use marlin_lang_query::{Cancelled, Cx, Query};
 
 use crate::diagnostics::{TyDiagnostic, TyDiagnosticKind, TyLoc};
+use crate::ty::{GenericArgTy, Ty};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Scalar {
@@ -163,6 +164,8 @@ pub struct Builtins {
     pub intrinsic_attribute: Option<ItemId>,
     /// `Marlin.IAttribute`, which attribute structs implement.
     pub attribute_interface: Option<ItemId>,
+    /// `Marlin.DiffPair<T>`, a value and its derivative (0004 §15.2).
+    pub diff_pair: Option<ItemId>,
     pub kinds: BTreeMap<ItemId, BuiltinKind>,
     pub items: BTreeMap<BuiltinKind, Vec<ItemId>>,
     pub diagnostics: Vec<TyDiagnostic>,
@@ -186,6 +189,46 @@ impl Builtins {
             _ => None,
         }
     }
+
+    /// Whether values of `ty` have derivatives (0004 §15.1): floating-point scalars, vectors
+    /// and matrices, and arrays of them. (User structs come with `IDifferentiable`.)
+    pub fn differentiable(&self, ty: &Ty) -> bool {
+        match ty {
+            Ty::Adt { item, args } => match self.kind(*item) {
+                Some(BuiltinKind::Scalar(s)) => {
+                    matches!(s, Scalar::F16 | Scalar::F32 | Scalar::F64)
+                }
+                Some(BuiltinKind::Vector | BuiltinKind::Matrix) => {
+                    matches!(args.first(), Some(GenericArgTy::Type(t)) if self.differentiable(t))
+                }
+                _ => false,
+            },
+            Ty::Array { element, .. } => self.differentiable(element),
+            _ => false,
+        }
+    }
+
+    /// `T` of a `DiffPair<T>`.
+    pub fn diff_pair_of(&self, ty: &Ty) -> Option<Ty> {
+        match ty {
+            Ty::Adt { item, args } if Some(*item) == self.diff_pair => match args.first() {
+                Some(GenericArgTy::Type(t)) => Some(t.clone()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// `DiffPair<T>`.
+    pub fn diff_pair(&self, t: Ty) -> Ty {
+        match self.diff_pair {
+            Some(item) => Ty::Adt {
+                item,
+                args: Arc::new([GenericArgTy::Type(t)]),
+            },
+            None => Ty::Error,
+        }
+    }
 }
 
 fn marlin() -> NamespacePath {
@@ -194,11 +237,21 @@ fn marlin() -> NamespacePath {
 
 /// The first type named `name` in namespace `Marlin` of the visible packages.
 fn marlin_type(cx: &Cx<'_>, package: PackageId, name: &str) -> Result<Option<ItemId>, Cancelled> {
+    marlin_generic(cx, package, name, 0)
+}
+
+/// The first type named `name` with `arity` type parameters in namespace `Marlin`.
+fn marlin_generic(
+    cx: &Cx<'_>,
+    package: PackageId,
+    name: &str,
+    arity: u32,
+) -> Result<Option<ItemId>, Cancelled> {
     for &p in cx.get::<VisiblePackages>(&package)?.iter() {
         let map = cx.get::<PackageDefMap>(&p)?;
         if let Some(items) = map
             .namespace(&marlin())
-            .and_then(|ns| ns.types.get(&(Name::new(name), 0)))
+            .and_then(|ns| ns.types.get(&(Name::new(name), arity)))
         {
             return Ok(Some(items[0]));
         }
@@ -250,6 +303,7 @@ impl Query for BuiltinsQuery {
             builtin_attribute: marlin_type(cx, *package, "BuiltinAttribute")?,
             intrinsic_attribute: marlin_type(cx, *package, "IntrinsicAttribute")?,
             attribute_interface: marlin_type(cx, *package, "IAttribute")?,
+            diff_pair: marlin_generic(cx, *package, "DiffPair", 1)?,
             ..Builtins::default()
         };
         let Some(builtin_attribute) = builtins.builtin_attribute else {

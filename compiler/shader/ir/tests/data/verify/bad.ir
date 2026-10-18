@@ -222,3 +222,14 @@ block0:
     mesh.set_counts i32 3, i32 1
     return
 }
+
+// ==== autodiff marks with the wrong operands
+func @Marks(%x: f32, %i: i32, %v: f32x2) -> f32 {
+block0:
+    %c = diff.channel
+    %a = diff.seed %x, %x, %x
+    %b = diff.seed %c, %x, %v
+    %d = deriv.seed %i, %i, %i
+    %e = deriv.seed %x, %v, %v
+    return %x
+}

@@ -164,6 +164,20 @@ impl Decl<'_, '_> {
                     .into(),
             );
         }
+        if !attrs.has(KnownAttr::Differentiable) {
+            for (param, param_attrs) in sig.params.iter().zip(&attrs.params) {
+                if param_attrs
+                    .iter()
+                    .any(|a| a.known == Some(KnownAttr::NoDiff))
+                {
+                    self.report(
+                        TyLoc::Type(param.ty),
+                        "E1139",
+                        "`[NoDiff]` is for parameters of `[Differentiable]` functions".into(),
+                    );
+                }
+            }
+        }
 
         // Types as written.
         for (param, ty) in sig.params.iter().zip(&types.params) {

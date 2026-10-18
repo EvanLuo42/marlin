@@ -1,0 +1,385 @@
+// Functions of `f64` numbers and vectors that the autodiff tests differentiate in every
+// parameter (`autodiff.rs`, `derivatives_match_finite_differences`), checked against central
+// differences at random points with every component in 0.1..0.9 (where every one of them is
+// smooth). One per differentiable operation, then programs with control flow and memory.
+
+struct @Pair { a: f64, n: i32, b: f64x2 }
+
+func @fadd(%x: f64, %y: f64) -> f64 {
+block0:
+    %r = fadd %x, %y
+    return %r
+}
+
+func @fsub(%x: f64, %y: f64) -> f64 {
+block0:
+    %r = fsub %x, %y
+    return %r
+}
+
+func @fmul(%x: f64, %y: f64) -> f64 {
+block0:
+    %r = fmul %x, %y
+    return %r
+}
+
+func @fdiv(%x: f64, %y: f64) -> f64 {
+block0:
+    %r = fdiv %x, %y
+    return %r
+}
+
+func @frem(%x: f64, %y: f64) -> f64 {
+block0:
+    %x3 = fmul %x, f64 3.0
+    %r = frem %x3, %y
+    return %r
+}
+
+func @fneg(%x: f64) -> f64 {
+block0:
+    %r = fneg %x
+    return %r
+}
+
+func @fma(%x: f64, %y: f64, %z: f64) -> f64 {
+block0:
+    %r = fma %x, %y, %z
+    return %r
+}
+
+func @sqrt(%x: f64) -> f64 {
+block0:
+    %r = sqrt %x
+    return %r
+}
+
+func @rsqrt(%x: f64) -> f64 {
+block0:
+    %r = rsqrt %x
+    return %r
+}
+
+func @rcp(%x: f64) -> f64 {
+block0:
+    %r = rcp %x
+    return %r
+}
+
+func @exp2(%x: f64) -> f64 {
+block0:
+    %r = exp2 %x
+    return %r
+}
+
+func @log2(%x: f64) -> f64 {
+block0:
+    %r = log2 %x
+    return %r
+}
+
+func @sin(%x: f64) -> f64 {
+block0:
+    %r = sin %x
+    return %r
+}
+
+func @cos(%x: f64) -> f64 {
+block0:
+    %r = cos %x
+    return %r
+}
+
+func @abs(%x: f64) -> f64 {
+block0:
+    %n = fsub f64 0.5, %x
+    %r = abs %n
+    return %r
+}
+
+func @fmin(%x: f64, %y: f64) -> f64 {
+block0:
+    %r = fmin %x, %y
+    return %r
+}
+
+func @fmax(%x: f64, %y: f64) -> f64 {
+block0:
+    %r = fmax %x, %y
+    return %r
+}
+
+func @fract(%x: f64) -> f64 {
+block0:
+    %x2 = fadd %x, f64 2.0
+    %r = fract %x2
+    return %r
+}
+
+func @flat(%x: f64) -> f64 {
+block0:
+    %f = floor %x
+    %c = ceil %x
+    %t = ftrunc %x
+    %e = round_even %x
+    %s = sign %x
+    %p = step f64 0.95, %x
+    %a = fadd %f, %c
+    %b = fadd %a, %t
+    %d = fadd %b, %e
+    %g = fadd %d, %s
+    %r = fadd %g, %p
+    return %r
+}
+
+func @pow(%x: f64, %y: f64) -> f64 {
+block0:
+    %r = pow %x, %y
+    return %r
+}
+
+func @tan(%x: f64) -> f64 {
+block0:
+    %r = tan %x
+    return %r
+}
+
+func @asin(%x: f64) -> f64 {
+block0:
+    %r = asin %x
+    return %r
+}
+
+func @acos(%x: f64) -> f64 {
+block0:
+    %r = acos %x
+    return %r
+}
+
+func @atan(%x: f64) -> f64 {
+block0:
+    %r = atan %x
+    return %r
+}
+
+func @atan2(%y: f64, %x: f64) -> f64 {
+block0:
+    %n = fsub %x, f64 0.5
+    %r = atan2 %y, %n
+    return %r
+}
+
+func @sinh(%x: f64) -> f64 {
+block0:
+    %r = sinh %x
+    return %r
+}
+
+func @cosh(%x: f64) -> f64 {
+block0:
+    %r = cosh %x
+    return %r
+}
+
+func @tanh(%x: f64) -> f64 {
+block0:
+    %r = tanh %x
+    return %r
+}
+
+func @exp(%x: f64) -> f64 {
+block0:
+    %r = exp %x
+    return %r
+}
+
+func @log(%x: f64) -> f64 {
+block0:
+    %r = log %x
+    return %r
+}
+
+func @smoothstep(%lo: f64, %x: f64) -> f64 {
+block0:
+    %l = fmul %lo, f64 0.5
+    %r = smoothstep %l, f64 1.0, %x
+    return %r
+}
+
+func @dot(%a: f64x3, %b: f64x3) -> f64 {
+block0:
+    %r = dot %a, %b
+    return %r
+}
+
+func @cross(%a: f64x3, %b: f64x3) -> f64x3 {
+block0:
+    %r = cross %a, %b
+    return %r
+}
+
+func @length(%a: f64x3) -> f64 {
+block0:
+    %r = length %a
+    return %r
+}
+
+func @distance(%a: f64x2, %b: f64x2) -> f64 {
+block0:
+    %r = distance %a, %b
+    return %r
+}
+
+func @normalize(%a: f64x3) -> f64x3 {
+block0:
+    %r = normalize %a
+    return %r
+}
+
+func @reflect(%i: f64x3, %n: f64x3) -> f64x3 {
+block0:
+    %r = reflect %i, %n
+    return %r
+}
+
+// A unit normal facing the incoming direction, which refracts without total reflection.
+func @refract(%i: f64x3, %n: f64x3, %eta: f64) -> f64x3 {
+block0:
+    %u = normalize %n
+    %d = fneg %i
+    %e = fmul %eta, f64 0.5
+    %r = refract %d, %u, %e
+    return %r
+}
+
+func @faceforward(%n: f64x3, %i: f64x3) -> f64x3 {
+block0:
+    %r = faceforward %n, %i, f64x3 (0.0, 0.0, 1.0)
+    return %r
+}
+
+func @select(%x: f64, %y: f64) -> f64 {
+block0:
+    %c = fcmp olt %x, f64 0.5
+    %r = select %c, %x, %y
+    return %r
+}
+
+func @vectors(%x: f64, %v: f64x3) -> f64x3 {
+block0:
+    %s = splat %x : f64x3
+    %a = fmul %s, %v
+    %e = extract %a, 1
+    %i = insert %v, 2, %e
+    %sh = shuffle %a, %i, [5, 0, 1]
+    %k = and i32 7, i32 1
+    %d = extract.dyn %sh, %k
+    %r = insert.dyn %sh, %k, (fmul %d, %d)
+    return %r
+}
+
+func @matrix(%c0: f64x2, %c1: f64x2, %v: f64x2) -> f64x2 {
+block0:
+    %m = construct f64x2x2(%c0, %c1)
+    %t = transpose %m
+    %p = matmul %t, %v
+    %q = matmul %m, %p
+    %col = mat.column %m, 1
+    %row = mat.row %m, 0
+    %x = mat.extract %m, 1, 0
+    %w = fmul %col, %row
+    %s = splat %x : f64x2
+    %r0 = fadd %q, %w
+    %r = fmul %r0, %s
+    return %r
+}
+
+func @aggregate(%x: f64, %y: f64) -> f64 {
+block0:
+    %b = construct f64x2(%x, %y)
+    %p = construct @Pair(%x, i32 3, %b)
+    %q = insert.field %p, .a, (fmul %y, %y)
+    %arr = construct [f64; 2](%x, %y)
+    %arr2 = insert.elem %arr, 1, (sin %x)
+    %e = extract.elem %arr2, 1
+    %a = extract.field %q, .a
+    %bb = extract.field %q, .b
+    %b1 = extract %bb, 0
+    %s = fadd %a, %b1
+    %r = fmul %s, %e
+    return %r
+}
+
+// x^4 by a loop: the product goes round as a block parameter.
+func @loop(%x: f64) -> f64 {
+block0:
+    loop header block1(f64 1.0, i32 0) continue block3 merge block4
+block1(%acc: f64, %i: i32):
+    %done = icmp sge %i, i32 4
+    cond_br %done, block4(%acc), block2 merge block2
+block2:
+    %next = fmul %acc, %x
+    br block3
+block3:
+    %i1 = add %i, i32 1
+    br block1(%next, %i1)
+block4(%out: f64):
+    return %out
+}
+
+func @branch(%x: f64, %y: f64) -> f64 {
+block0:
+    %c = fcmp olt %x, %y
+    cond_br %c, block1, block2 merge block3
+block1:
+    %a = fmul %x, %y
+    br block3(%a)
+block2:
+    %b = sin %y
+    br block3(%b)
+block3(%r: f64):
+    return %r
+}
+
+// An array read and written at a computed index stays a variable: its tangents go through a
+// shadow variable.
+func @memory(%x: f64, %y: f64) -> f64 {
+block0:
+    %t = var function : [f64; 4]
+    store %t, [f64; 4] (1.0, 2.0, 3.0, 4.0)
+    %k = and i32 6, i32 3
+    %p = access %t, [%k]
+    store %p, %x
+    %q = access %t, [i32 0]
+    %v = load %q
+    %w = fmul %v, %y
+    store %q, %w
+    %all = load %t
+    %a = extract.elem %all, 0
+    %b = load %p
+    %r = fmul %a, %b
+    return %r
+}
+
+// A helper called twice: inlined first.
+func @square(%x: f64) -> f64 {
+block0:
+    %r = fmul %x, %x
+    return %r
+}
+
+func @calls(%x: f64, %y: f64) -> f64 {
+block0:
+    %a = call @square(%x)
+    %b = call @square(%y)
+    %r = fdiv %a, (fadd %b, f64 1.0)
+    return %r
+}
+
+// `Detach` cuts the derivative: d/dx (x · detach(x)) = x.
+func @detach(%x: f64) -> f64 {
+block0:
+    %d = diff.detach %x
+    %r = fmul %x, %d
+    return %r
+}

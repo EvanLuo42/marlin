@@ -99,6 +99,15 @@ public struct UniformAttribute : IAttribute { }
 /// An entry point's local constant whose value goes into the reflection (0004 §13.4).
 public struct ExportAttribute : IAttribute { }
 
+// ---- differentiation (0004 §15) ----
+
+/// A function `ForwardDiff` can differentiate. It may call only functions that are
+/// differentiable too where a derivative flows into them; `Detach(x)` stops one.
+public struct DifferentiableAttribute : IAttribute { }
+
+/// A parameter of a `[Differentiable]` function that takes no part in differentiation.
+public struct NoDiffAttribute : IAttribute { }
+
 // ---- capabilities (0004 §12.3) ----
 
 /// Optional GPU features.

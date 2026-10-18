@@ -71,4 +71,5 @@ pub static SHADER_LANGUAGE: Language = Language {
     dialect: &SHADER,
     implicit_usings: &["Marlin"],
     require_namespace: true,
+    type_and_function_names: &["DiffPair"],
 };

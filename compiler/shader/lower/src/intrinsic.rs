@@ -21,6 +21,8 @@ pub(crate) fn op(name: &str) -> Option<Op> {
     }
     Some(match name {
         "select" => Op::Select,
+        "diff.detach" => Op::DiffDetach,
+        "deriv.seed" => Op::DerivSeed,
         "assume.uniform" => Op::AssumeUniform,
         "assume.nonuniform" => Op::AssumeNonUniform,
         "matmul" => Op::MatMul,

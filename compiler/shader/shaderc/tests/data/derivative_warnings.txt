@@ -1,0 +1,5 @@
+warning[E1402]: a texture sample has no derivative: `Ddx`, `Ddy` and samples with an implicit level take the derivative through it as 0
+  --> Game/Derivatives.mshader:34:23
+   |
+34 |     a.Output[0] = Ddx(a.Texture.Sample(a.Sampler, uv));
+   |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

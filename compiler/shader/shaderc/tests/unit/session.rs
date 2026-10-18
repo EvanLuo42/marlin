@@ -125,6 +125,7 @@ fn an_entry_compiles_to_spirv_with_its_reflection() {
         out.used_sources[core.len()..],
         [
             SourcePath::new("Game", "Debug.mshader"),
+            SourcePath::new("Game", "Derivatives.mshader"),
             SourcePath::new("Game", "Graphics.mshader"),
             SourcePath::new("Game", "Kernel.mshader"),
             SourcePath::new("Game", "Main.mshader"),
@@ -219,10 +220,6 @@ fn bad_requests_are_diagnostics() {
         ),
         ("a capability the target lacks", request("Game.Wide", &[])),
         (
-            "an implicit level in a compute entry",
-            request("Game.ImplicitInCompute", &[]),
-        ),
-        (
             "Mesh.Dispatch not last",
             request("Game.DispatchNotLast", &[]),
         ),
@@ -251,10 +248,6 @@ fn bad_requests_are_diagnostics() {
         (
             "a gather channel known at run time",
             request("Game.RuntimeChannel", &[]),
-        ),
-        (
-            "a derivative in a compute entry",
-            request("Game.SlopesInCompute", &[]),
         ),
         (
             "an atomic on a float texture",
@@ -634,4 +627,47 @@ fn type_arguments_bring_their_packages_into_the_compile() {
         .unwrap();
     let e = s.compile(&request).unwrap_err();
     assert!(errors(&s, &e).contains("Nope"), "{}", errors(&s, &e));
+}
+
+#[test]
+fn compute_entries_take_derivatives_from_seeds() {
+    let (sources, targets) = (Memory::new(), default_targets());
+    let s = session(&sources, &targets);
+    for entry in ["Game.Resolve", "Game.Unseeded"] {
+        let out = s
+            .compile(&request(entry, &[]))
+            .unwrap_or_else(|e| panic!("{entry}: {}", errors(&s, &e)));
+        assert!(
+            out.diagnostics.is_empty(),
+            "{entry}: {}",
+            s.render(&out.diagnostics)
+        );
+        external_check(&out.code.bytes, entry);
+    }
+    // A derivative through an operation that has none is 0, with a warning.
+    let out = s
+        .compile(&request("Game.SampleSlope", &[]))
+        .unwrap_or_else(|e| panic!("{}", errors(&s, &e)));
+    golden::assert_text(
+        &data_path(env!("CARGO_MANIFEST_DIR"), "derivative_warnings.txt"),
+        &s.render(&out.diagnostics),
+    );
+}
+
+#[test]
+fn differentiation_errors_are_diagnostics() {
+    let (sources, targets) = (Memory::new(), default_targets());
+    let text = std::fs::read_to_string(data_path(
+        env!("CARGO_MANIFEST_DIR"),
+        "differentiation_errors.mshader",
+    ))
+    .unwrap()
+    .replace("\r\n", "\n");
+    sources.set("Game", "Broken.mshader", &text);
+    let s = session(&sources, &targets);
+    let e = s.compile(&request("Game.Mirror", &[])).unwrap_err();
+    golden::assert_text(
+        &data_path(env!("CARGO_MANIFEST_DIR"), "differentiation_errors.txt"),
+        &errors(&s, &e),
+    );
 }

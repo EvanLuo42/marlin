@@ -113,6 +113,27 @@ impl World {
         Ok(module)
     }
 
+    /// Calls `path` with `args` after optimization only: code with derivatives runs once the
+    /// autodiff pass has made them arithmetic.
+    pub fn run_optimized(&self, path: &str, args: &[Val]) -> Vec<Val> {
+        let mut module = self.lower(path).unwrap_or_else(|e| panic!("{e}"));
+        let options = marlin_shaderc_opt::Options {
+            profile: marlin_shaderc_opt::Profile::Development,
+            verify_each: true,
+        };
+        marlin_shaderc_opt::pipeline(&options)
+            .run(&mut module)
+            .unwrap_or_else(|e| panic!("{path}: {e}"));
+        let f = module.find_function(path).unwrap();
+        Interpreter::new(&module).call(f, args).unwrap_or_else(|e| {
+            panic!(
+                "{path}, optimized: {e}
+{}",
+                print_module(&module)
+            )
+        })
+    }
+
     /// Calls `path` with `args`, before and after optimization; both must agree.
     pub fn run(&self, path: &str, args: &[Val]) -> Vec<Val> {
         let module = self.lower(path).unwrap_or_else(|e| panic!("{e}"));

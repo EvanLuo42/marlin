@@ -1,0 +1,99 @@
+struct @Args { Albedo: res<Texture2D<f32x4>>, Linear: res<Sampler>, Out: res<Buffer<f32x4>> }
+global @args : ptr<push, @Args>
+global @uv : ptr<input, f32x2> location(0)
+global @color : ptr<output, f32x4> target(0)
+
+func @Seeded(%uv0: f32x2, %dx: f32x2, %dy: f32x2) -> f32x2 {
+block0:
+    %w = fmul %uv0, f32x2 (2.0, 3.0)
+    %ddy_w = fmul %dy, f32x2 (2.0, 3.0)
+    %ddx_w = fmul %dx, f32x2 (2.0, 3.0)
+    %s = sin %w
+    %0 = cos %w
+    %ddx_s = fmul %ddx_w, %0
+    %1 = extract %uv0, 0
+    %c = fcmp olt %1, f32 0.5
+    cond_br %c, block2(%s, %ddx_s), block1 merge block2
+block1:
+    %t = fmul %s, %s
+    %2 = fmul %ddx_s, %s
+    %3 = fmul %ddx_s, %s
+    %ddx_t = fadd %2, %3
+    br block2(%t, %ddx_t)
+block2(%v: f32x2, %ddx_v: f32x2):
+    %r = fadd %ddx_v, %ddy_w
+    return %r
+}
+
+func @Sampled(%a: @Args, %uv0: f32x2, %dx: f32x2, %dy: f32x2) -> f32x4 {
+block0:
+    %0 = extract.field %a, .Albedo
+    %t = desc.get %0
+    %1 = extract.field %a, .Linear
+    %s = desc.get %1
+    %2 = tex.sample %t, %s, %uv0 { grad: (%dx, %dy) }
+    %3 = fmul %uv0, f32x2 (4.0, 4.0)
+    %4 = fmul %dy, f32x2 (4.0, 4.0)
+    %5 = fmul %dx, f32x2 (4.0, 4.0)
+    %6 = exp2 f32 1.0
+    %7 = splat %6 : f32x2
+    %8 = fmul %5, %7
+    %9 = fmul %4, %7
+    %10 = tex.sample %t, %s, %3 { grad: (%8, %9) }
+    %11 = tex.sample %t, %s, %uv0 { lod: f32 0.0 }
+    %c3 = tex.sample %t, %s, %uv0 { lod: f32 2.0 }
+    %r0 = fadd %2, %10
+    %r1 = fadd %r0, %11
+    %r2 = fadd %r1, %c3
+    %r = fadd %r2, f32x4 zero
+    return %r
+}
+
+entry pixel @Hardware uses(@args, @uv, @color) {
+block0:
+    %a = load @args
+    %0 = extract.field %a, .Albedo
+    %t = desc.get %0
+    %1 = extract.field %a, .Linear
+    %s = desc.get %1
+    %uv = load @uv
+    %c = tex.sample %t, %s, %uv
+    %d = deriv.ddx fine %uv
+    %e = extract %d, 0
+    %f = splat %e : f32x4
+    %2 = fadd %c, %f
+    store @color, %2
+    return
+}
+
+entry pixel @Analytic uses(@args, @uv, @color) {
+block0:
+    %a = load @args
+    %0 = extract.field %a, .Albedo
+    %t = desc.get %0
+    %1 = extract.field %a, .Linear
+    %s = desc.get %1
+    %uv0 = load @uv
+    %2 = tex.sample %t, %s, %uv0 { grad: (f32x2 (0.01, 0.0), f32x2 (0.0, 0.01)) }
+    %e = extract f32x2 zero, 0
+    %f = splat %e : f32x4
+    %3 = fadd %2, %f
+    store @color, %3
+    return
+}
+
+entry compute(8, 8, 1) @Compute uses(@args) {
+block0:
+    %a = load @args
+    %0 = extract.field %a, .Albedo
+    %t = desc.get %0
+    %1 = extract.field %a, .Linear
+    %s = desc.get %1
+    %2 = extract.field %a, .Out
+    %o = desc.get %2
+    %3 = tex.sample %t, %s, f32x2 (0.5, 0.5) { lod: f32 0.0 }
+    %4 = buffer.elem %o, i32 0
+    %5 = fadd %3, f32x4 zero
+    store %4, %5
+    return
+}

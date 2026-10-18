@@ -42,15 +42,6 @@ public void Rasterize([DispatchThreadId] uint3 id, [Push] in WideArgs a)
     a.Signed.AtomicMax(int3(px, 1), -(int)id.y);
 }
 
-public struct DerivArgs
-{
-    public Buffer<float> Out;
-}
-
-/// Derivatives are for pixel entries (E1309).
-[Compute(1, 1, 1)]
-public void SlopesInCompute([Push] in DerivArgs a) => a.Out[0] = Ddx(a.Out[1]);
-
 public struct FloatTexelArgs
 {
     public StorageTexture2D<float> T;

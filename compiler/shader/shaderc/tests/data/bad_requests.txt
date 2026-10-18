@@ -23,9 +23,6 @@ error[E1503]: `Game.Mirror` is not a static parameter (a `const` field of a stru
 == a capability the target lacks
 error[E1504]: `Game.Wide` needs `Float64` (it uses `double`), which the target `vulkan-1.4` does not have
 
-== an implicit level in a compute entry
-error[E1309]: `Game.ImplicitInCompute(@Game.SampleArgs)` samples without `lod:` or `grad:`, which only pixel entries can (their level comes from derivatives)
-
 == Mesh.Dispatch not last
 error[E1308]: an amplification entry ends with `Mesh.Dispatch(x, y, z, payload)`, its one call to it, with no `return` before (it is not the last statement)
   --> Game/Meshes.mshader:58:13
@@ -66,32 +63,29 @@ error[E1309]: debug output prints scalars and vectors, not `float2x2`
 
 == a texture offset known at run time
 error[E1309]: a texture offset is a constant with each component in -8..7
-   --> Game/Textures.mshader:160:30
+   --> Game/Textures.mshader:155:30
     |
-160 |     a.Output.Store(0, AsUInt(a.Texture.Load(int2(0, 0), offset: int2((int)a.X, 0))));
+155 |     a.Output.Store(0, AsUInt(a.Texture.Load(int2(0, 0), offset: int2((int)a.X, 0))));
     |                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 == a texture offset out of range
 error[E1309]: a texture offset is a constant with each component in -8..7
-   --> Game/Textures.mshader:164:30
+   --> Game/Textures.mshader:159:30
     |
-164 |     a.Output.Store(0, AsUInt(a.Texture.Load(int2(0, 0), offset: int2(9, 0))));
+159 |     a.Output.Store(0, AsUInt(a.Texture.Load(int2(0, 0), offset: int2(9, 0))));
     |                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 == a gather channel known at run time
 error[E1309]: a gather's channel is a constant
-   --> Game/Textures.mshader:176:31
+   --> Game/Textures.mshader:171:31
     |
-176 |     a.Output.Store4(0, AsUInt(a.Texture.Gather(a.Sampler, float2(0.5, 0.5), a.Which)));
+171 |     a.Output.Store4(0, AsUInt(a.Texture.Gather(a.Sampler, float2(0.5, 0.5), a.Which)));
     |                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-== a derivative in a compute entry
-error[E1309]: `Game.SlopesInCompute(@Game.DerivArgs)` takes a derivative (`Ddx`, `Ddy`, `Fwidth`), which only pixel entries can so far
 
 == an atomic on a float texture
 error[E1309]: texture atomics are on `int`, `uint`, `long` and `ulong` textures
-  --> Game/Visibility.mshader:61:61
+  --> Game/Visibility.mshader:52:61
    |
-61 | public void FloatTexelAtomic([Push] in FloatTexelArgs a) => a.T.AtomicAdd(int2(0, 0), 1.0f);
+52 | public void FloatTexelAtomic([Push] in FloatTexelArgs a) => a.T.AtomicAdd(int2(0, 0), 1.0f);
    |                                                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 

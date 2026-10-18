@@ -16,6 +16,7 @@ pub static TEST_LANGUAGE: Language = Language {
     dialect: &Dialect::SUPERSET,
     implicit_usings: &["Marlin"],
     require_namespace: true,
+    type_and_function_names: &[],
 };
 
 pub struct Fixture {

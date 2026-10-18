@@ -6,8 +6,8 @@ use marlin_front_hir_def::store::{
 };
 use marlin_front_hir_def::{BodyOwner, BodyPart, ItemKind, ItemSignature, ItemTreeQuery};
 use marlin_shaderc_hir_ty::{
-    BuiltinKind, Callee, ConstTy, GenericArgTy, InferLoc, ItemTypesQuery, Root, Step, Subst, Ty,
-    ValuePath, parse_int,
+    BuiltinKind, Callee, ConstTy, GenericArgTy, InferLoc, ItemAttributesQuery, ItemTypesQuery,
+    Root, Step, Subst, Ty, ValuePath, parse_int,
 };
 use marlin_shaderc_ir::{
     AccessStep, BinaryOp as IrBin, ConstValue, ConvertOp, FloatCmp, IntCmp, Op, Type, TypeData,
@@ -1192,6 +1192,7 @@ impl FnCx<'_, '_, '_> {
                 self.default_value(&ty, Self::loc(e)).map(Some)
             }
             Some(Callee::Invoke(b)) => self.invoke(e, b, args),
+            Some(Callee::ForwardDiff { item, subst }) => self.forward_diff(e, item, &subst, args),
             _ => Err(self.error("E1305", "a call to nothing", Self::loc(e))),
         }
     }
@@ -1308,6 +1309,15 @@ impl FnCx<'_, '_, '_> {
                     .ok_or_else(|| self.error("E1305", "an argument used twice", Self::loc(e)))?,
                 None => CallArg::Value(self.default_arg(item, p, &subst, e)?),
             });
+        }
+        // `[NoDiff]` arguments take no part in differentiation (0004 §15.1).
+        let attrs = self.l.cx.get::<ItemAttributesQuery>(&item)?;
+        for (p, arg) in ordered.iter_mut().enumerate() {
+            if crate::diff::no_diff(&attrs, p)
+                && let CallArg::Value(v) = arg
+            {
+                *v = self.op(Op::DiffDetach, vec![*v], None)?;
+            }
         }
         self.call_function(e, item, &subst, receiver, ordered)
     }
@@ -1448,7 +1458,7 @@ impl FnCx<'_, '_, '_> {
     }
 
     /// A parameter's default (literals for now).
-    fn default_arg(
+    pub(crate) fn default_arg(
         &mut self,
         item: marlin_front_hir_def::ItemId,
         param: usize,
@@ -1839,9 +1849,6 @@ impl FnCx<'_, '_, '_> {
     /// The operation an intrinsic that picks by kind stands for here, from the type of its
     /// value operand (the last argument of an atomic, the first of anything else).
     fn by_kind(&mut self, name: &str, args: &[Arg]) -> R<Option<&'static str>> {
-        let Some((_, ops)) = BY_KIND.iter().find(|(n, _)| *n == name) else {
-            return Ok(None);
-        };
         let arg = if name.starts_with("atomic.") || name.starts_with("tex.atomic.") {
             args.last()
         } else {
@@ -1849,7 +1856,15 @@ impl FnCx<'_, '_, '_> {
         };
         let Some(arg) = arg else { return Ok(None) };
         let ty = self.concrete(&self.infer.type_of(arg.expr));
-        let kind = match self.l.num(&ty)? {
+        self.kind_op(name, &ty, arg.expr)
+    }
+
+    /// The operation intrinsic `name`, which picks by kind, stands for on operands of type `ty`.
+    fn kind_op(&mut self, name: &str, ty: &Ty, at: ExprId) -> R<Option<&'static str>> {
+        let Some((_, ops)) = BY_KIND.iter().find(|(n, _)| *n == name) else {
+            return Ok(None);
+        };
+        let kind = match self.l.num(ty)? {
             Some(Num::Float(_)) => 0,
             Some(Num::Signed(_)) => 1,
             Some(Num::Unsigned(_)) => 2,
@@ -1859,8 +1874,8 @@ impl FnCx<'_, '_, '_> {
             Some(op) => Ok(Some(op)),
             None => Err(self.error(
                 "E1309",
-                format!("`{name}` has no operation for `{}`", self.l.show(&ty)),
-                Self::loc(arg.expr),
+                format!("`{name}` has no operation for `{}`", self.l.show(ty)),
+                Self::loc(at),
             )),
         }
     }
@@ -1900,5 +1915,39 @@ impl FnCx<'_, '_, '_> {
     ) -> R<Ty> {
         let types = self.l.cx.get::<ItemTypesQuery>(&item)?;
         Ok(self.concrete(&subst.ty(types.ty.as_ref().unwrap_or(&Ty::Error))))
+    }
+}
+
+impl FnCx<'_, '_, '_> {
+    /// An intrinsic called with values in parameter order (`ForwardDiff` of one): a plain IR
+    /// operation, picked by kind from its first parameter's type.
+    pub(crate) fn intrinsic_values(
+        &mut self,
+        e: ExprId,
+        name: &str,
+        item: marlin_front_hir_def::ItemId,
+        subst: &Subst,
+        operands: Vec<Value>,
+    ) -> R<Option<Value>> {
+        let types = self.l.cx.get::<ItemTypesQuery>(&item)?;
+        let picked = match types.params.first() {
+            Some(p) => {
+                let ty = self.l.resolve_assoc(&subst.ty(&p.ty));
+                self.kind_op(name, &ty, e)?
+            }
+            None => None,
+        };
+        let name = picked.unwrap_or(name);
+        let Some(op) = crate::intrinsic::op(name) else {
+            return Err(LowerError::unsupported(
+                format!("intrinsic `{name}`"),
+                self.owner(),
+                Self::loc(e),
+            ));
+        };
+        let inst = self
+            .emit(op, operands, None)
+            .map_err(|err| err.located(self.owner(), Self::loc(e)))?;
+        Ok(self.f.insts[inst].results.first().copied())
     }
 }

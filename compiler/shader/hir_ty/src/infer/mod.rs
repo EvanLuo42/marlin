@@ -8,6 +8,7 @@
 
 mod call;
 mod conv;
+mod diff;
 mod expr;
 mod group;
 mod member;
@@ -70,6 +71,10 @@ pub enum Callee {
     DefaultConstruct(Ty),
     /// Calling a `Func`/`Action` parameter.
     Invoke(BindingId),
+    /// `ForwardDiff(f)(args)` (0004 §15.2): the derivative of `f`, a function with its type
+    /// arguments; `call_args` maps its parameters to the arguments (a `DiffPair` for each
+    /// parameter that takes part in differentiation).
+    ForwardDiff { item: ItemId, subst: Subst },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

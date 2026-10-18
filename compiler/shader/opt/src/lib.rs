@@ -33,6 +33,10 @@
 //! Step 8c: [`uniformity`], which values and blocks may differ between the lanes of a wave or
 //! a group, and [`CheckBarriers`], which rejects (E1401, a [`Problem`]) a group barrier some
 //! threads may miss, after inlining.
+//!
+//! Step 11: [`Autodiff`] (0.3, run right after mem2reg): `ForwardDiff`, `Derivatives.Seed` and
+//! the screen-space derivatives they feed become arithmetic on tangents; a derivative taken
+//! through an operation that has none is a warning (E1402, a [`Problem`] with `warning`).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -40,6 +44,7 @@ use std::sync::Arc;
 use marlin_shaderc_ir::cfg::{Cfg, Structure};
 use marlin_shaderc_ir::{FuncId, Function, Module, VerifyError, verify_module};
 
+mod autodiff;
 mod check_barriers;
 mod dce;
 mod edit;
@@ -55,6 +60,7 @@ mod sroa;
 mod strip_debug;
 pub mod uniformity;
 
+pub use autodiff::Autodiff;
 pub use check_barriers::CheckBarriers;
 pub use dce::Dce;
 pub use global_dce::GlobalDce;
@@ -151,6 +157,8 @@ pub struct Problem {
     pub at: Option<u32>,
     /// Why, and where that is.
     pub because: Option<(String, Option<u32>)>,
+    /// A warning: the pipeline goes on, and the report keeps it.
+    pub warning: bool,
 }
 
 /// A pass over one function at a time. While it runs, the function is taken out of the module:
@@ -223,6 +231,8 @@ impl std::fmt::Display for PassError {
 #[derive(Clone, Debug, Default)]
 pub struct Report {
     pub ran: Vec<(&'static str, bool)>,
+    /// The warnings the passes found.
+    pub warnings: Vec<Problem>,
 }
 
 pub struct PassManager {
@@ -260,7 +270,9 @@ impl PassManager {
         for pass in &self.passes {
             let changed = pass.run(m, &mut analyses);
             report.ran.push((pass.name(), changed));
-            let problems = pass.problems(m);
+            let (warnings, problems): (Vec<Problem>, Vec<Problem>) =
+                pass.problems(m).into_iter().partition(|p| p.warning);
+            report.warnings.extend(warnings);
             if !problems.is_empty() {
                 return Err(PassError::Rejected {
                     pass: pass.name(),
@@ -300,6 +312,7 @@ pub fn pipeline(options: &Options) -> PassManager {
         .add(SimplifyCfg)
         .add(Sroa)
         .add(Mem2Reg)
+        .add(Autodiff::default())
         .add(PrecisePropagate)
         .add(HoistConstArrays)
         .add(GlobalDce);

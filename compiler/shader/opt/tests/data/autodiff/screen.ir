@@ -1,0 +1,90 @@
+// Screen-space derivatives (0004 §15.3): from `deriv.seed` everywhere but in a pixel entry
+// that seeds nothing, which keeps the hardware's.
+
+struct @Args { Albedo: res<Texture2D<f32x4>>, Linear: res<Sampler>, Out: res<Buffer<f32x4>> }
+global @args : ptr<push, @Args>
+global @uv : ptr<input, f32x2> location(0)
+global @color : ptr<output, f32x4> target(0)
+
+// The derivatives of what seeded values compute, through a loop and a branch.
+func @Seeded(%uv0: f32x2, %dx: f32x2, %dy: f32x2) -> f32x2 {
+block0:
+    %uv = deriv.seed %uv0, %dx, %dy
+    %w = fmul %uv, f32x2 (2.0, 3.0)
+    %s = sin %w
+    %c = fcmp olt (extract %uv0, 0), f32 0.5
+    cond_br %c, block1, block2 merge block3
+block1:
+    br block3(%s)
+block2:
+    %t = fmul %s, %s
+    br block3(%t)
+block3(%v: f32x2):
+    %ddx = deriv.ddx coarse %v
+    %ddy = deriv.ddy fine %w
+    %r = fadd %ddx, %ddy
+    return %r
+}
+
+// Samples: an implicit level becomes gradients (scaled by `bias`), or level 0 where nothing is
+// seeded; a sample's own derivative is 0, with a warning.
+func @Sampled(%a: @Args, %uv0: f32x2, %dx: f32x2, %dy: f32x2) -> f32x4 {
+block0:
+    %t = desc.get (extract.field %a, .Albedo)
+    %s = desc.get (extract.field %a, .Linear)
+    %uv = deriv.seed %uv0, %dx, %dy
+    %c0 = tex.sample %t, %s, %uv
+    %c1 = tex.sample %t, %s, (fmul %uv, f32x2 (4.0, 4.0)) { bias: f32 1.0 }
+    %c2 = tex.sample %t, %s, %uv0
+    %c3 = tex.sample %t, %s, %uv { lod: f32 2.0 }
+    %d = deriv.ddx coarse %c0
+    %r0 = fadd %c0, %c1
+    %r1 = fadd %r0, %c2
+    %r2 = fadd %r1, %c3
+    %r = fadd %r2, %d
+    return %r
+}
+
+// A pixel entry that seeds nothing keeps the hardware's derivatives.
+entry pixel @Hardware uses(@args, @uv, @color) {
+block0:
+    %a = load @args
+    %t = desc.get (extract.field %a, .Albedo)
+    %s = desc.get (extract.field %a, .Linear)
+    %uv = load @uv
+    %c = tex.sample %t, %s, %uv
+    %d = deriv.ddx fine %uv
+    %e = extract %d, 0
+    %f = splat %e : f32x4
+    store @color, (fadd %c, %f)
+    return
+}
+
+// A pixel entry that seeds: analytic derivatives throughout (an unseeded value has 0).
+entry pixel @Analytic uses(@args, @uv, @color) {
+block0:
+    %a = load @args
+    %t = desc.get (extract.field %a, .Albedo)
+    %s = desc.get (extract.field %a, .Linear)
+    %uv0 = load @uv
+    %uv = deriv.seed %uv0, f32x2 (0.01, 0.0), f32x2 (0.0, 0.01)
+    %c = tex.sample %t, %s, %uv
+    %d = deriv.ddx fine %uv0
+    %e = extract %d, 0
+    %f = splat %e : f32x4
+    store @color, (fadd %c, %f)
+    return
+}
+
+// A compute entry without seeds: derivatives are 0, samples read level 0.
+entry compute(8, 8, 1) @Compute uses(@args) {
+block0:
+    %a = load @args
+    %t = desc.get (extract.field %a, .Albedo)
+    %s = desc.get (extract.field %a, .Linear)
+    %o = desc.get (extract.field %a, .Out)
+    %c = tex.sample %t, %s, f32x2 (0.5, 0.5)
+    %d = deriv.ddy coarse %c
+    store (buffer.elem %o, i32 0), (fadd %c, %d)
+    return
+}

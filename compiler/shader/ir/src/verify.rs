@@ -556,11 +556,10 @@ impl<'a> Verifier<'a> {
                 }
                 for inst in Self::placed_insts(func) {
                     let op = &func.insts[inst].op;
-                    // Implicit levels (and `bias`) come from derivatives, which pixels have.
-                    let implicit = matches!(op, Op::TexSample(a)
-                        if !a.contains(&TexArg::Lod) && !a.contains(&TexArg::Grad));
-                    let pixel_only =
-                        implicit || matches!(op, Op::Discard | Op::IsHelper | Op::Deriv { .. });
+                    // Derivatives (`deriv.*`, samples with implicit levels) are fine anywhere:
+                    // outside pixel entries the autodiff pass makes them arithmetic (0005 §4.4
+                    // pass 0.3).
+                    let pixel_only = matches!(op, Op::Discard | Op::IsHelper);
                     if pixel_only && entry.stage != Stage::Pixel {
                         problems.push(format!(
                             "`@{}` uses a pixel-only operation, reached from a {} entry point",
@@ -1235,11 +1234,34 @@ impl<'v, 'a> FunctionVerifier<'v, 'a> {
                 (!ok).then(|| "the shapes do not multiply".into())
             }
             Op::Transpose => count(1),
-            Op::AssumeUniform | Op::AssumeNonUniform => {
+            Op::AssumeUniform | Op::AssumeNonUniform | Op::DiffDetach => {
                 if let Some(p) = count(1) {
                     return Some(p);
                 }
                 (!v.is_data(args[0])).then(|| "takes plain data".into())
+            }
+            Op::DiffChannel => count(0),
+            Op::DiffSeed | Op::DiffTangent => {
+                let n = if matches!(op, Op::DiffSeed) { 3 } else { 2 };
+                if let Some(p) = count(n) {
+                    return Some(p);
+                }
+                if !v.is_scalar(args[0], Scalar::I32) {
+                    return Some("the channel is an `i32` from `diff.channel`".into());
+                }
+                if !v.is_data(args[1]) {
+                    return Some("takes plain data".into());
+                }
+                (!same(&args[1..])).then(|| "the value and its tangent differ in type".into())
+            }
+            Op::DerivSeed => {
+                if let Some(p) = count(3) {
+                    return Some(p);
+                }
+                if !v.is_float(args[0], true) {
+                    return Some("takes floats".into());
+                }
+                (!same(args)).then(|| "the value and its derivatives differ in type".into())
             }
             Op::MatColumn(i) | Op::MatRow(i) | Op::MatExtract(i, _) => {
                 if let Some(p) = count(1) {

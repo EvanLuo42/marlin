@@ -60,7 +60,6 @@ runtime recursion: @Ping -> @Pong -> @Ping (recursion must unroll at compile tim
 @Textures: `%nolayers = tex.layers %albedo`: only array textures have layers
 @Textures: `%nosamples = tex.samples %albedo`: only multisampled textures have samples
 @Textures: `tex.store %store, i32x2 (0, 0), f32x4 zero { offset: i32x2 (1, 0) }`: `offset` is for reading 2D and 3D textures
-@Textures: `@Textures` uses a pixel-only operation, reached from a compute entry point
 == texture atomics
 @TextureAtomics: `%float = tex.atomic.add %floats, i32x2 (0, 0), f32 1.0 scope(device) order(relaxed)`: texture atomics take 32- or 64-bit integer texels
 @TextureAtomics: `%sampled = tex.atomic.umax %albedo, i32x2 (0, 0), i32 1 scope(device) order(relaxed)`: atomics work on storage textures
@@ -71,9 +70,13 @@ runtime recursion: @Ping -> @Pong -> @Ping (recursion must unroll at compile tim
 @TextureAtomics: `%offset = tex.atomic.xchg %wide, i32x2 (0, 0), i64 1 { offset: i32x2 (1, 0) } scope(device) order(relaxed)`: `offset` is for reading 2D and 3D textures
 == derivatives outside pixel entries
 @Slopes: `%int = deriv.ddy coarse i32 1`: takes floats
-@Slopes: `@Slopes` uses a pixel-only operation, reached from a compute entry point
 == mesh operations outside their stages
 @MeshInCompute: `@MeshInCompute` uses `mesh.set_counts`, reached from a compute entry point
 @MeshInCompute: `@MeshInCompute` uses `mesh.dispatch`, reached from a compute entry point
 == a mesh output written before its counts
 `@EarlyWrite`: a mesh output is written before `mesh.set_counts`
+== autodiff marks with the wrong operands
+@Marks: `%a = diff.seed %x, %x, %x`: the channel is an `i32` from `diff.channel`
+@Marks: `%b = diff.seed %c, %x, %v`: the value and its tangent differ in type
+@Marks: `%d = deriv.seed %i, %i, %i`: takes floats
+@Marks: `%e = deriv.seed %x, %v, %v`: the value and its derivatives differ in type

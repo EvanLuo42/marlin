@@ -4,9 +4,11 @@
 //! - `flow`: definite assignment, `out` parameters, returns on every path, `switch` sections
 //!   that fall through (0004 §6, §9.1);
 //! - `rules`: writes to and non-`readonly` calls on read-only values (§5), exhaustive `switch`
-//!   (§9.1).
+//!   (§9.1);
+//! - `diff`: what `[Differentiable]` functions call (§15.1).
 
 mod decl;
+mod diff;
 mod flow;
 mod rules;
 pub(crate) mod types;
@@ -44,6 +46,7 @@ impl Query for BodyChecksQuery {
         };
         flow::Flow::new(&mut checker)?.run()?;
         rules::Rules::new(&mut checker)?.run()?;
+        diff::run(&mut checker)?;
         Ok(checker.diagnostics.into())
     }
 }

@@ -384,6 +384,22 @@ pub enum Op {
     /// variable; the amplification entry returns right after.
     MeshDispatch,
 
+    // ---- automatic differentiation (0004 §15, 0005 §4.4 pass 0.3) ----
+    /// A tangent channel of its own for one `ForwardDiff` call: an `i32` token that only
+    /// `diff.seed` and `diff.tangent` read. Inlining a function copies it, so every copy of the
+    /// call keeps a channel of its own.
+    DiffChannel,
+    /// Operands: the channel, a value, its tangent. Result: the value, which has that tangent
+    /// in the channel.
+    DiffSeed,
+    /// Operands: the channel, a value. Result: the value's tangent in the channel.
+    DiffTangent,
+    /// The operand, with no tangent in any channel (`Detach`).
+    DiffDetach,
+    /// Operands: a value, its derivatives along the screen's x and y (`Derivatives.Seed`).
+    /// Result: the value, whose `deriv.ddx` and `deriv.ddy` are those.
+    DerivSeed,
+
     // ---- uniformity (0004 §10.3) ----
     /// The operand, asserted to be the same in every lane of the group (`[Uniform]`).
     AssumeUniform,
