@@ -121,6 +121,11 @@ fn_table! {
         vkEnumerateDeviceExtensionProperties: PFN_vkEnumerateDeviceExtensionProperties,
         vkCreateDevice: PFN_vkCreateDevice,
         vkGetDeviceProcAddr: PFN_vkGetDeviceProcAddr,
+        // --- resource (formats) ---
+        vkGetPhysicalDeviceFormatProperties2: PFN_vkGetPhysicalDeviceFormatProperties2,
+        vkGetPhysicalDeviceImageFormatProperties2: PFN_vkGetPhysicalDeviceImageFormatProperties2,
+        vkGetPhysicalDeviceSparseImageFormatProperties2:
+            PFN_vkGetPhysicalDeviceSparseImageFormatProperties2,
     }
     optional {
         vkGetPhysicalDeviceDescriptorSizeEXT: PFN_vkGetPhysicalDeviceDescriptorSizeEXT,
@@ -186,6 +191,20 @@ fn_table! {
         vkCmdBindSamplerHeapEXT: PFN_vkCmdBindSamplerHeapEXT,
         vkCmdPushDataEXT: PFN_vkCmdPushDataEXT,
         // --- resource ---
+        vkCreateImage: PFN_vkCreateImage,
+        vkDestroyImage: PFN_vkDestroyImage,
+        vkGetDeviceImageMemoryRequirements: PFN_vkGetDeviceImageMemoryRequirements,
+        vkGetImageMemoryRequirements2: PFN_vkGetImageMemoryRequirements2,
+        vkBindImageMemory2: PFN_vkBindImageMemory2,
+        vkCreateImageView: PFN_vkCreateImageView,
+        vkDestroyImageView: PFN_vkDestroyImageView,
+        vkCmdCopyBufferToImage2: PFN_vkCmdCopyBufferToImage2,
+        vkCmdCopyImageToBuffer2: PFN_vkCmdCopyImageToBuffer2,
+        vkCmdCopyImage2: PFN_vkCmdCopyImage2,
+        vkCmdResolveImage2: PFN_vkCmdResolveImage2,
+        vkCmdClearColorImage: PFN_vkCmdClearColorImage,
+        vkGetImageSparseMemoryRequirements2: PFN_vkGetImageSparseMemoryRequirements2,
+        vkQueueBindSparse: PFN_vkQueueBindSparse,
         // --- pipeline and draw ---
     }
     optional {

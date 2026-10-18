@@ -151,7 +151,7 @@ l ~ /^VK_DEFINE_HANDLE\(/ { h = l; sub(/^VK_DEFINE_HANDLE\(/, "", h); sub(/\).*/
 l ~ /^VK_DEFINE_NON_DISPATCHABLE_HANDLE\(/ { h = l; sub(/^VK_DEFINE_NON_DISPATCHABLE_HANDLE\(/, "", h); sub(/\).*/, "", h); ndhandle[h] = 1; next }
 l ~ /^typedef enum Vk[A-Za-z0-9_]+ \{/ { match(l, /Vk[A-Za-z0-9_]+/); cur_enum = substr(l, RSTART, RLENGTH); enums[cur_enum] = 1; next }
 cur_enum != "" && l ~ /^\}/ { cur_enum = ""; next }
-cur_enum != "" && l ~ /^[ \t]+VK_[A-Z0-9_]+ = / {
+cur_enum != "" && l ~ /^[ \t]+VK_[A-Za-z0-9_]+ = / {
     s = trim(l); sub(/,$/, "", s)
     split(s, kv, / = /)
     cval[kv[1]] = kv[2]; ctype[kv[1]] = cur_enum

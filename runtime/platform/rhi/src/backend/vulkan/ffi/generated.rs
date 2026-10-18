@@ -2749,6 +2749,673 @@ impl Default for VkExportSemaphoreCreateInfo {
     }
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkFormatProperties {
+    pub linearTilingFeatures: VkFormatFeatureFlags,
+    pub optimalTilingFeatures: VkFormatFeatureFlags,
+    pub bufferFeatures: VkFormatFeatureFlags,
+}
+
+impl Default for VkFormatProperties {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        unsafe { core::mem::zeroed() }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkFormatProperties2 {
+    pub sType: VkStructureType,
+    pub pNext: *mut c_void,
+    pub formatProperties: VkFormatProperties,
+}
+
+impl Default for VkFormatProperties2 {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000059002; // VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkFormatProperties3 {
+    pub sType: VkStructureType,
+    pub pNext: *mut c_void,
+    pub linearTilingFeatures: VkFormatFeatureFlags2,
+    pub optimalTilingFeatures: VkFormatFeatureFlags2,
+    pub bufferFeatures: VkFormatFeatureFlags2,
+}
+
+impl Default for VkFormatProperties3 {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000360000; // VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkImageFormatProperties {
+    pub maxExtent: VkExtent3D,
+    pub maxMipLevels: u32,
+    pub maxArrayLayers: u32,
+    pub sampleCounts: VkSampleCountFlags,
+    pub maxResourceSize: VkDeviceSize,
+}
+
+impl Default for VkImageFormatProperties {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        unsafe { core::mem::zeroed() }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkImageFormatProperties2 {
+    pub sType: VkStructureType,
+    pub pNext: *mut c_void,
+    pub imageFormatProperties: VkImageFormatProperties,
+}
+
+impl Default for VkImageFormatProperties2 {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000059003; // VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkPhysicalDeviceImageFormatInfo2 {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub format: VkFormat,
+    pub r#type: VkImageType,
+    pub tiling: VkImageTiling,
+    pub usage: VkImageUsageFlags,
+    pub flags: VkImageCreateFlags,
+}
+
+impl Default for VkPhysicalDeviceImageFormatInfo2 {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000059004; // VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkSparseImageFormatProperties {
+    pub aspectMask: VkImageAspectFlags,
+    pub imageGranularity: VkExtent3D,
+    pub flags: VkSparseImageFormatFlags,
+}
+
+impl Default for VkSparseImageFormatProperties {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        unsafe { core::mem::zeroed() }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkSparseImageFormatProperties2 {
+    pub sType: VkStructureType,
+    pub pNext: *mut c_void,
+    pub properties: VkSparseImageFormatProperties,
+}
+
+impl Default for VkSparseImageFormatProperties2 {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000059007; // VK_STRUCTURE_TYPE_SPARSE_IMAGE_FORMAT_PROPERTIES_2
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkPhysicalDeviceSparseImageFormatInfo2 {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub format: VkFormat,
+    pub r#type: VkImageType,
+    pub samples: VkSampleCountFlagBits,
+    pub usage: VkImageUsageFlags,
+    pub tiling: VkImageTiling,
+}
+
+impl Default for VkPhysicalDeviceSparseImageFormatInfo2 {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000059008; // VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SPARSE_IMAGE_FORMAT_INFO_2
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkImageCreateInfo {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub flags: VkImageCreateFlags,
+    pub imageType: VkImageType,
+    pub format: VkFormat,
+    pub extent: VkExtent3D,
+    pub mipLevels: u32,
+    pub arrayLayers: u32,
+    pub samples: VkSampleCountFlagBits,
+    pub tiling: VkImageTiling,
+    pub usage: VkImageUsageFlags,
+    pub sharingMode: VkSharingMode,
+    pub queueFamilyIndexCount: u32,
+    pub pQueueFamilyIndices: *const u32,
+    pub initialLayout: VkImageLayout,
+}
+
+impl Default for VkImageCreateInfo {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 14; // VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkImageFormatListCreateInfo {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub viewFormatCount: u32,
+    pub pViewFormats: *const VkFormat,
+}
+
+impl Default for VkImageFormatListCreateInfo {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000147000; // VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkImageViewUsageCreateInfo {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub usage: VkImageUsageFlags,
+}
+
+impl Default for VkImageViewUsageCreateInfo {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000117002; // VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkImageMemoryRequirementsInfo2 {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub image: VkImage,
+}
+
+impl Default for VkImageMemoryRequirementsInfo2 {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000146001; // VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkDeviceImageMemoryRequirements {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub pCreateInfo: *const VkImageCreateInfo,
+    pub planeAspect: VkImageAspectFlagBits,
+}
+
+impl Default for VkDeviceImageMemoryRequirements {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000413003; // VK_STRUCTURE_TYPE_DEVICE_IMAGE_MEMORY_REQUIREMENTS
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkBindImageMemoryInfo {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub image: VkImage,
+    pub memory: VkDeviceMemory,
+    pub memoryOffset: VkDeviceSize,
+}
+
+impl Default for VkBindImageMemoryInfo {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000157001; // VK_STRUCTURE_TYPE_BIND_IMAGE_MEMORY_INFO
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkImageSubresource {
+    pub aspectMask: VkImageAspectFlags,
+    pub mipLevel: u32,
+    pub arrayLayer: u32,
+}
+
+impl Default for VkImageSubresource {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        unsafe { core::mem::zeroed() }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkSamplerReductionModeCreateInfo {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub reductionMode: VkSamplerReductionMode,
+}
+
+impl Default for VkSamplerReductionModeCreateInfo {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000130001; // VK_STRUCTURE_TYPE_SAMPLER_REDUCTION_MODE_CREATE_INFO
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkImageSubresourceLayers {
+    pub aspectMask: VkImageAspectFlags,
+    pub mipLevel: u32,
+    pub baseArrayLayer: u32,
+    pub layerCount: u32,
+}
+
+impl Default for VkImageSubresourceLayers {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        unsafe { core::mem::zeroed() }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkBufferImageCopy2 {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub bufferOffset: VkDeviceSize,
+    pub bufferRowLength: u32,
+    pub bufferImageHeight: u32,
+    pub imageSubresource: VkImageSubresourceLayers,
+    pub imageOffset: VkOffset3D,
+    pub imageExtent: VkExtent3D,
+}
+
+impl Default for VkBufferImageCopy2 {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000337009; // VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkCopyBufferToImageInfo2 {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub srcBuffer: VkBuffer,
+    pub dstImage: VkImage,
+    pub dstImageLayout: VkImageLayout,
+    pub regionCount: u32,
+    pub pRegions: *const VkBufferImageCopy2,
+}
+
+impl Default for VkCopyBufferToImageInfo2 {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000337002; // VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkCopyImageToBufferInfo2 {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub srcImage: VkImage,
+    pub srcImageLayout: VkImageLayout,
+    pub dstBuffer: VkBuffer,
+    pub regionCount: u32,
+    pub pRegions: *const VkBufferImageCopy2,
+}
+
+impl Default for VkCopyImageToBufferInfo2 {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000337003; // VK_STRUCTURE_TYPE_COPY_IMAGE_TO_BUFFER_INFO_2
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkImageCopy2 {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub srcSubresource: VkImageSubresourceLayers,
+    pub srcOffset: VkOffset3D,
+    pub dstSubresource: VkImageSubresourceLayers,
+    pub dstOffset: VkOffset3D,
+    pub extent: VkExtent3D,
+}
+
+impl Default for VkImageCopy2 {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000337007; // VK_STRUCTURE_TYPE_IMAGE_COPY_2
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkCopyImageInfo2 {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub srcImage: VkImage,
+    pub srcImageLayout: VkImageLayout,
+    pub dstImage: VkImage,
+    pub dstImageLayout: VkImageLayout,
+    pub regionCount: u32,
+    pub pRegions: *const VkImageCopy2,
+}
+
+impl Default for VkCopyImageInfo2 {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000337001; // VK_STRUCTURE_TYPE_COPY_IMAGE_INFO_2
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkImageResolve2 {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub srcSubresource: VkImageSubresourceLayers,
+    pub srcOffset: VkOffset3D,
+    pub dstSubresource: VkImageSubresourceLayers,
+    pub dstOffset: VkOffset3D,
+    pub extent: VkExtent3D,
+}
+
+impl Default for VkImageResolve2 {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000337010; // VK_STRUCTURE_TYPE_IMAGE_RESOLVE_2
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkResolveImageInfo2 {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub srcImage: VkImage,
+    pub srcImageLayout: VkImageLayout,
+    pub dstImage: VkImage,
+    pub dstImageLayout: VkImageLayout,
+    pub regionCount: u32,
+    pub pRegions: *const VkImageResolve2,
+}
+
+impl Default for VkResolveImageInfo2 {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000337005; // VK_STRUCTURE_TYPE_RESOLVE_IMAGE_INFO_2
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) union VkClearColorValue {
+    pub float32: [f32; 4],
+    pub int32: [i32; 4],
+    pub uint32: [u32; 4],
+}
+
+impl Default for VkClearColorValue {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        unsafe { core::mem::zeroed() }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkSparseImageMemoryRequirements {
+    pub formatProperties: VkSparseImageFormatProperties,
+    pub imageMipTailFirstLod: u32,
+    pub imageMipTailSize: VkDeviceSize,
+    pub imageMipTailOffset: VkDeviceSize,
+    pub imageMipTailStride: VkDeviceSize,
+}
+
+impl Default for VkSparseImageMemoryRequirements {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        unsafe { core::mem::zeroed() }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkSparseImageMemoryRequirements2 {
+    pub sType: VkStructureType,
+    pub pNext: *mut c_void,
+    pub memoryRequirements: VkSparseImageMemoryRequirements,
+}
+
+impl Default for VkSparseImageMemoryRequirements2 {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000146004; // VK_STRUCTURE_TYPE_SPARSE_IMAGE_MEMORY_REQUIREMENTS_2
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkImageSparseMemoryRequirementsInfo2 {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub image: VkImage,
+}
+
+impl Default for VkImageSparseMemoryRequirementsInfo2 {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000146002; // VK_STRUCTURE_TYPE_IMAGE_SPARSE_MEMORY_REQUIREMENTS_INFO_2
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkBindSparseInfo {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub waitSemaphoreCount: u32,
+    pub pWaitSemaphores: *const VkSemaphore,
+    pub bufferBindCount: u32,
+    pub pBufferBinds: *const VkSparseBufferMemoryBindInfo,
+    pub imageOpaqueBindCount: u32,
+    pub pImageOpaqueBinds: *const VkSparseImageOpaqueMemoryBindInfo,
+    pub imageBindCount: u32,
+    pub pImageBinds: *const VkSparseImageMemoryBindInfo,
+    pub signalSemaphoreCount: u32,
+    pub pSignalSemaphores: *const VkSemaphore,
+}
+
+impl Default for VkBindSparseInfo {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 7; // VK_STRUCTURE_TYPE_BIND_SPARSE_INFO
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkSparseBufferMemoryBindInfo {
+    pub buffer: VkBuffer,
+    pub bindCount: u32,
+    pub pBinds: *const VkSparseMemoryBind,
+}
+
+impl Default for VkSparseBufferMemoryBindInfo {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        unsafe { core::mem::zeroed() }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkSparseImageOpaqueMemoryBindInfo {
+    pub image: VkImage,
+    pub bindCount: u32,
+    pub pBinds: *const VkSparseMemoryBind,
+}
+
+impl Default for VkSparseImageOpaqueMemoryBindInfo {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        unsafe { core::mem::zeroed() }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkSparseImageMemoryBindInfo {
+    pub image: VkImage,
+    pub bindCount: u32,
+    pub pBinds: *const VkSparseImageMemoryBind,
+}
+
+impl Default for VkSparseImageMemoryBindInfo {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        unsafe { core::mem::zeroed() }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkSparseMemoryBind {
+    pub resourceOffset: VkDeviceSize,
+    pub size: VkDeviceSize,
+    pub memory: VkDeviceMemory,
+    pub memoryOffset: VkDeviceSize,
+    pub flags: VkSparseMemoryBindFlags,
+}
+
+impl Default for VkSparseMemoryBind {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        unsafe { core::mem::zeroed() }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkSparseImageMemoryBind {
+    pub subresource: VkImageSubresource,
+    pub offset: VkOffset3D,
+    pub extent: VkExtent3D,
+    pub memory: VkDeviceMemory,
+    pub memoryOffset: VkDeviceSize,
+    pub flags: VkSparseMemoryBindFlags,
+}
+
+impl Default for VkSparseImageMemoryBind {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        unsafe { core::mem::zeroed() }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkTimelineSemaphoreSubmitInfo {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub waitSemaphoreValueCount: u32,
+    pub pWaitSemaphoreValues: *const u64,
+    pub signalSemaphoreValueCount: u32,
+    pub pSignalSemaphoreValues: *const u64,
+}
+
+impl Default for VkTimelineSemaphoreSubmitInfo {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000207003; // VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO
+        s
+    }
+}
+
 // --- Function pointer types ---
 
 pub(crate) type PFN_vkGetInstanceProcAddr = unsafe extern "system" fn(instance: VkInstance, pName: *const c_char) -> PFN_vkVoidFunction;
@@ -2822,6 +3489,23 @@ pub(crate) type PFN_vkCmdBindSamplerHeapEXT = unsafe extern "system" fn(commandB
 pub(crate) type PFN_vkCmdPushDataEXT = unsafe extern "system" fn(commandBuffer: VkCommandBuffer, pPushDataInfo: *const VkPushDataInfoEXT);
 pub(crate) type PFN_vkGetDeviceFaultInfoEXT = unsafe extern "system" fn(device: VkDevice, pFaultCounts: *mut VkDeviceFaultCountsEXT, pFaultInfo: *mut VkDeviceFaultInfoEXT) -> VkResult;
 pub(crate) type PFN_vkSetDeviceMemoryPriorityEXT = unsafe extern "system" fn(device: VkDevice, memory: VkDeviceMemory, priority: f32);
+pub(crate) type PFN_vkGetPhysicalDeviceFormatProperties2 = unsafe extern "system" fn(physicalDevice: VkPhysicalDevice, format: VkFormat, pFormatProperties: *mut VkFormatProperties2);
+pub(crate) type PFN_vkGetPhysicalDeviceImageFormatProperties2 = unsafe extern "system" fn(physicalDevice: VkPhysicalDevice, pImageFormatInfo: *const VkPhysicalDeviceImageFormatInfo2, pImageFormatProperties: *mut VkImageFormatProperties2) -> VkResult;
+pub(crate) type PFN_vkGetPhysicalDeviceSparseImageFormatProperties2 = unsafe extern "system" fn(physicalDevice: VkPhysicalDevice, pFormatInfo: *const VkPhysicalDeviceSparseImageFormatInfo2, pPropertyCount: *mut u32, pProperties: *mut VkSparseImageFormatProperties2);
+pub(crate) type PFN_vkCreateImage = unsafe extern "system" fn(device: VkDevice, pCreateInfo: *const VkImageCreateInfo, pAllocator: *const VkAllocationCallbacks, pImage: *mut VkImage) -> VkResult;
+pub(crate) type PFN_vkDestroyImage = unsafe extern "system" fn(device: VkDevice, image: VkImage, pAllocator: *const VkAllocationCallbacks);
+pub(crate) type PFN_vkGetDeviceImageMemoryRequirements = unsafe extern "system" fn(device: VkDevice, pInfo: *const VkDeviceImageMemoryRequirements, pMemoryRequirements: *mut VkMemoryRequirements2);
+pub(crate) type PFN_vkGetImageMemoryRequirements2 = unsafe extern "system" fn(device: VkDevice, pInfo: *const VkImageMemoryRequirementsInfo2, pMemoryRequirements: *mut VkMemoryRequirements2);
+pub(crate) type PFN_vkBindImageMemory2 = unsafe extern "system" fn(device: VkDevice, bindInfoCount: u32, pBindInfos: *const VkBindImageMemoryInfo) -> VkResult;
+pub(crate) type PFN_vkCreateImageView = unsafe extern "system" fn(device: VkDevice, pCreateInfo: *const VkImageViewCreateInfo, pAllocator: *const VkAllocationCallbacks, pView: *mut VkImageView) -> VkResult;
+pub(crate) type PFN_vkDestroyImageView = unsafe extern "system" fn(device: VkDevice, imageView: VkImageView, pAllocator: *const VkAllocationCallbacks);
+pub(crate) type PFN_vkCmdCopyBufferToImage2 = unsafe extern "system" fn(commandBuffer: VkCommandBuffer, pCopyBufferToImageInfo: *const VkCopyBufferToImageInfo2);
+pub(crate) type PFN_vkCmdCopyImageToBuffer2 = unsafe extern "system" fn(commandBuffer: VkCommandBuffer, pCopyImageToBufferInfo: *const VkCopyImageToBufferInfo2);
+pub(crate) type PFN_vkCmdCopyImage2 = unsafe extern "system" fn(commandBuffer: VkCommandBuffer, pCopyImageInfo: *const VkCopyImageInfo2);
+pub(crate) type PFN_vkCmdResolveImage2 = unsafe extern "system" fn(commandBuffer: VkCommandBuffer, pResolveImageInfo: *const VkResolveImageInfo2);
+pub(crate) type PFN_vkCmdClearColorImage = unsafe extern "system" fn(commandBuffer: VkCommandBuffer, image: VkImage, imageLayout: VkImageLayout, pColor: *const VkClearColorValue, rangeCount: u32, pRanges: *const VkImageSubresourceRange);
+pub(crate) type PFN_vkGetImageSparseMemoryRequirements2 = unsafe extern "system" fn(device: VkDevice, pInfo: *const VkImageSparseMemoryRequirementsInfo2, pSparseMemoryRequirementCount: *mut u32, pSparseMemoryRequirements: *mut VkSparseImageMemoryRequirements2);
+pub(crate) type PFN_vkQueueBindSparse = unsafe extern "system" fn(queue: VkQueue, bindInfoCount: u32, pBindInfo: *const VkBindSparseInfo, fence: VkFence) -> VkResult;
 
 // --- Constants ---
 
@@ -3106,6 +3790,173 @@ pub(crate) const VK_PIPELINE_CACHE_HEADER_VERSION_ONE: VkPipelineCacheHeaderVers
 pub(crate) const VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO: VkStructureType = 1000077000;
 pub(crate) const VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT: VkExternalSemaphoreHandleTypeFlags = 0x00000002;
 pub(crate) const VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT: VkExternalSemaphoreHandleTypeFlags = 0x00000001;
+pub(crate) const VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2: VkStructureType = 1000059002;
+pub(crate) const VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3: VkStructureType = 1000360000;
+pub(crate) const VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2: VkStructureType = 1000059003;
+pub(crate) const VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2: VkStructureType = 1000059004;
+pub(crate) const VK_STRUCTURE_TYPE_SPARSE_IMAGE_FORMAT_PROPERTIES_2: VkStructureType = 1000059007;
+pub(crate) const VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SPARSE_IMAGE_FORMAT_INFO_2: VkStructureType = 1000059008;
+pub(crate) const VK_FORMAT_UNDEFINED: VkFormat = 0;
+pub(crate) const VK_FORMAT_R8_UNORM: VkFormat = 9;
+pub(crate) const VK_FORMAT_R8_SNORM: VkFormat = 10;
+pub(crate) const VK_FORMAT_R8_UINT: VkFormat = 13;
+pub(crate) const VK_FORMAT_R8_SINT: VkFormat = 14;
+pub(crate) const VK_FORMAT_R8G8_UNORM: VkFormat = 16;
+pub(crate) const VK_FORMAT_R8G8_SNORM: VkFormat = 17;
+pub(crate) const VK_FORMAT_R8G8_UINT: VkFormat = 20;
+pub(crate) const VK_FORMAT_R8G8_SINT: VkFormat = 21;
+pub(crate) const VK_FORMAT_R8G8B8A8_UNORM: VkFormat = 37;
+pub(crate) const VK_FORMAT_R8G8B8A8_SRGB: VkFormat = 43;
+pub(crate) const VK_FORMAT_R8G8B8A8_SNORM: VkFormat = 38;
+pub(crate) const VK_FORMAT_R8G8B8A8_UINT: VkFormat = 41;
+pub(crate) const VK_FORMAT_R8G8B8A8_SINT: VkFormat = 42;
+pub(crate) const VK_FORMAT_B8G8R8A8_UNORM: VkFormat = 44;
+pub(crate) const VK_FORMAT_B8G8R8A8_SRGB: VkFormat = 50;
+pub(crate) const VK_FORMAT_A2B10G10R10_UNORM_PACK32: VkFormat = 64;
+pub(crate) const VK_FORMAT_A2B10G10R10_UINT_PACK32: VkFormat = 68;
+pub(crate) const VK_FORMAT_B10G11R11_UFLOAT_PACK32: VkFormat = 122;
+pub(crate) const VK_FORMAT_E5B9G9R9_UFLOAT_PACK32: VkFormat = 123;
+pub(crate) const VK_FORMAT_R16_UNORM: VkFormat = 70;
+pub(crate) const VK_FORMAT_R16_SNORM: VkFormat = 71;
+pub(crate) const VK_FORMAT_R16_UINT: VkFormat = 74;
+pub(crate) const VK_FORMAT_R16_SINT: VkFormat = 75;
+pub(crate) const VK_FORMAT_R16_SFLOAT: VkFormat = 76;
+pub(crate) const VK_FORMAT_R16G16_UNORM: VkFormat = 77;
+pub(crate) const VK_FORMAT_R16G16_SNORM: VkFormat = 78;
+pub(crate) const VK_FORMAT_R16G16_UINT: VkFormat = 81;
+pub(crate) const VK_FORMAT_R16G16_SINT: VkFormat = 82;
+pub(crate) const VK_FORMAT_R16G16_SFLOAT: VkFormat = 83;
+pub(crate) const VK_FORMAT_R16G16B16A16_UNORM: VkFormat = 91;
+pub(crate) const VK_FORMAT_R16G16B16A16_SNORM: VkFormat = 92;
+pub(crate) const VK_FORMAT_R16G16B16A16_UINT: VkFormat = 95;
+pub(crate) const VK_FORMAT_R16G16B16A16_SINT: VkFormat = 96;
+pub(crate) const VK_FORMAT_R16G16B16A16_SFLOAT: VkFormat = 97;
+pub(crate) const VK_FORMAT_R32_UINT: VkFormat = 98;
+pub(crate) const VK_FORMAT_R32_SINT: VkFormat = 99;
+pub(crate) const VK_FORMAT_R32_SFLOAT: VkFormat = 100;
+pub(crate) const VK_FORMAT_R32G32_UINT: VkFormat = 101;
+pub(crate) const VK_FORMAT_R32G32_SINT: VkFormat = 102;
+pub(crate) const VK_FORMAT_R32G32_SFLOAT: VkFormat = 103;
+pub(crate) const VK_FORMAT_R32G32B32A32_UINT: VkFormat = 107;
+pub(crate) const VK_FORMAT_R32G32B32A32_SINT: VkFormat = 108;
+pub(crate) const VK_FORMAT_R32G32B32A32_SFLOAT: VkFormat = 109;
+pub(crate) const VK_FORMAT_D16_UNORM: VkFormat = 124;
+pub(crate) const VK_FORMAT_D32_SFLOAT: VkFormat = 126;
+pub(crate) const VK_FORMAT_D32_SFLOAT_S8_UINT: VkFormat = 130;
+pub(crate) const VK_FORMAT_BC1_RGBA_UNORM_BLOCK: VkFormat = 133;
+pub(crate) const VK_FORMAT_BC1_RGBA_SRGB_BLOCK: VkFormat = 134;
+pub(crate) const VK_FORMAT_BC2_UNORM_BLOCK: VkFormat = 135;
+pub(crate) const VK_FORMAT_BC2_SRGB_BLOCK: VkFormat = 136;
+pub(crate) const VK_FORMAT_BC3_UNORM_BLOCK: VkFormat = 137;
+pub(crate) const VK_FORMAT_BC3_SRGB_BLOCK: VkFormat = 138;
+pub(crate) const VK_FORMAT_BC4_UNORM_BLOCK: VkFormat = 139;
+pub(crate) const VK_FORMAT_BC4_SNORM_BLOCK: VkFormat = 140;
+pub(crate) const VK_FORMAT_BC5_UNORM_BLOCK: VkFormat = 141;
+pub(crate) const VK_FORMAT_BC5_SNORM_BLOCK: VkFormat = 142;
+pub(crate) const VK_FORMAT_BC6H_UFLOAT_BLOCK: VkFormat = 143;
+pub(crate) const VK_FORMAT_BC6H_SFLOAT_BLOCK: VkFormat = 144;
+pub(crate) const VK_FORMAT_BC7_UNORM_BLOCK: VkFormat = 145;
+pub(crate) const VK_FORMAT_BC7_SRGB_BLOCK: VkFormat = 146;
+pub(crate) const VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK: VkFormat = 147;
+pub(crate) const VK_FORMAT_ETC2_R8G8B8_SRGB_BLOCK: VkFormat = 148;
+pub(crate) const VK_FORMAT_ETC2_R8G8B8A1_UNORM_BLOCK: VkFormat = 149;
+pub(crate) const VK_FORMAT_ETC2_R8G8B8A1_SRGB_BLOCK: VkFormat = 150;
+pub(crate) const VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK: VkFormat = 151;
+pub(crate) const VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK: VkFormat = 152;
+pub(crate) const VK_FORMAT_EAC_R11_UNORM_BLOCK: VkFormat = 153;
+pub(crate) const VK_FORMAT_EAC_R11_SNORM_BLOCK: VkFormat = 154;
+pub(crate) const VK_FORMAT_EAC_R11G11_UNORM_BLOCK: VkFormat = 155;
+pub(crate) const VK_FORMAT_EAC_R11G11_SNORM_BLOCK: VkFormat = 156;
+pub(crate) const VK_FORMAT_ASTC_4x4_UNORM_BLOCK: VkFormat = 157;
+pub(crate) const VK_FORMAT_ASTC_4x4_SRGB_BLOCK: VkFormat = 158;
+pub(crate) const VK_FORMAT_ASTC_5x5_UNORM_BLOCK: VkFormat = 161;
+pub(crate) const VK_FORMAT_ASTC_5x5_SRGB_BLOCK: VkFormat = 162;
+pub(crate) const VK_FORMAT_ASTC_6x6_UNORM_BLOCK: VkFormat = 165;
+pub(crate) const VK_FORMAT_ASTC_6x6_SRGB_BLOCK: VkFormat = 166;
+pub(crate) const VK_FORMAT_ASTC_8x8_UNORM_BLOCK: VkFormat = 171;
+pub(crate) const VK_FORMAT_ASTC_8x8_SRGB_BLOCK: VkFormat = 172;
+pub(crate) const VK_FORMAT_ASTC_10x10_UNORM_BLOCK: VkFormat = 179;
+pub(crate) const VK_FORMAT_ASTC_10x10_SRGB_BLOCK: VkFormat = 180;
+pub(crate) const VK_FORMAT_ASTC_12x12_UNORM_BLOCK: VkFormat = 183;
+pub(crate) const VK_FORMAT_ASTC_12x12_SRGB_BLOCK: VkFormat = 184;
+pub(crate) const VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT: VkFormatFeatureFlags2 = 0x00000001;
+pub(crate) const VK_FORMAT_FEATURE_2_STORAGE_IMAGE_BIT: VkFormatFeatureFlags2 = 0x00000002;
+pub(crate) const VK_FORMAT_FEATURE_2_STORAGE_IMAGE_ATOMIC_BIT: VkFormatFeatureFlags2 = 0x00000004;
+pub(crate) const VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BIT: VkFormatFeatureFlags2 = 0x00000080;
+pub(crate) const VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BLEND_BIT: VkFormatFeatureFlags2 = 0x00000100;
+pub(crate) const VK_FORMAT_FEATURE_2_DEPTH_STENCIL_ATTACHMENT_BIT: VkFormatFeatureFlags2 = 0x00000200;
+pub(crate) const VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_FILTER_LINEAR_BIT: VkFormatFeatureFlags2 = 0x00001000;
+pub(crate) const VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT: VkFormatFeatureFlags2 = 0x00004000;
+pub(crate) const VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT: VkFormatFeatureFlags2 = 0x00008000;
+pub(crate) const VK_FORMAT_FEATURE_2_STORAGE_READ_WITHOUT_FORMAT_BIT: VkFormatFeatureFlags2 = 0x80000000;
+pub(crate) const VK_FORMAT_FEATURE_2_STORAGE_WRITE_WITHOUT_FORMAT_BIT: VkFormatFeatureFlags2 = 0x100000000;
+pub(crate) const VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_DEPTH_COMPARISON_BIT: VkFormatFeatureFlags2 = 0x200000000;
+pub(crate) const VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO: VkStructureType = 14;
+pub(crate) const VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO: VkStructureType = 1000147000;
+pub(crate) const VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO: VkStructureType = 1000117002;
+pub(crate) const VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2: VkStructureType = 1000146001;
+pub(crate) const VK_STRUCTURE_TYPE_DEVICE_IMAGE_MEMORY_REQUIREMENTS: VkStructureType = 1000413003;
+pub(crate) const VK_STRUCTURE_TYPE_BIND_IMAGE_MEMORY_INFO: VkStructureType = 1000157001;
+pub(crate) const VK_IMAGE_TYPE_2D: VkImageType = 1;
+pub(crate) const VK_IMAGE_TYPE_3D: VkImageType = 2;
+pub(crate) const VK_IMAGE_TILING_OPTIMAL: VkImageTiling = 0;
+pub(crate) const VK_IMAGE_USAGE_TRANSFER_SRC_BIT: VkImageUsageFlags = 0x00000001;
+pub(crate) const VK_IMAGE_USAGE_TRANSFER_DST_BIT: VkImageUsageFlags = 0x00000002;
+pub(crate) const VK_IMAGE_USAGE_SAMPLED_BIT: VkImageUsageFlags = 0x00000004;
+pub(crate) const VK_IMAGE_USAGE_STORAGE_BIT: VkImageUsageFlags = 0x00000008;
+pub(crate) const VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT: VkImageUsageFlags = 0x00000010;
+pub(crate) const VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT: VkImageUsageFlags = 0x00000020;
+pub(crate) const VK_IMAGE_USAGE_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR: VkImageUsageFlags = 0x00000100;
+pub(crate) const VK_IMAGE_CREATE_SPARSE_BINDING_BIT: VkImageCreateFlags = 0x00000001;
+pub(crate) const VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT: VkImageCreateFlags = 0x00000002;
+pub(crate) const VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT: VkImageCreateFlags = 0x00000008;
+pub(crate) const VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT: VkImageCreateFlags = 0x00000010;
+pub(crate) const VK_SAMPLE_COUNT_1_BIT: VkSampleCountFlags = 0x00000001;
+pub(crate) const VK_IMAGE_VIEW_TYPE_2D: VkImageViewType = 1;
+pub(crate) const VK_IMAGE_VIEW_TYPE_3D: VkImageViewType = 2;
+pub(crate) const VK_IMAGE_VIEW_TYPE_CUBE: VkImageViewType = 3;
+pub(crate) const VK_IMAGE_VIEW_TYPE_2D_ARRAY: VkImageViewType = 5;
+pub(crate) const VK_IMAGE_VIEW_TYPE_CUBE_ARRAY: VkImageViewType = 6;
+pub(crate) const VK_COMPONENT_SWIZZLE_IDENTITY: VkComponentSwizzle = 0;
+pub(crate) const VK_IMAGE_ASPECT_METADATA_BIT: VkImageAspectFlags = 0x00000008;
+pub(crate) const VK_OBJECT_TYPE_IMAGE_VIEW: VkObjectType = 14;
+pub(crate) const VK_STRUCTURE_TYPE_SAMPLER_REDUCTION_MODE_CREATE_INFO: VkStructureType = 1000130001;
+pub(crate) const VK_FILTER_NEAREST: VkFilter = 0;
+pub(crate) const VK_FILTER_LINEAR: VkFilter = 1;
+pub(crate) const VK_SAMPLER_MIPMAP_MODE_NEAREST: VkSamplerMipmapMode = 0;
+pub(crate) const VK_SAMPLER_MIPMAP_MODE_LINEAR: VkSamplerMipmapMode = 1;
+pub(crate) const VK_SAMPLER_ADDRESS_MODE_REPEAT: VkSamplerAddressMode = 0;
+pub(crate) const VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT: VkSamplerAddressMode = 1;
+pub(crate) const VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE: VkSamplerAddressMode = 2;
+pub(crate) const VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER: VkSamplerAddressMode = 3;
+pub(crate) const VK_COMPARE_OP_NEVER: VkCompareOp = 0;
+pub(crate) const VK_COMPARE_OP_LESS: VkCompareOp = 1;
+pub(crate) const VK_COMPARE_OP_EQUAL: VkCompareOp = 2;
+pub(crate) const VK_COMPARE_OP_LESS_OR_EQUAL: VkCompareOp = 3;
+pub(crate) const VK_COMPARE_OP_GREATER: VkCompareOp = 4;
+pub(crate) const VK_COMPARE_OP_NOT_EQUAL: VkCompareOp = 5;
+pub(crate) const VK_COMPARE_OP_GREATER_OR_EQUAL: VkCompareOp = 6;
+pub(crate) const VK_COMPARE_OP_ALWAYS: VkCompareOp = 7;
+pub(crate) const VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK: VkBorderColor = 0;
+pub(crate) const VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK: VkBorderColor = 2;
+pub(crate) const VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE: VkBorderColor = 4;
+pub(crate) const VK_SAMPLER_REDUCTION_MODE_WEIGHTED_AVERAGE: VkSamplerReductionMode = 0;
+pub(crate) const VK_SAMPLER_REDUCTION_MODE_MIN: VkSamplerReductionMode = 1;
+pub(crate) const VK_SAMPLER_REDUCTION_MODE_MAX: VkSamplerReductionMode = 2;
+pub(crate) const VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2: VkStructureType = 1000337009;
+pub(crate) const VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2: VkStructureType = 1000337002;
+pub(crate) const VK_STRUCTURE_TYPE_COPY_IMAGE_TO_BUFFER_INFO_2: VkStructureType = 1000337003;
+pub(crate) const VK_STRUCTURE_TYPE_IMAGE_COPY_2: VkStructureType = 1000337007;
+pub(crate) const VK_STRUCTURE_TYPE_COPY_IMAGE_INFO_2: VkStructureType = 1000337001;
+pub(crate) const VK_STRUCTURE_TYPE_IMAGE_RESOLVE_2: VkStructureType = 1000337010;
+pub(crate) const VK_STRUCTURE_TYPE_RESOLVE_IMAGE_INFO_2: VkStructureType = 1000337005;
+pub(crate) const VK_STRUCTURE_TYPE_SPARSE_IMAGE_MEMORY_REQUIREMENTS_2: VkStructureType = 1000146004;
+pub(crate) const VK_STRUCTURE_TYPE_IMAGE_SPARSE_MEMORY_REQUIREMENTS_INFO_2: VkStructureType = 1000146002;
+pub(crate) const VK_STRUCTURE_TYPE_BIND_SPARSE_INFO: VkStructureType = 7;
+pub(crate) const VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO: VkStructureType = 1000207003;
+pub(crate) const VK_SPARSE_IMAGE_FORMAT_SINGLE_MIPTAIL_BIT: VkSparseImageFormatFlags = 0x00000001;
+pub(crate) const VK_SPARSE_IMAGE_FORMAT_NONSTANDARD_BLOCK_SIZE_BIT: VkSparseImageFormatFlags = 0x00000004;
+pub(crate) const VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT: VkCommandPoolCreateFlags = 0x00000002;
 
 // --- Referenced types ---
 
@@ -3147,10 +3998,17 @@ pub(crate) type VkFence = u64;
 pub(crate) type VkFenceCreateFlags = u32;
 pub(crate) type VkFilter = i32;
 pub(crate) type VkFormat = i32;
+pub(crate) type VkFormatFeatureFlags = u32;
+pub(crate) type VkFormatFeatureFlags2 = u64;
 pub(crate) type VkFramebuffer = u64;
 pub(crate) type VkImage = u64;
+pub(crate) type VkImageAspectFlagBits = i32;
 pub(crate) type VkImageAspectFlags = u32;
+pub(crate) type VkImageCreateFlags = u32;
 pub(crate) type VkImageLayout = i32;
+pub(crate) type VkImageTiling = i32;
+pub(crate) type VkImageType = i32;
+pub(crate) type VkImageUsageFlags = u32;
 pub(crate) type VkImageView = u64;
 pub(crate) type VkImageViewCreateFlags = u32;
 pub(crate) type VkImageViewType = i32;
@@ -3190,6 +4048,7 @@ pub(crate) type VkSampleCountFlags = u32;
 pub(crate) type VkSamplerAddressMode = i32;
 pub(crate) type VkSamplerCreateFlags = u32;
 pub(crate) type VkSamplerMipmapMode = i32;
+pub(crate) type VkSamplerReductionMode = i32;
 pub(crate) type VkSemaphore = u64;
 pub(crate) type VkSemaphoreCreateFlags = u32;
 pub(crate) type VkSemaphoreType = i32;
@@ -3200,6 +4059,8 @@ pub(crate) type VkShaderModuleCreateFlags = u32;
 pub(crate) type VkShaderStageFlagBits = i32;
 pub(crate) type VkShaderStageFlags = u32;
 pub(crate) type VkSharingMode = i32;
+pub(crate) type VkSparseImageFormatFlags = u32;
+pub(crate) type VkSparseMemoryBindFlags = u32;
 pub(crate) type VkSpirvResourceTypeFlagsEXT = u32;
 pub(crate) type VkStructureType = i32;
 pub(crate) type VkSubgroupFeatureFlags = u32;
