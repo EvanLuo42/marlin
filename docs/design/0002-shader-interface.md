@@ -109,11 +109,10 @@
 ## 6. SPIR-V 绑定（Vulkan）
 
 已定，见 [0016 §4](0016-rhi-vulkan.md)：bindless 用 `VK_EXT_descriptor_heap`，不用 descriptor set 和 pipeline layout。shader 两种写法都接受：
-- 原生 `SPV_EXT_descriptor_heap`（`ResourceHeapEXT` / `SamplerHeapEXT`，push constants 是 `PushConstant` 存储类）：自研编译器以后直接产出。
+- 原生 `SPV_EXT_descriptor_heap`（`ResourceHeapEXT` / `SamplerHeapEXT`，push constants 是 `PushConstant` 存储类）：自研编译器直接产出这种（2026-10-17 定）。资源 heap 的槽宽由 shader 自己算：`max(OpConstantSizeOfEXT(image), OpConstantSizeOfEXT(buffer))`（`OpSpecConstantOp` 的 `UGreaterThan` + `Select`，用 `ArrayStrideIdEXT` 标在 heap 的运行时数组上），sampler heap 的步长是 `OpConstantSizeOfEXT(sampler)`；驱动给出这些大小，编译器不用知道。RHI 的槽宽必须正好是这个最大值（0016 §4.1）。
 - set 0 映射（占位 HLSL 用的）：binding 0 资源表、binding 1 采样器表、binding 2 push constants 的 uniform block。
 
 ## 7. 待定
 
-- 自研编译器产出原生 heap 时槽宽怎么传给 shader（0016 §11）。
 - 主机平台的对应方式。
 - （mesh shader、ray query、wave 大小、16 位与 64 位运算、重心坐标等能力已经在 `Features` 里报告。）

@@ -13,5 +13,5 @@ static HEAP: MemCap<std::alloc::System> = MemCap::new(std::alloc::System, 1 << 3
 
 mod differential;
 mod passes;
-mod random;
+
 mod uniformity;

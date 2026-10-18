@@ -65,8 +65,9 @@ compiler/shader/          （包名 marlin-shaderc-*）
   target        target 描述（capability、布局规则、资源模型、支持的操作）
   backend_dxil  DXIL：LLVM 3.7 bitcode 写出器、DXIL 元数据、容器和验证哈希
   backend_spirv SPIR-V 写出器
-  reflect       反射数据类型（运行时也能依赖）
+  reflect       从 IR 构造反射；反射的数据类型在 runtime 里（运行时读它，运行时不能依赖 compiler/，2026-10-17 定）
   shaderc       facade marlin-shaderc：Session、target 注册表、EntryRequest
+  testgen       只给测试用：随机生成的结构化 IR 程序，以及包住它的 compute 入口（pass 和后端的差分测试共用）
 platforms/<p>/shader/  主机平台的后端（在 cook 平台 cfg 下通过 #[path] 引入）
 ```
 
@@ -407,7 +408,6 @@ public const ClosureInfo Flatten<M>() where M : IMaterial { ... }
 - peephole 规则表的格式；寄存器压力模型的参数（按 target）。
 - DXIL 写出器：LLVM 3.7 bitcode 的子集，以及验证哈希的算法。
 - 语言服务器的范围。
-- `reflect` crate 要让运行时依赖，但运行时不能依赖 `compiler/`：它要么放到 runtime 里（比如并进 `runtime/engine/shader`），要么拆成运行时的数据类型和编译器端的构造代码两部分。
 
 ## 11. 实现顺序
 
@@ -425,7 +425,7 @@ public const ClosureInfo Flatten<M>() where M : IMaterial { ... }
 | 6 | `ir`：6a 是类型、指令集、函数和 module 的表示、builder、文本打印和解析；6b 是 verifier；6c 是解释器 | 文本能往返；解释器能跑 compute 语义 |
 | 7 | `lower`：7a 是非泛型代码降低成 SSA IR（表达式、语句、结构化控制流、调用、内建函数）；7b 是实例收集、泛型、接口调用、lambda；7c 是入口（系统值、push、资源）和 CTFE（const 字段、静态参数、数组长度、const 函数） | 泛型入口能单态化，`const` 函数能在编译期求值 |
 | 8 | `opt`：8a 是 pass manager、控制流分析、结构保持的 CFG 化简、DCE、SCCP 和差分测试（随机生成的结构化函数，用解释器比较 pass 前后）；8b 是阶段 0–1 的 pass（1.4、1.5 只有 DXIL 需要，随 DXIL 后端一起做）；8c 是 uniformity 分析和 verifier 的 convergence 检查（0006 §5.3），并核对 verifier 的 break 规则和 SPIR-V 一致（break 只能去最内层 loop 或 switch 的 merge；现在的 verifier 接受任何一层外面的 loop） | 第一个 compute 入口能走完整条流水线 |
-| 9 | `target`、`backend_spirv`（SPIR-V 1.6 / Vulkan 1.3 环境）、`reflect`、facade `Session`、真正的核心库 | 第一个 compute shader 生成的 SPIR-V 通过我们自己的验证器；Vulkan RHI 就绪后在真实 GPU 上跑通 |
+| 9 | 9a 是 `target`（target 描述、`Backend` 接口、注册表）和 `backend_spirv` 的 compute 部分（SPIR-V 1.6、原生 descriptor heap，0002 §6）；9b 是我们自己的 SPIR-V 验证器；9c 是 `reflect` 和 facade `Session`；9d 是真正的核心库；9e 是第一个 compute shader 在真实 GPU 上跑通，和解释器比较 | 第一个 compute shader 生成的 SPIR-V 通过我们自己的验证器；Vulkan RHI 就绪后在真实 GPU 上跑通 |
 | 10 | 补齐其余 stage、资源、wave、纹理；cook 和 build.rs 接入；随 Vulkan RHI 替换占位 shader | |
 | 11 | 阶段 2–5 的其余 pass、自动微分、调试信息（NonSemantic.Shader.DebugInfo）、其他后端：DXIL（Xbox 等需要 D3D12 的平台）、Metal、主机 | |
 

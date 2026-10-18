@@ -306,3 +306,14 @@ pub fn value_constant(m: &mut Module, v: &Val, t: Type) -> Option<Const> {
     };
     Some(m.constant(t, value))
 }
+
+/// A type's scalar layout in memory (0004 §16): its size and alignment in bytes; `None` for
+/// types that are not stored (pointers, handles).
+pub fn scalar_layout(m: &Module, t: Type) -> Option<(u64, u64)> {
+    memory::layout(m, t).ok().map(|l| (l.size, l.align))
+}
+
+/// The byte offset of field `i` of struct type `t` in scalar layout.
+pub fn scalar_field_offset(m: &Module, t: Type, i: u32) -> Option<u64> {
+    memory::field_offset(m, t, i).ok().map(|(o, _)| o)
+}

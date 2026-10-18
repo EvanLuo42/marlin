@@ -455,16 +455,8 @@ impl<'a> Verifier<'a> {
                 continue;
             }
             out.push(f);
-            let Some(func) = self.m.funcs.get(f) else {
-                continue;
-            };
-            for (_, inst) in func.insts.iter() {
-                if let Op::Call(callee) = inst.op
-                    && self.m.funcs.get(callee).is_some()
-                {
-                    stack.push(callee);
-                }
-            }
+            // Only instructions in blocks: removed ones stay in the arena.
+            stack.extend(self.callees(f));
         }
         out
     }

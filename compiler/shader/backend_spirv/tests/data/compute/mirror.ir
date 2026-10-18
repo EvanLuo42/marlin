@@ -1,0 +1,38 @@
+struct @Game.Args { Out: res<Buffer<i32>>, Total: res<Buffer<i32>>, Scale: i32 }
+global @Game.Mirror.id : ptr<input, i32x3> builtin(DispatchThreadId)
+global @Game.Mirror.gi : ptr<input, i32> builtin(GroupIndex)
+global @Game.Mirror.a : ptr<push, @Game.Args>
+global @Game.Tile : ptr<groupshared, [i32; 64]>
+
+entry compute(64, 1, 1) @Game.Mirror uses(@Game.Mirror.id, @Game.Mirror.gi, @Game.Mirror.a, @Game.Tile) {
+block0:
+    %0 = load @Game.Mirror.id
+    %1 = load @Game.Mirror.gi
+    %2 = load @Game.Mirror.a
+    %3 = access @Game.Tile, [%1]
+    %4 = extract %0, 0
+    %5 = extract.field %2, .Scale
+    %6 = mul %4, %5
+    store %3, %6
+    barrier exec(group) mem(group) spaces(groupshared)
+    %7 = extract.field %2, .Out
+    %8 = extract %0, 0
+    %9 = desc.get %7
+    %10 = buffer.elem %9, %8
+    %11 = sub i32 63, %1
+    %12 = access @Game.Tile, [%11]
+    %13 = load %12
+    store %10, %13
+    %14 = extract %0, 0
+    %15 = extract.field %2, .Total
+    %16 = desc.get %15
+    %17 = buffer.elem %16, i32 0
+    %18 = atomic.add %17, %14 scope(device) order(relaxed)
+    %19 = extract %0, 0
+    %20 = extract.field %2, .Total
+    %21 = desc.get %20
+    %22 = buffer.elem %21, i32 1
+    %23 = atomic.umax %22, %19 scope(device) order(relaxed)
+    return
+}
+

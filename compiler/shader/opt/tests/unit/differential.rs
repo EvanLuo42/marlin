@@ -6,7 +6,7 @@ use marlin_shaderc_opt::{
 };
 use marlin_test_support::{scale, seed};
 
-use crate::random;
+use marlin_shaderc_testgen as random;
 
 fn run(m: &Module, f: FuncId, args: &[i32]) -> Vec<Val> {
     let args: Vec<Val> = args.iter().map(|&a| Val::i32(a)).collect();

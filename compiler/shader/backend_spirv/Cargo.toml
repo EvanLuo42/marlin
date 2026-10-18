@@ -1,0 +1,18 @@
+[package]
+name = "marlin-shaderc-backend-spirv"
+description = "Marlin shader compiler: the SPIR-V backend (SPIR-V 1.6 for Vulkan with native descriptor heaps) and its validator."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+marlin-shaderc-ir.workspace = true
+marlin-shaderc-target.workspace = true
+
+[dev-dependencies]
+marlin-shaderc-opt.workspace = true
+marlin-shaderc-testgen.workspace = true
+marlin-test-support.workspace = true
+
+[lints]
+workspace = true

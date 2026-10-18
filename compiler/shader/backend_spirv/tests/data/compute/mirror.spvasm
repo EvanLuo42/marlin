@@ -1,0 +1,112 @@
+; SPIR-V 1.6, bound 71
+OpCapability 1
+OpCapability 4473
+OpCapability 5128
+OpExtension "SPV_EXT_descriptor_heap"
+OpExtension "SPV_KHR_untyped_pointers"
+OpMemoryModel 0 1
+OpEntryPoint 5 1 "main" 8 10 14 21 46
+OpExecutionMode 1 17 64 1 1
+OpName 8 "Game.Mirror.id"
+OpName 10 "Game.Mirror.gi"
+OpName 11 "Game.Args"
+OpMemberName 11 0 "Out"
+OpMemberName 11 1 "Total"
+OpMemberName 11 2 "Scale"
+OpName 14 "Game.Mirror.a"
+OpName 21 "Game.Tile"
+OpName 24 "Game.Args"
+OpMemberName 24 0 "Out"
+OpMemberName 24 1 "Total"
+OpMemberName 24 2 "Scale"
+OpName 46 "resource_heap"
+OpName 1 "Game.Mirror"
+OpDecorate 8 11 28
+OpDecorate 10 11 29
+OpMemberDecorate 11 0 35 0
+OpMemberDecorate 11 1 35 4
+OpMemberDecorate 11 2 35 8
+OpDecorate 12 2
+OpMemberDecorate 12 0 35 0
+OpDecorateId 45 5124 44
+OpDecorate 46 11 5123
+OpDecorate 49 6 4
+OpDecorate 50 2
+OpMemberDecorate 50 0 35 0
+%3 = OpTypeVoid
+%4 = OpTypeFunction 3
+%5 = OpTypeInt 32 0
+%6 = OpTypeVector 5 3
+%7 = OpTypePointer 1 6
+%8 = OpVariable %7 1
+%9 = OpTypePointer 1 5
+%10 = OpVariable %9 1
+%11 = OpTypeStruct 5 5 5
+%12 = OpTypeStruct 11
+%13 = OpTypePointer 9 12
+%14 = OpVariable %13 9
+%15 = OpTypePointer 9 11
+%16 = OpConstant %5 0
+%18 = OpConstant %5 64
+%19 = OpTypeArray 5 18
+%20 = OpTypePointer 4 19
+%21 = OpVariable %20 4
+%24 = OpTypeStruct 5 5 5
+%27 = OpTypePointer 4 5
+%32 = OpConstant %5 2
+%33 = OpConstant %5 264
+%36 = OpTypeUntypedPointerKHR 0
+%37 = OpTypeBufferEXT 12
+%38 = OpTypeFloat 32
+%39 = OpTypeImage 38 1 0 0 0 1 0
+%40 = OpConstantSizeOfEXT %5 39
+%41 = OpConstantSizeOfEXT %5 37
+%42 = OpTypeBool
+%43 = OpSpecConstantOp %42 172 40 41
+%44 = OpSpecConstantOp %5 169 43 40 41
+%45 = OpTypeRuntimeArray 37
+%46 = OpUntypedVariableKHR %36 0
+%48 = OpTypePointer 12 5
+%49 = OpTypeRuntimeArray 5
+%50 = OpTypeStruct 49
+%51 = OpTypePointer 12 50
+%54 = OpConstant %5 63
+%63 = OpConstant %5 1
+
+%1 = OpFunction %3 0 4
+
+%2 = OpLabel
+%17 = OpAccessChain %15 14 16
+%22 = OpLoad %6 8
+%23 = OpLoad %5 10
+%25 = OpLoad %11 17
+%26 = OpCopyLogical %24 25
+%28 = OpAccessChain %27 21 23
+%29 = OpCompositeExtract %5 22 0
+%30 = OpCompositeExtract %5 26 2
+%31 = OpIMul %5 29 30
+OpStore 28 31
+OpControlBarrier 32 32 33
+%34 = OpCompositeExtract %5 26 0
+%35 = OpCompositeExtract %5 22 0
+%47 = OpUntypedAccessChainKHR %36 45 46 34
+%52 = OpBufferPointerEXT %51 47
+%53 = OpAccessChain %48 52 16 35
+%55 = OpISub %5 54 23
+%56 = OpAccessChain %27 21 55
+%57 = OpLoad %5 56
+OpStore 53 57
+%58 = OpCompositeExtract %5 22 0
+%59 = OpCompositeExtract %5 26 1
+%60 = OpUntypedAccessChainKHR %36 45 46 59
+%61 = OpBufferPointerEXT %51 60
+%62 = OpAccessChain %48 61 16 16
+%64 = OpAtomicIAdd %5 62 63 16 58
+%65 = OpCompositeExtract %5 22 0
+%66 = OpCompositeExtract %5 26 1
+%67 = OpUntypedAccessChainKHR %36 45 46 66
+%68 = OpBufferPointerEXT %51 67
+%69 = OpAccessChain %48 68 16 63
+%70 = OpAtomicUMax %5 69 63 16 65
+OpReturn
+OpFunctionEnd

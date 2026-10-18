@@ -893,6 +893,17 @@ name = "marlin-shader"
 version = "0.1.0"
 
 [[package]]
+name = "marlin-shaderc-backend-spirv"
+version = "0.1.0"
+dependencies = [
+ "marlin-shaderc-ir",
+ "marlin-shaderc-opt",
+ "marlin-shaderc-target",
+ "marlin-shaderc-testgen",
+ "marlin-test-support",
+]
+
+[[package]]
 name = "marlin-shaderc-hir-ty"
 version = "0.1.0"
 dependencies = [
@@ -938,6 +949,7 @@ version = "0.1.0"
 dependencies = [
  "marlin-math",
  "marlin-shaderc-ir",
+ "marlin-shaderc-testgen",
  "marlin-test-support",
 ]
 
@@ -947,6 +959,22 @@ version = "0.1.0"
 dependencies = [
  "marlin-front-syntax",
  "marlin-lang-diag",
+]
+
+[[package]]
+name = "marlin-shaderc-target"
+version = "0.1.0"
+dependencies = [
+ "marlin-shaderc-ir",
+ "marlin-test-support",
+]
+
+[[package]]
+name = "marlin-shaderc-testgen"
+version = "0.1.0"
+dependencies = [
+ "marlin-math",
+ "marlin-shaderc-ir",
 ]
 
 [[package]]

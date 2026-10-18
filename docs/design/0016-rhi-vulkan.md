@@ -98,7 +98,7 @@ adapter：`AdapterPreference::HighPerformance` 选独显优先、然后显存最
 
 两种 shader 都接受，backend 每次建 pipeline 都附上同一份映射（`VkShaderDescriptorSetAndBindingMappingInfoEXT`），原生 heap 的 shader 不受它影响：
 
-1. **原生 `SPV_EXT_descriptor_heap`**：shader 直接用 `ResourceHeapEXT` / `SamplerHeapEXT`，下标即槽号（字节偏移 = 槽号 × 槽宽，槽宽由 backend 在 device 上报告——自研编译器以后要知道它怎么取，待定，见 §11）；push constants 用 `PushConstant` 存储类，读的是 push data。
+1. **原生 `SPV_EXT_descriptor_heap`**：shader 直接用 `ResourceHeapEXT` / `SamplerHeapEXT`，下标即槽号（字节偏移 = 槽号 × 槽宽）。槽宽由 shader 用 `OpConstantSizeOfEXT` 算出：`max(image, buffer)` 的描述符大小，sampler heap 是 sampler 的大小（2026-10-17 定，0002 §6）。所以 backend 的槽宽必须正好是 `max(imageDescriptorSize, bufferDescriptorSize)`：现在的实现再向上对齐到两者对齐的较大值，接入自研编译器时改成检查这个最大值已经对齐（实际的描述符大小都是对齐的），不对齐就不支持这个 device；push constants 用 `PushConstant` 存储类，读的是 push data。
 2. **set 0 映射**（占位 HLSL，dxc 默认的"emulated heap"）：
 
 | SPIR-V | 映射到 | `VkDescriptorMappingSourceEXT` |
@@ -180,7 +180,6 @@ buffer 成员的 offset 由 shader 自己声明（SPIR-V 的 `Offset` 装饰）�
 
 ## 11. 待定
 
-- 自研编译器产出原生 `SPV_EXT_descriptor_heap` 时，槽宽怎么传给 shader（specialization constant、编译期常量、还是统一取各厂商最大值固定下来）。
 - buffer 布局规则（shader 编译器决定；它产出的 `Offset` 和手写 Rust 结构体靠反射对齐）。
 - Linux 的 Wayland/X11 surface（等 L1 Linux 窗口）。
 - 内存子分配（现在 committed = 每资源一次 `vkAllocateMemory`，测试规模够用；Windows 上 `maxMemoryAllocationCount` 通常 4096）。

@@ -166,6 +166,8 @@ GPU 层的看门狗：xtask 监控测试进程，超时没有输出就报告卡�
 | `data_path(env!("CARGO_MANIFEST_DIR"), rel)`：`<crate>/tests/data/rel` | 各处 `env!("CARGO_MANIFEST_DIR")` 拼路径 |
 | `regress::for_each(manifest_dir, target, |bytes| …)`：回放 `tests/data/regress/<target>/*`，全部跑完再报出失败的输入 | fuzz 找到的崩溃用例（§7.3） |
 
+shader 编译器另有一个只给测试用的 crate `marlin-shaderc-testgen`（`compiler/shader/testgen`）：随机生成的结构化 IR 程序和包住它的 compute 入口，pass 和后端的差分测试共用（0005 §4.6）。SPIR-V 后端的测试可以选择性地用 Khronos 的 `spirv-val` 再查一遍：设 `MARLIN_SPIRV_VAL` 为它的路径（Vulkan SDK 里有），不设就不查；测试从不依赖它，判定标准是我们自己的验证器（0005 §4.6）。
+
 ### 6.2 `marlin-gpu-test-support`（新 crate，`tools/gpu_test_support`）
 
 依赖 `marlin-rhi` 和只读写 PNG 的 `png` crate（不用 `image`：`png` 不和任何 runtime crate 共享依赖，不会经 feature 统一漏进 runtime 构建），只做 dev-dependency；xtask `check-layers` 本来就不管 dev-dependency。内容从 rhi 的 `tests/support` 搬过来，再补上其他 crate 自己抄的部分：

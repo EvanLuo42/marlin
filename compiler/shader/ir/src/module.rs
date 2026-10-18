@@ -251,6 +251,38 @@ impl Module {
         self.entries.iter().find(|e| e.func == func)
     }
 
+    /// Sets each entry's `uses` to the module variables its functions (through calls) use.
+    pub fn recompute_uses(&mut self) {
+        for k in 0..self.entries.len() {
+            let mut seen = std::collections::HashSet::new();
+            let mut stack = vec![self.entries[k].func];
+            let mut uses: Vec<GlobalId> = Vec::new();
+            while let Some(f) = stack.pop() {
+                if !seen.insert(f) {
+                    continue;
+                }
+                let func = &self.funcs[f];
+                for (v, data) in func.values.iter() {
+                    if let crate::func::ValueDef::Global(g) = data.def
+                        && !func.uses(v).is_empty()
+                        && !uses.contains(&g)
+                    {
+                        uses.push(g);
+                    }
+                }
+                for &b in &func.layout {
+                    for i in func.insts(b) {
+                        if let crate::op::Op::Call(c) = func.insts[i].op {
+                            stack.push(c);
+                        }
+                    }
+                }
+            }
+            uses.sort();
+            self.entries[k].uses = uses;
+        }
+    }
+
     /// Keeps only the functions and module variables `keep_func` and `keep_global` accept; ids
     /// change, and calls, entries and the functions' references follow. Nothing kept may call a
     /// removed function or use a removed variable.

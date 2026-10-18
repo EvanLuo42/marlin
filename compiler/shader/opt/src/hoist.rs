@@ -9,41 +9,50 @@ use marlin_shaderc_ir::{
 };
 
 use crate::edit::value_before;
-use crate::{Analyses, Changed, FunctionPass};
+use crate::{Analyses, Changed, Pass};
 
 pub struct HoistConstArrays;
 
-impl FunctionPass for HoistConstArrays {
+impl Pass for HoistConstArrays {
     fn name(&self) -> &'static str {
         "hoist-const-arrays"
     }
 
-    fn run_function(
-        &self,
-        m: &mut Module,
-        _: FuncId,
-        f: &mut Function,
-        _: &mut Analyses,
-    ) -> Changed {
-        let vars: Vec<Inst> = f
-            .layout
-            .iter()
-            .flat_map(|&b| f.insts(b).collect::<Vec<_>>())
-            .filter(|&i| f.insts[i].op == Op::Var)
-            .collect();
-        if vars.is_empty() {
-            return Changed::No;
+    fn run(&self, m: &mut Module, _: &mut Analyses) -> bool {
+        let ids: Vec<FuncId> = m.funcs.iter().map(|(id, _)| id).collect();
+        let mut any = false;
+        for id in ids {
+            let mut f = std::mem::replace(&mut m.funcs[id], Function::new("", Vec::new()));
+            any |= hoist_in(m, &mut f) != Changed::No;
+            m.funcs[id] = f;
         }
-        let cfg = Cfg::new(f);
-        let mut changed = Changed::No;
-        for var in vars {
-            if let Some(store) = hoistable(m, f, &cfg, var) {
-                hoist(m, f, var, store);
-                changed = Changed::Values;
-            }
+        // The new constant data is used by the entry points that reach it.
+        if any {
+            m.recompute_uses();
         }
-        changed
+        any
     }
+}
+
+fn hoist_in(m: &mut Module, f: &mut Function) -> Changed {
+    let vars: Vec<Inst> = f
+        .layout
+        .iter()
+        .flat_map(|&b| f.insts(b).collect::<Vec<_>>())
+        .filter(|&i| f.insts[i].op == Op::Var)
+        .collect();
+    if vars.is_empty() {
+        return Changed::No;
+    }
+    let cfg = Cfg::new(f);
+    let mut changed = Changed::No;
+    for var in vars {
+        if let Some(store) = hoistable(m, f, &cfg, var) {
+            hoist(m, f, var, store);
+            changed = Changed::Values;
+        }
+    }
+    changed
 }
 
 /// Whether only loads read through `p` (directly or through `access`).

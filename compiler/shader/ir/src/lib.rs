@@ -74,7 +74,7 @@ pub use func::{
 pub use infer::{Existing, Types, result_types, result_types_in, step_type, step_type_in};
 pub use interp::{
     ExecError, Interpreter, Options, Output, Print, Ptr, Resources, Root, Val, constant_value,
-    evaluate_op, value_constant,
+    evaluate_op, scalar_field_offset, scalar_layout, value_constant,
 };
 pub use module::{
     Binding, Builtin, Const, ConstData, ConstValue, Entry, GlobalData, GlobalId, Interp, Module,

@@ -1,0 +1,15 @@
+[package]
+name = "marlin-shaderc-target"
+description = "Marlin shader compiler: target descriptions (capabilities, wave sizes, what the hardware takes), the backend interface and the target registry."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+marlin-shaderc-ir.workspace = true
+
+[dev-dependencies]
+marlin-test-support.workspace = true
+
+[lints]
+workspace = true

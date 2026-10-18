@@ -6,8 +6,6 @@
 //! `builtin(...)` binding, or `push`) and calls the instance. Inlining removes the call.
 //! A module holds one entry; its `uses` are the module-level variables its functions reach.
 
-use std::collections::HashSet;
-
 use marlin_front_hir_def::store::{Expr, Literal, UnaryOp};
 use marlin_front_hir_def::{
     BodyOwner, BodyPart, ItemId, ItemKind, ItemSignature, ItemTreeQuery, Resolution, Resolver,
@@ -17,8 +15,7 @@ use marlin_shaderc_hir_ty::{
     GenericArgTy, InferLoc, ItemAttributesQuery, KnownAttr, Stage, Subst, parse_int,
 };
 use marlin_shaderc_ir::{
-    Binding, Builtin, Entry, FuncBuilder, FuncId, GlobalData, GlobalId, Op, Space,
-    Stage as IrStage, Val, ValueDef,
+    Binding, Builtin, Entry, FuncBuilder, FuncId, GlobalData, Op, Space, Stage as IrStage, Val,
 };
 
 use crate::func::{Pass, signature};
@@ -244,30 +241,6 @@ impl Lowering<'_, '_> {
 
     /// Each entry's `uses`: the module-level variables of the functions it reaches.
     pub(crate) fn entry_uses(&mut self) {
-        for k in 0..self.module.entries.len() {
-            let mut seen = HashSet::new();
-            let mut stack = vec![self.module.entries[k].func];
-            let mut uses: Vec<GlobalId> = Vec::new();
-            while let Some(f) = stack.pop() {
-                if !seen.insert(f) {
-                    continue;
-                }
-                let func = &self.module.funcs[f];
-                for (_, v) in func.values.iter() {
-                    if let ValueDef::Global(g) = v.def
-                        && !uses.contains(&g)
-                    {
-                        uses.push(g);
-                    }
-                }
-                for (_, inst) in func.insts.iter() {
-                    if let Op::Call(c) = inst.op {
-                        stack.push(c);
-                    }
-                }
-            }
-            uses.sort();
-            self.module.entries[k].uses = uses;
-        }
+        self.module.recompute_uses();
     }
 }
