@@ -3,8 +3,10 @@
 
 use std::collections::HashMap;
 
-use marlin_cook_mesh::{cluster, dag};
+use marlin_cook_mesh::{cluster, dag, quantize};
 use marlin_math::Rng;
+use marlin_render::asset::cluster::{UvRange, read_cluster_attributes};
+use marlin_render::asset::mesh::{dequantize_position, position_scale};
 
 use crate::support::icosphere;
 
@@ -339,5 +341,129 @@ fn every_lod_cut_is_watertight() {
             &ids,
             &format!("camera {camera:?}, threshold {threshold}"),
         );
+    }
+}
+
+fn normalize(a: [f32; 3]) -> [f32; 3] {
+    let l = dot(a, a).sqrt();
+    a.map(|c| c / l)
+}
+
+fn angle(a: [f32; 3], b: [f32; 3]) -> f32 {
+    dot(normalize(a), normalize(b))
+        .clamp(-1.0, 1.0)
+        .acos()
+        .to_degrees()
+}
+
+#[test]
+fn quantization_round_trip() {
+    let s = icosphere(4);
+    let mut rng = Rng::new(5);
+    let n = s.positions.len();
+    // Tangents orthogonal to the normals, random signs; a tiling UV set and a small one.
+    let tangents: Vec<[f32; 4]> = s
+        .normals
+        .iter()
+        .map(|&nrm| {
+            let r = [0, 1, 2].map(|_| rng.f32() - 0.5);
+            let t = normalize(cross(nrm, r));
+            [t[0], t[1], t[2], if rng.f32() < 0.5 { -1.0 } else { 1.0 }]
+        })
+        .collect();
+    let uvs = vec![
+        s.uvs
+            .iter()
+            .map(|uv| [uv[0] * 40.0 - 7.0, uv[1] * 25.0])
+            .collect::<Vec<_>>(),
+        s.uvs.clone(),
+    ];
+    let colors: Vec<[f32; 4]> = (0..n).map(|_| [0, 1, 2, 3].map(|_| rng.f32())).collect();
+    let skin: Vec<([u16; 4], [u8; 4])> = (0..n as u16)
+        .map(|i| ([i, i + 1, 0, 3], [200, 55, 0, 0]))
+        .collect();
+    let v = quantize::Vertices {
+        positions: &s.positions,
+        normals: &s.normals,
+        tangents: &tangents,
+        uvs: &uvs,
+        colors: Some(&colors),
+        skin: Some(&skin),
+    };
+    let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+    for p in &s.positions {
+        for i in 0..3 {
+            lo[i] = lo[i].min(p[i]);
+            hi[i] = hi[i].max(p[i]);
+        }
+    }
+    let scale = position_scale(lo, hi);
+    let stride = quantize::attribute_stride(&v);
+    let mesh_ranges: Vec<UvRange> = uvs
+        .iter()
+        .map(|set| UvRange::of(set.iter().copied()))
+        .collect();
+    assert_eq!(stride, 4 + 8 + 4);
+
+    let clusters = cluster::split(&s.indices, &vec![0; s.indices.len() / 3], &s.positions);
+    let mut decoded_at: HashMap<u32, [u16; 3]> = HashMap::new();
+    for c in &clusters {
+        let vertices = c.vertices();
+        for positions in [
+            quantize::Positions::Quantized { min: lo, scale },
+            quantize::Positions::Float,
+        ] {
+            let e = quantize::encode(&vertices, &v, positions);
+            assert_eq!(e.positions.len(), vertices.len() * positions.stride());
+            assert_eq!(e.attributes.len(), vertices.len() * stride);
+            assert_eq!(e.skin.len(), vertices.len() * 12);
+            for (k, &i) in vertices.iter().enumerate() {
+                let i = i as usize;
+                let p = &e.positions[k * positions.stride()..];
+                match positions {
+                    quantize::Positions::Quantized { .. } => {
+                        let q = [0, 1, 2].map(|a| u16::from_le_bytes([p[a * 2], p[a * 2 + 1]]));
+                        let back = dequantize_position(q, lo, scale);
+                        for a in 0..3 {
+                            assert!((back[a] - s.positions[i][a]).abs() <= scale[a] * 0.5 + 1e-6);
+                        }
+                        // The same position decodes the same in every cluster.
+                        assert_eq!(*decoded_at.entry(i as u32).or_insert(q), q);
+                    }
+                    quantize::Positions::Float => {
+                        let back = [0, 1, 2]
+                            .map(|a| f32::from_le_bytes(p[a * 4..a * 4 + 4].try_into().unwrap()));
+                        assert_eq!(back, s.positions[i]);
+                    }
+                }
+                let a = read_cluster_attributes(&e.attributes, stride, k, &e.uv_ranges);
+                assert!(
+                    angle(a.normal, s.normals[i]) < 0.25,
+                    "normal off by {}°",
+                    angle(a.normal, s.normals[i])
+                );
+                let t = tangents[i];
+                assert!(angle(a.tangent, [t[0], t[1], t[2]]) < 0.5);
+                assert_eq!(a.bitangent_sign, t[3]);
+                for (set, range) in e.uv_ranges.iter().enumerate() {
+                    for c in 0..2 {
+                        let error = (a.uvs[set][c] - uvs[set][i][c]).abs();
+                        // Half a step of the cluster's range, plus float rounding of the decode.
+                        assert!(
+                            error <= range.scale[c] * 0.5 + uvs[set][i][c].abs() * 1e-6 + 1e-7,
+                            "UV off by {error}"
+                        );
+                        // Never coarser than one range over the whole mesh.
+                        assert!(range.scale[c] <= mesh_ranges[set].scale[c]);
+                    }
+                }
+                let color = a.color.unwrap();
+                for c in 0..4 {
+                    assert!((color[c] as f32 / 255.0 - colors[i][c]).abs() <= 0.5 / 255.0 + 1e-6);
+                }
+                assert_eq!(&e.skin[k * 12..k * 12 + 2], &skin[i].0[0].to_le_bytes());
+                assert_eq!(&e.skin[k * 12 + 8..k * 12 + 12], &skin[i].1);
+            }
+        }
     }
 }

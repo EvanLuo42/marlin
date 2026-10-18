@@ -8,6 +8,8 @@
 //! - [`cluster`]: clusters of up to 128 triangles and 128 vertices for the cluster DAG.
 //! - [`meshlet`]: meshlets of up to 64 vertices and 124 triangles with bounding spheres and
 //!   normal cones.
+//! - [`quantize`]: cluster vertex streams: positions over the mesh bounds, octahedral frames,
+//!   UVs over each cluster's range.
 //! - [`tangent`]: tangent frames for meshes imported without them.
 //! - [`MeshCooker`], [`SkeletonCooker`], [`AnimationCooker`]: the cookers for
 //!   `marlin_render::asset::Mesh` and `marlin_anim::asset::{Skeleton, AnimationClip}`.
@@ -22,6 +24,7 @@ pub mod import;
 mod math;
 pub mod meshlet;
 pub mod optimize;
+pub mod quantize;
 pub mod simplify;
 pub mod tangent;
 
