@@ -470,6 +470,12 @@ impl InferCtx<'_, '_> {
                         resolved,
                     )
                 }
+                // `Tile.Length`: the field's value, then members of it.
+                Resolution::Values(items) => {
+                    let ty = self.values(e, &items, path)?;
+                    let value = self.result.paths.remove(e);
+                    (ty, value, false, resolved)
+                }
                 Resolution::Type(item) => (Ty::adt(item), None, true, resolved),
                 Resolution::TypeParam { owner, index } => {
                     (Ty::Param { owner, index }, None, true, resolved)
@@ -1181,7 +1187,10 @@ impl InferCtx<'_, '_> {
                     }
                     true
                 }
-                None => self.result.expr_types.get(e).is_none_or(Ty::is_error),
+                None => {
+                    self.result.expr_types.get(e).is_none_or(Ty::is_error)
+                        || self.in_buffer_element(e)
+                }
             },
             Expr::Index { .. } | Expr::DeclVar { .. } | Expr::DeclTuple(_) => true,
             Expr::Tuple(items) => {
@@ -1369,5 +1378,25 @@ trait OrTy {
 impl OrTy for Ty {
     fn or(self, other: Ty) -> Ty {
         if self.is_error() { other } else { self }
+    }
+}
+
+impl InferCtx<'_, '_> {
+    /// Whether `e` is part of a `Buffer<T>` element (`b[i].Pos.y`): elements of writable
+    /// buffers are variables, like array elements (`Span<T>`'s rule, not that of indexers that
+    /// return values).
+    fn in_buffer_element(&self, e: ExprId) -> bool {
+        match &self.body.store.exprs[e] {
+            Expr::Member { receiver, .. } if self.result.paths.get(e).is_none() => {
+                self.in_buffer_element(*receiver)
+            }
+            Expr::Index { base, .. } => matches!(
+                self.result.expr_types.get(*base),
+                Some(Ty::Adt { item, .. })
+                    if self.builtins.kind(*item)
+                        == Some(BuiltinKind::Resource(crate::builtins::Resource::Buffer))
+            ),
+            _ => false,
+        }
     }
 }

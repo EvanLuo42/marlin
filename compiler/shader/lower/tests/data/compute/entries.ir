@@ -1,0 +1,88 @@
+struct @Game.Args { Out: res<Buffer<i32>>, Total: res<Buffer<i32>>, Scale: i32 }
+global @Game.Mirror.id : ptr<input, i32x3> builtin(DispatchThreadId)
+global @Game.Mirror.gi : ptr<input, i32> builtin(GroupIndex)
+global @Game.Mirror.a : ptr<push, @Game.Args>
+global @Game.Tile : ptr<groupshared, [i32; 64]>
+
+entry compute(64, 1, 1) @Game.Mirror uses(@Game.Mirror.id, @Game.Mirror.gi, @Game.Mirror.a, @Game.Tile) {
+block0:
+    %0 = load @Game.Mirror.id
+    %1 = load @Game.Mirror.gi
+    %2 = load @Game.Mirror.a
+    call @"Game.Mirror(i32x3, i32, @Game.Args)"(%0, %1, %2)
+    return
+}
+
+func @"Game.Mirror(i32x3, i32, @Game.Args)"(%id: i32x3, %gi: i32, %a: @Game.Args) {
+block0:
+    %0 = access @Game.Tile, [%gi]
+    %1 = extract %id, 0
+    %2 = extract.field %a, .Scale
+    %3 = mul %1, %2
+    store %0, %3
+    barrier exec(group) mem(group) spaces(groupshared)
+    %4 = extract.field %a, .Out
+    %5 = extract %id, 0
+    %6 = desc.get %4
+    %7 = buffer.elem %6, %5
+    %8 = sub i32 63, %gi
+    %9 = access @Game.Tile, [%8]
+    %10 = load %9
+    store %7, %10
+    %11 = extract %id, 0
+    %12 = extract.field %a, .Total
+    %13 = desc.get %12
+    %14 = buffer.elem %13, i32 0
+    %15 = atomic.add %14, %11 scope(device) order(relaxed)
+    %16 = extract %id, 0
+    %17 = extract.field %a, .Total
+    %18 = desc.get %17
+    %19 = buffer.elem %18, i32 1
+    %20 = atomic.umax %19, %16 scope(device) order(relaxed)
+    return
+}
+
+struct @Game.MoveArgs { Particles: res<Buffer<@Game.Particle>>, Dt: f32 }
+struct @Game.Particle { Pos: f32x3, Mass: f32 }
+global @Game.Move.id : ptr<input, i32x3> builtin(DispatchThreadId)
+global @Game.Move.a : ptr<push, @Game.MoveArgs>
+
+entry compute(32, 1, 1) @Game.Move uses(@Game.Move.id, @Game.Move.a) {
+block0:
+    %0 = load @Game.Move.id
+    %1 = load @Game.Move.a
+    call @"Game.Move(i32x3, @Game.MoveArgs)"(%0, %1)
+    return
+}
+
+func @"Game.Move(i32x3, @Game.MoveArgs)"(%id: i32x3, %a: @Game.MoveArgs) {
+block0:
+    %0 = extract %id, 0
+    %1 = extract.field %a, .Particles
+    %2 = desc.get %1
+    %3 = buffer.length %2
+    %4 = icmp uge %0, %3
+    cond_br %4, block1, block2 merge block2
+block1:
+    return
+block2:
+    %5 = extract.field %a, .Particles
+    %6 = extract %id, 0
+    %7 = desc.get %5
+    %8 = buffer.elem %7, %6
+    %9 = access %8, .Pos
+    %10 = access %9, [1]
+    %11 = load %10
+    %12 = extract.field %a, .Dt
+    %13 = extract.field %a, .Particles
+    %14 = extract %id, 0
+    %15 = desc.get %13
+    %16 = buffer.elem %15, %14
+    %17 = access %16, .Mass
+    %18 = load %17
+    %19 = fmul %12, %18
+    %20 = fadd %11, %19
+    store %10, %20
+    return
+}
+

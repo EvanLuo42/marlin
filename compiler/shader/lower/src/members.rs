@@ -77,11 +77,19 @@ impl FnCx<'_, '_, '_> {
         e: ExprId,
     ) -> R<(Value, Ty)> {
         let loc = InferLoc::Expr(e);
+        let subst = self.member_subst(p, ty)?;
+        // `b.Length` and the like: an operation, not a getter body.
+        if let Some(op) = self.l.cx.get::<ItemTypesQuery>(&p)?.intrinsic.clone() {
+            let receiver = (!self.is_static(p)?).then_some(Receiver::Value(v));
+            let result = self
+                .intrinsic(e, &op, p, &subst, receiver, &[])?
+                .ok_or_else(|| self.error("E1305", "a property without a value", loc))?;
+            return Ok((result, self.member_ty(p, &subst)?));
+        }
         let (get, _) = self.accessors(p)?;
         let get = get.ok_or_else(|| {
             LowerError::unsupported("an auto-property", self.owner(), loc.clone())
         })?;
-        let subst = self.member_subst(p, ty)?;
         let receiver = (!self.is_static(p)?).then_some(Receiver::Value(v));
         let (result, _) = self.call_body(e, get, &subst, receiver, Vec::new())?;
         let result = result.ok_or_else(|| self.error("E1305", "a getter without a result", loc))?;

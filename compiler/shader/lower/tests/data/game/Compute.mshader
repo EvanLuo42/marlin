@@ -1,0 +1,115 @@
+namespace Game;
+
+public struct Args
+{
+    public Buffer<uint> Out;
+    public Buffer<uint> Total;
+    public uint Scale;
+}
+
+[GroupShared] uint[64] Tile;
+
+// Each lane reads its mirror image in the group's tile; one total over everything.
+[Compute(64, 1, 1)]
+public void Mirror([DispatchThreadId] uint3 id, [GroupIndex] uint gi, [Push] in Args a)
+{
+    Tile[gi] = id.x * a.Scale;
+    Barrier.Group();
+    a.Out[id.x] = Tile[63 - gi];
+    a.Total.AtomicAdd(0, id.x);
+    a.Total.AtomicMax(1, id.x);
+}
+
+public struct Particle
+{
+    public float3 Pos;
+    public float Mass;
+}
+
+public struct MoveArgs
+{
+    public Buffer<Particle> Particles;
+    public float Dt;
+}
+
+// Writes one component of one field of each element, past the end of nothing.
+[Compute(32, 1, 1)]
+public void Move([DispatchThreadId] uint3 id, [Push] in MoveArgs a)
+{
+    if (id.x >= a.Particles.Length) return;
+    a.Particles[id.x].Pos.y += a.Dt * a.Particles[id.x].Mass;
+}
+
+public interface IOp
+{
+    static abstract uint Apply(uint x);
+}
+
+public struct Doubler : IOp
+{
+    public static uint Apply(uint x) => x * 2;
+}
+
+public struct Squarer : IOp
+{
+    public static uint Apply(uint x) => x * x;
+}
+
+[Compute(8, 1, 1)]
+public void MapOp<T>([DispatchThreadId] uint3 id, [Push] in Args a) where T : IOp
+{
+    a.Out[id.x] = T.Apply(id.x);
+}
+
+public struct Rock
+{
+    public const uint Factor = 3;
+    public const uint Twice = Factor * 2;
+    public const bool UseMoss = false;
+    public const int Size = 4;
+}
+
+[Compute(Rock.Size, 1, 1)]
+public void Statics([DispatchThreadId] uint3 id, [Push] in Args a)
+{
+    uint v = Rock.Twice + id.x;
+    if (Rock.UseMoss) v += 100;
+    a.Out[id.x] = v;
+}
+
+public const uint Triangle(uint n)
+{
+    uint s = 0;
+    for (uint i = 1; i <= n; i++) s += i;
+    return s;
+}
+
+public struct Table
+{
+    public const uint T4 = Triangle(4);
+    public const int Len = 3;
+}
+
+[GroupShared] uint[Table.Len] Small;
+
+[Compute(1, 1, 1)]
+public void ConstFunctions([Push] in Args a)
+{
+    Small[0] = Table.T4;
+    a.Out[0] = Small[0] + (uint)Small.Length;
+}
+
+public uint NotConst(uint x) => x;
+
+public struct BadTable
+{
+    public const uint Value = NotConst(2);
+}
+
+[Compute(1, 1, 1)]
+public void UsesBadTable([Push] in Args a)
+{
+    a.Out[0] = BadTable.Value;
+}
+
+public void NotAnEntry() { }

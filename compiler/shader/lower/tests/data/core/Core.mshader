@@ -50,3 +50,27 @@ public T Dot<T, const int N>(Vector<T, N> a, Vector<T, N> b) where T : IArithmet
 [Intrinsic("fmax")] public float Max(float a, float b);
 [Intrinsic("smax")] public int Max(int a, int b);
 [Intrinsic("umax")] public uint Max(uint a, uint b);
+
+// Attributes the compiler knows (0004 §11, §12).
+public struct ComputeAttribute : IAttribute { public ComputeAttribute(int x, int y, int z) { } }
+public struct VertexAttribute : IAttribute { }
+public struct PushAttribute : IAttribute { }
+public struct GroupSharedAttribute : IAttribute { }
+public struct DispatchThreadIdAttribute : IAttribute { }
+public struct GroupIdAttribute : IAttribute { }
+public struct GroupIndexAttribute : IAttribute { }
+public struct VertexIdAttribute : IAttribute { }
+
+[Builtin("buffer")]
+public readonly struct Buffer<T>
+{
+    [Intrinsic("buffer.elem")] public T this[uint i] { get; set; }
+    [Intrinsic("buffer.length")] public uint Length { get; }
+    [Intrinsic("atomic.add")] public T AtomicAdd(uint i, T v);
+    [Intrinsic("atomic.umax")] public T AtomicMax(uint i, T v);
+}
+
+public struct Barrier
+{
+    [Intrinsic("barrier.group")] public static void Group();
+}

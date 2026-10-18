@@ -182,6 +182,8 @@ entry compute(8, 8, 1) @Blur uses(@args, @tid) { ... }
 - 每个入口用 `uses(...)` 列出它用到的变量。
 - 系统值用 `builtin(...)` 标注，插值方式用 `interp(...)` 标注。
 - SROA、DSE 和 load 去重都可以直接用在这些变量上。
+- 降低（第 7c 步）：入口函数本身照普通实例降低，系统值和 `[Push]` 是它的参数；IR 的入口是一个没有参数的函数，从各自的模块级变量 `load` 出参数再 `call` 它，之后由 inline 消掉。
+- groupshared 变量和 buffer 元素是内存里的位置，读写只经过指针访问用到的那一部分（`access`、`buffer.elem`），不整体读出再写回：别的 lane 可能同时在写其他部分。
 
 ## 7. 资源
 

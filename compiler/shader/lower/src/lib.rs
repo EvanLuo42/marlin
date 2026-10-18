@@ -24,21 +24,38 @@
 //! - Properties, indexers and extension members call their accessor bodies.
 //! - Lambdas, local functions and method groups passed to `Func`/`Action` parameters, with
 //!   captures by value in an environment struct (0004 §9.2, 0006 §2).
+//!
+//! Step 7c: entry points and compile-time evaluation.
+//! - [`Lowering::entry`]: a compute entry (generic ones with type arguments, 0004 §11.4) as an
+//!   IR entry that loads its system values and `[Push]` struct from module variables and calls
+//!   the entry function's instance (0006 §6.3).
+//! - `[GroupShared]` fields as module variables; they and buffer elements are places in
+//!   memory, read and written through pointers (`access`, `buffer.elem`) one part at a time;
+//!   buffer and groupshared atomics; `b.Length`.
+//! - [`Lowering::set_static`]: static parameters, `const` fields of structs a request
+//!   overrides (0004 §13.3); constants that depend on them follow.
+//! - Compile-time evaluation calls only `const` functions (0004 §13.4); thread-group sizes and
+//!   array lengths may be constants.
+//!
+//! Not lowered yet: vertex, pixel, mesh and amplification entries and their stage I/O (step
+//! 10); `[Export]` and local `const` evaluation (step 9, with reflection); auto-properties.
 
 mod closures;
 mod ctfe;
 mod dispatch;
+mod entry;
 mod error;
 mod expr;
 mod func;
 mod intrinsic;
 mod members;
 mod pat;
+mod place;
 mod ssa;
 mod stmt;
 mod types;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use marlin_front_hir_def::{
@@ -46,7 +63,7 @@ use marlin_front_hir_def::{
 };
 use marlin_lang_query::Cx;
 use marlin_shaderc_hir_ty::{Builtins, BuiltinsQuery, Subst, Ty};
-use marlin_shaderc_ir::{FuncId, Module, StructId, Type};
+use marlin_shaderc_ir::{FuncId, GlobalId, Module, StructId, Type};
 
 pub use error::LowerError;
 
@@ -83,6 +100,12 @@ pub struct Lowering<'a, 'b> {
     pub(crate) evaluating: Vec<ItemId>,
     /// The environment struct of each lambda and local function instance.
     pub(crate) envs: HashMap<Instance, Type>,
+    /// Static parameters set by the request (0004 §13.3).
+    pub(crate) statics: HashSet<ItemId>,
+    /// The module variable of each `[GroupShared]` field used.
+    pub(crate) shared: HashMap<ItemId, GlobalId>,
+    /// Lowering for compile-time evaluation: only `const` functions may be called.
+    pub(crate) ctfe: bool,
 }
 
 impl<'a, 'b> Lowering<'a, 'b> {
@@ -100,6 +123,9 @@ impl<'a, 'b> Lowering<'a, 'b> {
             consts: HashMap::new(),
             evaluating: Vec::new(),
             envs: HashMap::new(),
+            statics: HashSet::new(),
+            shared: HashMap::new(),
+            ctfe: false,
         })
     }
 
@@ -133,6 +159,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
     /// Lowers what is left and gives the module.
     pub fn finish(mut self) -> R<Module> {
         self.run()?;
+        self.entry_uses();
         Ok(self.module)
     }
 

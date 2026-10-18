@@ -430,3 +430,5 @@ public const ClosureInfo Flatten<M>() where M : IMaterial { ... }
 | 11 | 阶段 2–5 的其余 pass、自动微分、调试信息（NonSemantic.Shader.DebugInfo）、其他后端：DXIL（Xbox 等需要 D3D12 的平台）、Metal、主机 | |
 
 第 5c 步留到后面的：`[StructLayout]`/`[FieldOffset]`（0004 §16）；mesh 的 `MeshOutput`、`[Payload]` 和 `Mesh.Dispatch` 的检查（§11.6）；长度由 `const` 字段给出的数组，布局要等第 7 步的编译期求值；capability 和具体 target 的对照、`const if` 的裁剪，等第 9 步的 target 描述。
+
+第 7c 步留到后面的：vertex、pixel、mesh 和 amplification 入口以及 stage I/O（第 10 步，location 怎么分配到时再定）；`[Export]` 和局部 `const` 的编译期求值（第 9 步，和反射一起）；`const` 函数不能访问资源、groupshared 和系统值的检查（verifier）；auto-property。

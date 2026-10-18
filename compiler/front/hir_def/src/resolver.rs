@@ -24,8 +24,8 @@ pub enum Resolution {
     },
     /// Functions (an overload set), or a field.
     Values(Vec<ItemId>),
-    /// The first `resolved` segments name `base` (a type or type parameter); the rest are
-    /// members that need types to look up (`M.Params`, `T.Zero`).
+    /// The first `resolved` segments name `base` (a type, a type parameter or a field); the
+    /// rest are members that need types to look up (`M.Params`, `T.Zero`, `Tile.Length`).
     Partial {
         base: Box<Resolution>,
         resolved: usize,
@@ -153,11 +153,38 @@ impl Resolver {
         } else {
             self.first_segment(cx, first, values && last)?
         };
+        // `Tile.Length`: a field, with members of its value after it.
+        if !last && matches!(current, Resolution::Unresolved { .. }) {
+            let field = if path.global {
+                self.in_namespace_level(cx, &NamespacePath::root(), first, true, None)?
+                    .unwrap_or(Resolution::Unresolved { segment: 0 })
+            } else {
+                self.first_segment(cx, first, true)?
+            };
+            if let Resolution::Values(_) = field {
+                current = Resolution::Partial {
+                    base: Box::new(field),
+                    resolved: 1,
+                };
+            }
+        }
         for (i, segment) in path.segments.iter().enumerate().skip(1) {
             let last = i + 1 == path.segments.len();
             current = match current {
                 Resolution::Namespace(ns) => {
-                    self.in_namespace(cx, &ns, segment, values && last, i)?
+                    let found = self.in_namespace(cx, &ns, segment, values && last, i)?;
+                    match found {
+                        Resolution::Unresolved { .. } if !last => {
+                            match self.in_namespace(cx, &ns, segment, true, i)? {
+                                field @ Resolution::Values(_) => Resolution::Partial {
+                                    base: Box::new(field),
+                                    resolved: i + 1,
+                                },
+                                _ => found,
+                            }
+                        }
+                        found => found,
+                    }
                 }
                 Resolution::Type(owner) => {
                     match self.in_type(cx, owner, segment, values && last, i)? {

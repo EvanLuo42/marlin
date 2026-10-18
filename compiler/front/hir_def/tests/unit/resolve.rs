@@ -24,6 +24,9 @@ const CASES: &[(&str, &str, bool, &str)] = &[
     ("Marlin.Post.Blur", "Light.Color", true, "values [Marlin.Light.Color]"),
     ("Marlin.Post.Blur", "Light.Color", false, "partial type Marlin.Light after 1 segment(s)"),
     ("Marlin.Post.Rock", "Params", false, "type Marlin.Post.Rock.Params"),
+    // A field (or function) with members of its value after it: `Tile.Length`.
+    ("Marlin.Post.Blur", "Math.Pi.x", true, "partial values [Marlin.Math.Pi] after 2 segment(s)"),
+    ("Marlin.Post.Blur", "Dot.x", true, "partial values [Marlin.Dot] after 1 segment(s)"),
     // Accessibility.
     ("Marlin.Post.Blur", "Light.Secret", false, "inaccessible at segment 1 [Marlin.Light.Secret]"),
     ("Marlin.Light", "Secret", false, "type Marlin.Light.Secret"),

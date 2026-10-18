@@ -183,6 +183,10 @@ impl FnCx<'_, '_, '_> {
             Expr::Literal(_) | Expr::Interpolated(_) => {
                 return unsupported(self, "a string or character");
             }
+            Expr::Path(_) | Expr::Member { .. } | Expr::Index { .. } if self.is_mem_place(e)? => {
+                let (p, _) = self.mem_place(e)?;
+                self.op(Op::Load { aligned: None }, vec![p], None)?
+            }
             Expr::Path(_) => {
                 let path =
                     self.infer.paths.get(e).cloned().ok_or_else(|| {
@@ -320,6 +324,10 @@ impl FnCx<'_, '_, '_> {
                 }
                 None => return Err(self.error("E1305", "no `this` here", Self::loc(e))),
             },
+            Root::Item(item) if self.l.shared_global(*item)?.is_some() => {
+                let (p, ty) = self.shared_root(*item, e)?;
+                (self.op(Op::Load { aligned: None }, vec![p], None)?, ty)
+            }
             Root::Item(item) => {
                 let tree = self.l.cx.get::<ItemTreeQuery>(&item.file)?;
                 let data = &tree.items[item.local];
@@ -378,7 +386,7 @@ impl FnCx<'_, '_, '_> {
         }
     }
 
-    fn field_ty(&mut self, owner_ty: &Ty, field: marlin_front_hir_def::ItemId) -> R<Ty> {
+    pub(crate) fn field_ty(&mut self, owner_ty: &Ty, field: marlin_front_hir_def::ItemId) -> R<Ty> {
         let types = self.l.cx.get::<ItemTypesQuery>(&field)?;
         let ty = types.ty.clone().unwrap_or(Ty::Error);
         Ok(match owner_ty {
@@ -510,6 +518,11 @@ impl FnCx<'_, '_, '_> {
 
     /// Writes `value` to the place `target` (a path, an element, a declaration or a tuple).
     pub(crate) fn assign_place(&mut self, target: ExprId, value: Value) -> R<()> {
+        if self.is_mem_place(target)? {
+            let (p, _) = self.mem_place(target)?;
+            self.emit(Op::Store { aligned: None }, vec![p, value], None)?;
+            return Ok(());
+        }
         match self.body.store.exprs[target].clone() {
             Expr::DeclVar { binding, .. } => self.write_local(binding, value),
             Expr::DeclTuple(bindings) => {
@@ -557,6 +570,11 @@ impl FnCx<'_, '_, '_> {
                 .this
                 .clone()
                 .ok_or_else(|| self.error("E1305", "no `this` here", Self::loc(e)))?,
+            // A part a pointer cannot reach (a property): the whole variable is rebuilt.
+            Root::Item(item) if self.l.shared_global(*item)?.is_some() => {
+                let (p, ty) = self.shared_root(*item, e)?;
+                (Local::Ptr(p), ty)
+            }
             Root::Item(_) => {
                 return Err(LowerError::unsupported(
                     "writing a module-level variable",
@@ -904,6 +922,19 @@ impl FnCx<'_, '_, '_> {
         target: ExprId,
         value: ExprId,
     ) -> R<Value> {
+        // A place in memory: its address once, before the value (C#'s order).
+        if self.is_mem_place(target)? {
+            let (p, _) = self.mem_place(target)?;
+            let new = match op {
+                None => self.value(value)?,
+                Some(op) => {
+                    let old = self.op(Op::Load { aligned: None }, vec![p], None)?;
+                    self.compound(e, op, target, old, value)?
+                }
+            };
+            self.emit(Op::Store { aligned: None }, vec![p, new], None)?;
+            return Ok(new);
+        }
         let new = match op {
             None => {
                 if let Expr::DeclTuple(_) | Expr::Tuple(_) = self.body.store.exprs[target] {
@@ -914,33 +945,44 @@ impl FnCx<'_, '_, '_> {
                 self.value(value)?
             }
             Some(op) => {
-                match self.user_operator(e, target)? {
-                    Some((item, subst)) => {
-                        let (a, b) = (self.value(target)?, self.value(value)?);
-                        self.call_function(
-                            e,
-                            item,
-                            &subst,
-                            None,
-                            vec![CallArg::Value(a), CallArg::Value(b)],
-                        )?
-                        .ok_or_else(|| {
-                            self.error("E1305", "an operator without a result", Self::loc(e))
-                        })?
-                    }
-                    _ => {
-                        let (l, r) = (self.value(target)?, self.value(value)?);
-                        let (lt, rt) = (self.final_ty(target), self.final_ty(value));
-                        let v = self.builtin_binary(op, (l, &lt), (r, &rt), e)?;
-                        // The result has the left operand's type; it converts to the target's.
-                        let tt = self.expr_ty(target);
-                        self.convert(v, &lt, &tt, e)?
-                    }
-                }
+                let old = self.value(target)?;
+                self.compound(e, op, target, old, value)?
             }
         };
         self.assign_place(target, new)?;
         Ok(new)
+    }
+
+    /// `target op= value` with the target's current value `old`: the new value.
+    fn compound(
+        &mut self,
+        e: ExprId,
+        op: BinaryOp,
+        target: ExprId,
+        old: Value,
+        value: ExprId,
+    ) -> R<Value> {
+        Ok(match self.user_operator(e, target)? {
+            Some((item, subst)) => {
+                let (a, b) = (old, self.value(value)?);
+                self.call_function(
+                    e,
+                    item,
+                    &subst,
+                    None,
+                    vec![CallArg::Value(a), CallArg::Value(b)],
+                )?
+                .ok_or_else(|| self.error("E1305", "an operator without a result", Self::loc(e)))?
+            }
+            _ => {
+                let (l, r) = (old, self.value(value)?);
+                let (lt, rt) = (self.final_ty(target), self.final_ty(value));
+                let v = self.builtin_binary(op, (l, &lt), (r, &rt), e)?;
+                // The result has the left operand's type; it converts to the target's.
+                let tt = self.expr_ty(target);
+                self.convert(v, &lt, &tt, e)?
+            }
+        })
     }
 
     // ---- aggregates ----
@@ -996,7 +1038,7 @@ impl FnCx<'_, '_, '_> {
         Ok((var, p))
     }
 
-    fn indices(&mut self, base_ty: &Ty, args: &[Arg]) -> R<Vec<Value>> {
+    pub(crate) fn indices(&mut self, base_ty: &Ty, args: &[Arg]) -> R<Vec<Value>> {
         let mut out = Vec::new();
         for a in args {
             out.push(self.value(a.expr)?);
@@ -1132,6 +1174,21 @@ impl FnCx<'_, '_, '_> {
         let types = self.l.cx.get::<ItemTypesQuery>(&item)?;
         if let Some(op) = types.intrinsic.clone() {
             return self.intrinsic(e, &op, item, &subst, receiver, args);
+        }
+        // Compile-time evaluation calls only `const` functions (0004 §13.4).
+        if self.l.ctfe {
+            let tree = self.l.cx.get::<ItemTreeQuery>(&item.file)?;
+            let data = &tree.items[item.local];
+            if data.kind == ItemKind::Function && !data.is_const {
+                let path = marlin_front_hir_def::item_path(self.l.cx, item)?;
+                return Err(self.error(
+                    "E1306",
+                    format!(
+                        "compile-time evaluation calls only `const` functions; `{path}` is not one"
+                    ),
+                    Self::loc(e),
+                ));
+            }
         }
         // Arguments that go to `Func`/`Action` parameters pass a closure, not a value.
         let func_args: Vec<bool> = {
@@ -1382,7 +1439,7 @@ impl FnCx<'_, '_, '_> {
 
     // ---- intrinsics ----
 
-    fn intrinsic(
+    pub(crate) fn intrinsic(
         &mut self,
         e: ExprId,
         name: &str,
@@ -1412,6 +1469,28 @@ impl FnCx<'_, '_, '_> {
             self.l.module.formats.push(format.into());
             self.emit(Op::DebugPrint(index), values, None)?;
             return Ok(None);
+        }
+        if let Some(op) = name.strip_prefix("atomic.") {
+            let mut operands = Vec::new();
+            for a in args {
+                operands.push(self.value(a.expr)?);
+            }
+            return self.atomic(e, op, receiver, operands);
+        }
+        if name == "buffer.length" {
+            let b = match receiver {
+                Some(Receiver::Place(p)) => self.read_path(&p, e)?,
+                Some(Receiver::Value(v)) => v,
+                None => {
+                    return Err(self.error(
+                        "E1305",
+                        "a buffer length without a buffer",
+                        Self::loc(e),
+                    ));
+                }
+            };
+            let h = self.op(Op::DescGet { nonuniform: false }, vec![b], None)?;
+            return self.op(Op::BufferLength, vec![h], None).map(Some);
         }
         let mut operands = Vec::new();
         if let Some(r) = receiver {

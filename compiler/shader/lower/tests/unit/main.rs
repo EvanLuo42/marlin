@@ -13,6 +13,7 @@ mod support;
 
 mod basics;
 mod closures;
+mod compute;
 mod generics;
 mod members;
 mod robustness;

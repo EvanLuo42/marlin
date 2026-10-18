@@ -94,6 +94,9 @@ impl Lowering<'_, '_> {
             consts: self.consts.clone(),
             evaluating: self.evaluating.iter().copied().chain([item]).collect(),
             envs: HashMap::new(),
+            statics: self.statics.clone(),
+            shared: HashMap::new(),
+            ctfe: true,
         };
         let f = scratch.function(item)?;
         scratch.run()?;

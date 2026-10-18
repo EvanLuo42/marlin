@@ -9,8 +9,8 @@ use marlin_front_hir_def::{
 };
 use marlin_lang_diag::{SourceMap, render_all};
 use marlin_lang_query::{Db, Durability};
-use marlin_shaderc_hir_ty::{FileTyDiagnostics, SHADER_LANGUAGE};
-use marlin_shaderc_ir::{Interpreter, Module, Val, print_module, verify_module};
+use marlin_shaderc_hir_ty::{FileTyDiagnostics, GenericArgTy, SHADER_LANGUAGE, Ty};
+use marlin_shaderc_ir::{Interpreter, Module, Output, Resources, Val, print_module, verify_module};
 use marlin_shaderc_lower::Lowering;
 use marlin_test_support::data_path;
 
@@ -131,6 +131,54 @@ impl World {
             print_module(&module)
         );
         module
+    }
+
+    /// Lowers the entry point at `path` with type arguments (paths of types) and static
+    /// parameters into a verified module, or the rendered error.
+    pub fn try_entry(
+        &self,
+        path: &str,
+        type_args: &[&str],
+        statics: &[(&str, Val)],
+    ) -> Result<Module, String> {
+        let snapshot = self.db.snapshot();
+        let mut l = Lowering::new(&snapshot, self.game).unwrap();
+        for (p, v) in statics {
+            l.set_static(self.item(p), v.clone())
+                .map_err(|e| self.render_error(&snapshot, &e))?;
+        }
+        let args: Vec<GenericArgTy> = type_args
+            .iter()
+            .map(|t| GenericArgTy::Type(Ty::adt(self.item(t))))
+            .collect();
+        l.entry(self.item(path), &args)
+            .map_err(|e| self.render_error(&snapshot, &e))?;
+        let module = l.finish().map_err(|e| self.render_error(&snapshot, &e))?;
+        let errors = verify_module(&module);
+        assert!(
+            errors.is_empty(),
+            "lowered IR does not verify: {errors:#?}\n{}",
+            print_module(&module)
+        );
+        Ok(module)
+    }
+
+    /// Lowers an entry point and runs `groups` thread groups of it over `resources`.
+    pub fn dispatch(
+        &self,
+        path: &str,
+        type_args: &[&str],
+        statics: &[(&str, Val)],
+        groups: [u32; 3],
+        resources: &mut Resources,
+    ) -> Output {
+        let module = self
+            .try_entry(path, type_args, statics)
+            .unwrap_or_else(|e| panic!("{path}: {e}"));
+        let entry = module.entries[0].func;
+        Interpreter::new(&module)
+            .dispatch(entry, groups, resources)
+            .unwrap_or_else(|e| panic!("{path}: {e}\n{}", print_module(&module)))
     }
 
     fn render_error(
