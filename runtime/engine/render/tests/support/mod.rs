@@ -7,7 +7,10 @@ pub mod cook;
 
 use marlin_gpu_test_support::{Image, hardware_device, shader};
 use marlin_math::{Transform, Vec3};
-use marlin_render::scene::{InstanceDesc, InstanceId, InstanceUpdate, MeshId, MeshUpdate};
+use marlin_render::scene::{
+    InstanceDesc, InstanceId, InstanceUpdate, MaterialDesc, MaterialId, MaterialUpdate, MeshId,
+    MeshUpdate,
+};
 use marlin_render::{
     Camera, Environment, ForwardShaders, GpuScene, MeshHandle, RenderScene, RenderStats, Renderer,
     RendererDesc, ScatterShader, SceneUpdates, Visibility,
@@ -26,6 +29,8 @@ pub struct Harness {
     scatter: ScatterShader,
     /// The unit cube, in the scene and on the GPU.
     pub cube: MeshId,
+    /// What instances draw with: a material row of permutation 0 (the forward pass ignores it).
+    pub material: MaterialId,
     /// Applied with the next frame.
     pub updates: SceneUpdates,
     pub camera: Option<(Transform, Camera)>,
@@ -55,12 +60,17 @@ impl Harness {
             ..SceneUpdates::default()
         };
         let (cube, _) = upload(device, &mut renderer, &scene, &mut updates, &cook::cube());
+        let material = scene.ids().materials.reserve();
+        updates
+            .materials
+            .push(material, MaterialUpdate::Add(MaterialDesc::default()));
         Self {
             device,
             renderer,
             scene,
             scatter,
             cube,
+            material,
             updates,
             camera: None,
             frame,
@@ -85,6 +95,7 @@ impl Harness {
             id,
             InstanceUpdate::Add(InstanceDesc {
                 mesh,
+                material: self.material,
                 transform,
                 color,
                 flags: 0,

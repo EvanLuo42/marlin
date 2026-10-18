@@ -23,6 +23,9 @@ use marlin_shaderc::{
 /// The shared package and namespace: an entry named without a namespace is in it.
 pub const SHARED: &str = "Test";
 
+/// The engine's material model (`content/engine/substrate/`), which the engine's package uses.
+pub const SUBSTRATE: &str = "Marlin.Substrate";
+
 /// The engine's shader package (`content/engine/shaders/`): its entries are named in full
 /// (`Marlin.Engine.ForwardVs`).
 pub const ENGINE: &str = "Marlin.Engine";
@@ -34,6 +37,7 @@ const TARGET: &str = "vulkan-1.4";
 pub struct Shader<'a> {
     entry: &'a str,
     crate_dir: Option<&'a str>,
+    type_args: Vec<&'a str>,
     consts: Vec<(&'a str, ConstValue)>,
 }
 
@@ -44,6 +48,7 @@ impl<'a> Shader<'a> {
         Self {
             entry,
             crate_dir: None,
+            type_args: Vec::new(),
             consts: Vec::new(),
         }
     }
@@ -52,6 +57,13 @@ impl<'a> Shader<'a> {
     /// the `.mshader` files in its `tests/data/shaders/`.
     pub fn in_crate(mut self, manifest_dir: &'a str) -> Self {
         self.crate_dir = Some(manifest_dir);
+        self
+    }
+
+    /// The type arguments of a generic entry point, by full path
+    /// (`Marlin.Engine.Material.ResolvePixel` with `Marlin.Engine.DefaultMaterial`).
+    pub fn with_type_args(mut self, args: &[&'a str]) -> Self {
+        self.type_args.extend_from_slice(args);
         self
     }
 
@@ -87,7 +99,10 @@ impl<'a> Shader<'a> {
         } else {
             format!("{SHARED}.{}", self.entry)
         };
-        let key = format!("{entry} {:?} {:?}", self.crate_dir, self.consts);
+        let key = format!(
+            "{entry} {:?} {:?} {:?}",
+            self.type_args, self.crate_dir, self.consts
+        );
         let mut compiler = compiler().lock().unwrap_or_else(|e| e.into_inner());
         if let Some(&c) = compiler.cache.get(&key) {
             return c;
@@ -97,7 +112,7 @@ impl<'a> Shader<'a> {
         }
         let request = EntryRequest {
             entry: &entry,
-            type_args: &[],
+            type_args: &self.type_args,
             consts: &self.consts,
             target: TARGET,
             profile: Profile::Development,
@@ -164,7 +179,7 @@ impl Compiler {
         self.session
             .add_package(&PackageDesc {
                 name: &name,
-                dependencies: &["Marlin", SHARED, ENGINE],
+                dependencies: &["Marlin", SHARED, SUBSTRATE, ENGINE],
             })
             .unwrap_or_else(|e| panic!("the test shaders of {manifest_dir}: {e}"));
         self.crates.push(manifest_dir.to_string());
@@ -180,6 +195,10 @@ fn compiler() -> &'static Mutex<Compiler> {
             Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders"),
         );
         sources.add(
+            SUBSTRATE,
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/engine/substrate"),
+        );
+        sources.add(
             ENGINE,
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/engine/shaders"),
         );
@@ -193,8 +212,14 @@ fn compiler() -> &'static Mutex<Compiler> {
             .unwrap_or_else(|e| panic!("the shared test shaders: {e}"));
         session
             .add_package(&PackageDesc {
-                name: ENGINE,
+                name: SUBSTRATE,
                 dependencies: &["Marlin"],
+            })
+            .unwrap_or_else(|e| panic!("the engine's material model: {e}"));
+        session
+            .add_package(&PackageDesc {
+                name: ENGINE,
+                dependencies: &["Marlin", SUBSTRATE],
             })
             .unwrap_or_else(|e| panic!("the engine's shaders: {e}"));
         Mutex::new(Compiler {

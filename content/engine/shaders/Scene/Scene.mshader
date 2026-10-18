@@ -20,80 +20,66 @@ public struct InstanceData
     /// The mesh's row in the mesh table.
     public uint Mesh;
     public uint Flags;
-    public uint2 Spare;
-    /// Linear RGBA (until materials replace it).
+    /// The material's row in the material table; `0xFFFFFFFF`: none.
+    public uint Material;
+    public uint Spare;
+    /// Linear RGBA: the material's per-instance data (`SurfaceContext.CustomData`).
     public float4 Color;
 }
 
+/// A row of the material table.
+public struct MaterialEntry
+{
+    /// The resolve permutation that draws it; `0xFFFFFFFF`: removed.
+    public uint Permutation;
+    /// Its row in the permutation's parameter table.
+    public uint Slot;
+    public uint2 Spare;
+}
+
+/// An instance's current transform, then last frame's (for motion vectors), each as the rows of
+/// a 3x4 matrix. The rows are vector fields rather than two `Rows3x4` fields: NVIDIA's driver
+/// (2026-10, through the descriptor heap) reads every struct-typed member of a buffer element at
+/// offset 0, so buffer types keep their members vectors, scalars and arrays.
 public struct InstanceTransforms
 {
-    public Rows3x4 Current;
-    /// Last frame's: for motion vectors.
-    public Rows3x4 Previous;
+    public float4 CurrentR0;
+    public float4 CurrentR1;
+    public float4 CurrentR2;
+    public float4 PreviousR0;
+    public float4 PreviousR1;
+    public float4 PreviousR2;
+
+    public Rows3x4 Current => Rows3x4 { R0 = CurrentR0, R1 = CurrentR1, R2 = CurrentR2 };
+    public Rows3x4 Previous => Rows3x4 { R0 = PreviousR0, R1 = PreviousR1, R2 = PreviousR2 };
 }
 
 public struct ScatterArgs
 {
-    /// One op per row: x = table | kind << 8, y = row, z = first data word, w = words.
+    /// One op per row: x = the row's first word in the table, y = what to do, z = first data
+    /// word, w = words.
     public ReadOnlyBuffer<uint4> Ops;
     public ReadOnlyBuffer<uint> Data;
-    /// Writable raw views of the tables: instance data, transforms, bounds, meshes, lights.
-    public ByteBuffer InstanceData;
-    public ByteBuffer Transforms;
-    public ByteBuffer Bounds;
-    public ByteBuffer Meshes;
-    public ByteBuffer Lights;
+    /// A writable raw view of the table.
+    public ByteBuffer Table;
     public uint Count;
 }
 
-/// Words per row of table `t`.
-uint Stride(uint t) => t == 0 ? 8 : t == 1 ? 24 : t == 2 ? 4 : 16;
-
-uint Read(in ScatterArgs a, uint t, uint word)
-{
-    uint at = word * 4;
-    if (t == 0)
-        return a.InstanceData.Load(at);
-    if (t == 1)
-        return a.Transforms.Load(at);
-    if (t == 2)
-        return a.Bounds.Load(at);
-    if (t == 3)
-        return a.Meshes.Load(at);
-    return a.Lights.Load(at);
-}
-
-void Write(in ScatterArgs a, uint t, uint word, uint value)
-{
-    uint at = word * 4;
-    if (t == 0)
-        a.InstanceData.Store(at, value);
-    else if (t == 1)
-        a.Transforms.Store(at, value);
-    else if (t == 2)
-        a.Bounds.Store(at, value);
-    else if (t == 3)
-        a.Meshes.Store(at, value);
-    else
-        a.Lights.Store(at, value);
-}
-
-/// One thread per op. Kind 0 writes `w` words of data at the row; kind 1 (transforms) copies
-/// the current transform over the previous one; kind 2 does that, then writes the new current.
+/// One thread per op, one dispatch per table. Kind 0 writes `w` words of data at the row; kind
+/// 1 (transforms) copies the current transform over the previous one; kind 2 does that, then
+/// writes the new current.
 [Compute(64, 1, 1)]
 public void Scatter([DispatchThreadId] uint3 id, [Push] in ScatterArgs a)
 {
     if (id.x >= a.Count)
         return;
     uint4 op = a.Ops[id.x];
-    uint table = op.x & 255;
-    uint kind = op.x >> 8;
-    uint first = op.y * Stride(table);
-    if (kind != 0)
+    uint first = op.x * 4;
+    if (op.y != 0)
     {
         for (uint i = 0; i < 12; i++)
-            Write(a, table, first + 12 + i, Read(a, table, first + i));
+            a.Table.Store(first + (12 + i) * 4, a.Table.Load(first + i * 4));
     }
     for (uint i = 0; i < op.w; i++)
-        Write(a, table, first + i, a.Data[op.z + i]);
+        a.Table.Store(first + i * 4, a.Data[op.z + i]);
 }

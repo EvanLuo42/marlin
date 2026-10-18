@@ -5,7 +5,7 @@ use alloc::vec::Vec;
 
 use marlin_math::Transform;
 
-use super::id::{InstanceId, LightId, MeshId};
+use super::id::{InstanceId, LightId, MaterialId, MeshId};
 use crate::renderer::{Environment, MeshHandle};
 
 /// Changes to one table, in order.
@@ -59,8 +59,11 @@ pub mod flags {
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct InstanceDesc {
     pub mesh: MeshId,
+    /// The material its sections draw with (0011 §7; one for every section until meshes carry
+    /// a material per section).
+    pub material: MaterialId,
     pub transform: Transform,
-    /// Linear RGBA, until materials (0011) replace it.
+    /// Linear RGBA: the material's per-instance data (`SurfaceContext.CustomData`, 0011 §7.3).
     pub color: [f32; 4],
     pub flags: u32,
 }
@@ -72,8 +75,26 @@ pub enum InstanceUpdate {
     /// The fast path: only the transform moved.
     Transform(Transform),
     Mesh(MeshId),
+    Material(MaterialId),
     Color([f32; 4]),
     Flags(u32),
+}
+
+/// A material instance as the GPU Scene holds it (0011 §7.5): which material type's resolve
+/// permutation draws it, and its parameter block, the material struct's fields in the shader's
+/// layout. Instances of one permutation share a parameter table, so their blocks have one size.
+#[derive(Clone, PartialEq, Debug, Default)]
+pub struct MaterialDesc {
+    pub permutation: u32,
+    pub params: Vec<u32>,
+}
+
+#[derive(Clone, PartialEq, Debug)]
+pub enum MaterialUpdate {
+    Add(MaterialDesc),
+    /// New parameters, or another permutation.
+    Set(MaterialDesc),
+    Remove,
 }
 
 /// Local bounds of a mesh: a sphere and a box.
@@ -188,6 +209,7 @@ pub enum LightUpdate {
 #[derive(Clone, PartialEq, Debug, Default)]
 pub struct SceneUpdates {
     pub meshes: UpdateStream<MeshId, MeshUpdate>,
+    pub materials: UpdateStream<MaterialId, MaterialUpdate>,
     pub instances: UpdateStream<InstanceId, InstanceUpdate>,
     pub lights: UpdateStream<LightId, LightUpdate>,
     pub environment: Option<Environment>,
@@ -197,6 +219,7 @@ impl SceneUpdates {
     /// Appends `other`'s changes after this one's (one extract job's after another's).
     pub fn append(&mut self, other: &mut Self) {
         self.meshes.append(&mut other.meshes);
+        self.materials.append(&mut other.materials);
         self.instances.append(&mut other.instances);
         self.lights.append(&mut other.lights);
         if other.environment.is_some() {
@@ -206,6 +229,7 @@ impl SceneUpdates {
 
     pub fn is_empty(&self) -> bool {
         self.meshes.is_empty()
+            && self.materials.is_empty()
             && self.instances.is_empty()
             && self.lights.is_empty()
             && self.environment.is_none()

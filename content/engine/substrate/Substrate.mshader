@@ -1,0 +1,203 @@
+namespace Marlin.Substrate;
+
+// Substrate (0011 §3): a surface material returns a tree of nodes (`ISubstrateNode`), the tree's
+// type being its topology; the material resolve emits the tree's closures into the material
+// buffer with a `ClosureWriter`. So far only the default Slab exists, and only the dense part of
+// the material buffer (0011 §4.1, 16 bytes a pixel):
+//
+// | word | content |
+// |---|---|
+// | 0 | header: closure count (bits 0–2), fast path (3), emissive (4), SSS (5), normal table entries (6–7), overflow pool offset in 16 bytes (12–31) |
+// | 1 | proxy normal: octahedral, x and y unorm16 |
+// | 2 | proxy diffuse albedo RGB8 (square-root encoded), roughness unorm8 |
+// | 3 | proxy F0 RGB8 (square-root encoded), proxy kind (0: diffuse plus GGX) |
+//
+// A pixel with no surface (the sky) is all zero: no closures.
+
+/// A node of a Substrate tree: a BSDF (a leaf) or an operator over nodes.
+public interface ISubstrateNode<TSelf> where TSelf : ISubstrateNode<TSelf>
+{
+    /// Writes the node's closures, scaled by `weight`.
+    void Emit(ref ClosureWriter w, float3 weight, in EmitContext e);
+}
+
+/// A surface material (0011 §2.2): its fields are its parameter block; `Surface` gives the
+/// tree for a point of the surface.
+public interface ISurfaceMaterial<TSelf> where TSelf : ISurfaceMaterial<TSelf>
+{
+    type Tree : ISubstrateNode<Tree>;
+    Tree Surface(in SurfaceContext ctx);
+}
+
+/// What a material sees of the surface point (0011 §6.2).
+public struct SurfaceContext
+{
+    /// World space.
+    public float3 Position;
+    /// The interpolated vertex normal, world space, normalized.
+    public float3 Normal;
+    /// The triangle's normal, facing the eye.
+    public float3 GeometricNormal;
+    public float2 Uv0;
+    /// The instance's row in the GPU Scene.
+    public uint InstanceId;
+    /// The instance's per-instance data (0011 §7.3): its color so far.
+    public float4 CustomData;
+}
+
+/// What emitting closures needs besides the tree.
+public struct EmitContext
+{
+    /// The shading normal a closure without its own uses.
+    public float3 Normal;
+    /// From the surface toward the eye.
+    public float3 Wo;
+}
+
+/// The default BSDF (0011 §3.1): a diffuse lobe and a GGX lobe. So far without its optional
+/// features (anisotropy, haze, fuzz, SSS, thin film, glints, specular profile, transmission).
+public struct Slab : ISubstrateNode<Slab>
+{
+    public float3 DiffuseAlbedo = 0.18;
+    /// Specular reflectance at normal and grazing incidence; a metal has a high F0 and no
+    /// diffuse albedo.
+    public float3 F0 = 0.04;
+    public float3 F90 = 1;
+    public float Roughness = 0.5;
+    /// The shading normal; zero: the surface's.
+    public float3 Normal = 0;
+    /// cd/m².
+    public float3 Emissive = 0;
+
+    public static Slab Default => Slab { };
+
+    public void Emit(ref ClosureWriter w, float3 weight, in EmitContext e)
+    {
+        float3 n = Dot(Normal, Normal) > 0 ? Normalize(Normal) : e.Normal;
+        bool plain = F90.x == 1 && F90.y == 1 && F90.z == 1;
+        bool emissive = Max(Emissive.x, Max(Emissive.y, Emissive.z)) > 0;
+        ClosureWriter.Add(ref w, DiffuseAlbedo, F0, Roughness, n, plain, emissive, weight);
+    }
+}
+
+/// Writes a pixel's closures (0011 §5.3). So far it keeps only what the dense part holds: the
+/// proxy lobe, merged over the closures by weight (0011 §4.2), and the header's flags.
+public struct ClosureWriter
+{
+    public uint Count;
+    /// Every closure so far is a plain Slab at full weight.
+    public bool Fast;
+    public bool Emissive;
+    public float3 Albedo;
+    public float3 F0;
+    /// Roughness summed weighted by specular luminance, and that weight.
+    public float RoughnessSum;
+    public float SpecularSum;
+    public float3 Normal;
+    public float NormalWeight;
+
+    public static ClosureWriter Open() => ClosureWriter { Fast = true };
+
+    /// Adds one diffuse-plus-GGX closure.
+    public static void Add(
+        ref ClosureWriter w,
+        float3 albedo,
+        float3 f0,
+        float roughness,
+        float3 normal,
+        bool plain,
+        bool emissive,
+        float3 weight)
+    {
+        float wl = Dot(weight, float3(0.2126, 0.7152, 0.0722));
+        if (wl <= 0)
+            return;
+        w.Count += 1;
+        bool full = Min(weight.x, Min(weight.y, weight.z)) >= 1;
+        w.Fast = w.Fast && w.Count == 1 && plain && !emissive && full;
+        w.Emissive = w.Emissive || emissive;
+        w.Albedo += albedo * weight;
+        w.F0 += f0 * weight;
+        float spec = Max(Dot(f0 * weight, float3(0.2126, 0.7152, 0.0722)), 0.0001);
+        w.RoughnessSum += roughness * spec;
+        w.SpecularSum += spec;
+        if (wl > w.NormalWeight)
+        {
+            w.Normal = normal;
+            w.NormalWeight = wl;
+        }
+    }
+
+    /// The pixel's dense words.
+    public static uint4 Finish(in ClosureWriter w)
+    {
+        if (w.Count == 0)
+            return uint4(0, 0, 0, 0);
+        uint header = Min(w.Count, 7u) | (w.Fast ? 8u : 0u) | (w.Emissive ? 16u : 0u);
+        float roughness = w.RoughnessSum / w.SpecularSum;
+        return uint4(
+            header,
+            PackOct(w.Normal),
+            PackColor(w.Albedo) | (Unorm8(roughness) << 24),
+            PackColor(w.F0));
+    }
+}
+
+/// `v` in [0, 1] as an unorm8.
+public uint Unorm8(float v) => (uint)(Saturate(v) * 255 + 0.5);
+
+/// A color in [0, 1] as RGB8, square-root encoded (more precision in the darks).
+public uint PackColor(float3 c)
+{
+    float3 s = Sqrt(Saturate(c));
+    return Unorm8(s.x) | (Unorm8(s.y) << 8) | (Unorm8(s.z) << 16);
+}
+
+public float3 UnpackColor(uint w)
+{
+    float3 s = float3((float)(w & 255), (float)((w >> 8) & 255), (float)((w >> 16) & 255)) / 255;
+    return s * s;
+}
+
+/// A unit vector, octahedral-encoded, x and y as unorm16.
+public uint PackOct(float3 n)
+{
+    float l1 = Abs(n.x) + Abs(n.y) + Abs(n.z);
+    float2 e = float2(n.x, n.y) / l1;
+    if (n.z < 0)
+    {
+        float2 s = float2(e.x >= 0 ? 1 : -1, e.y >= 0 ? 1 : -1);
+        e = (float2(1, 1) - Abs(float2(e.y, e.x))) * s;
+    }
+    float2 u = Saturate(e * 0.5 + 0.5) * 65535 + 0.5;
+    return (uint)u.x | ((uint)u.y << 16);
+}
+
+public float3 UnpackOct(uint w)
+{
+    float2 e = float2((float)(w & 65535), (float)(w >> 16)) / 65535 * 2 - 1;
+    float z = 1 - Abs(e.x) - Abs(e.y);
+    float t = Max(-z, 0);
+    return Normalize(float3(e.x + (e.x >= 0 ? -t : t), e.y + (e.y >= 0 ? -t : t), z));
+}
+
+/// The proxy lobe of a pixel's dense words (0011 §4.2).
+public struct Proxy
+{
+    public uint Count;
+    public bool Fast;
+    public float3 Normal;
+    public float3 Albedo;
+    public float Roughness;
+    public float3 F0;
+}
+
+public Proxy UnpackProxy(uint4 d) => Proxy
+{
+    Count = d.x & 7,
+    Fast = (d.x & 8) != 0,
+    Normal = UnpackOct(d.y),
+    Albedo = UnpackColor(d.z),
+    Roughness = (float)(d.z >> 24) / 255,
+    F0 = UnpackColor(d.w),
+};

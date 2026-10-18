@@ -831,6 +831,13 @@ public interface IUiEffect<TSelf> where TSelf : IUiEffect<TSelf>
 
 ## 13. 待定
 
+**已确认**（2026-10-18，R1k 之前）：
+- 表面材质的接口叫 `ISurfaceMaterial<TSelf>`，上下文叫 `SurfaceContext`；
+- 材质从一开始就用关联类型 `Tree`（只有 Slab 时写 `type Tree = Slab;`），R5 加算子时材质代码不用改；
+- Tree 的约束接口叫 `ISubstrateNode<TSelf>`，写材质缓冲的类型叫 `ClosureWriter`；
+- Substrate 的类型放在单独的包 `Marlin.Substrate` 里（`content/engine/substrate/`），引擎和游戏的材质都依赖它；
+- 引擎的默认材质类型叫 `Marlin.Engine.DefaultMaterial`。
+
 **需要和 shader 语言一起确认的**（0004 的规则：命名和语义先问再定）：
 - 接口和类型名：`ISurfaceMaterial`、`ISubstrateNode`、`IBsdf`、`IClosureId`、`IClosureDispatch`、`ClosureWriter`、`SurfaceContext`、各个域的接口名；
 - attribute 名：`[PerInstance(i)]`、`[Global("...")]`，以及 `[Group]`、`[Range]` 是否进标准库；
@@ -845,3 +852,22 @@ public interface IUiEffect<TSelf> where TSelf : IUiEffect<TSelf>
 - 直接光和间接光分开的合成通道（§5.9）：给需要的 BSDF 一个特性位，降噪器只在那些 tile 上多处理一路；
 - 简化材质要不要带上每实例数据的影响（§9.2）；
 - 每像素位移（POM）和曲面细分位移。
+
+## 14. 实现记录
+
+R1k（0008 §8，材质最小集）做完时（2026-10-18）定下的细节：
+- **范围**：只有默认 Slab（`DiffuseAlbedo`、`F0`、`F90`、`Roughness`、`Normal`、`Emissive`），只有材质缓冲的稠密部分（§4.1，每像素 16 字节），没有溢出池、closure 注册表和分发（§5）、材质实例资产（§7.2）、每实例自定义数据之外的参数来源（`[PerInstance]`、`[Global]`）、平台简化（§8.3）。这些随 R5 的完整 Substrate 一起做。
+- **`Marlin.Substrate` 包**（`content/engine/substrate/`，`Library = true`）：`ISubstrateNode<TSelf>`（`Emit`）、`ISurfaceMaterial<TSelf>`（`type Tree : ISubstrateNode<Tree>`、`Tree Surface(in SurfaceContext)`）、`SurfaceContext`（位置、插值法线、几何法线、`Uv0`、实例行、`CustomData`）、`EmitContext`、`Slab`、`ClosureWriter`，以及打包和解包（八面体法线 2×16 位；反照率和 F0 是平方根编码的 RGB8，暗部精度更高；粗糙度 8 位）。`ShaderPackage` 加了 `Library`：只给别的包用的类型和函数，cooker 不再警告它没有入口。
+- **快路径**：一个默认的 Slab、权重 1、`F90` 为 1、没有自发光，header 的快路径位置 1。多个 closure 时 proxy 按权重合成：反照率和 F0 加权求和，粗糙度按镜面亮度加权，法线取权重最大的那个（§4.2）。自发光现在只有 header 的标志位，颜色要等溢出池。
+- **`Marlin.Engine.DefaultMaterial`**：`BaseColor`、`Roughness`、`Metallic`，基色乘上实例颜色（`CustomData`）；金属的漫反射为 0，F0 是基色。marlin-material 的 `DefaultMaterial` 按着色器的布局打包它的参数块（5 个字）。
+- **材质表**（GPU Scene，0009 §2.1）：场景多了材质表（`MaterialId`、`MaterialUpdate`、`MaterialDesc { permutation, params }`），实例带一个材质（每个 section 一个材质等网格的 section 接上再做），`InstanceData` 的第 3 个字是材质行，没有时是 `0xFFFFFFFF`。**参数块按 permutation 分表**（偏离 §7.5 的"一个 `ByteBuffer`"）：shader 用 `ReadOnlyBuffer<M>[row]` 按材质的 struct 类型读参数，Marlin shader 现在没有从字节 buffer 按类型读 struct 的写法，所以同一个 permutation 的参数块放在一张行宽相同的表里。材质表每行是 (permutation, 在表里的行)。GPU Scene 的 scatter 因此改成通用的：每个 op 带上目标表里的字偏移，一张表一次 dispatch，表的个数不再固定。
+- **分箱和解算**（`Marlin.Engine.Material`，0009 §5）：`Classify` 按像素查出 permutation 并计数，同时给没有表面的像素清空材质缓冲、写相机运动的速度；`Bins` 算出每个 bin 的起点，写成 RHI 的 indirect 记录（常量 = bin 的起点，即 push 的第 31 个字）；`Scatter` 把像素（x \| y << 16）写进 bin；`ResolvePixel<M>` 在一个 graph pass 里对每个 permutation 一次 indirect dispatch。解算从 visbuffer 重建三角形：解码三个顶点、按当前和上一帧的变换算世界位置、用 clip 坐标求透视正确的重心坐标，再插值位置、上一帧位置和法线。uv 和导数源（§6.2 的 `Derivatives.Seed`）还没有接：现在的材质不采样纹理，等纹理上传到来时一起做。
+- **运动向量**（0009 §4.6）：解算时用实例上一帧的变换和上一帧的相机算出上一帧的屏幕位置，速度 = 当前 − 上一帧，UV 单位（y 向下），`Rg16Float`。天空用无穷远点在两帧相机下的投影差。
+- **host 端**：新的 `marlin-material` crate：`Materials::new(device, &MaterialShaders)`、`register(device, name, resolve)`（按注册顺序给出 permutation，默认材质先注册，`DEFAULT_PERMUTATION = 0`）、`add_passes(g, gpu, &vis, camera, previous, w, h) -> MaterialOutput { visbuffer, material, velocity, counts }`、`add_debug_pass(g, &out, MaterialDebug)`（反照率、法线、粗糙度/F0/快路径、速度）。framework 的 `Engine` 建一个默认材质实例，所有静态网格都用它；游戏的帧还不跑材质 pass，R1l 的光照接上时一起接进来（那时也要给 `ResolvePixel<DefaultMaterial>` 建一个 cook 出来的 `Shader` permutation 资产）。
+- **编译器的修正**（语法没有变化）：
+  - 关联类型的约束可以提到它自己（`type Tree : ISubstrateNode<Tree>;`）：别名环检查跳过没有目标的关联类型，`AliasTargetQuery` 对它们不再去降级签名（那会在自己的约束上成环）。
+  - 实现接口时，签名里的关联类型按实现者的取值比较（`Tree Surface(...)` 和 `Slab Surface(...)` 匹配）。
+  - 经类型参数调用接口方法时，接口的关联类型变成 `M.Tree`；`M.Tree` 类型的值能找到它约束接口上的成员（`tree.Emit(...)`）。`hir_ty` 和 `lower` 各加了测试（后者在解释器里跑单态化后的结果）。
+  - `marlin-gpu-test-support` 的测试 shader 能给泛型入口传类型实参，session 里多了 `Marlin.Substrate`。
+- **驱动问题**：NVIDIA 驱动经 descriptor heap 读 buffer 时，忽略类型是 struct 的成员的 offset（0016 §4.2）。`InstanceTransforms` 因此改成 6 个 `float4` 字段，`Current`、`Previous` 是拼出 `Rows3x4` 的属性。
+- **测试**（`marlin-material/tests/gpu/materials.rs`，两种材质：默认材质和测试包里的 `Material.Stripes`，所以有两个 permutation）：每个被覆盖的像素恰好进一个 bin、恰好解算一次，closure 数为 1 且走快路径，反照率、F0、粗糙度是各自材质给的值（8 位编码的误差内）；天空全 0；正对相机的面法线正确；静止时速度为 0，实例右移 0.1 时速度和投影算出的一致，相机转动时天空的速度和 tan(θ)·P00/2 一致。三张调试视图（反照率、法线、粗糙度/F0/快路径）有 golden。GPU Scene 的测试（render crate）检查材质表和每个 permutation 的参数表，包括换 permutation 和删除。3 张前向 golden 和 `sample_first_frame` 不变。开窗口跑 `samples/basic` 10 秒，没有报错。

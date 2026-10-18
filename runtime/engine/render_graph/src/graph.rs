@@ -183,6 +183,12 @@ pub struct RenderGraph<'g, B: Backend = Rhi> {
 impl<'g, B: Backend> RenderGraph<'g, B> {
     /// An empty graph allocating from `arena`, the frame's arena. Imports without an initial
     /// state start undefined.
+    /// The frame's arena: for data that lives as long as the frame's handles (slices of
+    /// handles a caller hands on, say).
+    pub fn arena(&self) -> &'g Arena {
+        self.arena
+    }
+
     pub fn new(arena: &'g Arena) -> Self {
         Self {
             arena,

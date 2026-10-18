@@ -6,7 +6,7 @@ use std::sync::Arc;
 use marlin_math::{Transform, Vec3};
 use marlin_render::scene::{
     Bounds, IdAllocator, InstanceDesc, InstanceId, InstanceRow, InstanceUpdate, LightDesc,
-    LightKind, LightUpdate, MeshUpdate,
+    LightKind, LightUpdate, MaterialDesc, MaterialUpdate, MeshUpdate,
 };
 use marlin_render::{Environment, RenderScene, SceneUpdates};
 
@@ -16,10 +16,12 @@ fn at(x: f32) -> Transform {
 
 fn desc(scene: &RenderScene, x: f32) -> (InstanceId, InstanceDesc) {
     let mesh = scene.ids().meshes.reserve();
+    let material = scene.ids().materials.reserve();
     (
         scene.ids().instances.reserve(),
         InstanceDesc {
             mesh,
+            material,
             transform: at(x),
             color: [1.0; 4],
             flags: 0,
@@ -196,4 +198,32 @@ fn bounds_enclose_the_points() {
     assert_eq!(b.center, [1.0, 0.5, 0.0]);
     assert!((b.radius - 1.25f32.sqrt()).abs() < 1e-6);
     assert_eq!(Bounds::of(core::iter::empty()).radius, 0.0);
+}
+
+#[test]
+fn materials_follow_their_updates() {
+    let mut scene = RenderScene::new();
+    let ids = scene.ids();
+    let (a, b) = (ids.materials.reserve(), ids.materials.reserve());
+    let desc = |permutation, word| MaterialDesc {
+        permutation,
+        params: vec![word, 2, 3],
+    };
+    let mut u = SceneUpdates::default();
+    u.materials.push(a, MaterialUpdate::Add(desc(0, 1)));
+    u.materials.push(b, MaterialUpdate::Add(desc(1, 7)));
+    u.materials.push(a, MaterialUpdate::Set(desc(0, 5)));
+    scene.apply(&u);
+    assert_eq!(scene.material(a), Some(&desc(0, 5)));
+    assert_eq!(scene.material(b), Some(&desc(1, 7)));
+
+    // Moving to another permutation, and removal; stale handles change nothing.
+    let mut u = SceneUpdates::default();
+    u.materials.push(a, MaterialUpdate::Set(desc(1, 9)));
+    u.materials.push(b, MaterialUpdate::Remove);
+    u.materials.push(b, MaterialUpdate::Set(desc(0, 0)));
+    scene.apply(&u);
+    assert_eq!(scene.material(a), Some(&desc(1, 9)));
+    assert_eq!(scene.material(b), None);
+    assert_eq!(ids.materials.reserve().index(), b.index());
 }

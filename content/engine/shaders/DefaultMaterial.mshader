@@ -1,0 +1,27 @@
+namespace Marlin.Engine;
+
+using Marlin.Substrate;
+
+/// What a mesh draws with when nothing names its material: one Slab of the base color tinted by
+/// the instance's color, metallic or not. marlin-material's `DefaultMaterial` packs its fields.
+public struct DefaultMaterial : ISurfaceMaterial<DefaultMaterial>
+{
+    /// Linear.
+    public float3 BaseColor = 1;
+    public float Roughness = 0.5;
+    public float Metallic = 0;
+
+    public type Tree = Slab;
+
+    public Slab Surface(in SurfaceContext ctx)
+    {
+        float3 color = BaseColor * ctx.CustomData.xyz;
+        float3 metal = float3(Metallic, Metallic, Metallic);
+        return Slab.Default with
+        {
+            DiffuseAlbedo = color * (1 - Metallic),
+            F0 = Lerp(float3(0.04, 0.04, 0.04), color, metal),
+            Roughness = Roughness,
+        };
+    }
+}

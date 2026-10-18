@@ -60,6 +60,7 @@ marlin-world = { path = "runtime/engine/world" }
 marlin-shader = { path = "runtime/engine/shader" }
 marlin-render-graph = { path = "runtime/engine/render_graph" }
 marlin-render = { path = "runtime/engine/render" }
+marlin-material = { path = "runtime/engine/material" }
 marlin-font = { path = "runtime/engine/font" }
 marlin-ui-render = { path = "runtime/engine/ui_render" }
 marlin-anim = { path = "runtime/engine/anim" }

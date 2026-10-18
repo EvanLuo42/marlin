@@ -9,8 +9,11 @@ use marlin_ecs::{Changed, Entity, With, World};
 use marlin_input::{InputState, Key, MouseButton};
 use marlin_io::IoQueue;
 use marlin_jobs::JobSystem;
+use marlin_material::DefaultMaterial;
 use marlin_math::{Quat, Transform, Vec3};
-use marlin_render::scene::{InstanceDesc, InstanceId, InstanceUpdate, MeshId, MeshUpdate};
+use marlin_render::scene::{
+    InstanceDesc, InstanceId, InstanceUpdate, MaterialId, MaterialUpdate, MeshId, MeshUpdate,
+};
 use marlin_render::{Camera, SceneIds, SceneUpdates};
 
 use crate::delta::{MeshUpload, RenderDelta};
@@ -58,6 +61,8 @@ pub struct Engine<'v> {
     meshes: HashMap<Uuid, MeshEntry>,
     /// Entities drawn, with what the render scene has of them.
     instances: HashMap<Entity, InstanceEntry>,
+    /// What static meshes draw with until they name materials.
+    default_material: MaterialId,
     /// Changes made outside extract (spawning a level), sent with the next delta.
     updates: SceneUpdates,
     frame: u64,
@@ -71,6 +76,13 @@ pub struct EngineError(#[from] pub marlin_io::Error);
 impl<'v> Engine<'v> {
     /// An engine loading from `vfs`, with the engine's loaders.
     pub fn new(vfs: &'v Vfs) -> Result<Self, EngineError> {
+        let ids = SceneIds::new();
+        let default_material = ids.materials.reserve();
+        let mut updates = SceneUpdates::default();
+        updates.materials.push(
+            default_material,
+            MaterialUpdate::Add(DefaultMaterial::default().desc()),
+        );
         Ok(Self {
             vfs,
             io: IoQueue::new(64)?,
@@ -78,10 +90,11 @@ impl<'v> Engine<'v> {
             world: World::new(),
             level: None,
             spawned: None,
-            ids: SceneIds::new(),
+            ids,
+            default_material,
             meshes: HashMap::new(),
             instances: HashMap::new(),
-            updates: SceneUpdates::default(),
+            updates,
             frame: 0,
             time: 0.0,
         })
@@ -338,6 +351,7 @@ impl<'v> Engine<'v> {
                         id,
                         InstanceUpdate::Add(InstanceDesc {
                             mesh,
+                            material: self.default_material,
                             transform: *transform,
                             color: m.color,
                             flags: marlin_render::scene::flags::SHADOW,

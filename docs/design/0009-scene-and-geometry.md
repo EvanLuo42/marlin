@@ -362,3 +362,5 @@ R1j（0008 §8）做完时（2026-10-18）定下的细节（§4.1、§4.3 的离
   - `Renderer::add_passes` 返回 `ForwardOutput { color, depth, stats }`，深度改为存储（测试拿它和 visbuffer 比较）。
   - 测试 shader 的 crate 包现在可以依赖 `Marlin.Engine`（R1i 已改）；framework 加了 `visibility_shaders(library)`，按 stage 和 push 大小检查，端到端测试用真实的 cook 结果建一次 `Visibility`。
 - **测试**（`marlin-render/tests/gpu/visibility.rs`，同一帧里同时跑前向和可见性 pass）：旋转、缩放、非均匀缩放、相互穿插的立方体和球，视锥外和相机背后的实例被剔除（可见实例数正确）；visbuffer 的覆盖、深度和前向的深度缓冲**逐像素一致**（RTX 5060 上 0 个像素不同，测试也按 0 容差），拆出的深度纹理和 visbuffer 的高 32 位逐位相同，每个像素的 cluster 都属于前向画出那个颜色的实例；把一个实例移出视野后下一帧再比一次。法线锥：正对相机的球 47 个 meshlet 只画 31 个，画面不变。LOD：5 个距离上的球，GPU 选的 LOD 的三角形总数等于前向渲染器在 CPU 上选的。空场景 visbuffer 全 0。3 张 golden 和 `sample_first_frame` 不变。开窗口跑 `samples/basic` 10 秒，没有报错。
+
+R1k（材质最小集，细节见 0011 §14）对本文的影响：场景多了材质表（`MaterialId`、每个实例一个材质），GPU Scene 多了材质表和每个 permutation 一张的参数表，scatter 改成通用的（op 带目标字偏移，一张表一次 dispatch）。材质分箱（§5）和运动向量（§4.6）照本文实现：分箱的 indirect 记录的常量带着 bin 的起点，所有 permutation 的解算在一个 graph pass 里。`InstanceTransforms` 改成 6 个 `float4`（驱动问题，0016 §4.2）。

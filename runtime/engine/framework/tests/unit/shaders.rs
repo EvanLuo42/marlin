@@ -9,6 +9,7 @@ use marlin_framework::shaders::{ENGINE_SHADERS, FORWARD_PS, FORWARD_VS, SCATTER}
 use marlin_framework::{ShaderError, forward_shaders, load_engine_shaders, scatter_shader};
 use marlin_reflect::type_info;
 use marlin_render::FORWARD_PUSH_BYTES;
+use marlin_render::scene::SCATTER_PUSH_BYTES;
 use marlin_shader::asset::{LibraryEntry, ShaderLibrary};
 use marlin_shader::reflect::{
     EntryInfo, ShaderReflection, Stage, StageBinding, StageVariable, StructLayout,
@@ -198,13 +199,13 @@ fn the_scatter_is_a_compute_shader_with_the_gpu_scenes_push() {
         scatter_shader(&forward()),
         Err(ShaderError::MissingEntry(SCATTER))
     ));
-    let ok = library(vec![entry(SCATTER, Stage::Compute, 32)]);
+    let ok = library(vec![entry(SCATTER, Stage::Compute, SCATTER_PUSH_BYTES)]);
     assert!(scatter_shader(&ok).is_ok());
-    let wrong_push = library(vec![entry(SCATTER, Stage::Compute, 28)]);
+    let wrong_push = library(vec![entry(SCATTER, Stage::Compute, SCATTER_PUSH_BYTES + 4)]);
     assert!(matches!(
         scatter_shader(&wrong_push),
         Err(ShaderError::Mismatch { entry: SCATTER, .. })
     ));
-    let wrong_stage = library(vec![entry(SCATTER, Stage::Pixel, 32)]);
+    let wrong_stage = library(vec![entry(SCATTER, Stage::Pixel, SCATTER_PUSH_BYTES)]);
     assert!(scatter_shader(&wrong_stage).is_err());
 }

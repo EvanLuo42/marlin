@@ -165,7 +165,7 @@ impl Cooker for ShaderPackageCooker {
         let packages = Packages::read(object.uuid, name, mount, package, ctx)?;
         let session = packages.session(&self.compiler.targets)?;
         let entries = session.entries(name).map_err(|e| e.message)?;
-        if entries.is_empty() {
+        if entries.is_empty() && !package.library {
             ctx.warn(
                 "the package declares no entry points (public functions with a stage attribute)",
             );

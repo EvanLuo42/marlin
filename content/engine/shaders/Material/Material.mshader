@@ -1,0 +1,268 @@
+namespace Marlin.Engine.Material;
+
+// The material passes of one view (0009 §5, 0011 §6), after the visibility buffer:
+//
+// 1. `Classify`: every pixel's material permutation (visible cluster → instance → material →
+//    permutation), counted per permutation. Pixels without a surface get an empty material
+//    buffer and the camera's velocity at infinity.
+// 2. `Bins`: the counts as bins: each permutation's first pixel, and its indirect dispatch
+//    record (the RHI's: a constant, push word 31, here the bin's first pixel; then x, y, z).
+// 3. `Scatter`: every pixel into its permutation's bin, packed as x | y << 16.
+// 4. `ResolvePixel<M>`, once per permutation: rebuilds the pixel's triangle from the visibility
+//    buffer, runs `M.Surface`, emits the tree into the material buffer, and writes the
+//    velocity from the instance's last-frame transform and the last frame's view.
+//
+// The material buffer is the dense part of `Marlin.Substrate` (16 bytes a pixel, `uint4`); the
+// velocity is the current minus the last screen position, in UV units (y down).
+
+using Marlin.Engine.Scene;
+using Marlin.Substrate;
+
+public struct MaterialView
+{
+    /// Matrices are column-major; `M * v` is the column-vector product.
+    public float4x4 ViewProjection;
+    public float4x4 PreviousViewProjection;
+    public float4x4 InverseViewProjection;
+    /// xyz: the eye.
+    public float4 Eye;
+    public uint Width;
+    public uint Height;
+    /// Permutations the bins hold.
+    public uint Permutations;
+    public uint Spare;
+}
+
+public struct ClassifyArgs
+{
+    public Uniform<MaterialView> View;
+    public StorageTexture2D<ulong> Vis;
+    public ReadOnlyBuffer<uint2> Clusters;
+    public ReadOnlyBuffer<InstanceData> Instances;
+    public ReadOnlyBuffer<MaterialEntry> Materials;
+    /// Pixels per permutation.
+    public Buffer<uint> Counts;
+    /// Each bin's next free entry.
+    public Buffer<uint> Cursors;
+    public Buffer<uint> Pixels;
+    /// Indirect records, one per permutation.
+    public Buffer<uint4> Args;
+    public StorageTexture2D<uint4> MaterialBuffer;
+    public StorageTexture2D<float2> Velocity;
+}
+
+/// No material permutation: the pixel has no surface, or its material is gone.
+const uint NoPermutation = 4294967295;
+
+/// The pixel's NDC, its center (y up).
+float2 Ndc(uint2 px, in MaterialView v) =>
+    float2(((float)px.x + 0.5) / (float)v.Width * 2 - 1, 1 - ((float)px.y + 0.5) / (float)v.Height * 2);
+
+/// The screen motion from `previous` to `current` (NDC), in UV units (y down).
+float2 Motion(float2 current, float2 previous) => (current - previous) * float2(0.5, -0.5);
+
+/// The permutation drawing the pixel, or `NoPermutation`.
+uint PermutationOf(in ClassifyArgs a, int2 px, uint permutations)
+{
+    ulong v = a.Vis[px];
+    if (v == 0)
+        return NoPermutation;
+    uint cluster = (uint)(v >> 7) & 33554431;
+    uint row = a.Clusters[cluster].x;
+    uint material = a.Instances[row].Material;
+    if (material == NoPermutation)
+        return NoPermutation;
+    uint permutation = a.Materials[material].Permutation;
+    return permutation < permutations ? permutation : NoPermutation;
+}
+
+[Compute(8, 8, 1)]
+public void Classify([DispatchThreadId] uint3 id, [Push] in ClassifyArgs a)
+{
+    MaterialView v = a.View.Value;
+    if (id.x >= v.Width || id.y >= v.Height)
+        return;
+    int2 px = (int2)id.xy;
+    uint permutation = PermutationOf(a, px, v.Permutations);
+    if (permutation != NoPermutation)
+    {
+        a.Counts.AtomicAdd(permutation, 1);
+        return;
+    }
+    a.MaterialBuffer[px] = uint4(0, 0, 0, 0);
+    // The sky: a point at infinity moves only with the camera's rotation.
+    float2 ndc = Ndc(id.xy, v);
+    float4 direction = v.InverseViewProjection * float4(ndc, 0, 1);
+    float4 previous = v.PreviousViewProjection * float4(direction.xyz, 0);
+    float2 motion = previous.w > 0 ? Motion(ndc, previous.xy / previous.w) : float2(0, 0);
+    a.Velocity[px] = motion;
+}
+
+[Compute(1, 1, 1)]
+public void Bins([Push] in ClassifyArgs a)
+{
+    uint first = 0;
+    for (uint p = 0; p < a.View.Value.Permutations; p++)
+    {
+        uint count = a.Counts[p];
+        a.Args[p] = uint4(first, (count + 63) / 64, 1, 1);
+        a.Cursors[p] = first;
+        first += count;
+    }
+}
+
+[Compute(8, 8, 1)]
+public void Scatter([DispatchThreadId] uint3 id, [Push] in ClassifyArgs a)
+{
+    MaterialView v = a.View.Value;
+    if (id.x >= v.Width || id.y >= v.Height)
+        return;
+    uint permutation = PermutationOf(a, (int2)id.xy, v.Permutations);
+    if (permutation == NoPermutation)
+        return;
+    uint slot = a.Cursors.AtomicAdd(permutation, 1);
+    a.Pixels[slot] = id.x | (id.y << 16);
+}
+
+public struct ResolveArgs<M>
+{
+    public Uniform<MaterialView> View;
+    public StorageTexture2D<ulong> Vis;
+    public ReadOnlyBuffer<uint2> Clusters;
+    public ReadOnlyBuffer<InstanceData> Instances;
+    public ReadOnlyBuffer<InstanceTransforms> Transforms;
+    public ReadOnlyBuffer<MeshEntry> Meshes;
+    public ReadOnlyBuffer<MaterialEntry> Materials;
+    /// The permutation's parameter table.
+    public ReadOnlyBuffer<M> Params;
+    public ReadOnlyBuffer<uint> Counts;
+    public ReadOnlyBuffer<uint> Pixels;
+    public StorageTexture2D<uint4> MaterialBuffer;
+    public StorageTexture2D<float2> Velocity;
+    public uint Permutation;
+    public uint[18] Unused;
+    /// The bin's first pixel: the indirect record's constant.
+    public uint First;
+}
+
+/// The barycentric coordinates of `ndc` in the triangle of clip positions `c0`–`c2`,
+/// perspective-correct.
+float3 Barycentrics(float4 c0, float4 c1, float4 c2, float2 ndc)
+{
+    float3 inv = float3(1 / c0.w, 1 / c1.w, 1 / c2.w);
+    float2 n0 = c0.xy * inv.x;
+    float2 n1 = c1.xy * inv.y;
+    float2 n2 = c2.xy * inv.z;
+    float det = 1 / ((n2.x - n1.x) * (n0.y - n1.y) - (n2.y - n1.y) * (n0.x - n1.x));
+    float3 dx = float3(n1.y - n2.y, n2.y - n0.y, n0.y - n1.y) * det * inv;
+    float3 dy = float3(n2.x - n1.x, n0.x - n2.x, n1.x - n0.x) * det * inv;
+    float2 d = ndc - n0;
+    float w = 1 / (inv.x + d.x * (dx.x + dx.y + dx.z) + d.y * (dy.x + dy.y + dy.z));
+    return float3(inv.x + d.x * dx.x + d.y * dy.x, d.x * dx.y + d.y * dy.y, d.x * dx.z + d.y * dy.z) * w;
+}
+
+/// The material resolve of permutation `M` (0011 §6.1): one thread per pixel of its bin.
+[Compute(64, 1, 1)]
+public void ResolvePixel<M>([DispatchThreadId] uint3 id, [Push] in ResolveArgs<M> a)
+    where M : ISurfaceMaterial<M>
+{
+    if (id.x >= a.Counts[a.Permutation])
+        return;
+    MaterialView v = a.View.Value;
+    uint packed = a.Pixels[a.First + id.x];
+    uint2 xy = uint2(packed & 65535, packed >> 16);
+    int2 px = (int2)xy;
+    ulong vis = a.Vis[px];
+    uint cluster = (uint)(vis >> 7) & 33554431;
+    uint triangle = (uint)vis & 127;
+    uint2 c = a.Clusters[cluster];
+    uint row = c.x;
+    InstanceData instance = a.Instances[row];
+    InstanceTransforms t = a.Transforms[row];
+    MeshEntry mesh = a.Meshes[instance.Mesh];
+    ReadOnlyByteBuffer g = mesh.Geometry;
+    LodStreams l = Lod(g, c.y >> 24);
+    uint at = l.Meshlets + (c.y & 16777215) * 64;
+    uint vertexOffset = g.Load(at + 20);
+    uint corner = l.MeshletTriangles + g.Load(at + 24) + triangle * 3;
+
+    float3[3] world = default;
+    float3[3] previous = default;
+    float3[3] normal = default;
+    float4[3] clip = default;
+    for (uint k = 0; k < 3; k++)
+    {
+        uint local = Marlin.Engine.Visibility.ByteAt(g, corner + k);
+        uint vertex = g.Load(l.MeshletVertices + (vertexOffset + local) * 4);
+        float3 p = DecodePosition(g, mesh, l, vertex);
+        world[k] = Apply(t.Current, float4(p, 1));
+        previous[k] = Apply(t.Previous, float4(p, 1));
+        normal[k] = Apply(t.Current, float4(DecodeVertexNormal(g, mesh, l, vertex), 0));
+        clip[k] = v.ViewProjection * float4(world[k], 1);
+    }
+    float2 ndc = Ndc(xy, v);
+    float3 b = Barycentrics(clip[0], clip[1], clip[2], ndc);
+    float3 position = world[0] * b.x + world[1] * b.y + world[2] * b.z;
+    float3 last = previous[0] * b.x + previous[1] * b.y + previous[2] * b.z;
+    float3 n = Normalize(normal[0] * b.x + normal[1] * b.y + normal[2] * b.z);
+    float3 wo = Normalize(v.Eye.xyz - position);
+    float3 face = Normalize(Cross(world[1] - world[0], world[2] - world[0]));
+    if (Dot(face, wo) < 0)
+        face = -face;
+
+    SurfaceContext ctx = SurfaceContext
+    {
+        Position = position,
+        Normal = n,
+        GeometricNormal = face,
+        Uv0 = float2(0, 0),
+        InstanceId = row,
+        CustomData = instance.Color,
+    };
+    M m = a.Params[a.Materials[instance.Material].Slot];
+    M.Tree tree = m.Surface(ctx);
+    ClosureWriter w = ClosureWriter.Open();
+    tree.Emit(ref w, float3(1, 1, 1), EmitContext { Normal = n, Wo = wo });
+    a.MaterialBuffer[px] = ClosureWriter.Finish(w);
+
+    float4 before = v.PreviousViewProjection * float4(last, 1);
+    a.Velocity[px] = Motion(ndc, before.xy / before.w);
+}
+
+public struct DebugArgs
+{
+    public Texture2D<uint4> MaterialBuffer;
+    public Texture2D<float2> Velocity;
+    public StorageTexture2D<float4> Output;
+    public uint Width;
+    public uint Height;
+    /// 0: albedo; 1: normal; 2: roughness, F0 luminance, fast path; 3: velocity (×10, +0.5).
+    public uint Mode;
+}
+
+/// A view of the material buffer (0011 §11).
+[Compute(8, 8, 1)]
+public void MaterialDebug([DispatchThreadId] uint3 id, [Push] in DebugArgs a)
+{
+    if (id.x >= a.Width || id.y >= a.Height)
+        return;
+    int2 px = (int2)id.xy;
+    uint4 d = a.MaterialBuffer.Load(px);
+    Proxy p = UnpackProxy(d);
+    float3 c = float3(0, 0, 0);
+    if (a.Mode == 3)
+    {
+        float2 m = a.Velocity.Load(px) * 10 + 0.5;
+        c = float3(Saturate(m.x), Saturate(m.y), 0.5);
+    }
+    else if (p.Count != 0)
+    {
+        if (a.Mode == 0)
+            c = p.Albedo;
+        else if (a.Mode == 1)
+            c = p.Normal * 0.5 + 0.5;
+        else
+            c = float3(p.Roughness, Dot(p.F0, float3(0.2126, 0.7152, 0.0722)), p.Fast ? 1 : 0);
+    }
+    a.Output[px] = float4(c, 1);
+}

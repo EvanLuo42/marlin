@@ -184,7 +184,7 @@ pub fn post_shaders(library: &ShaderLibrary) -> Result<PostShaders<'_>, ShaderEr
 pub const SCATTER: &str = "Marlin.Engine.Scene.Scatter";
 
 /// The scatter shader from the engine's library, checked for its stage and the push constants
-/// marlin-render's GPU Scene sets (eight 32-bit words).
+/// marlin-render's GPU Scene sets (`SCATTER_PUSH_BYTES`).
 pub fn scatter_shader(library: &ShaderLibrary) -> Result<ShaderModule<'_>, ShaderError> {
     let e = library
         .entry(SCATTER)
@@ -196,7 +196,8 @@ pub fn scatter_shader(library: &ShaderLibrary) -> Result<ShaderModule<'_>, Shade
     if e.reflection.entry.stage != Stage::Compute {
         return Err(mismatch("not a compute shader"));
     }
-    if e.reflection.push.as_ref().map(|p| p.size) != Some(32) {
+    if e.reflection.push.as_ref().map(|p| p.size) != Some(marlin_render::scene::SCATTER_PUSH_BYTES)
+    {
         return Err(mismatch(
             "its push constants are not what the GPU Scene's scatter sets",
         ));

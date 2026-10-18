@@ -35,6 +35,9 @@ pub struct ShaderPackage {
     pub sources: Vec<SourceFile>,
     /// Packages whose public declarations this one uses, by link.
     pub dependencies: Vec<Link<ShaderPackage>>,
+    /// Only types and functions for other packages (`Marlin.Substrate`): no entry points are
+    /// expected, so the cooker does not warn that it has none.
+    pub library: bool,
 }
 
 /// One permutation of an entry point (0003 §4.4), for what a package's library cannot hold:

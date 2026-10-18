@@ -1,0 +1,21 @@
+[package]
+name = "marlin-material"
+description = "Materials: types, instances, binning and the material resolve into the material buffer."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+marlin-math.workspace = true
+marlin-render.workspace = true
+marlin-render-graph.workspace = true
+marlin-rhi.workspace = true
+marlin-serial.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+marlin-cook-mesh.workspace = true
+marlin-gpu-test-support.workspace = true
+marlin-render-graph.workspace = true

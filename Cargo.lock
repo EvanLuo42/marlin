@@ -599,6 +599,7 @@ dependencies = [
  "marlin-input",
  "marlin-io",
  "marlin-jobs",
+ "marlin-material",
  "marlin-math",
  "marlin-profile",
  "marlin-reflect",
@@ -751,6 +752,19 @@ dependencies = [
  "marlin-error",
  "marlin-math",
  "marlin-reflect",
+]
+
+[[package]]
+name = "marlin-material"
+version = "0.1.0"
+dependencies = [
+ "marlin-cook-mesh",
+ "marlin-gpu-test-support",
+ "marlin-math",
+ "marlin-render",
+ "marlin-render-graph",
+ "marlin-rhi",
+ "marlin-serial",
 ]
 
 [[package]]

@@ -5,17 +5,22 @@
 //!
 //! | table | words | content |
 //! |---|---|---|
-//! | instance data | 8 | mesh row, flags, 2 spare, color (float4) |
+//! | instance data | 8 | mesh row, flags, material row (`u32::MAX`: none), spare, color (float4) |
 //! | instance transforms | 24 | current, then previous: 3 rows of a 3×4 matrix each |
 //! | instance bounds | 4 | world bounding sphere: center, radius |
 //! | meshes | 16 | geometry view, LOD count, flags, strides; position offset (3), resident (0/1); position scale (3), UV sets; local bounding sphere (`Marlin.Engine.Scene.MeshEntry`) |
 //! | lights | 16 | kind, range, cone (2); radiance + spare; position + spare; direction + spare |
+//! | materials | 4 | permutation (`u32::MAX`: removed), row in its parameter table, 2 spare |
+//! | parameters, one table per permutation | the permutation's block | the material struct (0011 §7.5) |
 //!
 //! The buffers are graph persistent resources keyed by the scene: they keep their contents
 //! across frames and grow by powers of two. A new or grown buffer comes back fresh, and the
 //! scatter rewrites every live row of it. The transform shift (last frame's current becomes the
 //! previous) happens on the GPU: a row that moved writes only its new current transform, and a
 //! row that stopped moving writes nothing.
+//!
+//! Parameter blocks live in one table per permutation because a shader reads a material's block
+//! as its struct type, `ReadOnlyBuffer<M>[row]`: rows of one table share one size.
 
 use alloc::vec::Vec;
 
@@ -25,18 +30,33 @@ use marlin_serial::cooked::Pod;
 
 use super::{RenderScene, dirty};
 
-/// Words per row of each table, in table order.
-const STRIDES: [u32; 5] = [8, 24, 4, 16, 16];
-const DATA: u32 = 0;
-const TRANSFORMS: u32 = 1;
-const BOUNDS: u32 = 2;
-const MESHES: u32 = 3;
-const LIGHTS: u32 = 4;
+/// Words per row of the fixed tables, in table order.
+const STRIDES: [u32; 6] = [8, 24, 4, 16, 16, 4];
+const DATA: usize = 0;
+const TRANSFORMS: usize = 1;
+const BOUNDS: usize = 2;
+const MESHES: usize = 3;
+const LIGHTS: usize = 4;
+const MATERIALS: usize = 5;
+const NAMES: [&str; 6] = [
+    "GpuScene.InstanceData",
+    "GpuScene.InstanceTransforms",
+    "GpuScene.InstanceBounds",
+    "GpuScene.Meshes",
+    "GpuScene.Lights",
+    "GpuScene.Materials",
+];
 
 /// What a scatter op does with its row.
 const WRITE: u32 = 0;
 const SHIFT: u32 = 1;
 const SHIFT_WRITE: u32 = 2;
+
+/// A row that names no material.
+pub const NO_MATERIAL: u32 = u32::MAX;
+
+/// Bytes of push constants the scatter sets: four 32-bit words (`Marlin.Engine.Scene.ScatterArgs`).
+pub const SCATTER_PUSH_BYTES: u32 = 16;
 
 /// The scatter shader (`Marlin.Engine.Scene.Scatter`) as a pipeline.
 pub struct ScatterShader {
@@ -62,6 +82,9 @@ pub struct GpuScene<'g> {
     pub instance_bounds: BufferHandle<'g>,
     pub meshes: BufferHandle<'g>,
     pub lights: BufferHandle<'g>,
+    pub materials: BufferHandle<'g>,
+    /// Each permutation's parameter table, by permutation.
+    pub material_params: &'g [BufferHandle<'g>],
 }
 
 #[repr(C)]
@@ -69,7 +92,7 @@ pub struct GpuScene<'g> {
 struct ScatterArgs {
     ops: u32,
     data: u32,
-    tables: [u32; 5],
+    table: u32,
     count: u32,
 }
 
@@ -90,16 +113,26 @@ fn rows_of(t: &marlin_math::Transform) -> [f32; 12] {
     out
 }
 
+/// One table's ops: `[first word of the row, kind, first data word, words]`.
+#[derive(Default)]
 struct Ops {
+    stride: u32,
     ops: Vec<[u32; 4]>,
     data: Vec<u32>,
 }
 
 impl Ops {
-    fn push(&mut self, table: u32, kind: u32, row: u32, words: &[u32]) {
+    fn new(stride: u32) -> Self {
+        Self {
+            stride,
+            ..Self::default()
+        }
+    }
+
+    fn push(&mut self, kind: u32, row: u32, words: &[u32]) {
         self.ops.push([
-            table | (kind << 8),
-            row,
+            row * self.stride,
+            kind,
             self.data.len() as u32,
             words.len() as u32,
         ]);
@@ -112,52 +145,117 @@ fn floats(f: &[f32]) -> impl Iterator<Item = u32> + '_ {
 }
 
 impl RenderScene {
-    /// Declares this frame's GPU Scene: the five tables (persistent resources keyed by the
-    /// scene) and, if any row changed since the last call, the scatter pass that writes them.
-    /// Call it once a frame, before the passes that read the tables. Needs a graph with a state
-    /// table.
+    /// Declares this frame's GPU Scene: its tables (persistent resources keyed by the scene)
+    /// and, if any row changed since the last call, the scatter pass that writes them. Call it
+    /// once a frame, before the passes that read the tables. Needs a graph with a state table.
     pub fn add_passes<'g>(
         &mut self,
         g: &mut RenderGraph<'g>,
         scatter: &'g ScatterShader,
     ) -> GpuScene<'g> {
         let scope = self.id;
-        let table = |g: &mut RenderGraph<'g>, name: &str, rows: usize, stride: u32| {
+        let rows = [
+            self.instance_rows.len(),
+            self.instance_rows.len(),
+            self.instance_rows.len(),
+            self.mesh_rows.len(),
+            self.light_rows.len(),
+            self.material_rows.len(),
+        ];
+        let fixed: [_; 6] = core::array::from_fn(|t| {
             g.persistent(
-                name,
+                NAMES[t],
                 scope,
-                BufferDesc::new(capacity(rows) * u64::from(stride) * 4),
+                BufferDesc::new(capacity(rows[t]) * u64::from(STRIDES[t]) * 4),
             )
-        };
-        let data = table(
-            g,
-            "GpuScene.InstanceData",
-            self.instance_rows.len(),
-            STRIDES[0],
-        );
-        let transforms = table(
-            g,
-            "GpuScene.InstanceTransforms",
-            self.instance_rows.len(),
-            STRIDES[1],
-        );
-        let bounds = table(
-            g,
-            "GpuScene.InstanceBounds",
-            self.instance_rows.len(),
-            STRIDES[2],
-        );
-        let meshes = table(g, "GpuScene.Meshes", self.mesh_rows.len(), STRIDES[3]);
-        let lights = table(g, "GpuScene.Lights", self.light_rows.len(), STRIDES[4]);
+        });
+        // Parameter tables: one per permutation, rows of the permutation's block size.
+        let strides: Vec<u32> = (0..self.permutation_slots.len())
+            .map(|p| self.param_words(p as u32))
+            .collect();
+        let params: Vec<_> = self
+            .permutation_slots
+            .iter()
+            .enumerate()
+            .map(|(p, slots)| {
+                let bytes = capacity(slots.next as usize) * u64::from(strides[p].max(1)) * 4;
+                // The scene's id in the high bits: one scope per (scene, permutation).
+                g.persistent(
+                    "GpuScene.MaterialParams",
+                    scope << 20 | p as u64,
+                    BufferDesc::new(bytes),
+                )
+            })
+            .collect();
 
-        let mut ops = Ops {
-            ops: Vec::new(),
-            data: Vec::new(),
-        };
-        // Instances: every live row when a table is new, else the changed ones.
-        let fresh_instances = data.fresh || transforms.fresh || bounds.fresh;
+        let mut tables: Vec<Ops> = STRIDES.iter().map(|&s| Ops::new(s)).collect();
+        tables.extend(strides.iter().map(|&s| Ops::new(s)));
+        self.instance_ops(&mut tables, fixed.map(|t| t.fresh));
+        self.mesh_ops(&mut tables[MESHES], fixed[MESHES].fresh);
+        self.light_ops(&mut tables[LIGHTS], fixed[LIGHTS].fresh);
+        let fresh_params: Vec<bool> = params.iter().map(|t| t.fresh).collect();
+        self.material_ops(&mut tables, fixed[MATERIALS].fresh, &fresh_params);
+
+        let mut handles: Vec<BufferHandle<'g>> = fixed.iter().map(|t| t.handle).collect();
+        handles.extend(params.iter().map(|t| t.handle));
+        if tables.iter().any(|t| !t.ops.is_empty()) {
+            let pipeline = &scatter.pipeline;
+            let declared = handles.clone();
+            handles = g.add_compute("GpuSceneScatter", |b| {
+                let written: Vec<BufferHandle<'g>> = declared
+                    .iter()
+                    .map(|&h| b.write_buffer(h, Access::ComputeWrite))
+                    .collect();
+                let views = written.clone();
+                (written, move |ctx: &mut PassContext<'_>| {
+                    ctx.set_pipeline(pipeline);
+                    for (t, table) in tables.iter().enumerate() {
+                        if table.ops.is_empty() {
+                            continue;
+                        }
+                        let count = table.ops.len() as u32;
+                        let ops = ctx.upload_slice(&table.ops);
+                        let data = if table.data.is_empty() {
+                            ops
+                        } else {
+                            ctx.upload_slice(&table.data)
+                        };
+                        ctx.push(&ScatterArgs {
+                            ops,
+                            data,
+                            table: ctx.uav(views[t]),
+                            count,
+                        });
+                        ctx.dispatch(count.div_ceil(64), 1, 1);
+                    }
+                })
+            });
+        }
+        GpuScene {
+            instance_data: handles[DATA],
+            instance_transforms: handles[TRANSFORMS],
+            instance_bounds: handles[BOUNDS],
+            meshes: handles[MESHES],
+            lights: handles[LIGHTS],
+            materials: handles[MATERIALS],
+            material_params: g.arena().alloc_slice_copy(&handles[MATERIALS + 1..]),
+        }
+    }
+
+    /// Words of `permutation`'s parameter blocks (its live materials share one size).
+    fn param_words(&self, permutation: u32) -> u32 {
+        (0..self.material_rows.len())
+            .filter(|&r| {
+                self.material_rows.alive[r] && self.material_desc[r].permutation == permutation
+            })
+            .map(|r| self.material_desc[r].params.len() as u32)
+            .max()
+            .unwrap_or(0)
+    }
+
+    fn instance_ops(&mut self, tables: &mut [Ops], fresh: [bool; 6]) {
         let mut instance_rows = self.instances_dirty.take();
-        if fresh_instances {
+        if fresh[DATA] || fresh[TRANSFORMS] || fresh[BOUNDS] {
             // Every row: dead ones are written hidden.
             instance_rows = (0..self.instance_rows.len() as u32)
                 .map(|r| (r, dirty::DATA | dirty::BOTH | dirty::BOUNDS))
@@ -168,50 +266,55 @@ impl RenderScene {
             if !self.instance_rows.alive[i] {
                 // A removed row: hidden, so the visibility passes skip it.
                 if bits & dirty::DATA != 0 {
-                    ops.push(
-                        DATA,
-                        WRITE,
-                        row,
-                        &[0, super::flags::HIDDEN, 0, 0, 0, 0, 0, 0],
-                    );
+                    let hidden = [0, super::flags::HIDDEN, NO_MATERIAL, 0, 0, 0, 0, 0];
+                    tables[DATA].push(WRITE, row, &hidden);
                 }
                 continue;
             }
             if bits & dirty::DATA != 0 {
+                let material = self.instance_material[i];
                 let mut words = [0u32; 8];
                 words[0] = self.instance_mesh[i].index;
                 words[1] = self.instance_flags[i];
+                words[2] = if self.material_rows.live(material) {
+                    material.index
+                } else {
+                    NO_MATERIAL
+                };
                 for (w, c) in words[4..].iter_mut().zip(floats(&self.instance_color[i])) {
                     *w = c;
                 }
-                ops.push(DATA, WRITE, row, &words);
+                tables[DATA].push(WRITE, row, &words);
             }
             if bits & dirty::BOTH != 0 {
                 let mut words: Vec<u32> = floats(&rows_of(&self.instance_transform[i])).collect();
                 words.extend(floats(&rows_of(&self.instance_previous[i])));
-                ops.push(TRANSFORMS, WRITE, row, &words);
+                tables[TRANSFORMS].push(WRITE, row, &words);
             } else if bits & dirty::MOVED != 0 {
                 let words: Vec<u32> = floats(&rows_of(&self.instance_transform[i])).collect();
-                ops.push(TRANSFORMS, SHIFT_WRITE, row, &words);
+                tables[TRANSFORMS].push(SHIFT_WRITE, row, &words);
             } else if bits & dirty::STOPPED != 0 {
-                ops.push(TRANSFORMS, SHIFT, row, &[]);
+                tables[TRANSFORMS].push(SHIFT, row, &[]);
             }
             if bits & dirty::BOUNDS != 0 {
                 let sphere = self.world_sphere(i);
                 let words: Vec<u32> = floats(&sphere).collect();
-                ops.push(BOUNDS, WRITE, row, &words);
+                tables[BOUNDS].push(WRITE, row, &words);
             }
         }
-        let mut mesh_rows: Vec<u32> = self
+    }
+
+    fn mesh_ops(&mut self, ops: &mut Ops, fresh: bool) {
+        let mut rows: Vec<u32> = self
             .meshes_dirty
             .take()
             .into_iter()
             .map(|(r, _)| r)
             .collect();
-        if meshes.fresh {
-            mesh_rows = (0..self.mesh_rows.len() as u32).collect();
+        if fresh {
+            rows = (0..self.mesh_rows.len() as u32).collect();
         }
-        for row in mesh_rows {
+        for row in rows {
             let i = row as usize;
             if !self.mesh_rows.alive[i] {
                 continue;
@@ -239,18 +342,21 @@ impl RenderScene {
                     b.radius.to_bits(),
                 ];
             }
-            ops.push(MESHES, WRITE, row, &words);
+            ops.push(WRITE, row, &words);
         }
-        let mut light_rows: Vec<u32> = self
+    }
+
+    fn light_ops(&mut self, ops: &mut Ops, fresh: bool) {
+        let mut rows: Vec<u32> = self
             .lights_dirty
             .take()
             .into_iter()
             .map(|(r, _)| r)
             .collect();
-        if lights.fresh {
-            light_rows = (0..self.light_rows.len() as u32).collect();
+        if fresh {
+            rows = (0..self.light_rows.len() as u32).collect();
         }
-        for row in light_rows {
+        for row in rows {
             let i = row as usize;
             if !self.light_rows.alive[i] {
                 continue;
@@ -271,51 +377,35 @@ impl RenderScene {
                     words[4 + 4 * k + j] = f.to_bits();
                 }
             }
-            ops.push(LIGHTS, WRITE, row, &words);
+            ops.push(WRITE, row, &words);
         }
-        let handles = [
-            data.handle,
-            transforms.handle,
-            bounds.handle,
-            meshes.handle,
-            lights.handle,
-        ];
-        if ops.ops.is_empty() {
-            return GpuScene {
-                instance_data: handles[0],
-                instance_transforms: handles[1],
-                instance_bounds: handles[2],
-                meshes: handles[3],
-                lights: handles[4],
-            };
+    }
+
+    /// The material table's rows and the parameter blocks, into `tables[MATERIALS]` and
+    /// `tables[MATERIALS + 1 + permutation]`.
+    fn material_ops(&mut self, tables: &mut [Ops], fresh: bool, fresh_params: &[bool]) {
+        let mut rows: Vec<u32> = self
+            .materials_dirty
+            .take()
+            .into_iter()
+            .map(|(r, _)| r)
+            .collect();
+        if fresh || fresh_params.iter().any(|&f| f) {
+            rows = (0..self.material_rows.len() as u32).collect();
         }
-        let pipeline = &scatter.pipeline;
-        let written = g.add_compute("GpuSceneScatter", |b| {
-            let written = handles.map(|h| b.write_buffer(h, Access::ComputeWrite));
-            (written, move |ctx: &mut PassContext<'_>| {
-                let count = ops.ops.len() as u32;
-                let op_view = ctx.upload_slice(&ops.ops);
-                let data_view = if ops.data.is_empty() {
-                    op_view
-                } else {
-                    ctx.upload_slice(&ops.data)
-                };
-                ctx.set_pipeline(pipeline);
-                ctx.push(&ScatterArgs {
-                    ops: op_view,
-                    data: data_view,
-                    tables: written.map(|h| ctx.uav(h)),
-                    count,
-                });
-                ctx.dispatch(count.div_ceil(64), 1, 1);
-            })
-        });
-        GpuScene {
-            instance_data: written[0],
-            instance_transforms: written[1],
-            instance_bounds: written[2],
-            meshes: written[3],
-            lights: written[4],
+        for row in rows {
+            let i = row as usize;
+            if !self.material_rows.alive[i] {
+                tables[MATERIALS].push(WRITE, row, &[NO_MATERIAL, 0, 0, 0]);
+                continue;
+            }
+            let desc = &self.material_desc[i];
+            let slot = self.material_slot[i];
+            tables[MATERIALS].push(WRITE, row, &[desc.permutation, slot, 0, 0]);
+            let params = &mut tables[MATERIALS + 1 + desc.permutation as usize];
+            if !desc.params.is_empty() {
+                params.push(WRITE, slot, &desc.params);
+            }
         }
     }
 }

@@ -13,11 +13,14 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use marlin_math::{Transform, Vec3};
 
-pub use gpu::{GpuScene, ScatterShader};
-pub use id::{Id, IdAllocator, InstanceId, InstanceRow, LightId, LightRow, MeshId, MeshRow};
+pub use gpu::{GpuScene, SCATTER_PUSH_BYTES, ScatterShader};
+pub use id::{
+    Id, IdAllocator, InstanceId, InstanceRow, LightId, LightRow, MaterialId, MaterialRow, MeshId,
+    MeshRow,
+};
 pub use update::{
-    Bounds, InstanceDesc, InstanceUpdate, LightDesc, LightKind, LightUpdate, MeshUpdate,
-    ResidentMesh, SceneUpdates, UpdateStream, flags,
+    Bounds, InstanceDesc, InstanceUpdate, LightDesc, LightKind, LightUpdate, MaterialDesc,
+    MaterialUpdate, MeshUpdate, ResidentMesh, SceneUpdates, UpdateStream, flags,
 };
 
 use crate::renderer::{Environment, MeshHandle};
@@ -109,6 +112,7 @@ pub struct SceneIds {
     pub instances: Arc<IdAllocator<InstanceRow>>,
     pub meshes: Arc<IdAllocator<MeshRow>>,
     pub lights: Arc<IdAllocator<LightRow>>,
+    pub materials: Arc<IdAllocator<MaterialRow>>,
 }
 
 impl SceneIds {
@@ -125,11 +129,20 @@ pub struct RenderScene {
 
     instance_rows: Rows,
     instance_mesh: Vec<MeshId>,
+    instance_material: Vec<MaterialId>,
     instance_transform: Vec<Transform>,
     /// The transform the last frame drew with (for motion vectors).
     instance_previous: Vec<Transform>,
     instance_color: Vec<[f32; 4]>,
     instance_flags: Vec<u32>,
+
+    material_rows: Rows,
+    material_desc: Vec<MaterialDesc>,
+    /// Each material's row in its permutation's parameter table.
+    material_slot: Vec<u32>,
+    /// Per permutation: its parameter table's rows.
+    permutation_slots: Vec<Slots>,
+    materials_dirty: Dirty,
 
     mesh_rows: Rows,
     mesh_resident: Vec<Option<ResidentMesh>>,
@@ -165,10 +178,16 @@ impl RenderScene {
             ids,
             instance_rows: Rows::default(),
             instance_mesh: Vec::new(),
+            instance_material: Vec::new(),
             instance_transform: Vec::new(),
             instance_previous: Vec::new(),
             instance_color: Vec::new(),
             instance_flags: Vec::new(),
+            material_rows: Rows::default(),
+            material_desc: Vec::new(),
+            material_slot: Vec::new(),
+            permutation_slots: Vec::new(),
+            materials_dirty: Dirty::default(),
             mesh_rows: Rows::default(),
             mesh_resident: Vec::new(),
             light_rows: Rows::default(),
@@ -199,7 +218,7 @@ impl RenderScene {
         self.apply_all([updates]);
     }
 
-    /// Applies one frame's changes, set after set; within a set meshes first, then lights and
+    /// Applies one frame's changes, set after set; within a set meshes, materials, lights, then
     /// instances, each in stream order. Changes to rows that are not alive (removed, or never
     /// added) are ignored. Rows removed here go back to their allocators. Call it once a frame:
     /// an instance whose transform it does not change comes to rest.
@@ -210,6 +229,9 @@ impl RenderScene {
         for updates in sets {
             for (id, update) in updates.meshes.iter() {
                 self.apply_mesh(*id, update);
+            }
+            for (id, update) in updates.materials.iter() {
+                self.apply_material(*id, update);
             }
             for (id, update) in updates.lights.iter() {
                 self.apply_light(*id, update);
@@ -260,6 +282,64 @@ impl RenderScene {
         }
     }
 
+    fn apply_material(&mut self, id: MaterialId, update: &MaterialUpdate) {
+        let i = id.index as usize;
+        match update {
+            MaterialUpdate::Add(desc) => {
+                if !self.material_rows.add(id) {
+                    return;
+                }
+                if self.material_desc.len() <= i {
+                    self.material_desc.resize(i + 1, MaterialDesc::default());
+                    self.material_slot.resize(i + 1, 0);
+                }
+                self.material_slot[i] = self.slots(desc.permutation).take();
+                self.material_desc[i] = desc.clone();
+                self.materials_dirty.mark(id.index, dirty::DATA);
+                self.instances_using(id);
+            }
+            MaterialUpdate::Set(desc) if self.material_rows.live(id) => {
+                let old = self.material_desc[i].permutation;
+                if old != desc.permutation {
+                    let slot = self.material_slot[i];
+                    self.slots(old).free.push(slot);
+                    self.material_slot[i] = self.slots(desc.permutation).take();
+                }
+                self.material_desc[i] = desc.clone();
+                self.materials_dirty.mark(id.index, dirty::DATA);
+            }
+            MaterialUpdate::Remove if self.material_rows.live(id) => {
+                self.material_rows.alive[i] = false;
+                let (permutation, slot) =
+                    (self.material_desc[i].permutation, self.material_slot[i]);
+                self.slots(permutation).free.push(slot);
+                self.ids.materials.release(id);
+                self.materials_dirty.mark(id.index, dirty::DATA);
+                self.instances_using(id);
+            }
+            _ => {}
+        }
+    }
+
+    /// The parameter table rows of `permutation`.
+    fn slots(&mut self, permutation: u32) -> &mut Slots {
+        let p = permutation as usize;
+        if self.permutation_slots.len() <= p {
+            self.permutation_slots.resize_with(p + 1, Slots::default);
+        }
+        &mut self.permutation_slots[p]
+    }
+
+    /// Marks the instances drawing with `material` for a rewrite of their GPU row (its material
+    /// row there reads as none while the material is not live).
+    fn instances_using(&mut self, material: MaterialId) {
+        for row in 0..self.instance_rows.len() {
+            if self.instance_rows.alive[row] && self.instance_material[row] == material {
+                self.instances_dirty.mark(row as u32, dirty::DATA);
+            }
+        }
+    }
+
     fn apply_light(&mut self, id: LightId, update: &LightUpdate) {
         let i = id.index as usize;
         match *update {
@@ -293,6 +373,7 @@ impl RenderScene {
                 }
                 if self.instance_mesh.len() <= i {
                     self.instance_mesh.resize(i + 1, desc.mesh);
+                    self.instance_material.resize(i + 1, desc.material);
                     self.instance_transform.resize(i + 1, desc.transform);
                     self.instance_previous.resize(i + 1, desc.transform);
                     self.instance_color.resize(i + 1, desc.color);
@@ -300,6 +381,7 @@ impl RenderScene {
                     self.moved_at.resize(i + 1, 0);
                 }
                 self.instance_mesh[i] = desc.mesh;
+                self.instance_material[i] = desc.material;
                 self.instance_transform[i] = desc.transform;
                 self.instance_previous[i] = desc.transform;
                 self.instance_color[i] = desc.color;
@@ -324,6 +406,10 @@ impl RenderScene {
                 self.instance_transform[i] = t;
                 self.instances_dirty
                     .mark(id.index, dirty::MOVED | dirty::BOUNDS);
+            }
+            InstanceUpdate::Material(material) => {
+                self.instance_material[i] = material;
+                self.instances_dirty.mark(id.index, dirty::DATA);
             }
             InstanceUpdate::Mesh(mesh) => {
                 self.instance_mesh[i] = mesh;
@@ -360,6 +446,7 @@ impl RenderScene {
             let i = id.index as usize;
             InstanceDesc {
                 mesh: self.instance_mesh[i],
+                material: self.instance_material[i],
                 transform: self.instance_transform[i],
                 color: self.instance_color[i],
                 flags: self.instance_flags[i],
@@ -378,6 +465,12 @@ impl RenderScene {
         self.mesh_rows
             .live(id)
             .then(|| self.mesh_resident[id.index as usize])
+    }
+
+    pub fn material(&self, id: MaterialId) -> Option<&MaterialDesc> {
+        self.material_rows
+            .live(id)
+            .then(|| &self.material_desc[id.index as usize])
     }
 
     pub fn light(&self, id: LightId) -> Option<LightDesc> {
@@ -424,5 +517,22 @@ impl RenderScene {
 impl Default for RenderScene {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Rows of one permutation's parameter table.
+#[derive(Default)]
+struct Slots {
+    /// Rows never handed out start here.
+    next: u32,
+    free: Vec<u32>,
+}
+
+impl Slots {
+    fn take(&mut self) -> u32 {
+        self.free.pop().unwrap_or_else(|| {
+            self.next += 1;
+            self.next - 1
+        })
     }
 }

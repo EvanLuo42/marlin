@@ -117,6 +117,8 @@ adapter：`AdapterPreference::HighPerformance` 选独显优先、然后显存最
 
 buffer 成员的 offset 由 shader 自己声明（SPIR-V 的 `Offset` 装饰），RHI 不规定布局，只打开 `scalarBlockLayout`，让任意自然对齐的 offset 都合法。布局规则归自研 shader 编译器定（它产出的 offset 要和手写的 Rust 结构体一致，用反射检查），见 §11。Marlin shader 是标量布局：紧密排列、按标量自然对齐，和 `#[repr(C)]` 的结构体一致。
 
+**已知的驱动问题**（2026-10-18，RTX 5060，经 descriptor heap 的 buffer 指针）：buffer 元素类型里**类型是 struct 的成员**，它的 `Offset` 装饰被忽略，读出来都在偏移 0；向量、标量、数组成员和内层 struct 自己的成员 offset 都正确。SPIR-V 是合法的（验证层带 spirv-val 也不报错），把多段 `OpAccessChain` 合成一段也没有用。所以引擎 shader 里给 buffer 用的类型只用向量、标量和数组做成员（例如 `InstanceTransforms` 存 6 行 `float4`，再用属性拼出 `Rows3x4`）。根治的办法是让编译器在布局类型里把嵌套 struct 展开成平的成员，留到需要时再做（0011 R1k 的记录）。
+
 ### 4.3 push constants
 
 - `MAX_PUSH_CONSTANTS` = 32 字 = 128 字节（`maxPushDataSize` 至少 128）。`push_constants` → `vkCmdPushDataEXT`；graphics 和 compute 共用一份 push data，所以"写进最近绑定的那类 pipeline"在 Vulkan 上自然成立。`begin` 时清零。

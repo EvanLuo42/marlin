@@ -1,0 +1,21 @@
+namespace Material;
+
+using Marlin.Substrate;
+
+/// A second material type for the material tests: stripes of two albedos across world x, so
+/// two resolve permutations share the frame and the result depends on the reconstructed
+/// position.
+public struct Stripes : ISurfaceMaterial<Stripes>
+{
+    public float3 A = 1;
+    public float3 B = 0;
+    public float Width = 0.25;
+
+    public type Tree = Slab;
+
+    public Slab Surface(in SurfaceContext ctx)
+    {
+        bool odd = ((int)Floor(ctx.Position.x / Width) & 1) != 0;
+        return Slab.Default with { DiffuseAlbedo = odd ? B : A, Roughness = 0.8 };
+    }
+}

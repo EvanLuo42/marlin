@@ -174,3 +174,63 @@ fn growing_the_tables_rewrites_every_row() {
         );
     }
 }
+
+#[test]
+fn materials_and_their_parameters_reach_their_tables() {
+    use marlin_render::scene::{MaterialDesc, MaterialUpdate};
+    let mut h = Harness::new(Environment::default());
+    let ids = h.scene.ids();
+    let (a, b, c) = (
+        ids.materials.reserve(),
+        ids.materials.reserve(),
+        ids.materials.reserve(),
+    );
+    let desc = |permutation, params: &[u32]| MaterialDesc {
+        permutation,
+        params: params.to_vec(),
+    };
+    h.updates
+        .materials
+        .push(a, MaterialUpdate::Add(desc(1, &[10, 11, 12])));
+    h.updates
+        .materials
+        .push(b, MaterialUpdate::Add(desc(2, &[20, 21])));
+    h.updates
+        .materials
+        .push(c, MaterialUpdate::Add(desc(1, &[30, 31, 32])));
+    let instance = h.add(h.cube, Transform::IDENTITY, [1.0; 4]);
+    h.set(instance, InstanceUpdate::Material(c));
+    let read = |h: &mut Harness| {
+        let (_, _, tickets) = h.frame_with(|g, gpu| {
+            [
+                g.readback(gpu.materials),
+                g.readback(gpu.material_params[1]),
+                g.readback(gpu.material_params[2]),
+                g.readback(gpu.instance_data),
+            ]
+        });
+        tickets.map(|t| words(&h.wait_readback(t)))
+    };
+    let [materials, one, two, data] = read(&mut h);
+    let row = |m: &marlin_render::scene::MaterialId| &materials[m.index() as usize * 4..][..2];
+    // Rows in their permutation's table, in order of arrival.
+    assert_eq!(row(&a), [1, 0]);
+    assert_eq!(row(&b), [2, 0]);
+    assert_eq!(row(&c), [1, 1]);
+    assert_eq!(one[..6], [10, 11, 12, 30, 31, 32]);
+    assert_eq!(two[..2], [20, 21]);
+    assert_eq!(data[instance.index() as usize * 8 + 2], c.index());
+
+    // A move to another permutation frees the old row; a removal reads as none, and so do the
+    // instances drawing with it.
+    h.updates
+        .materials
+        .push(a, MaterialUpdate::Set(desc(2, &[40, 41])));
+    h.updates.materials.push(c, MaterialUpdate::Remove);
+    let [materials, _, two, data] = read(&mut h);
+    let row = |m: &marlin_render::scene::MaterialId| &materials[m.index() as usize * 4..][..2];
+    assert_eq!(row(&a), [2, 1]);
+    assert_eq!(two[2..4], [40, 41]);
+    assert_eq!(row(&c)[0], u32::MAX);
+    assert_eq!(data[instance.index() as usize * 8 + 2], u32::MAX);
+}

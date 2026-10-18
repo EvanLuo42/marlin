@@ -1,0 +1,14 @@
+!Version 1
+
+// Substrate (docs/design/0011-material-system.md §3): the material model every surface
+// material builds on, in its own package so the engine's shaders and a game's materials both
+// depend on it.
+ShaderPackage
+{
+    !Uuid = "019a3c40-5b21-7d10-9a6e-3f1c2b4d5e60"
+    !Name = "Marlin.Substrate"
+    Library = true
+    Sources = [
+        `source:substrate/Substrate.mshader`,
+    ]
+}

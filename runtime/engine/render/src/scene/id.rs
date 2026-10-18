@@ -74,6 +74,8 @@ pub enum InstanceRow {}
 pub enum MeshRow {}
 #[derive(Debug)]
 pub enum LightRow {}
+#[derive(Debug)]
+pub enum MaterialRow {}
 
 /// A renderable instance.
 pub type InstanceId = Id<InstanceRow>;
@@ -81,6 +83,8 @@ pub type InstanceId = Id<InstanceRow>;
 pub type MeshId = Id<MeshRow>;
 /// A light.
 pub type LightId = Id<LightRow>;
+/// A material instance.
+pub type MaterialId = Id<MaterialRow>;
 
 /// Hands out rows of one table to any thread; takes rows back when the scene applies their
 /// removal.

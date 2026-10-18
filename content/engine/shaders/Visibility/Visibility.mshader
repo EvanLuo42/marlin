@@ -218,7 +218,7 @@ public struct VisPrimitive
 }
 
 /// Byte `at` of a byte buffer.
-uint ByteAt(ReadOnlyByteBuffer b, uint at) => (b.Load((at >> 2) << 2) >> ((at & 3) * 8)) & 255;
+public uint ByteAt(ReadOnlyByteBuffer b, uint at) => (b.Load((at >> 2) << 2) >> ((at & 3) * 8)) & 255;
 
 [Mesh(128, 1, 1, MaxVertices = 64, MaxPrimitives = 124, Topology = MeshTopology.Triangle)]
 public void VisMesh(

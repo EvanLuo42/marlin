@@ -438,8 +438,11 @@ fn cooking_is_deterministic() {
 fn the_engine_package_cooks() {
     let p = Project::new("engine");
     let content = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/engine");
-    // The package and every source under it.
-    let mut dirs = vec![std::path::PathBuf::from("shaders")];
+    // The packages (the engine's and the Substrate library it uses) and their sources.
+    let mut dirs = vec![
+        std::path::PathBuf::from("shaders"),
+        std::path::PathBuf::from("substrate"),
+    ];
     while let Some(dir) = dirs.pop() {
         for e in std::fs::read_dir(content.join(&dir)).unwrap() {
             let e = e.unwrap();
