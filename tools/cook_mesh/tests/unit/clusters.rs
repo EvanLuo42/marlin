@@ -3,10 +3,13 @@
 
 use std::collections::HashMap;
 
-use marlin_cook_mesh::{cluster, dag, quantize};
+use marlin_cook_mesh::{cluster, dag, page, quantize};
 use marlin_math::Rng;
-use marlin_render::asset::cluster::{UvRange, read_cluster_attributes};
-use marlin_render::asset::mesh::{dequantize_position, position_scale};
+use marlin_render::asset::cluster::{
+    HIERARCHY_LEAF, HIERARCHY_NONE, HierarchyChild, PAGE_SIZE, PageLayout, PageView, UvRange,
+    read_cluster_attributes,
+};
+use marlin_render::asset::mesh::{dequantize_position, position_scale, quantize_position};
 
 use crate::support::icosphere;
 
@@ -465,5 +468,326 @@ fn quantization_round_trip() {
                 assert_eq!(&e.skin[k * 12 + 8..k * 12 + 12], &skin[i].1);
             }
         }
+    }
+}
+
+/// Vertex streams for `s` with everything a page can hold: two UV sets, colors and skin.
+struct Streams {
+    tangents: Vec<[f32; 4]>,
+    uvs: Vec<Vec<[f32; 2]>>,
+    colors: Vec<[f32; 4]>,
+    skin: Vec<([u16; 4], [u8; 4])>,
+}
+
+fn streams(s: &crate::support::Sphere) -> Streams {
+    Streams {
+        tangents: s
+            .normals
+            .iter()
+            .map(|&n| {
+                let t = normalize(cross(n, [0.3, 1.0, 0.2]));
+                [t[0], t[1], t[2], 1.0]
+            })
+            .collect(),
+        uvs: vec![
+            s.uvs.clone(),
+            s.uvs.iter().map(|uv| [uv[1] * 3.0, uv[0]]).collect(),
+        ],
+        colors: s
+            .positions
+            .iter()
+            .map(|p| [p[0].abs(), p[1].abs(), p[2].abs(), 1.0])
+            .collect(),
+        skin: (0..s.positions.len())
+            .map(|i| ([(i % 7) as u16, 0, 0, 0], [255, 0, 0, 0]))
+            .collect(),
+    }
+}
+
+fn mesh_bounds(positions: &[[f32; 3]]) -> ([f32; 3], [f32; 3]) {
+    let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+    for p in positions {
+        for i in 0..3 {
+            lo[i] = lo[i].min(p[i]);
+            hi[i] = hi[i].max(p[i]);
+        }
+    }
+    (lo, hi)
+}
+
+#[test]
+fn pages_hold_every_cluster_within_limits() {
+    let s = icosphere(5);
+    let sections = banded_sections(&s.positions, &s.indices);
+    let dag = dag_of(&s, &sections);
+    let st = streams(&s);
+    let v = quantize::Vertices {
+        positions: &s.positions,
+        normals: &s.normals,
+        tangents: &st.tangents,
+        uvs: &st.uvs,
+        colors: Some(&st.colors),
+        skin: Some(&st.skin),
+    };
+    let (lo, hi) = mesh_bounds(&s.positions);
+    let scale = position_scale(lo, hi);
+    let packed = page::pack(&dag, &v, quantize::Positions::Quantized { min: lo, scale });
+    let layout = PageLayout {
+        uv_sets: 2,
+        position_stride: 8,
+        attribute_stride: quantize::attribute_stride(&v) as u32,
+        skin_stride: 12,
+        mesh_sections: sections.iter().copied().max().unwrap() as u32 + 1,
+    };
+    assert!(packed.pages.len() >= 4, "{} pages", packed.pages.len());
+    assert!(packed.root_page_count >= 1 && packed.root_page_count < packed.pages.len() as u32);
+
+    // Limits; every cluster in exactly one place, decoding to its triangles and sections.
+    let views: Vec<PageView<'_>> = packed
+        .pages
+        .iter()
+        .map(|p| PageView::new(p, layout).expect("a valid page"))
+        .collect();
+    let mut seen = vec![false; dag.clusters.len()];
+    let mut fill = 0usize;
+    for (i, (view, record)) in views.iter().zip(&packed.page_records).enumerate() {
+        assert!(view.bytes.len() <= PAGE_SIZE);
+        assert_eq!(record.cluster_count, view.header.cluster_count);
+        fill += view.bytes.len();
+        for k in 0..record.cluster_count as usize {
+            let r = view.cluster(k);
+            let c = (0..dag.clusters.len())
+                .find(|&c| packed.cluster_location[c] == (i as u32, k as u32))
+                .expect("a cluster of the DAG");
+            assert!(!seen[c]);
+            seen[c] = true;
+            let dc = &dag.clusters[c];
+            assert_eq!(
+                (r.group, r.source_group, r.lod_error),
+                (dc.group, dc.source_group, dc.lod_error)
+            );
+            assert_eq!(r.triangle_count as usize, dc.cluster.triangle_count());
+            for t in 0..r.triangle_count as usize {
+                let tri = view.triangle(r.triangle_offset as usize + t);
+                for corner in 0..3 {
+                    let decoded =
+                        view.position(r.vertex_offset as usize + tri[corner] as usize, lo, scale);
+                    let source = s.positions[dc.cluster.indices[t * 3 + corner] as usize];
+                    let expected =
+                        dequantize_position(quantize_position(source, lo, scale), lo, scale);
+                    assert_eq!(decoded, expected);
+                }
+                assert_eq!(
+                    view.section(r.section_offset as usize + tri[3] as usize),
+                    dc.cluster.sections[t],
+                    "a triangle keeps its section"
+                );
+            }
+        }
+    }
+    assert!(seen.iter().all(|&s| s));
+    // Pages fill: all but the last root page and the last page at least 3/4 full.
+    let average = fill as f32 / packed.pages.len() as f32;
+    assert!(
+        average > PAGE_SIZE as f32 * 0.75,
+        "average page {average} bytes"
+    );
+
+    // Parts cover each group's clusters; dependencies point back, roots come first.
+    for (g, group) in packed.groups.iter().enumerate() {
+        let parts = &packed.parts[group.first_part as usize..][..group.part_count as usize];
+        let mut clusters: Vec<u32> = Vec::new();
+        for p in parts {
+            assert_eq!(p.group, g as u32);
+            for k in p.first_cluster..p.first_cluster + p.cluster_count {
+                let c = (0..dag.clusters.len())
+                    .find(|&c| packed.cluster_location[c] == (p.page, k))
+                    .unwrap();
+                clusters.push(c as u32);
+            }
+            if dag.groups[g].is_root() {
+                assert!(p.page < packed.root_page_count);
+            }
+        }
+        let mut expected = dag.groups[g].clusters.clone();
+        expected.sort_unstable();
+        clusters.sort_unstable();
+        assert_eq!(clusters, expected);
+        assert_eq!(group.error, dag.groups[g].error);
+    }
+    for (i, record) in packed.page_records.iter().enumerate() {
+        let deps = &packed.dependencies[record.first_dependency as usize..]
+            [..record.dependency_count as usize];
+        for &d in deps {
+            assert!(d < packed.pages.len() as u32 && d != i as u32);
+        }
+        // The coarser clusters of this page's groups are on pages it depends on.
+        for k in 0..record.cluster_count as usize {
+            let g = views[i].cluster(k).group as usize;
+            for &c in &dag.groups[g].simplified {
+                let page = packed.cluster_location[c as usize].0;
+                assert!(page == i as u32 || deps.contains(&page));
+                assert!(page <= i as u32, "coarser clusters on later pages");
+            }
+        }
+    }
+
+    // The hierarchy: every part reached once, spheres and errors enclose what is below.
+    let mut reached = vec![0u32; packed.parts.len()];
+    let mut stack = vec![0u32];
+    let mut nodes_seen = 0;
+    // (sphere, max error) of everything below each child, checked against the child.
+    fn below(packed: &page::Packed, child: u32, out: &mut Vec<([f32; 4], f32)>) {
+        if child & HIERARCHY_LEAF != 0 {
+            let p = packed.parts[(child & !HIERARCHY_LEAF) as usize];
+            let g = packed.groups[p.group as usize];
+            out.push((g.sphere, g.error));
+        } else {
+            for c in &packed.nodes[child as usize].children {
+                if c.child != HIERARCHY_NONE {
+                    below(packed, c.child, out);
+                }
+            }
+        }
+    }
+    while let Some(n) = stack.pop() {
+        nodes_seen += 1;
+        let node = &packed.nodes[n as usize];
+        let used: Vec<&HierarchyChild> = node
+            .children
+            .iter()
+            .filter(|c| c.child != HIERARCHY_NONE)
+            .collect();
+        assert!(!used.is_empty());
+        if n != 0 {
+            assert!(used.len() >= 2, "a node with one child");
+        }
+        for c in used {
+            let mut under = Vec::new();
+            below(&packed, c.child, &mut under);
+            for (sphere, error) in under {
+                assert!(
+                    inside(sphere, c.sphere),
+                    "a group outside its node's sphere"
+                );
+                assert!(c.max_error >= error);
+            }
+            if c.child & HIERARCHY_LEAF != 0 {
+                reached[(c.child & !HIERARCHY_LEAF) as usize] += 1;
+            } else {
+                stack.push(c.child);
+            }
+        }
+    }
+    assert_eq!(nodes_seen, packed.nodes.len());
+    assert!(
+        reached.iter().all(|&r| r == 1),
+        "every part reached exactly once"
+    );
+
+    // A cut decoded from the pages alone is watertight.
+    let mut rng = Rng::new(3);
+    for _ in 0..8 {
+        let threshold = rng.f32() * 0.02;
+        let mut edges: HashMap<([u32; 3], [u32; 3]), u32> = HashMap::new();
+        for view in &views {
+            for k in 0..view.header.cluster_count as usize {
+                let r = view.cluster(k);
+                if !(r.lod_error <= threshold && packed.groups[r.group as usize].error > threshold)
+                {
+                    continue;
+                }
+                for t in 0..r.triangle_count as usize {
+                    let tri = view.triangle(r.triangle_offset as usize + t);
+                    let p = [0, 1, 2].map(|i| {
+                        view.position(r.vertex_offset as usize + tri[i] as usize, lo, scale)
+                            .map(f32::to_bits)
+                    });
+                    if p[0] == p[1] || p[1] == p[2] || p[0] == p[2] {
+                        continue;
+                    }
+                    for i in 0..3 {
+                        *edges.entry((p[i], p[(i + 1) % 3])).or_default() += 1;
+                    }
+                }
+            }
+        }
+        assert!(!edges.is_empty());
+        for (&(a, b), &n) in &edges {
+            assert_eq!(n, 1);
+            assert_eq!(
+                edges.get(&(b, a)),
+                Some(&1),
+                "crack in the decoded cut at {threshold}"
+            );
+        }
+    }
+}
+
+#[test]
+fn damaged_pages_are_refused() {
+    let s = icosphere(3);
+    let sections = vec![0u16; s.indices.len() / 3];
+    let dag = dag_of(&s, &sections);
+    let tangents: Vec<[f32; 4]> = vec![[1.0, 0.0, 0.0, 1.0]; s.positions.len()];
+    let uvs = vec![s.uvs.clone()];
+    let v = quantize::Vertices {
+        positions: &s.positions,
+        normals: &s.normals,
+        tangents: &tangents,
+        uvs: &uvs,
+        colors: None,
+        skin: None,
+    };
+    let packed = page::pack(&dag, &v, quantize::Positions::Float);
+    let layout = PageLayout {
+        uv_sets: 1,
+        position_stride: 12,
+        attribute_stride: 8,
+        skin_stride: 0,
+        mesh_sections: 1,
+    };
+    let page = &packed.pages[0];
+    let view = PageView::new(page, layout).unwrap();
+    assert!(
+        PageView::new(
+            page,
+            PageLayout {
+                mesh_sections: 0,
+                ..layout
+            }
+        )
+        .is_err()
+    );
+    assert!(
+        PageView::new(
+            page,
+            PageLayout {
+                uv_sets: 2,
+                ..layout
+            }
+        )
+        .is_err()
+    );
+    assert!(PageView::new(&page[..page.len() - 16], layout).is_err());
+    assert!(PageView::new(&page[..8], layout).is_err());
+    // A vertex index past its cluster.
+    let r = view.cluster(0);
+    let mut bad = page.clone();
+    bad[view.header.triangles.offset as usize + r.triangle_offset as usize * 4] = r.vertex_count;
+    assert!(PageView::new(&bad, layout).is_err());
+    // A section entry past the cluster's table.
+    let mut bad = page.clone();
+    bad[view.header.triangles.offset as usize + 3] = r.section_count;
+    assert!(PageView::new(&bad, layout).is_err());
+    // Random bytes never panic.
+    let mut rng = Rng::new(9);
+    for _ in 0..200 {
+        let mut bad = page.clone();
+        for _ in 0..4 {
+            let at = (rng.f32() * bad.len() as f32) as usize % bad.len();
+            bad[at] = (rng.f32() * 256.0) as u8;
+        }
+        let _ = PageView::new(&bad, layout);
     }
 }

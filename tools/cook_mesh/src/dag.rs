@@ -51,6 +51,8 @@ pub struct DagCluster {
     pub lod_sphere: [f32; 4],
     /// The group the cluster belongs to, whose error is the cluster's parent error.
     pub group: u32,
+    /// The group the cluster was made from; [`u32::MAX`] at level 0.
+    pub source_group: u32,
     pub level: u32,
 }
 
@@ -169,32 +171,35 @@ pub fn build(input: &Input<'_>) -> Dag {
         }
     }
 
-    let push = |dag: &mut Dag,
-                cluster: Cluster,
-                level: u32,
-                lod_error: f32,
-                lod_sphere: Option<[f32; 4]>| {
+    // `source`: the group the cluster was made from, its level, error and sphere.
+    let push = |dag: &mut Dag, cluster: Cluster, source: Option<(u32, u32, f32, [f32; 4])>| {
         let bounds = cluster.bounds(input.positions);
-        let lod_sphere = lod_sphere.unwrap_or([
-            bounds.center[0],
-            bounds.center[1],
-            bounds.center[2],
-            bounds.radius,
-        ]);
+        let (source_group, level, lod_error, lod_sphere) = source.unwrap_or((
+            u32::MAX,
+            0,
+            0.0,
+            [
+                bounds.center[0],
+                bounds.center[1],
+                bounds.center[2],
+                bounds.radius,
+            ],
+        ));
         dag.clusters.push(DagCluster {
             cluster,
             bounds,
             lod_error,
             lod_sphere,
             group: u32::MAX,
-            level,
+            source_group,
+            level: level + u32::from(source.is_some()),
         });
         dag.clusters.len() as u32 - 1
     };
 
     let mut current: Vec<u32> = cluster::split(input.indices, input.sections, input.positions)
         .into_iter()
-        .map(|c| push(&mut dag, c, 0, 0.0, None))
+        .map(|c| push(&mut dag, c, None))
         .collect();
     loop {
         if current.is_empty() {
@@ -231,7 +236,7 @@ pub fn build(input: &Input<'_>) -> Dag {
             if !last && let Some((clusters, error)) = simplify_group(input, &dag, &g.clusters) {
                 g.error = child_error + error;
                 for c in clusters {
-                    let id = push(&mut dag, c, g.level + 1, g.error, Some(sphere));
+                    let id = push(&mut dag, c, Some((group, g.level, g.error, sphere)));
                     g.simplified.push(id);
                     next.push(id);
                 }
