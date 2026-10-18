@@ -129,7 +129,7 @@ fn entry<'a>(
     match &e.reflection.push {
         Some(push) if push.size == FORWARD_PUSH_BYTES => Ok(e),
         _ => Err(mismatch(
-            "its push constants are not the forward pass's four 32-bit words",
+            "its push constants are not the forward pass's six 32-bit words",
         )),
     }
 }
@@ -178,4 +178,28 @@ pub fn post_shaders(library: &ShaderLibrary) -> Result<PostShaders<'_>, ShaderEr
         fullscreen: get(POST[4], Stage::Vertex, None)?,
         tonemap: get(POST[5], Stage::Pixel, Some(20))?,
     })
+}
+
+/// The GPU Scene's scatter (`Marlin.Engine.Scene.Scatter`).
+pub const SCATTER: &str = "Marlin.Engine.Scene.Scatter";
+
+/// The scatter shader from the engine's library, checked for its stage and the push constants
+/// marlin-render's GPU Scene sets (eight 32-bit words).
+pub fn scatter_shader(library: &ShaderLibrary) -> Result<ShaderModule<'_>, ShaderError> {
+    let e = library
+        .entry(SCATTER)
+        .ok_or(ShaderError::MissingEntry(SCATTER))?;
+    let mismatch = |problem| ShaderError::Mismatch {
+        entry: SCATTER,
+        problem,
+    };
+    if e.reflection.entry.stage != Stage::Compute {
+        return Err(mismatch("not a compute shader"));
+    }
+    if e.reflection.push.as_ref().map(|p| p.size) != Some(32) {
+        return Err(mismatch(
+            "its push constants are not what the GPU Scene's scatter sets",
+        ));
+    }
+    Ok(module(e))
 }

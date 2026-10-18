@@ -87,7 +87,7 @@ struct Viewer {
 
 impl Viewer {
     /// A renderer and post chain with the shaders of `library`, the engine's cooked one.
-    fn new(library: &ShaderLibrary) -> Self {
+    fn new(library: &ShaderLibrary, ids: marlin_render::SceneIds) -> Self {
         let device = hardware_device();
         let renderer = Renderer::new(
             device,
@@ -103,9 +103,14 @@ impl Viewer {
             OFFSCREEN_FORMAT,
         )
         .unwrap();
+        let scatter = marlin_render::ScatterShader::new(
+            device,
+            marlin_framework::scatter_shader(library).unwrap(),
+        )
+        .unwrap();
         let offscreen = Offscreen::new(device, WIDTH, HEIGHT).unwrap();
         Self {
-            render: RenderSide::new(renderer, post),
+            render: RenderSide::new(renderer, post, scatter, ids),
             offscreen,
             device,
         }
@@ -126,7 +131,7 @@ impl Viewer {
 fn start<'a>(boot: &'a Boot) -> (Engine<'a>, Viewer, Vec<u32>) {
     let mut engine = Engine::new(&boot.vfs).unwrap();
     let library = load_engine_shaders(&mut engine.assets, &boot.vfs, None).unwrap();
-    let mut viewer = Viewer::new(engine.assets.get(&library).unwrap());
+    let mut viewer = Viewer::new(engine.assets.get(&library).unwrap(), engine.scene_ids());
     engine.load_level(boot.level);
     wait_until(Duration::from_secs(60), "the level to load", || {
         engine.is_ready() || {

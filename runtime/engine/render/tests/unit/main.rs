@@ -2,3 +2,4 @@
 //! Run alone with `cargo test -p marlin-render --test unit`.
 
 mod asset;
+mod scene;

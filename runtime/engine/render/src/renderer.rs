@@ -3,10 +3,9 @@
 use alloc::vec::Vec;
 
 use marlin_containers::{Handle, SlotMap};
-use marlin_ecs::World;
 use marlin_math::{Mat4, Transform, Vec3};
 use marlin_render_graph::{
-    PassContext, RenderGraph, TextureDesc as GraphTextureDesc, TextureHandle,
+    Access, PassContext, RenderGraph, TextureDesc as GraphTextureDesc, TextureHandle,
 };
 use marlin_rhi::{
     Buffer, BufferBarrier, BufferDesc, BufferState, BufferUsage, BufferViewDesc, BufferViewKind,
@@ -16,6 +15,7 @@ use marlin_rhi::{
 };
 
 use crate::mesh::{MeshData, Vertex};
+use crate::scene::{Bounds, GpuScene, RenderScene, ResidentMesh};
 
 /// The view a [`Renderer`] draws from: put it on an entity with a [`Transform`]. The camera looks
 /// down its local −Z with +Y up.
@@ -40,51 +40,6 @@ impl Default for Camera {
 /// handle draws nothing, even after a later upload reuses its slot.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct MeshHandle(Handle<Mesh>);
-
-/// Draws a mesh at the entity's [`Transform`].
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub struct MeshRenderer {
-    pub mesh: MeshHandle,
-    /// Linear RGBA.
-    pub color: [f32; 4],
-}
-
-/// One mesh drawn at a transform.
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub struct SceneInstance {
-    pub mesh: MeshHandle,
-    pub transform: Transform,
-    /// Linear RGBA.
-    pub color: [f32; 4],
-}
-
-/// What a frame draws, taken out of the simulation so the two can run apart: the camera and
-/// every instance. Immutable once built.
-#[derive(Clone, PartialEq, Debug, Default)]
-pub struct Scene {
-    pub camera: Option<(Transform, Camera)>,
-    pub instances: Vec<SceneInstance>,
-}
-
-impl Scene {
-    /// The first [`Camera`] and every [`MeshRenderer`] of `world`, with their [`Transform`]s.
-    pub fn extract(world: &World) -> Self {
-        Self {
-            camera: world
-                .query_ref::<(&Transform, &Camera)>()
-                .next()
-                .map(|(t, c)| (*t, *c)),
-            instances: world
-                .query_ref::<(&Transform, &MeshRenderer)>()
-                .map(|(t, r)| SceneInstance {
-                    mesh: r.mesh,
-                    transform: *t,
-                    color: r.color,
-                })
-                .collect(),
-        }
-    }
-}
 
 /// Lighting shared by the whole scene.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -127,9 +82,9 @@ pub struct ForwardShaders<'a> {
     pub pixel: ShaderModule<'a>,
 }
 
-/// Bytes of push constants the forward pass sets: four 32-bit words (0002). Its shaders' `[Push]`
+/// Bytes of push constants the forward pass sets: six 32-bit words (0002). Its shaders' `[Push]`
 /// struct must be this size.
-pub const FORWARD_PUSH_BYTES: u32 = 16;
+pub const FORWARD_PUSH_BYTES: u32 = 24;
 
 /// What a [`Renderer::add_passes`] call draws.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -138,8 +93,6 @@ pub struct RenderStats {
     pub draws: u32,
 }
 
-/// `Instance` in the shader: model matrix and color.
-const INSTANCE_WORDS: usize = 20;
 const DEPTH_FORMAT: Format = Format::D32Float;
 
 struct Mesh {
@@ -158,12 +111,11 @@ struct Draw<'g> {
     count: u32,
 }
 
-/// Draws the meshes of a [`World`]: see the crate docs.
+/// Draws a [`RenderScene`]: see the crate docs.
 pub struct Renderer {
     /// `None` without shaders: frames are only cleared.
     pipeline: Option<GraphicsPipeline>,
     meshes: SlotMap<Mesh>,
-    pub environment: Environment,
 }
 
 impl Renderer {
@@ -187,7 +139,6 @@ impl Renderer {
         Ok(Self {
             pipeline,
             meshes: SlotMap::new(),
-            environment: Environment::default(),
         })
     }
 
@@ -281,62 +232,70 @@ impl Renderer {
         self.meshes.len()
     }
 
+    /// What the GPU Scene's mesh table needs of `mesh`, its bounds computed from `data` (the
+    /// geometry it was uploaded from). `None` if the mesh was released.
+    pub fn resident_mesh(&self, mesh: MeshHandle, data: &MeshData<'_>) -> Option<ResidentMesh> {
+        let m = self.meshes.get(mesh.0)?;
+        Some(ResidentMesh {
+            handle: mesh,
+            vertices: m.vertex_view.index(),
+            index_count: m.index_count,
+            bounds: Bounds::of(data.vertices.iter().map(|v| v.position)),
+        })
+    }
+
     /// Declares the forward pass into `g` (0007 §11.2): one raster pass that clears `target` and
-    /// a transient depth buffer and draws every instance of `scene` seen from its camera, one
-    /// instanced draw per mesh. Without a camera, or shaders, it only clears. The frame and
-    /// instance constants go through the frame's upload memory. Returns the target's new handle
-    /// and what the pass draws.
+    /// a transient depth buffer and draws every drawable instance of `scene` seen from `camera`,
+    /// one instanced draw per mesh. Transforms and colors come from the GPU Scene `gpu` (after
+    /// its scatter); the pass uploads only the frame constants and the instance rows grouped by
+    /// mesh. Without a camera, or shaders, it only clears. Returns the target's new handle and
+    /// what the pass draws.
     pub fn add_passes<'g>(
         &'g self,
         g: &mut RenderGraph<'g>,
         target: TextureHandle<'g>,
-        scene: &Scene,
+        scene: &RenderScene,
+        gpu: GpuScene<'g>,
+        camera: Option<(Transform, Camera)>,
     ) -> (TextureHandle<'g>, RenderStats) {
         let size = g.texture_desc(target);
         let (width, height) = (size.width, size.height);
-        let mut instances: Vec<(Handle<Mesh>, [f32; INSTANCE_WORDS])> = Vec::new();
-        let camera = scene.camera.filter(|_| self.pipeline.is_some());
+        let camera = camera.filter(|_| self.pipeline.is_some());
+        let mut rows: Vec<(MeshHandle, u32)> = Vec::new();
         if camera.is_some() {
-            for instance in &scene.instances {
-                let mut words = [0.0; INSTANCE_WORDS];
-                words[..16].copy_from_slice(&instance.transform.to_matrix().to_cols_array());
-                words[16..].copy_from_slice(&instance.color);
-                instances.push((instance.mesh.0, words));
-            }
-            instances.sort_unstable_by_key(|(mesh, _)| *mesh);
+            rows.extend(scene.drawable().map(|(row, mesh)| (mesh, row)));
+            rows.sort_unstable_by_key(|&(mesh, row)| (mesh.0, row));
         }
         let mut draws: Vec<Draw<'g>> = Vec::new();
+        let mut list: Vec<u32> = Vec::with_capacity(rows.len());
         let mut start = 0;
-        while start < instances.len() {
-            let handle = instances[start].0;
-            let count = instances[start..]
+        while start < rows.len() {
+            let handle = rows[start].0;
+            let count = rows[start..]
                 .iter()
                 .take_while(|(m, _)| *m == handle)
                 .count();
-            if let Some(mesh) = self.meshes.get(handle) {
+            if let Some(mesh) = self.meshes.get(handle.0) {
                 draws.push(Draw {
                     indices: &mesh.indices,
                     index_count: mesh.index_count,
                     vertices: mesh.vertex_view.index(),
-                    first: start as u32,
+                    first: list.len() as u32,
                     count: count as u32,
                 });
+                list.extend(rows[start..start + count].iter().map(|(_, r)| *r));
             }
             start += count;
         }
-        let stats = if draws.is_empty() {
-            RenderStats::default()
-        } else {
-            RenderStats {
-                instances: instances.len() as u32,
-                draws: draws.len() as u32,
-            }
+        let stats = RenderStats {
+            instances: list.len() as u32,
+            draws: draws.len() as u32,
         };
+        let env = *scene.environment();
         let constants = camera.map(|(transform, camera)| {
             let aspect = width as f32 / height.max(1) as f32;
             let view = transform.to_matrix().inverse_affine();
             let projection = Mat4::perspective_infinite_rh(camera.fov_y, aspect, camera.near);
-            let env = &self.environment;
             let light = env.light_direction.normalize_or_zero();
             let mut constants = [0.0f32; 28];
             constants[..16].copy_from_slice(&(projection * view).to_cols_array());
@@ -345,17 +304,17 @@ impl Renderer {
             constants[24..27].copy_from_slice(&env.ambient);
             constants
         });
-        let words: Vec<[f32; INSTANCE_WORDS]> = instances.into_iter().map(|(_, w)| w).collect();
         let depth = g.create_texture(
             "Depth",
             GraphTextureDesc::new_2d(width, height, DEPTH_FORMAT)
                 .with_clear(ClearValue::Depth(0.0)),
         );
-        let clear = self.environment.clear_color;
         let pipeline = self.pipeline.as_ref();
         let target = g.add_raster("Forward", |b| {
-            let target = b.color(target, LoadOp::Clear(clear), StoreOp::Store);
+            let target = b.color(target, LoadOp::Clear(env.clear_color), StoreOp::Store);
             b.depth(depth, LoadOp::Clear(0.0), StoreOp::DontCare);
+            let transforms = b.read_buffer(gpu.instance_transforms, Access::VertexRead);
+            let instances = b.read_buffer(gpu.instance_data, Access::VertexRead);
             (target, move |ctx: &mut PassContext<'_>| {
                 let (Some(pipeline), Some(constants)) = (pipeline, constants) else {
                     return;
@@ -364,11 +323,19 @@ impl Renderer {
                     return;
                 }
                 let frame = ctx.upload(&constants);
-                let instances = ctx.upload_slice(&words);
+                let list = ctx.upload_slice(&list);
+                let (transforms, instances) = (ctx.srv(transforms), ctx.srv(instances));
                 ctx.set_pipeline(pipeline);
                 for draw in &draws {
                     ctx.resident_index_buffer(draw.indices, 0, IndexFormat::U32);
-                    ctx.push_words(&[frame, instances, draw.vertices, draw.first]);
+                    ctx.push_words(&[
+                        frame,
+                        list,
+                        transforms,
+                        instances,
+                        draw.vertices,
+                        draw.first,
+                    ]);
                     ctx.draw_indexed(draw.index_count, draw.count, 0, 0, 0);
                 }
             })

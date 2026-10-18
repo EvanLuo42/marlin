@@ -1,12 +1,13 @@
 //! The forward renderer's draws, instancing, depth and mesh handles, checked pixel by pixel.
 
-use marlin_ecs::World;
 use marlin_math::{Quat, Transform, Vec3};
-use marlin_render::{Environment, MeshData, MeshRenderer, RenderStats, cube};
+use marlin_render::scene::{InstanceUpdate, MeshUpdate, flags};
+use marlin_render::{Environment, MeshData, RenderStats, cube};
 
-use crate::support::{Harness, camera};
+use crate::support::Harness;
 
 const BLACK: u32 = 0xff00_0000;
+const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
 
 /// Lit straight on with no ambient and a black background, so faces facing the camera come out
 /// in exactly their color.
@@ -26,16 +27,9 @@ fn pixel(pixels: &[u32], x: u32, y: u32) -> u32 {
 #[test]
 fn draws_a_cube_in_front_of_the_camera() {
     let mut h = Harness::new(flat_environment());
-    let mut world = World::new();
-    camera(&mut world, 3.0);
-    world.spawn((
-        Transform::IDENTITY,
-        MeshRenderer {
-            mesh: h.cube,
-            color: [1.0, 0.0, 0.0, 1.0],
-        },
-    ));
-    let (pixels, stats) = h.render(&world);
+    h.camera_at(3.0);
+    h.add(h.cube, Transform::IDENTITY, RED);
+    let (pixels, stats) = h.render();
     assert_eq!(
         stats,
         RenderStats {
@@ -50,31 +44,26 @@ fn draws_a_cube_in_front_of_the_camera() {
 #[test]
 fn instances_of_one_mesh_share_a_draw_and_depth_sorts_them() {
     let mut h = Harness::new(flat_environment());
-    let mut world = World::new();
-    camera(&mut world, 5.0);
+    h.camera_at(5.0);
     let colors = [[0.0, 1.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0]];
     for (x, color) in [-1.0, 1.0].into_iter().zip(colors) {
-        world.spawn((
+        h.add(
+            h.cube,
             Transform::from_translation(Vec3::new(x, 0.0, 0.0)),
-            MeshRenderer {
-                mesh: h.cube,
-                color,
-            },
-        ));
+            color,
+        );
     }
     // A white cube behind the left one, partly hidden by it.
-    world.spawn((
+    h.add(
+        h.cube,
         Transform {
             translation: Vec3::new(-1.0, 0.0, -2.0),
             rotation: Quat::IDENTITY,
             scale: Vec3::splat(3.0),
         },
-        MeshRenderer {
-            mesh: h.cube,
-            color: [1.0, 1.0, 1.0, 1.0],
-        },
-    ));
-    let (pixels, stats) = h.render(&world);
+        [1.0, 1.0, 1.0, 1.0],
+    );
+    let (pixels, stats) = h.render();
     assert_eq!(
         stats,
         RenderStats {
@@ -99,73 +88,102 @@ fn instances_of_one_mesh_share_a_draw_and_depth_sorts_them() {
 #[test]
 fn without_a_camera_only_clears() {
     let mut h = Harness::new(flat_environment());
-    let mut world = World::new();
-    world.spawn((
-        Transform::IDENTITY,
-        MeshRenderer {
-            mesh: h.cube,
-            color: [1.0, 0.0, 0.0, 1.0],
-        },
-    ));
-    let (pixels, stats) = h.render(&world);
+    h.add(h.cube, Transform::IDENTITY, RED);
+    let (pixels, stats) = h.render();
     assert_eq!(stats, RenderStats::default());
     assert!(pixels.iter().all(|&p| p == BLACK));
 }
 
 #[test]
-fn renders_repeatedly_into_the_same_slot() {
+fn updates_change_only_what_they_name() {
     let mut h = Harness::new(flat_environment());
-    let mut world = World::new();
-    camera(&mut world, 3.0);
-    let cube = world.spawn((
-        Transform::IDENTITY,
-        MeshRenderer {
-            mesh: h.cube,
-            color: [1.0, 0.0, 0.0, 1.0],
-        },
-    ));
+    h.camera_at(3.0);
+    let cube = h.add(h.cube, Transform::IDENTITY, RED);
+    h.render();
     for i in 0..3 {
-        let color = [0.0, 0.0, 0.0, 1.0].map(|_| 0.0);
-        let mut c = color;
+        let mut c = [0.0, 0.0, 0.0, 1.0];
         c[i] = 1.0;
-        c[3] = 1.0;
-        world.get_mut::<MeshRenderer>(cube).unwrap().color = c;
-        let (pixels, _) = h.render(&world);
+        h.set(cube, InstanceUpdate::Color(c));
+        let (pixels, _) = h.render();
         assert_eq!(pixel(&pixels, 32, 32), 0xff00_0000 | (0xff << (8 * i)));
     }
+    // A frame without updates draws the same.
+    let (pixels, _) = h.render();
+    assert_eq!(pixel(&pixels, 32, 32), 0xffff_0000);
+
+    // Moved out of view, then hidden, then back.
+    h.set(
+        cube,
+        InstanceUpdate::Transform(Transform::from_translation(Vec3::new(10.0, 0.0, 0.0))),
+    );
+    let (pixels, _) = h.render();
+    assert!(pixels.iter().all(|&p| p == BLACK), "moved away");
+    h.set(cube, InstanceUpdate::Transform(Transform::IDENTITY));
+    h.set(cube, InstanceUpdate::Flags(flags::HIDDEN));
+    let (pixels, stats) = h.render();
+    assert_eq!(stats.instances, 0, "hidden");
+    assert!(pixels.iter().all(|&p| p == BLACK));
+    h.set(cube, InstanceUpdate::Flags(0));
+    let (pixels, _) = h.render();
+    assert_eq!(pixel(&pixels, 32, 32), 0xffff_0000, "back");
+
+    // Removed: its handle is dead, and the row comes back with a new generation.
+    h.set(cube, InstanceUpdate::Remove);
+    let (pixels, stats) = h.render();
+    assert_eq!(stats, RenderStats::default());
+    assert!(pixels.iter().all(|&p| p == BLACK));
+    h.set(cube, InstanceUpdate::Color(RED));
+    let again = h.add(h.cube, Transform::IDENTITY, RED);
+    assert_eq!(again.index(), cube.index());
+    assert_ne!(again, cube);
+    let (pixels, stats) = h.render();
+    assert_eq!(stats.instances, 1);
+    assert_eq!(pixel(&pixels, 32, 32), 0xff00_00ff);
 }
 
 #[test]
-fn a_released_handle_stays_dead_after_its_slot_is_reused() {
+fn a_mesh_draws_once_resident_and_a_released_one_draws_nothing() {
     let mut h = Harness::new(flat_environment());
+    h.camera_at(3.0);
     let (vertices, indices) = cube();
-    let mesh = MeshData {
+    let data = MeshData {
         vertices: &vertices,
         indices: &indices,
     };
-    let old = h.cube;
-    // SAFETY: nothing has drawn the mesh yet.
-    unsafe { h.renderer.release_mesh(old) };
-    assert_eq!(h.renderer.mesh_count(), 0);
-    let new = h.renderer.upload_mesh(h.device, &mesh).unwrap();
-    assert_ne!(new, old);
-    assert_eq!(h.renderer.mesh_count(), 1);
+    // Referenced, not resident yet.
+    let mesh = h.scene.ids().meshes.reserve();
+    h.updates.meshes.push(mesh, MeshUpdate::Add);
+    h.add(mesh, Transform::IDENTITY, RED);
+    let (pixels, stats) = h.render();
+    assert_eq!(stats.draws, 0);
+    assert!(pixels.iter().all(|&p| p == BLACK));
 
-    let mut world = World::new();
-    camera(&mut world, 3.0);
-    let entity = world.spawn((
-        Transform::IDENTITY,
-        MeshRenderer {
-            mesh: old,
-            color: [1.0, 0.0, 0.0, 1.0],
-        },
-    ));
-    let (pixels, stats) = h.render(&world);
+    // Resident on a mesh the renderer then releases: nothing is drawn with the dead handle.
+    let old = h.renderer.upload_mesh(h.device, &data).unwrap();
+    let resident = h.resident(old, &data);
+    h.updates.meshes.push(mesh, MeshUpdate::Resident(resident));
+    let (pixels, stats) = h.render();
+    assert_eq!(stats.draws, 1);
+    assert_eq!(pixel(&pixels, 32, 32), 0xff00_00ff);
+    h.wait_idle();
+    // SAFETY: the GPU is idle.
+    unsafe { h.renderer.release_mesh(old) };
+    let new = h.renderer.upload_mesh(h.device, &data).unwrap();
+    assert_ne!(new, old);
+    let (pixels, stats) = h.render();
     assert_eq!(stats.draws, 0, "the old handle draws nothing");
     assert!(pixels.iter().all(|&p| p == BLACK));
 
-    world.get_mut::<MeshRenderer>(entity).unwrap().mesh = new;
-    let (pixels, stats) = h.render(&world);
+    // A reload: the new copy replaces it.
+    let resident = h.resident(new, &data);
+    h.updates.meshes.push(mesh, MeshUpdate::Resident(resident));
+    let (pixels, stats) = h.render();
     assert_eq!(stats.draws, 1);
     assert_eq!(pixel(&pixels, 32, 32), 0xff00_00ff);
+
+    // Removed from the scene: its instances stay but draw nothing.
+    h.updates.meshes.push(mesh, MeshUpdate::Remove);
+    let (_, stats) = h.render();
+    assert_eq!(stats.draws, 0);
+    assert_eq!(h.scene.instance_count(), 1);
 }

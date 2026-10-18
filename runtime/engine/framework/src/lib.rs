@@ -5,8 +5,9 @@
 //!   level.
 //! - [`Engine`]: the simulation side: the asset server, the world, the level and the engine's
 //!   systems. Each frame returns a [`RenderDelta`].
-//! - [`RenderSide`]: the renderer and GPU copies of meshes, fed by deltas. The two sides share no
-//!   state, so [`run`] simulates frame N+1 on a job while rendering frame N.
+//! - [`RenderSide`]: the renderer, the render scene and GPU copies of meshes, fed by deltas. The
+//!   two sides share only the scene's row allocators, so [`run`] simulates frame N+1 on a job
+//!   while rendering frame N.
 //! - [`level`]: the level asset; [`loaders`]: what each cooked type becomes at runtime.
 //! - [`Offscreen`]: rendering into a texture and reading it back.
 //! - [`shaders`]: the engine's cooked shader library, found by package name.
@@ -24,9 +25,11 @@ mod run;
 pub mod shaders;
 
 pub use boot::{Boot, BootError, ContentSettings, boot, mount, register_cvars};
-pub use delta::{MeshUpload, RenderDelta, RenderInstance, RenderSide};
+pub use delta::{MeshUpload, RenderDelta, RenderSide};
 pub use engine::{Engine, EngineError, FlyCamera, FromLevel, Spin, StaticMesh};
 pub use level::{Component, Level, LevelEntity, LevelEnvironment, TransformDesc};
 pub use offscreen::{OFFSCREEN_FORMAT, Offscreen};
 pub use run::{RunError, run};
-pub use shaders::{ShaderError, forward_shaders, load_engine_shaders, post_shaders};
+pub use shaders::{
+    ShaderError, forward_shaders, load_engine_shaders, post_shaders, scatter_shader,
+};

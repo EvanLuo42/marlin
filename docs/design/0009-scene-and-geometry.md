@@ -53,14 +53,14 @@ pub struct SceneUpdates {
 ```
 
 - extract 的 job 各自写一段更新流，最后按表合并，不需要锁。
-- 句柄在 extract 时由 `RenderScene` 预分配：分配器是无锁的，删除的回收推迟到应用阶段，所以 extract 期间不会复用正在使用的下标。
+- 句柄在 extract 时预分配，用 `RenderScene` 的分配器（`SceneIds`，extract 那边持有一份）；删除的回收推迟到应用阶段，所以 extract 期间不会复用正在使用的下标。分配新行是一次原子加，复用空闲行要拿一把 fiber 感知的锁（R1h 的实现，不是无锁的；extract 每帧分配的句柄不多，等成为瓶颈再换）。
 - 应用阶段（0008 §3.3）按表并行，每张表内部再按行区间分给多个 job。
 - 只改变换的实例走一条快路径：不做别的校验，直接记脏行。
 
 ### 1.3 和 ECS 的关系
 
 - `RenderScene` 不依赖 ECS。editor 的预览场景、资产缩略图、材质球都直接构造 `RenderScene`，不需要一个 ECS 世界。
-- ECS 那边的组件（`MeshRenderer`、`Light`、`Decal`……）和 extract 系统放在 `marlin-framework` 里，`marlin-render` 只定义更新流。
+- ECS 那边的组件（`StaticMesh`，以后的 `Light`、`Decal`……）和 extract 系统放在 `marlin-framework` 里，`marlin-render` 只定义更新流。
 
 ## 2. GPU Scene
 
@@ -317,3 +317,22 @@ cook 侧做完时（2026-10-18）定下的细节：
 - 请求一个页时把依赖一起请求，依赖没到就不用这个页；根页在网格加载时上传并钉住。
 - 遍历从层级节点 0 开始，子节点的 `max_error` 投影后不超过阈值就跳过。
 - BLAS 用 RT LOD 的 blob 构建（§7），按 section 分成几何。
+
+R1h（0008 §8）做完时（2026-10-18）定下的细节（§1、§2，以及 framework 的 extract）：
+- **范围**：这一步的表只有 `Instances`、`Meshes`、`Lights` 和 `Environment`，字段也只取前向渲染器现在用得到的（实例：网格、变换、上一帧变换、颜色、标志；网格：顶点视图、索引数、局部包围）。材质槽、自定义数据、贴花、体积、蒙皮等到用到它们的步骤再加。颜色是材质（0011，R1k）到来之前的占位。
+- **`marlin-render::scene`**：
+  - `Id<T>` 是 (下标, 代数)，`InstanceId`、`MeshId`、`LightId` 是它的别名。`IdAllocator` 的 `reserve` 可以在任何线程调用；`release` 只在 `apply` 里做，把代数加一放回空闲表。三个分配器合成 `SceneIds`（`Arc`），`RenderScene::with_ids(ids)` 用调用方给的那一份。
+  - `RenderScene::apply_all(sets)` 是一帧的应用：一帧只调用一次，可以给几组更新（framework 先给 extract 的，再给渲染侧自己产生的网格驻留）。每组里先网格、再光源、再实例，各自按流的顺序。对不是活着的行（删掉的、没加过的、代数对不上的）的更新直接忽略。
+  - 上一帧变换在 CPU 上也记一份：一行这一帧第一次 `Transform` 时把当前值存为上一帧，同一帧再改不动它；上一帧动过、这一帧没动的行，上一帧变换追上当前值，并标记为"停下"。
+  - 网格表的一行先由 `MeshUpdate::Add` 建立（被引用了，还没上 GPU），再由 `MeshUpdate::Resident(ResidentMesh)` 填上 GPU 副本（重新加载时再来一次）。不驻留的网格的实例不画。
+- **GPU Scene**（`RenderScene::add_passes(g, &ScatterShader) -> GpuScene`）：
+  - 五张表是 graph 的持久资源（`g.persistent("GpuScene.*", 场景 id, …)`，R1c），每个 `RenderScene` 有唯一的 id 作为 scope。行的布局见 `scene::gpu` 的模块文档：实例数据 8 个字、变换 24 个字（当前和上一帧各一个 3×4，行主序）、包围 4 个字（世界空间包围球）、网格 8 个字、光源 16 个字。AABB 等剔除需要时再加。
+  - 容量是至少 64 行的 2 的幂。**增长时不拷旧内容**（偏离 §2.1 第 2 条）：CPU 上有完整的表，新 buffer 拿到的是 `fresh`，scatter 把所有活着的行重写一遍，省掉一个 copy pass 和旧 buffer 的退休。
+  - scatter 每帧一个 compute pass，没有脏行就不加。每个 op 是 `uint4`（表 | 种类 << 8、行、数据起点、字数），数据和 op 都用 `ctx.upload_slice`。种类：写（新值写进行）、移位（当前变换拷到上一帧）、移位加写（先移位再写新的当前变换）。所以动了的实例只上传新的 12 个字，§2.2 的"上一帧"移位在 GPU 上做；停下的实例只发一个移位，不上传数据；静止的实例什么都不发（§2.2 说的位图就是这份"上一帧动过的行"的列表）。新行把两个变换都写成同一个值。
+  - shader 在 `content/engine/shaders/Scene/Scene.mshader`（`Marlin.Engine.Scene`）：`Scatter`，以及 `InstanceData`、`InstanceTransforms`、`Rows3x4`、`Apply` 给别的 shader 用。表在 scatter 里是 raw 视图（`ByteBuffer`），forward pass 读的是 structured 视图（`ReadOnlyBuffer<T>`），两者在 Vulkan 上都是同一种 storage buffer 描述符，所以同一个 buffer 两种读法都行；D3D12（Xbox）到时候要分开建视图。
+- **前向渲染器**：`Renderer::add_passes(g, target, &scene, gpu, camera)`。变换和颜色从 GPU Scene 读；CPU 每帧只上传帧常量和按网格分组的实例行号列表（`InstanceList`），push constant 变成 6 个字（`FORWARD_PUSH_BYTES = 24`）。环境（光和清屏色）在场景里。旧的 `Scene`、`SceneInstance`、`MeshRenderer` 删掉了，`marlin-render` 不再依赖 `marlin-ecs`。`Renderer::resident_mesh(handle, &data)` 给出网格表要的 `ResidentMesh`（包围由顶点算出）。
+- **framework 的 extract**（`Engine::frame` 里）：
+  - 按 ECS 的变化检测产生更新：`Changed<StaticMesh>` 里没见过的实体是新实例（`Add`），见过的比较网格和颜色，变了才发 `Mesh`/`Color`；`Changed<Transform>`（带 `StaticMesh`）且不是这一帧新加的实体只发 `Transform`；`removed::<StaticMesh>()` 里现在已经没有 `StaticMesh` 的实体发 `Remove`。实体到 `InstanceId` 的映射在 `Engine` 里。没有变化的帧，`SceneUpdates` 是空的。
+  - 网格按资产 UUID 对应一个 `MeshId`：关卡用到的网格在生成关卡时预约并发 `MeshUpdate::Add`，关卡不再用的发 `Remove`；游戏代码直接生成的实体用到没见过的网格时，在 extract 里同样处理。环境只在关卡（重新）生成时随更新发送。
+  - `RenderDelta` 变成 `{ frame, dt, updates, uploads, camera }`，`uploads` 按 `MeshId` 给几何。`RenderSide` 持有 `RenderScene` 和 `ScatterShader`：上传网格、产生 `Resident`，网格 `Remove` 时把 GPU 副本放进退休队列，再 `apply_all([&delta.updates, &resident])`；`add_passes` 先 scatter，再前向、后处理。`Engine::scene_ids()` 交给 `RenderSide::new`，两边共享的只有这几个分配器。
+- **测试**：CPU（`marlin-render/tests/unit/scene.rs`）：8 个线程各预约 1000 个句柄互不相同；删除在应用之后才回收、回来的代数加一、旧句柄对新行无效；对没加过的行的更新被忽略且不回收；上一帧变换（多次移动、停下）；多段流合并后按顺序应用；网格和光源的增删；包围。framework（`tests/unit/extract.rs`）：新实体、无变化的帧为空、移动只发变换、改颜色、换网格（新网格同时加入）、去掉组件、销毁实体。GPU（`tests/gpu/gpu_scene.rs`）：读回 GPU 表和 CPU 对比，包括移动、连续移动、停下后上一帧追上、同一帧多次移动、标志和光源，以及表增长后所有行都在；前向测试改为用更新驱动（改颜色、移开、隐藏、删除后行号复用、网格先引用后驻留、换 GPU 副本、网格删除）。3 张 golden 和 `sample_first_frame` 没有变。开窗口跑 `samples/basic` 10 秒，开着验证层，没有报错。

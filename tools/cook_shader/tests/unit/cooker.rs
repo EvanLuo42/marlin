@@ -432,13 +432,25 @@ fn cooking_is_deterministic() {
     assert_eq!(one.get(key).unwrap(), two.get(key).unwrap());
 }
 
-/// The engine's own package (`content/engine/shaders/`) cooks, with the forward pass in it.
+/// The engine's own package (`content/engine/shaders/`) cooks, with the forward pass, the post
+/// chain and the GPU Scene's scatter in it.
 #[test]
 fn the_engine_package_cooks() {
     let p = Project::new("engine");
     let content = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/engine");
-    for file in ["shaders/package.masset", "shaders/Forward.mshader"] {
-        p.write(file, std::fs::read(content.join(file)).unwrap());
+    // The package and every source under it.
+    let mut dirs = vec![std::path::PathBuf::from("shaders")];
+    while let Some(dir) = dirs.pop() {
+        for e in std::fs::read_dir(content.join(&dir)).unwrap() {
+            let e = e.unwrap();
+            let rel = dir.join(e.file_name());
+            if e.file_type().unwrap().is_dir() {
+                dirs.push(rel);
+            } else {
+                let file = rel.to_str().unwrap().replace('\\', "/");
+                p.write(&file, std::fs::read(e.path()).unwrap());
+            }
+        }
     }
     // As the engine's mount: only it may name packages `Marlin.…`.
     let db = p.content_as(ENGINE_MOUNT);
@@ -455,14 +467,16 @@ fn the_engine_package_cooks() {
     for (name, stage) in [
         ("Marlin.Engine.ForwardPs", Stage::Pixel),
         ("Marlin.Engine.ForwardVs", Stage::Vertex),
+        ("Marlin.Engine.Post.TonemapPs", Stage::Pixel),
+        ("Marlin.Engine.Scene.Scatter", Stage::Compute),
     ] {
         let e = lib.entry(name).unwrap_or_else(|| panic!("{name}"));
         assert_eq!(e.reflection.entry.stage, stage);
         assert_eq!(e.code[..4], SPIRV_MAGIC);
     }
-    // The forward pass's push constants: four 32-bit words (0002).
+    // The forward pass's push constants: six 32-bit words (0002).
     let vs = lib.entry("Marlin.Engine.ForwardVs").unwrap();
-    assert_eq!(vs.reflection.push.as_ref().unwrap().size, 16);
+    assert_eq!(vs.reflection.push.as_ref().unwrap().size, 24);
 }
 
 /// `Marlin` and `Marlin.…` are the engine's package names, and the engine uses no others: a

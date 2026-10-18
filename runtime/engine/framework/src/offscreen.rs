@@ -37,11 +37,10 @@ impl Offscreen {
     ) -> marlin_rhi::Result<Vec<u32>> {
         render.apply(device, delta)?;
         let (width, height) = (self.width, self.height);
-        let render = &*render;
         let ticket = self.frame.execute(device, |g, _| {
             // The clear value the target is made for (D3D12 clears fastest, and validates
             // quietly, when the clear matches the resource's).
-            let clear = render.renderer.environment.clear_color;
+            let clear = render.scene.environment().clear_color;
             let target = g.create_texture(
                 "Offscreen",
                 TextureDesc::new_2d(width, height, OFFSCREEN_FORMAT)

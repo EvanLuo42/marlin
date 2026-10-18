@@ -5,14 +5,15 @@ use alloc::vec::Vec;
 
 use marlin_asset::{AssetServer, Handle, LoadState, Uuid, Vfs};
 use marlin_containers::{HashMap, HashMapExt};
-use marlin_ecs::{Entity, World};
+use marlin_ecs::{Changed, Entity, With, World};
 use marlin_input::{InputState, Key, MouseButton};
 use marlin_io::IoQueue;
 use marlin_jobs::JobSystem;
 use marlin_math::{Quat, Transform, Vec3};
-use marlin_render::{Camera, Environment};
+use marlin_render::scene::{InstanceDesc, InstanceId, InstanceUpdate, MeshId, MeshUpdate};
+use marlin_render::{Camera, SceneIds, SceneUpdates};
 
-use crate::delta::{MeshUpload, RenderDelta, RenderInstance};
+use crate::delta::{MeshUpload, RenderDelta};
 use crate::level::{Component, Level};
 use crate::loaders::{LoadedMesh, engine_loaders};
 
@@ -51,10 +52,14 @@ pub struct Engine<'v> {
     level: Option<Handle<Level>>,
     /// The level version whose entities are in the world.
     spawned: Option<u32>,
-    /// Meshes the level uses, and the version last sent to the render side.
-    meshes: HashMap<Uuid, (Handle<LoadedMesh>, Option<u32>)>,
-    released: Vec<Uuid>,
-    environment: Environment,
+    /// Where the scene's rows come from: the render side's scene shares them.
+    ids: SceneIds,
+    /// Meshes the level uses: their scene row and the version last sent to the render side.
+    meshes: HashMap<Uuid, MeshEntry>,
+    /// Entities drawn, with what the render scene has of them.
+    instances: HashMap<Entity, InstanceEntry>,
+    /// Changes made outside extract (spawning a level), sent with the next delta.
+    updates: SceneUpdates,
     frame: u64,
     time: f32,
 }
@@ -73,9 +78,10 @@ impl<'v> Engine<'v> {
             world: World::new(),
             level: None,
             spawned: None,
+            ids: SceneIds::new(),
             meshes: HashMap::new(),
-            released: Vec::new(),
-            environment: Environment::default(),
+            instances: HashMap::new(),
+            updates: SceneUpdates::default(),
             frame: 0,
             time: 0.0,
         })
@@ -97,8 +103,8 @@ impl<'v> Engine<'v> {
     /// Whether the level and every mesh it uses have loaded and been handed to the renderer.
     pub fn is_ready(&self) -> bool {
         self.spawned.is_some()
-            && self.meshes.values().all(|(h, sent)| {
-                sent.is_some() || !matches!(self.assets.state(h), LoadState::Loading)
+            && self.meshes.values().all(|m| {
+                m.sent.is_some() || !matches!(self.assets.state(&m.handle), LoadState::Loading)
             })
     }
 
@@ -150,7 +156,7 @@ impl<'v> Engine<'v> {
         for e in old {
             self.world.despawn(e);
         }
-        self.environment = level.environment.to_render();
+        self.updates.environment = Some(level.environment.to_render());
         let mut used: Vec<Uuid> = Vec::new();
         for desc in &level.entities {
             let transform = desc.transform.to_transform();
@@ -217,13 +223,23 @@ impl<'v> Engine<'v> {
             .filter(|m| used.binary_search(m).is_err())
             .collect();
         for m in gone {
-            self.meshes.remove(&m);
-            self.released.push(m);
+            if let Some(entry) = self.meshes.remove(&m) {
+                self.updates.meshes.push(entry.id, MeshUpdate::Remove);
+            }
         }
         for m in used {
             if !self.meshes.contains_key(&m) {
+                let id = self.ids.meshes.reserve();
+                self.updates.meshes.push(id, MeshUpdate::Add);
                 let handle = self.assets.load(m);
-                self.meshes.insert(m, (handle, None));
+                self.meshes.insert(
+                    m,
+                    MeshEntry {
+                        handle,
+                        id,
+                        sent: None,
+                    },
+                );
             }
         }
     }
@@ -259,42 +275,150 @@ impl<'v> Engine<'v> {
         }
     }
 
+    /// The render delta: changes since the last one (0009 §1.2). Instances are entities with a
+    /// [`Transform`] and a [`StaticMesh`]; only those added, changed or removed since the last
+    /// [`World::clear_trackers`] produce updates, and a moved entity sends just its transform.
     fn extract(&mut self) -> RenderDelta {
+        let mut updates = core::mem::take(&mut self.updates);
         let mut uploads = Vec::new();
-        for (&mesh, (handle, sent)) in &mut self.meshes {
-            if let Some(loaded) = self.assets.get(handle) {
-                let version = self.assets.version(handle);
-                if *sent != Some(version) {
+        for entry in self.meshes.values_mut() {
+            if let Some(loaded) = self.assets.get(&entry.handle) {
+                let version = self.assets.version(&entry.handle);
+                if entry.sent != Some(version) {
                     uploads.push(MeshUpload {
-                        mesh,
+                        mesh: entry.id,
                         version,
                         geometry: loaded.0.clone(),
                     });
-                    *sent = Some(version);
+                    entry.sent = Some(version);
                 }
             }
         }
-        uploads.sort_unstable_by_key(|u| u.mesh);
+        uploads.sort_unstable_by_key(|u| u.mesh.index());
+
+        // Entities that lost their mesh, or are gone.
+        let world = &self.world;
+        let gone: Vec<Entity> = world
+            .removed::<StaticMesh>()
+            .filter(|&e| !world.has::<StaticMesh>(e))
+            .collect();
+        for e in gone {
+            if let Some(entry) = self.instances.remove(&e) {
+                updates.instances.push(entry.id, InstanceUpdate::Remove);
+            }
+        }
+        // New entities, and changed meshes or colors.
+        let frame = self.frame;
+        for (e, transform, m) in self
+            .world
+            .query_ref_filtered::<(Entity, &Transform, &StaticMesh), Changed<StaticMesh>>()
+        {
+            // A mesh the level did not list (game code spawned it): load it now.
+            let mesh = match self.meshes.get(&m.mesh) {
+                Some(entry) => entry.id,
+                None => {
+                    let id = self.ids.meshes.reserve();
+                    updates.meshes.push(id, MeshUpdate::Add);
+                    let handle = self.assets.load(m.mesh);
+                    self.meshes.insert(
+                        m.mesh,
+                        MeshEntry {
+                            handle,
+                            id,
+                            sent: None,
+                        },
+                    );
+                    id
+                }
+            };
+            match self.instances.get_mut(&e) {
+                None => {
+                    let id = self.ids.instances.reserve();
+                    updates.instances.push(
+                        id,
+                        InstanceUpdate::Add(InstanceDesc {
+                            mesh,
+                            transform: *transform,
+                            color: m.color,
+                            flags: marlin_render::scene::flags::SHADOW,
+                        }),
+                    );
+                    self.instances.insert(
+                        e,
+                        InstanceEntry {
+                            id,
+                            mesh,
+                            color: m.color,
+                            added: frame,
+                        },
+                    );
+                }
+                Some(entry) => {
+                    if entry.mesh != mesh {
+                        entry.mesh = mesh;
+                        updates.instances.push(entry.id, InstanceUpdate::Mesh(mesh));
+                    }
+                    if entry.color != m.color {
+                        entry.color = m.color;
+                        updates
+                            .instances
+                            .push(entry.id, InstanceUpdate::Color(m.color));
+                    }
+                }
+            }
+        }
+        // Moved entities (new ones were added where they are).
+        for (e, transform) in self
+            .world
+            .query_ref_filtered::<(Entity, &Transform), (Changed<Transform>, With<StaticMesh>)>()
+        {
+            if let Some(entry) = self.instances.get(&e)
+                && entry.added != frame
+            {
+                updates
+                    .instances
+                    .push(entry.id, InstanceUpdate::Transform(*transform));
+            }
+        }
         RenderDelta {
             frame: self.frame,
             dt: 0.0,
+            updates,
             uploads,
-            releases: core::mem::take(&mut self.released),
             camera: self
                 .world
                 .query_ref::<(&Transform, &Camera)>()
                 .next()
                 .map(|(t, c)| (*t, *c)),
-            environment: self.environment,
-            instances: self
-                .world
-                .query_ref::<(&Transform, &StaticMesh)>()
-                .map(|(t, m)| RenderInstance {
-                    mesh: m.mesh,
-                    transform: *t,
-                    color: m.color,
-                })
-                .collect(),
         }
     }
+
+    /// The allocators the render scene must take its rows from: give them to
+    /// [`RenderSide::new`](crate::RenderSide::new).
+    pub fn scene_ids(&self) -> SceneIds {
+        self.ids.clone()
+    }
+
+    /// Instances the render scene has, as of the last delta.
+    pub fn instance_count(&self) -> usize {
+        self.instances.len()
+    }
+}
+
+/// A mesh the level uses.
+struct MeshEntry {
+    handle: Handle<LoadedMesh>,
+    /// Its row in the render scene.
+    id: MeshId,
+    /// The version last sent to the render side.
+    sent: Option<u32>,
+}
+
+/// What the render scene has of a drawn entity.
+struct InstanceEntry {
+    id: InstanceId,
+    mesh: MeshId,
+    color: [f32; 4],
+    /// The frame it was added in.
+    added: u64,
 }

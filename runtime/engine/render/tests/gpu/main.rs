@@ -8,4 +8,5 @@
 mod support;
 
 mod forward;
+mod gpu_scene;
 mod post;

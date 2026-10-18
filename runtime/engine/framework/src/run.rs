@@ -11,7 +11,7 @@ use marlin_app::{App, Event, Surface, WindowDesc};
 use marlin_diag::{FixedBuf, info};
 use marlin_input::{GamepadButton, Input, Key};
 use marlin_jobs::{Config, JobSystem};
-use marlin_render::{HDR_FORMAT, PostProcess, Renderer, RendererDesc};
+use marlin_render::{HDR_FORMAT, PostProcess, Renderer, RendererDesc, ScatterShader};
 use marlin_render_graph::{FrameContext, FrameContextDesc, GpuTimeline};
 use marlin_rhi::{
     DeviceDesc, Instance, InstanceDesc, PresentMode, PresentStatus, SurfaceHandle, Swapchain,
@@ -22,7 +22,9 @@ use marlin_time::Instant;
 use crate::boot::{Boot, R_VSYNC, WINDOW_HEIGHT, WINDOW_WIDTH};
 use crate::delta::{RenderDelta, RenderSide};
 use crate::engine::{Engine, EngineError};
-use crate::shaders::{ShaderError, forward_shaders, load_engine_shaders, post_shaders};
+use crate::shaders::{
+    ShaderError, forward_shaders, load_engine_shaders, post_shaders, scatter_shader,
+};
 
 #[derive(Debug, marlin_error::Error)]
 pub enum RunError {
@@ -100,7 +102,8 @@ pub fn run(boot: &Boot, title: &str) -> Result<(), RunError> {
         },
     )?;
     let post = PostProcess::new(&device, &post_shaders(shaders)?, swapchain.format())?;
-    let mut render = RenderSide::new(renderer, post);
+    let scatter = ScatterShader::new(&device, scatter_shader(shaders)?)?;
+    let mut render = RenderSide::new(renderer, post, scatter, engine.scene_ids());
     engine.load_level(boot.level);
 
     let mut pending: Option<RenderDelta> = None;
@@ -220,7 +223,6 @@ fn render_frame(
     render.apply(device, delta)?;
     let image = swapchain.acquire(None)?;
     let texture = swapchain.texture(image);
-    let render = &*render;
     // The swapchain image is imported like any texture: the graph remembers it was presented.
     frames.execute_on(device, Some(jobs), |g, _| {
         let target = g.import_texture("Swapchain", texture);

@@ -1,13 +1,14 @@
 //! The engine's shaders from mounted content: found by package name, checked against what the
-//! forward pass uses.
+//! forward pass and the GPU Scene use.
 
 use marlin_asset::cooked::write::{UnitObject, unit};
 use marlin_asset::cooked::{Encoding, platform_id, unit_id};
 use marlin_asset::{AssetServer, MemorySource, Uuid, Vfs};
 use marlin_framework::loaders::engine_loaders;
-use marlin_framework::shaders::{ENGINE_SHADERS, FORWARD_PS, FORWARD_VS};
-use marlin_framework::{ShaderError, forward_shaders, load_engine_shaders};
+use marlin_framework::shaders::{ENGINE_SHADERS, FORWARD_PS, FORWARD_VS, SCATTER};
+use marlin_framework::{ShaderError, forward_shaders, load_engine_shaders, scatter_shader};
 use marlin_reflect::type_info;
+use marlin_render::FORWARD_PUSH_BYTES;
 use marlin_shader::asset::{LibraryEntry, ShaderLibrary};
 use marlin_shader::reflect::{
     EntryInfo, ShaderReflection, Stage, StageBinding, StageVariable, StructLayout,
@@ -75,8 +76,8 @@ fn library(entries: Vec<LibraryEntry>) -> ShaderLibrary {
 
 fn forward() -> ShaderLibrary {
     library(vec![
-        entry(FORWARD_PS, Stage::Pixel, 16),
-        entry(FORWARD_VS, Stage::Vertex, 16),
+        entry(FORWARD_PS, Stage::Pixel, FORWARD_PUSH_BYTES),
+        entry(FORWARD_VS, Stage::Vertex, FORWARD_PUSH_BYTES),
     ])
 }
 
@@ -131,14 +132,14 @@ fn content_without_the_package_says_so() {
 
 #[test]
 fn entries_must_be_what_the_forward_pass_uses() {
-    let missing = library(vec![entry(FORWARD_VS, Stage::Vertex, 16)]);
+    let missing = library(vec![entry(FORWARD_VS, Stage::Vertex, FORWARD_PUSH_BYTES)]);
     assert!(matches!(
         forward_shaders(&missing),
         Err(ShaderError::MissingEntry(FORWARD_PS))
     ));
     let wrong_stage = library(vec![
-        entry(FORWARD_PS, Stage::Pixel, 16),
-        entry(FORWARD_VS, Stage::Pixel, 16),
+        entry(FORWARD_PS, Stage::Pixel, FORWARD_PUSH_BYTES),
+        entry(FORWARD_VS, Stage::Pixel, FORWARD_PUSH_BYTES),
     ]);
     assert!(matches!(
         forward_shaders(&wrong_stage),
@@ -149,7 +150,7 @@ fn entries_must_be_what_the_forward_pass_uses() {
     ));
     let wrong_push = library(vec![
         entry(FORWARD_PS, Stage::Pixel, 12),
-        entry(FORWARD_VS, Stage::Vertex, 16),
+        entry(FORWARD_VS, Stage::Vertex, FORWARD_PUSH_BYTES),
     ]);
     let e = forward_shaders(&wrong_push).unwrap_err();
     assert!(e.to_string().contains("push constants"), "{e}");
@@ -189,4 +190,21 @@ fn the_pixel_stage_must_read_what_the_vertex_stage_writes() {
     });
     let e = forward_shaders(&two_targets).unwrap_err();
     assert!(e.to_string().contains("render target 0"), "{e}");
+}
+
+#[test]
+fn the_scatter_is_a_compute_shader_with_the_gpu_scenes_push() {
+    assert!(matches!(
+        scatter_shader(&forward()),
+        Err(ShaderError::MissingEntry(SCATTER))
+    ));
+    let ok = library(vec![entry(SCATTER, Stage::Compute, 32)]);
+    assert!(scatter_shader(&ok).is_ok());
+    let wrong_push = library(vec![entry(SCATTER, Stage::Compute, 28)]);
+    assert!(matches!(
+        scatter_shader(&wrong_push),
+        Err(ShaderError::Mismatch { entry: SCATTER, .. })
+    ));
+    let wrong_stage = library(vec![entry(SCATTER, Stage::Pixel, 32)]);
+    assert!(scatter_shader(&wrong_stage).is_err());
 }

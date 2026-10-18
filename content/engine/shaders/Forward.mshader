@@ -1,15 +1,18 @@
 namespace Marlin.Engine;
 
 // The renderer's forward opaque pass (`Marlin.Engine.ForwardVs` / `ForwardPs`): vertex pulling,
-// per-instance transforms and colors, one directional light plus ambient. `ForwardArgs` is
-// what marlin-render's forward pass pushes (docs/design/0002-shader-interface.md).
+// per-instance transforms and colors from the GPU Scene (`Marlin.Engine.Scene`), one directional
+// light plus ambient. `ForwardArgs` is what marlin-render's forward pass pushes
+// (docs/design/0002-shader-interface.md).
 
 public struct ForwardArgs
 {
     public Uniform<Frame> Frame;
-    public ReadOnlyBuffer<Instance> Instances;
+    /// GPU Scene instance rows, grouped by mesh: this draw's start at `BaseInstance`.
+    public ReadOnlyBuffer<uint> InstanceList;
+    public ReadOnlyBuffer<Marlin.Engine.Scene.InstanceTransforms> Transforms;
+    public ReadOnlyBuffer<Marlin.Engine.Scene.InstanceData> Instances;
     public ReadOnlyBuffer<Vertex> Vertices;
-    /// The first instance of this draw in `Instances`.
     public uint BaseInstance;
 }
 
@@ -23,13 +26,6 @@ public struct Frame
     public float4 LightColor;
     /// rgb: linear radiance.
     public float4 Ambient;
-}
-
-public struct Instance
-{
-    public float4x4 Model;
-    /// Linear RGBA.
-    public float4 Color;
 }
 
 public struct Vertex
@@ -49,15 +45,16 @@ public struct ForwardVertex
 public ForwardVertex ForwardVs(
     [VertexId] uint vertexId, [InstanceId] uint instanceId, [Push] in ForwardArgs a)
 {
-    Instance instance = a.Instances[a.BaseInstance + instanceId];
+    uint row = a.InstanceList[a.BaseInstance + instanceId];
+    Marlin.Engine.Scene.InstanceTransforms t = a.Transforms[row];
     Vertex vertex = a.Vertices[vertexId];
-    float4 world = instance.Model * float4(vertex.Position, 1);
+    float4 world = float4(Marlin.Engine.Scene.Apply(t.Current, float4(vertex.Position, 1)), 1);
     return ForwardVertex
     {
         Pos = a.Frame.Value.ViewProjection * world,
         // Exact for rotation and uniform scale; non-uniform scale needs the inverse transpose.
-        Normal = (instance.Model * float4(vertex.Normal, 0)).xyz,
-        Color = instance.Color,
+        Normal = Marlin.Engine.Scene.Apply(t.Current, float4(vertex.Normal, 0)),
+        Color = a.Instances[row].Color,
     };
 }
 

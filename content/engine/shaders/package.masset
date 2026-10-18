@@ -7,5 +7,9 @@ ShaderPackage
 {
     !Uuid = "01a14e23-41a7-7240-a3d8-65abdeb55b0e"
     !Name = "Marlin.Engine"
-    Sources = [`source:shaders/Forward.mshader`, `source:shaders/Post/Post.mshader`]
+    Sources = [
+        `source:shaders/Forward.mshader`,
+        `source:shaders/Post/Post.mshader`,
+        `source:shaders/Scene/Scene.mshader`,
+    ]
 }
