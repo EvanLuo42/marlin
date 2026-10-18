@@ -1,0 +1,149 @@
+namespace Test;
+
+// Structs nested in laid-out memory (buffers and uniforms), read member by member, piece by
+// piece and whole, and written back. The backend flattens nested struct members (0016 §4.2).
+
+public struct Pair
+{
+    public uint4 A;
+    public float4 B;
+}
+
+public struct PadPair
+{
+    public uint4 P;
+    public Pair S;
+}
+
+/// 40 words in scalar layout: `Y` at byte 4, `S` at 16, `Inner` at 48, `Pairs` at 96. Also a
+/// valid uniform.
+public struct Deep
+{
+    public uint X;
+    public uint3 Y;
+    public Pair S;
+    public PadPair Inner;
+    public Pair[2] Pairs;
+}
+
+public struct LayoutArgs
+{
+    public ReadOnlyBuffer<Deep> In;
+    public Uniform<Deep> U;
+    /// Eight runs of 40 words, each a `Deep`'s words in order.
+    public Buffer<uint> Out;
+    /// Elements 0 to 2 are written as copies of `In[1]`.
+    public Buffer<Deep> Rw;
+    /// 1, for indices the compiler cannot see.
+    public uint One;
+}
+
+/// `d`'s words in memory order (`B` converted).
+public uint[40] Words(Deep d) =>
+    [
+        d.X, d.Y.x, d.Y.y, d.Y.z,
+        d.S.A.x, d.S.A.y, d.S.A.z, d.S.A.w,
+        (uint)d.S.B.x, (uint)d.S.B.y, (uint)d.S.B.z, (uint)d.S.B.w,
+        d.Inner.P.x, d.Inner.P.y, d.Inner.P.z, d.Inner.P.w,
+        d.Inner.S.A.x, d.Inner.S.A.y, d.Inner.S.A.z, d.Inner.S.A.w,
+        (uint)d.Inner.S.B.x, (uint)d.Inner.S.B.y, (uint)d.Inner.S.B.z, (uint)d.Inner.S.B.w,
+        d.Pairs[0].A.x, d.Pairs[0].A.y, d.Pairs[0].A.z, d.Pairs[0].A.w,
+        (uint)d.Pairs[0].B.x, (uint)d.Pairs[0].B.y, (uint)d.Pairs[0].B.z, (uint)d.Pairs[0].B.w,
+        d.Pairs[1].A.x, d.Pairs[1].A.y, d.Pairs[1].A.z, d.Pairs[1].A.w,
+        (uint)d.Pairs[1].B.x, (uint)d.Pairs[1].B.y, (uint)d.Pairs[1].B.z, (uint)d.Pairs[1].B.w
+    ];
+
+public void Put(Buffer<uint> o, uint run, uint[40] w)
+{
+    for (uint i = 0; i < 40; i++)
+        o[run * 40 + i] = w[i];
+}
+
+[Compute(1, 1, 1)]
+public void NestedLayout([Push] in LayoutArgs a)
+{
+    // Leaf by leaf through pointers.
+    Put(a.Out, 0, [
+        a.In[1].X, a.In[1].Y.x, a.In[1].Y.y, a.In[1].Y.z,
+        a.In[1].S.A.x, a.In[1].S.A.y, a.In[1].S.A.z, a.In[1].S.A.w,
+        (uint)a.In[1].S.B.x, (uint)a.In[1].S.B.y, (uint)a.In[1].S.B.z, (uint)a.In[1].S.B.w,
+        a.In[1].Inner.P.x, a.In[1].Inner.P.y, a.In[1].Inner.P.z, a.In[1].Inner.P.w,
+        a.In[1].Inner.S.A.x, a.In[1].Inner.S.A.y, a.In[1].Inner.S.A.z, a.In[1].Inner.S.A.w,
+        (uint)a.In[1].Inner.S.B.x, (uint)a.In[1].Inner.S.B.y,
+        (uint)a.In[1].Inner.S.B.z, (uint)a.In[1].Inner.S.B.w,
+        a.In[1].Pairs[0].A.x, a.In[1].Pairs[0].A.y, a.In[1].Pairs[0].A.z, a.In[1].Pairs[0].A.w,
+        (uint)a.In[1].Pairs[0].B.x, (uint)a.In[1].Pairs[0].B.y,
+        (uint)a.In[1].Pairs[0].B.z, (uint)a.In[1].Pairs[0].B.w,
+        a.In[1].Pairs[1].A.x, a.In[1].Pairs[1].A.y, a.In[1].Pairs[1].A.z, a.In[1].Pairs[1].A.w,
+        (uint)a.In[1].Pairs[a.One].B.x, (uint)a.In[1].Pairs[a.One].B.y,
+        (uint)a.In[1].Pairs[a.One].B.z, (uint)a.In[1].Pairs[a.One].B.w
+    ]);
+    Put(a.Out, 1, [
+        a.U.Value.X, a.U.Value.Y.x, a.U.Value.Y.y, a.U.Value.Y.z,
+        a.U.Value.S.A.x, a.U.Value.S.A.y, a.U.Value.S.A.z, a.U.Value.S.A.w,
+        (uint)a.U.Value.S.B.x, (uint)a.U.Value.S.B.y, (uint)a.U.Value.S.B.z, (uint)a.U.Value.S.B.w,
+        a.U.Value.Inner.P.x, a.U.Value.Inner.P.y, a.U.Value.Inner.P.z, a.U.Value.Inner.P.w,
+        a.U.Value.Inner.S.A.x, a.U.Value.Inner.S.A.y, a.U.Value.Inner.S.A.z, a.U.Value.Inner.S.A.w,
+        (uint)a.U.Value.Inner.S.B.x, (uint)a.U.Value.Inner.S.B.y,
+        (uint)a.U.Value.Inner.S.B.z, (uint)a.U.Value.Inner.S.B.w,
+        a.U.Value.Pairs[0].A.x, a.U.Value.Pairs[0].A.y,
+        a.U.Value.Pairs[0].A.z, a.U.Value.Pairs[0].A.w,
+        (uint)a.U.Value.Pairs[0].B.x, (uint)a.U.Value.Pairs[0].B.y,
+        (uint)a.U.Value.Pairs[0].B.z, (uint)a.U.Value.Pairs[0].B.w,
+        a.U.Value.Pairs[1].A.x, a.U.Value.Pairs[1].A.y,
+        a.U.Value.Pairs[1].A.z, a.U.Value.Pairs[1].A.w,
+        (uint)a.U.Value.Pairs[1].B.x, (uint)a.U.Value.Pairs[1].B.y,
+        (uint)a.U.Value.Pairs[1].B.z, (uint)a.U.Value.Pairs[1].B.w
+    ]);
+    // Whole.
+    Put(a.Out, 2, Words(a.In[1]));
+    Put(a.Out, 3, Words(a.U.Value));
+    // Nested structs and arrays of them whole.
+    Put(a.Out, 4, Words(Deep
+    {
+        X = a.In[1].X,
+        Y = a.In[1].Y,
+        S = a.In[1].S,
+        Inner = a.In[1].Inner,
+        Pairs = a.In[1].Pairs,
+    }));
+    Put(a.Out, 5, Words(Deep
+    {
+        X = a.U.Value.X,
+        Y = a.U.Value.Y,
+        S = a.U.Value.S,
+        Inner = PadPair { P = a.U.Value.Inner.P, S = a.U.Value.Inner.S },
+        Pairs = [a.U.Value.Pairs[a.One - 1], a.U.Value.Pairs[a.One]],
+    }));
+    PadPair inner = a.In[1].Inner;
+    Pair pair = a.In[1].Pairs[a.One];
+    Put(a.Out, 6, [
+        a.In[1].X, a.In[1].Y.x, a.In[1].Y.y, a.In[1].Y.z,
+        a.In[1].S.A.x, a.In[1].S.A.y, a.In[1].S.A.z, a.In[1].S.A.w,
+        (uint)a.In[1].S.B.x, (uint)a.In[1].S.B.y, (uint)a.In[1].S.B.z, (uint)a.In[1].S.B.w,
+        inner.P.x, inner.P.y, inner.P.z, inner.P.w,
+        inner.S.A.x, inner.S.A.y, inner.S.A.z, inner.S.A.w,
+        (uint)inner.S.B.x, (uint)inner.S.B.y, (uint)inner.S.B.z, (uint)inner.S.B.w,
+        a.In[1].Pairs[0].A.x, a.In[1].Pairs[0].A.y, a.In[1].Pairs[0].A.z, a.In[1].Pairs[0].A.w,
+        (uint)a.In[1].Pairs[0].B.x, (uint)a.In[1].Pairs[0].B.y,
+        (uint)a.In[1].Pairs[0].B.z, (uint)a.In[1].Pairs[0].B.w,
+        pair.A.x, pair.A.y, pair.A.z, pair.A.w,
+        (uint)pair.B.x, (uint)pair.B.y, (uint)pair.B.z, (uint)pair.B.w
+    ]);
+    // Stores: whole, by member, by the members of nested structs.
+    a.Rw[0] = a.In[1];
+    a.Rw[1].X = a.In[1].X;
+    a.Rw[1].S = a.In[1].S;
+    a.Rw[1].Y = a.In[1].Y;
+    a.Rw[1].Inner = a.In[1].Inner;
+    a.Rw[1].Pairs = a.In[1].Pairs;
+    a.Rw[2].X = a.In[1].X;
+    a.Rw[2].S.A = a.In[1].S.A;
+    a.Rw[2].S.B = a.In[1].S.B;
+    a.Rw[2].Y = a.In[1].Y;
+    a.Rw[2].Inner.P = a.In[1].Inner.P;
+    a.Rw[2].Inner.S = a.In[1].Inner.S;
+    a.Rw[2].Pairs[0] = a.In[1].Pairs[0];
+    a.Rw[2].Pairs[a.One] = pair;
+    Put(a.Out, 7, Words(a.Rw[1]));
+}

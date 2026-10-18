@@ -117,7 +117,9 @@ adapter：`AdapterPreference::HighPerformance` 选独显优先、然后显存最
 
 buffer 成员的 offset 由 shader 自己声明（SPIR-V 的 `Offset` 装饰），RHI 不规定布局，只打开 `scalarBlockLayout`，让任意自然对齐的 offset 都合法。布局规则归自研 shader 编译器定（它产出的 offset 要和手写的 Rust 结构体一致，用反射检查），见 §11。Marlin shader 是标量布局：紧密排列、按标量自然对齐，和 `#[repr(C)]` 的结构体一致。
 
-**已知的驱动问题**（2026-10-18，RTX 5060，经 descriptor heap 的 buffer 指针）：buffer 元素类型里**类型是 struct 的成员**，它的 `Offset` 装饰被忽略，读出来都在偏移 0；向量、标量、数组成员和内层 struct 自己的成员 offset 都正确。SPIR-V 是合法的（验证层带 spirv-val 也不报错），把多段 `OpAccessChain` 合成一段也没有用。所以引擎 shader 里给 buffer 用的类型只用向量、标量和数组做成员（例如 `InstanceTransforms` 存 6 行 `float4`，再用属性拼出 `Rows3x4`）。根治的办法是让编译器在布局类型里把嵌套 struct 展开成平的成员，留到需要时再做（0011 R1k 的记录）。
+**已知的驱动问题**（2026-10-18，RTX 5060，经 descriptor heap 的 buffer 指针，storage buffer 和 uniform 都有）：布局类型里**类型是 struct 或 struct 数组的成员**，它的 `Offset` 装饰被忽略，读出来都在偏移 0；向量、标量、元素不是 struct 的数组，以及内层 struct 自己的成员 offset、数组步长都正确。SPIR-V 是合法的（验证层带 spirv-val 也不报错），把多段 `OpAccessChain` 合成一段也没有用。
+
+编译器绕开了它（2026-10-18，0005 §4.4 阶段 6）：SPIR-V 后端在布局类型里把嵌套 struct 展开成外层的成员，struct 数组成员写成 32 位字数组、按字下标读写，所以布局类型里不再有这两种成员。shader 里照常写嵌套 struct（`InstanceTransforms` 恢复成两个 `Rows3x4` 字段）。回归测试是 marlin-rhi 的 GPU 测试 `shader_layout`（`Test.NestedLayout`）：从 buffer 和 uniform 逐叶子、逐成员、整体读嵌套 struct 和 struct 数组（含动态下标），再整体、逐成员写回。驱动修好之后可以去掉这层处理，那时先让这个测试在去掉之后通过。
 
 ### 4.3 push constants
 

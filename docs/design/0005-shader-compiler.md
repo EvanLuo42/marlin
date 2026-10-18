@@ -240,6 +240,11 @@ DXC **故意关掉**了以下几项：
 **阶段 6：后端**
 
 - 后端自己的 lower 和写出（DXIL 元数据、SPIR-V 装饰等），然后由后端做验证（§4.6）。
+- SPIR-V 的布局类型（2026-10-18）：API 布局的内存（storage buffer、uniform、push constant）里，struct 和数组有一份带 `Offset`/`ArrayStride` 的布局类型，别处用不带装饰的普通类型，整体读写用 `OpCopyLogical` 转换。NVIDIA 驱动经 descriptor heap 的 buffer 指针读的时候，会忽略类型是 struct 或 struct 数组的成员的 `Offset`（0016 §4.2），所以布局类型里的 struct 不含这两种成员，写出器这样处理：
+  - **嵌套 struct 展开**：内层 struct 的成员直接成为外层 struct 的成员，各自带算好的偏移，名字是 `Now.R0` 这样的路径。字段到成员的对应由 `Writer::flat_start` 算。指向嵌套 struct 的指针没有对应的 SPIR-V 类型，函数体里记成"外层 struct 的指针 + 起始成员"（`body.rs` 的 `Place::Flat`），继续往下 access 时换算成平的成员下标；整体读写逐成员 load/store，再用 `OpCompositeConstruct`/`OpCompositeExtract` 拼回或拆开。
+  - **struct 数组成员按字存**：成员如果是 struct 的数组（可以多维），写成同样大小的 32 位字数组（`ArrayStride` 4），因为下标可以是动态的，没法展开。里面的位置记成"字数组指针 + 字下标"（`Place::Words`），下标按 scalar 布局的偏移和步长计算；读写按叶子一个字一个字地做，float 用 `OpBitcast`，64 位是两个字，bool 是 0/1 的字。这种成员里的原子操作只支持 32 位整数，16 位成员还不支持（会报错）。
+  - 其余成员（标量、向量、矩阵、元素不是 struct 的数组）照旧。整体读写一个含这些成员的布局值时，逐成员转换，不再用 `OpCopyLogical`。
+  - buffer 的运行时数组、uniform 和 push 的 Block 里，被包着的 struct 在偏移 0，不受影响。
 
 ### 4.5 不做的
 

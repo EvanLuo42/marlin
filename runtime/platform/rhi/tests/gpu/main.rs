@@ -16,6 +16,7 @@ mod raster;
 mod raytracing;
 mod resources;
 mod services;
+mod shader_layout;
 mod shader_output;
 mod sparse;
 mod textures;

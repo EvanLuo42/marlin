@@ -78,6 +78,15 @@ fn visibility_buffer_operations_become_spirv() {
     }
 }
 
+/// Nested structs and arrays of structs in laid-out memory: flattened, and words (0016 §4.2).
+#[test]
+fn nested_structs_are_flattened() {
+    let words = check("nested");
+    let problems = validate(&words);
+    assert!(problems.is_empty(), "{problems:#?}");
+    external_check(&words, "nested");
+}
+
 #[test]
 fn random_programs_become_spirv() {
     use marlin_shaderc_opt::{Options, Profile, pipeline};

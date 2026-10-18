@@ -5,6 +5,12 @@
 //! buffers) needs `Offset`, `ArrayStride` and `MatrixStride` (scalar layout, 0004 §16); other
 //! memory and values must not carry them in Vulkan. So a struct or array has a plain id and a
 //! laid-out id, and loads and stores of aggregates convert with `OpCopyLogical`.
+//!
+//! Laid-out structs hold no struct members (0016 §4.2): NVIDIA's driver reads a struct-typed
+//! member, or an array of structs, at offset 0 through the heap's buffer pointers. A nested
+//! struct's members become the outer struct's, each with its own offset; a member that is an
+//! array holding structs becomes an array of 32-bit words. [`Writer::flat_start`] maps fields
+//! to members, and the function body reaches into both by hand (`body.rs`, `Place`).
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -67,6 +73,17 @@ pub(crate) fn storage_class(space: Space) -> R<u32> {
 /// Whether the API lays out memory of this storage class (so its types carry offsets).
 pub(crate) fn laid_out(class: u32) -> bool {
     matches!(class, sc::StorageBuffer | sc::Uniform | sc::PushConstant)
+}
+
+/// How a field is laid out in a laid-out struct (see the module docs).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Member {
+    /// A struct: its members are the outer struct's.
+    Nested,
+    /// An array holding structs: one member of 32-bit words.
+    Words,
+    /// Anything else: one member of its laid-out type.
+    Plain,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -333,11 +350,9 @@ impl<'m> Writer<'m> {
                 let et = self.ty(e, laid)?;
                 let len = self.uint(n);
                 if laid {
-                    let id = self.once("laid", op::TypeArray, vec![et, len]);
                     let (size, align) = self.layout(e)?;
                     let stride = size.div_ceil(align) * align;
-                    self.decorate(id, decoration::ArrayStride, &[stride as u32]);
-                    id
+                    self.laid_array(et, len, stride as u32)
                 } else {
                     self.once("", op::TypeArray, vec![et, len])
                 }
@@ -370,34 +385,157 @@ impl<'m> Writer<'m> {
     }
 
     fn struct_ty(&mut self, t: Type, s: StructId, laid: bool) -> R<u32> {
-        let fields = self.m.structs[s].fields.clone();
-        let mut members = Vec::new();
-        for (_, f) in &fields {
-            members.push(self.ty(*f, laid)?);
-        }
         // Each IR struct is its own SPIR-V struct (members may be decorated differently).
+        let name = self.m.structs[s].name.clone();
+        let mut members = Vec::new();
+        if laid {
+            self.flat_members(t, 0, "", &mut members)?;
+        } else {
+            for (field, f) in self.m.structs[s].fields.clone() {
+                members.push((self.ty(f, false)?, 0, field.into(), None));
+            }
+        }
         let id = self.id();
         let mut ops = vec![id];
-        ops.extend(&members);
+        ops.extend(members.iter().map(|m| m.0));
         self.globals.extend(inst(op::TypeStruct, &ops));
-        let name = self.m.structs[s].name.clone();
         self.name(id, &name);
-        for (i, (field, _)) in fields.iter().enumerate() {
+        for (i, (_, offset, field, matrix)) in members.into_iter().enumerate() {
             let mut ops = vec![id, i as u32];
-            ops.extend(string(field));
+            ops.extend(string(&field));
             self.names.extend(inst(op::MemberName, &ops));
-        }
-        if laid {
-            for (i, (_, f)) in fields.iter().enumerate() {
-                let offset =
-                    scalar_field_offset(self.m, t, i as u32).ok_or_else(|| BackendError {
-                        message: "a struct field without an offset".into(),
-                    })?;
+            if laid {
                 self.member_decorate(id, i as u32, decoration::Offset, &[offset as u32]);
-                self.matrix_layout(id, i as u32, *f);
+                if let Some(f) = matrix {
+                    self.matrix_layout(id, i as u32, f);
+                }
             }
         }
         Ok(id)
+    }
+
+    /// The laid-out members of struct `t` at byte `base`: type id, offset, name and the IR type
+    /// for matrix decorations (none for words). Nested structs are flattened into the list.
+    #[allow(clippy::type_complexity)]
+    fn flat_members(
+        &mut self,
+        t: Type,
+        base: u64,
+        prefix: &str,
+        out: &mut Vec<(u32, u64, String, Option<Type>)>,
+    ) -> R<()> {
+        let TypeData::Struct(s) = *self.m.data(t) else {
+            unreachable!("flattening a struct")
+        };
+        for (i, (field, f)) in self.m.structs[s].fields.clone().into_iter().enumerate() {
+            let offset = base
+                + scalar_field_offset(self.m, t, i as u32).ok_or_else(|| BackendError {
+                    message: "a struct field without an offset".into(),
+                })?;
+            let name = format!("{prefix}{field}");
+            match self.member(f) {
+                Member::Nested => self.flat_members(f, offset, &format!("{name}."), out)?,
+                Member::Words => out.push((self.words_ty(f)?, offset, name, None)),
+                Member::Plain => out.push((self.ty(f, true)?, offset, name, Some(f))),
+            }
+        }
+        Ok(())
+    }
+
+    /// How a field of type `t` is laid out in a laid-out struct.
+    pub fn member(&self, t: Type) -> Member {
+        match self.m.data(t) {
+            TypeData::Struct(_) => Member::Nested,
+            _ if self.holds_struct(t) => Member::Words,
+            _ => Member::Plain,
+        }
+    }
+
+    /// Whether `t` is a struct or an array (of arrays) of them.
+    fn holds_struct(&self, t: Type) -> bool {
+        match self.m.data(t) {
+            TypeData::Struct(_) => true,
+            TypeData::Array(e, _) => self.holds_struct(*e),
+            _ => false,
+        }
+    }
+
+    /// Whether `t`'s laid-out form differs from its plain one by more than decorations: values
+    /// convert member by member rather than with `OpCopyLogical`.
+    pub fn reshaped(&self, t: Type) -> bool {
+        match self.m.data(t) {
+            TypeData::Struct(s) => self.m.structs[*s]
+                .fields
+                .iter()
+                .any(|(_, f)| self.holds_struct(*f)),
+            TypeData::Array(e, _) => self.reshaped(*e),
+            _ => false,
+        }
+    }
+
+    /// The number of laid-out members field `t` takes in a laid-out struct.
+    fn member_count(&self, t: Type) -> u32 {
+        match self.m.data(t) {
+            TypeData::Struct(s) => self.m.structs[*s]
+                .fields
+                .iter()
+                .map(|(_, f)| self.member_count(*f))
+                .sum(),
+            _ => 1,
+        }
+    }
+
+    /// The laid-out member of struct `t` that field `i` starts at.
+    pub fn flat_start(&self, t: Type, i: u32) -> u32 {
+        let TypeData::Struct(s) = self.m.data(t) else {
+            unreachable!("a field of a struct")
+        };
+        self.m.structs[*s].fields[..i as usize]
+            .iter()
+            .map(|(_, f)| self.member_count(*f))
+            .sum()
+    }
+
+    /// The laid-out form of an array holding structs: its bytes as 32-bit words.
+    pub fn words_ty(&mut self, t: Type) -> R<u32> {
+        if self.has_16bit(t) {
+            return unsupported("16-bit members of an array of structs inside a laid-out struct");
+        }
+        let (size, _) = self.layout(t)?;
+        let u = self.uint_ty(32);
+        let len = self.uint(size.div_ceil(4) as u32);
+        Ok(self.laid_array(u, len, 4))
+    }
+
+    fn has_16bit(&self, t: Type) -> bool {
+        match self.m.data(t) {
+            TypeData::Scalar(s) | TypeData::Vector(s, _) => {
+                matches!(s, Scalar::I16 | Scalar::F16)
+            }
+            TypeData::Matrix { element, .. } => matches!(element, Scalar::I16 | Scalar::F16),
+            TypeData::Array(e, _) => self.has_16bit(*e),
+            TypeData::Struct(s) => self.m.structs[*s]
+                .fields
+                .iter()
+                .any(|(_, f)| self.has_16bit(*f)),
+            _ => false,
+        }
+    }
+
+    /// A laid-out array of `len` (a constant id) `element`s, `stride` bytes apart.
+    fn laid_array(&mut self, element: u32, len: u32, stride: u32) -> u32 {
+        let key = Key::Words("laid", vec![op::TypeArray, element, len]);
+        if let Some(&id) = self.types.get(&key) {
+            return id;
+        }
+        let id = self.once("laid", op::TypeArray, vec![element, len]);
+        self.decorate(id, decoration::ArrayStride, &[stride]);
+        id
+    }
+
+    /// A vector of `n` of type id `element`.
+    pub fn vector_ty(&mut self, element: u32, n: u32) -> u32 {
+        self.once("", op::TypeVector, vec![element, n])
     }
 
     pub fn member_decorate(&mut self, id: u32, member: u32, d: u32, extra: &[u32]) {

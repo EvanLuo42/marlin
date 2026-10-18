@@ -10,13 +10,14 @@
 use std::collections::{HashMap, HashSet};
 
 use marlin_shaderc_ir::{
-    AccessStep, AtomicOp, Axis, BinaryOp, Block, Builtin, ConvertOp, FloatCmp, Function, Inst,
-    IntCmp, MathOp, MemOrder, Op, QuadOp, ReduceOp, Scalar, Scope, Space, Stage, TexArg, Type,
-    TypeData, UnaryOp, Value, ValueDef, VoteOp, WaveOp,
+    AccessStep, AtomicOp, Axis, BinaryOp, Block, Builtin, ConvertOp, Existing, FloatCmp, Function,
+    Inst, IntCmp, MathOp, MemOrder, Op, QuadOp, ReduceOp, Scalar, Scope, Space, Stage, TexArg,
+    Type, TypeData, UnaryOp, Value, ValueDef, VoteOp, WaveOp, scalar_field_offset, scalar_layout,
+    step_type_in,
 };
 
 use crate::spirv::{builtin, capability as cap, glsl, group_operation, op, scope, semantics};
-use crate::write::{Global, R, Writer, inst, laid_out, storage_class, unsupported};
+use crate::write::{Global, Member, R, Writer, inst, laid_out, storage_class, unsupported};
 
 pub(crate) struct Body<'w, 'm> {
     w: &'w mut Writer<'m>,
@@ -40,6 +41,48 @@ pub(crate) struct Body<'w, 'm> {
     dispatched: bool,
     /// The heap pointer each texture handle was loaded from, for texel pointers (atomics).
     image_ptrs: HashMap<Value, u32>,
+    /// Pointers into laid-out memory that no SPIR-V pointer stands for.
+    places: HashMap<Value, Place>,
+}
+
+/// A pointer into a laid-out struct's flattened members (see `write.rs`): what a load, store or
+/// further access through it reaches.
+#[derive(Clone, Copy, Debug)]
+enum Place {
+    /// A nested struct: members `first` on of the laid-out struct `base` points at.
+    Flat { base: u32, first: u32 },
+    /// Something inside an array of structs that a laid-out struct holds as words: `words`
+    /// points at that member, and the place starts at word `at`.
+    Words { words: u32, at: WordIndex },
+}
+
+/// A word index into a `Place::Words` member: a constant plus a computed part, if any.
+#[derive(Clone, Copy, Debug, Default)]
+struct WordIndex {
+    dynamic: Option<u32>,
+    fixed: u32,
+}
+
+impl WordIndex {
+    fn plus(self, words: u64) -> Self {
+        Self {
+            fixed: self.fixed + words as u32,
+            ..self
+        }
+    }
+}
+
+/// Where words come from: a `Place::Words` member through its pointer, or the member's value.
+#[derive(Clone, Copy)]
+enum WordSrc {
+    Ptr { words: u32, class: u32 },
+    Val(u32),
+}
+
+/// Where words go: through a member's pointer, or into the words of a value being built.
+enum WordDst<'a> {
+    Ptr { words: u32, class: u32 },
+    Val(&'a mut [u32]),
 }
 
 impl<'w, 'm> Body<'w, 'm> {
@@ -56,6 +99,7 @@ impl<'w, 'm> Body<'w, 'm> {
             via: HashMap::new(),
             dispatched: false,
             image_ptrs: HashMap::new(),
+            places: HashMap::new(),
         }
     }
 
@@ -604,21 +648,7 @@ impl<'w, 'm> Body<'w, 'm> {
                 self.store(ops[0], ops[1], *aligned)?;
                 None
             }
-            Op::Access(steps) => {
-                let base = a(self, 0)?;
-                let mut operands = vec![base];
-                let mut k = 1;
-                for s in steps {
-                    match s {
-                        AccessStep::Field(n) => operands.push(self.w.uint(*n)),
-                        AccessStep::Index => {
-                            operands.push(a(self, k)?);
-                            k += 1;
-                        }
-                    }
-                }
-                Some(self.value(rt.unwrap_or(0), op::AccessChain, &operands))
-            }
+            Op::Access(steps) => self.access(&ops, steps, result.expect("a result"))?,
             Op::DescGet { nonuniform } => {
                 let TypeData::Res(kind) = self.w.m.data(f.ty(ops[0])).clone() else {
                     return unsupported("`desc.get` of something that is not a resource");
@@ -1022,8 +1052,11 @@ impl<'w, 'm> Body<'w, 'm> {
     /// Loads through `p`; aggregates read from laid-out memory become plain values.
     fn load(&mut self, p: Value, r: Value, aligned: Option<u32>) -> R<u32> {
         let f = self.f;
-        let ptr = self.val(p)?;
         let (class, pointee) = self.pointer(p)?;
+        if let Some(&place) = self.places.get(&p) {
+            return self.load_place(place, class, pointee);
+        }
+        let ptr = self.val(p)?;
         let plain = self.ty(r)?;
         let laid = self.w.ty(pointee, laid_out(class))?;
         let mut operands = vec![ptr];
@@ -1044,26 +1077,562 @@ impl<'w, 'm> Body<'w, 'm> {
         }
         let _ = f;
         Ok(if laid != plain {
-            self.value(plain, op::CopyLogical, &[loaded])
+            self.plain_of(loaded, pointee)?
         } else {
             loaded
         })
     }
 
     fn store(&mut self, p: Value, v: Value, aligned: Option<u32>) -> R<()> {
-        let ptr = self.val(p)?;
         let (class, pointee) = self.pointer(p)?;
         let mut x = self.val(v)?;
+        if let Some(&place) = self.places.get(&p) {
+            return self.store_place(place, class, pointee, x);
+        }
+        let ptr = self.val(p)?;
         let laid = self.w.ty(pointee, laid_out(class))?;
         let plain = self.ty(v)?;
         if laid != plain {
-            x = self.value(laid, op::CopyLogical, &[x]);
+            x = self.laid_of(x, pointee)?;
         }
         let mut operands = vec![ptr, x];
         if let Some(n) = aligned {
             operands.extend([0x2, n]);
         }
         self.emit(op::Store, &operands);
+        Ok(())
+    }
+
+    /// `access`: an `OpAccessChain`, except where laid-out memory has no SPIR-V type for what it
+    /// reaches (a nested struct, or a place inside an array of structs that a struct holds as
+    /// words): that result is a [`Place`] and has no id.
+    fn access(&mut self, ops: &[Value], steps: &[AccessStep], r: Value) -> R<Option<u32>> {
+        let rt = self.ty(r)?;
+        let (class, mut t) = self.pointer(ops[0])?;
+        let mut indices = ops[1..].iter().copied();
+        if !laid_out(class) {
+            let mut operands = vec![self.val(ops[0])?];
+            for s in steps {
+                operands.push(match s {
+                    AccessStep::Field(n) => self.w.uint(*n),
+                    AccessStep::Index => self.val(indices.next().expect("an index"))?,
+                });
+            }
+            return Ok(Some(self.value(rt, op::AccessChain, &operands)));
+        }
+        /// A pointer with the indices still to apply to it, or a place.
+        enum At {
+            Ptr(u32, Vec<u32>),
+            Place(Place),
+        }
+        let mut at = match self.places.get(&ops[0]) {
+            Some(&p) => At::Place(p),
+            None => At::Ptr(self.val(ops[0])?, Vec::new()),
+        };
+        for &s in steps {
+            let index = match s {
+                AccessStep::Index => Some(indices.next().expect("an index")),
+                AccessStep::Field(_) => None,
+            };
+            let next = step_type_in(&mut Existing(self.w.m), t, s)
+                .map_err(|message| marlin_shaderc_target::BackendError { message })?;
+            at = match (at, s) {
+                // A field of a laid-out struct, or of a nested one flattened into it.
+                (At::Ptr(ptr, mut chain), AccessStep::Field(n))
+                    if matches!(self.w.m.data(t), TypeData::Struct(_))
+                        && self.w.member(next) == Member::Plain =>
+                {
+                    chain.push(self.w.uint(self.w.flat_start(t, n)));
+                    At::Ptr(ptr, chain)
+                }
+                (at @ (At::Ptr(..) | At::Place(Place::Flat { .. })), AccessStep::Field(n))
+                    if matches!(self.w.m.data(t), TypeData::Struct(_)) =>
+                {
+                    let (base, first) = match at {
+                        At::Ptr(ptr, chain) => (self.chain(ptr, chain, class, t)?, 0),
+                        At::Place(Place::Flat { base, first }) => (base, first),
+                        At::Place(Place::Words { .. }) => unreachable!(),
+                    };
+                    let m = first + self.w.flat_start(t, n);
+                    match self.w.member(next) {
+                        Member::Nested => At::Place(Place::Flat { base, first: m }),
+                        Member::Words => At::Place(Place::Words {
+                            words: self.member_ptr(base, m, class, next)?,
+                            at: WordIndex::default(),
+                        }),
+                        Member::Plain => At::Ptr(base, vec![self.w.uint(m)]),
+                    }
+                }
+                (At::Ptr(ptr, mut chain), _) => {
+                    chain.push(match (index, s) {
+                        (Some(i), _) => self.val(i)?,
+                        (None, AccessStep::Field(n)) => self.w.uint(n),
+                        (None, AccessStep::Index) => unreachable!(),
+                    });
+                    At::Ptr(ptr, chain)
+                }
+                (At::Place(Place::Words { words, at }), _) => {
+                    // Words from the start of `t` to the start of `next`: per index, or fixed.
+                    let (per, fixed) = match (self.w.m.data(t), s) {
+                        (TypeData::Struct(_), AccessStep::Field(n)) => {
+                            (0, self.field_offset(t, n)? / 4)
+                        }
+                        (TypeData::Array(..), _) => (self.stride(next)? / 4, 0),
+                        (TypeData::Vector(e, _), _) => (scalar_bytes(*e) / 4, 0),
+                        (TypeData::Matrix { element, rows, .. }, _) => {
+                            (scalar_bytes(*element) * *rows as u64 / 4, 0)
+                        }
+                        _ => return unsupported("this access in an array of structs"),
+                    };
+                    let mut at = at.plus(fixed);
+                    if per != 0 {
+                        let i = self.index_u32(index.expect("an index step"))?;
+                        let u32t = self.w.uint_ty(32);
+                        let scaled = if per == 1 {
+                            i
+                        } else {
+                            let k = self.w.uint(per as u32);
+                            self.value(u32t, op::IMul, &[i, k])
+                        };
+                        at.dynamic = Some(match at.dynamic {
+                            Some(d) => self.value(u32t, op::IAdd, &[d, scaled]),
+                            None => scaled,
+                        });
+                    }
+                    At::Place(Place::Words { words, at })
+                }
+                (At::Place(Place::Flat { .. }), _) => {
+                    return unsupported("an index into a struct");
+                }
+            };
+            t = next;
+        }
+        Ok(match at {
+            At::Ptr(ptr, chain) if chain.is_empty() => Some(ptr),
+            At::Ptr(ptr, chain) => {
+                let mut operands = vec![ptr];
+                operands.extend(chain);
+                Some(self.value(rt, op::AccessChain, &operands))
+            }
+            At::Place(p) => {
+                self.places.insert(r, p);
+                None
+            }
+        })
+    }
+
+    /// `ptr` (into laid-out memory of `class`) with `chain` applied, which reaches a `t`.
+    fn chain(&mut self, ptr: u32, chain: Vec<u32>, class: u32, t: Type) -> R<u32> {
+        if chain.is_empty() {
+            return Ok(ptr);
+        }
+        let laid = self.w.ty(t, true)?;
+        let pt = self.w.ptr_ty(class, laid);
+        let mut operands = vec![ptr];
+        operands.extend(chain);
+        Ok(self.value(pt, op::AccessChain, &operands))
+    }
+
+    /// A pointer to member `m` of the laid-out struct `base` points at, which field type `t`
+    /// is laid out as.
+    fn member_ptr(&mut self, base: u32, m: u32, class: u32, t: Type) -> R<u32> {
+        let laid = match self.w.member(t) {
+            Member::Words => self.w.words_ty(t)?,
+            _ => self.w.ty(t, true)?,
+        };
+        let pt = self.w.ptr_ty(class, laid);
+        let m = self.w.uint(m);
+        Ok(self.value(pt, op::AccessChain, &[base, m]))
+    }
+
+    fn field_offset(&self, t: Type, n: u32) -> R<u64> {
+        scalar_field_offset(self.w.m, t, n).ok_or_else(|| marlin_shaderc_target::BackendError {
+            message: "a struct field without an offset".into(),
+        })
+    }
+
+    /// The array stride of elements of type `t` in scalar layout.
+    fn stride(&self, t: Type) -> R<u64> {
+        let (size, align) =
+            scalar_layout(self.w.m, t).ok_or_else(|| marlin_shaderc_target::BackendError {
+                message: "a type without a memory layout in laid-out memory".into(),
+            })?;
+        Ok(size.div_ceil(align) * align)
+    }
+
+    /// Index `v` as a 32-bit integer.
+    fn index_u32(&mut self, v: Value) -> R<u32> {
+        let i = self.val(v)?;
+        Ok(match self.scalar_of(self.f.ty(v)) {
+            Some(Scalar::I32) | None => i,
+            Some(_) => {
+                let u32t = self.w.uint_ty(32);
+                self.value(u32t, op::UConvert, &[i])
+            }
+        })
+    }
+
+    fn load_place(&mut self, place: Place, class: u32, t: Type) -> R<u32> {
+        match place {
+            Place::Flat { base, first } => self.load_flat(base, first, class, t),
+            Place::Words { words, at } => self.read_words(WordSrc::Ptr { words, class }, at, t),
+        }
+    }
+
+    fn store_place(&mut self, place: Place, class: u32, t: Type, x: u32) -> R<()> {
+        match place {
+            Place::Flat { base, first } => self.store_flat(base, first, class, t, x),
+            Place::Words { words, at } => {
+                self.write_words(&mut WordDst::Ptr { words, class }, at, t, x)
+            }
+        }
+    }
+
+    /// Loads struct `t` from members `first` on of the laid-out struct `base` points at.
+    fn load_flat(&mut self, base: u32, first: u32, class: u32, t: Type) -> R<u32> {
+        let mut parts = Vec::new();
+        for (i, f) in self.fields(t).into_iter().enumerate() {
+            let m = first + self.w.flat_start(t, i as u32);
+            parts.push(match self.w.member(f) {
+                Member::Nested => self.load_flat(base, m, class, f)?,
+                Member::Words => {
+                    let words = self.member_ptr(base, m, class, f)?;
+                    self.read_words(WordSrc::Ptr { words, class }, WordIndex::default(), f)?
+                }
+                Member::Plain => {
+                    let p = self.member_ptr(base, m, class, f)?;
+                    let laid = self.w.ty(f, true)?;
+                    let x = self.value(laid, op::Load, &[p]);
+                    self.plain_of(x, f)?
+                }
+            });
+        }
+        let plain = self.w.ty(t, false)?;
+        Ok(self.value(plain, op::CompositeConstruct, &parts))
+    }
+
+    /// Stores struct value `x` (of type `t`) to members `first` on of the laid-out struct
+    /// `base` points at.
+    fn store_flat(&mut self, base: u32, first: u32, class: u32, t: Type, x: u32) -> R<()> {
+        for (i, f) in self.fields(t).into_iter().enumerate() {
+            let m = first + self.w.flat_start(t, i as u32);
+            let ft = self.w.ty(f, false)?;
+            let e = self.value(ft, op::CompositeExtract, &[x, i as u32]);
+            match self.w.member(f) {
+                Member::Nested => self.store_flat(base, m, class, f, e)?,
+                Member::Words => {
+                    let words = self.member_ptr(base, m, class, f)?;
+                    let mut dst = WordDst::Ptr { words, class };
+                    self.write_words(&mut dst, WordIndex::default(), f, e)?;
+                }
+                Member::Plain => {
+                    let p = self.member_ptr(base, m, class, f)?;
+                    let e = self.laid_of(e, f)?;
+                    self.emit(op::Store, &[p, e]);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn fields(&self, t: Type) -> Vec<Type> {
+        match self.w.m.data(t) {
+            TypeData::Struct(s) => self.w.m.structs[*s].fields.iter().map(|f| f.1).collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Value `x` of `t`'s laid-out type as a plain value.
+    fn plain_of(&mut self, x: u32, t: Type) -> R<u32> {
+        let plain = self.w.ty(t, false)?;
+        let laid = self.w.ty(t, true)?;
+        if laid == plain {
+            return Ok(x);
+        }
+        if !self.w.reshaped(t) {
+            return Ok(self.value(plain, op::CopyLogical, &[x]));
+        }
+        match *self.w.m.data(t) {
+            TypeData::Struct(_) => self.flat_to_plain(x, 0, t),
+            TypeData::Array(e, n) => {
+                let le = self.w.ty(e, true)?;
+                let mut parts = Vec::new();
+                for k in 0..n {
+                    let x = self.value(le, op::CompositeExtract, &[x, k]);
+                    parts.push(self.plain_of(x, e)?);
+                }
+                Ok(self.value(plain, op::CompositeConstruct, &parts))
+            }
+            _ => unreachable!("only structs and arrays are reshaped"),
+        }
+    }
+
+    /// Struct `t` from members `first` on of laid-out struct value `x`.
+    fn flat_to_plain(&mut self, x: u32, first: u32, t: Type) -> R<u32> {
+        let mut parts = Vec::new();
+        for (i, f) in self.fields(t).into_iter().enumerate() {
+            let m = first + self.w.flat_start(t, i as u32);
+            parts.push(match self.w.member(f) {
+                Member::Nested => self.flat_to_plain(x, m, f)?,
+                Member::Words => {
+                    let wt = self.w.words_ty(f)?;
+                    let words = self.value(wt, op::CompositeExtract, &[x, m]);
+                    self.read_words(WordSrc::Val(words), WordIndex::default(), f)?
+                }
+                Member::Plain => {
+                    let laid = self.w.ty(f, true)?;
+                    let e = self.value(laid, op::CompositeExtract, &[x, m]);
+                    self.plain_of(e, f)?
+                }
+            });
+        }
+        let plain = self.w.ty(t, false)?;
+        Ok(self.value(plain, op::CompositeConstruct, &parts))
+    }
+
+    /// Plain value `x` of type `t` in `t`'s laid-out type.
+    fn laid_of(&mut self, x: u32, t: Type) -> R<u32> {
+        let plain = self.w.ty(t, false)?;
+        let laid = self.w.ty(t, true)?;
+        if laid == plain {
+            return Ok(x);
+        }
+        if !self.w.reshaped(t) {
+            return Ok(self.value(laid, op::CopyLogical, &[x]));
+        }
+        let mut parts = Vec::new();
+        match *self.w.m.data(t) {
+            TypeData::Struct(_) => self.plain_to_flat(x, t, &mut parts)?,
+            TypeData::Array(e, n) => {
+                let pe = self.w.ty(e, false)?;
+                for k in 0..n {
+                    let x = self.value(pe, op::CompositeExtract, &[x, k]);
+                    parts.push(self.laid_of(x, e)?);
+                }
+            }
+            _ => unreachable!("only structs and arrays are reshaped"),
+        }
+        Ok(self.value(laid, op::CompositeConstruct, &parts))
+    }
+
+    /// The laid-out members of plain struct value `x` of type `t`, appended to `out`.
+    fn plain_to_flat(&mut self, x: u32, t: Type, out: &mut Vec<u32>) -> R<()> {
+        for (i, f) in self.fields(t).into_iter().enumerate() {
+            let ft = self.w.ty(f, false)?;
+            let e = self.value(ft, op::CompositeExtract, &[x, i as u32]);
+            match self.w.member(f) {
+                Member::Nested => self.plain_to_flat(e, f, out)?,
+                Member::Words => {
+                    // Padding words are written as 0.
+                    let (size, _) = scalar_layout(self.w.m, f).unwrap_or((0, 1));
+                    let zero = self.w.uint(0);
+                    let mut words = vec![zero; size.div_ceil(4) as usize];
+                    self.write_words(&mut WordDst::Val(&mut words), WordIndex::default(), f, e)?;
+                    let wt = self.w.words_ty(f)?;
+                    out.push(self.value(wt, op::CompositeConstruct, &words));
+                }
+                Member::Plain => out.push(self.laid_of(e, f)?),
+            }
+        }
+        Ok(())
+    }
+
+    /// The `t` at word `at` of `src`.
+    fn read_words(&mut self, src: WordSrc, at: WordIndex, t: Type) -> R<u32> {
+        let plain = self.w.ty(t, false)?;
+        let parts = match *self.w.m.data(t) {
+            TypeData::Scalar(s) => return self.read_scalar(src, at, s),
+            TypeData::Res(_) => return self.read_scalar(src, at, Scalar::I32),
+            TypeData::Vector(s, n) => {
+                let mut parts = Vec::new();
+                for k in 0..n as u64 {
+                    let at = at.plus(k * scalar_bytes(s) / 4);
+                    parts.push(self.read_scalar(src, at, s)?);
+                }
+                parts
+            }
+            TypeData::Matrix {
+                element,
+                rows,
+                cols,
+            } => {
+                let e = self.w.scalar(element);
+                let col = self.w.vector_ty(e, rows as u32);
+                let mut parts = Vec::new();
+                for c in 0..cols as u64 {
+                    let mut comps = Vec::new();
+                    for r in 0..rows as u64 {
+                        let k = (c * rows as u64 + r) * scalar_bytes(element) / 4;
+                        comps.push(self.read_scalar(src, at.plus(k), element)?);
+                    }
+                    parts.push(self.value(col, op::CompositeConstruct, &comps));
+                }
+                parts
+            }
+            TypeData::Struct(_) => {
+                let mut parts = Vec::new();
+                for (i, f) in self.fields(t).into_iter().enumerate() {
+                    let offset = self.field_offset(t, i as u32)?;
+                    parts.push(self.read_words(src, at.plus(offset / 4), f)?);
+                }
+                parts
+            }
+            TypeData::Array(e, n) => {
+                let stride = self.stride(e)?;
+                let mut parts = Vec::new();
+                for k in 0..n as u64 {
+                    parts.push(self.read_words(src, at.plus(k * stride / 4), e)?);
+                }
+                parts
+            }
+            _ => return unsupported("this type in an array of structs"),
+        };
+        Ok(self.value(plain, op::CompositeConstruct, &parts))
+    }
+
+    /// Stores `x` of type `t` at word `at` of `dst`.
+    fn write_words(&mut self, dst: &mut WordDst, at: WordIndex, t: Type, x: u32) -> R<()> {
+        match *self.w.m.data(t) {
+            TypeData::Scalar(s) => self.write_scalar(dst, at, s, x),
+            TypeData::Res(_) => self.write_scalar(dst, at, Scalar::I32, x),
+            TypeData::Vector(s, n) => {
+                let st = self.w.scalar(s);
+                for k in 0..n as u32 {
+                    let e = self.value(st, op::CompositeExtract, &[x, k]);
+                    let at = at.plus(k as u64 * scalar_bytes(s) / 4);
+                    self.write_scalar(dst, at, s, e)?;
+                }
+                Ok(())
+            }
+            TypeData::Matrix {
+                element,
+                rows,
+                cols,
+            } => {
+                let st = self.w.scalar(element);
+                for c in 0..cols as u32 {
+                    for r in 0..rows as u32 {
+                        let e = self.value(st, op::CompositeExtract, &[x, c, r]);
+                        let k = (c * rows as u32 + r) as u64 * scalar_bytes(element) / 4;
+                        self.write_scalar(dst, at.plus(k), element, e)?;
+                    }
+                }
+                Ok(())
+            }
+            TypeData::Struct(_) => {
+                for (i, f) in self.fields(t).into_iter().enumerate() {
+                    let offset = self.field_offset(t, i as u32)?;
+                    let ft = self.w.ty(f, false)?;
+                    let e = self.value(ft, op::CompositeExtract, &[x, i as u32]);
+                    self.write_words(dst, at.plus(offset / 4), f, e)?;
+                }
+                Ok(())
+            }
+            TypeData::Array(e, n) => {
+                let stride = self.stride(e)?;
+                let et = self.w.ty(e, false)?;
+                for k in 0..n {
+                    let v = self.value(et, op::CompositeExtract, &[x, k]);
+                    self.write_words(dst, at.plus(k as u64 * stride / 4), e, v)?;
+                }
+                Ok(())
+            }
+            _ => unsupported("this type in an array of structs"),
+        }
+    }
+
+    /// The word at `at` of `src`.
+    fn word(&mut self, src: WordSrc, at: WordIndex) -> u32 {
+        let u32t = self.w.uint_ty(32);
+        match src {
+            WordSrc::Ptr { words, class } => {
+                let p = self.word_ptr(words, class, at);
+                self.value(u32t, op::Load, &[p])
+            }
+            WordSrc::Val(v) => {
+                debug_assert!(
+                    at.dynamic.is_none(),
+                    "a value's words are reached by constants"
+                );
+                self.value(u32t, op::CompositeExtract, &[v, at.fixed])
+            }
+        }
+    }
+
+    /// A pointer to word `at` of the words `words` points at.
+    fn word_ptr(&mut self, words: u32, class: u32, at: WordIndex) -> u32 {
+        let u32t = self.w.uint_ty(32);
+        let pt = self.w.ptr_ty(class, u32t);
+        let index = match at.dynamic {
+            None => self.w.uint(at.fixed),
+            Some(d) if at.fixed == 0 => d,
+            Some(d) => {
+                let k = self.w.uint(at.fixed);
+                self.value(u32t, op::IAdd, &[d, k])
+            }
+        };
+        self.value(pt, op::AccessChain, &[words, index])
+    }
+
+    fn read_scalar(&mut self, src: WordSrc, at: WordIndex, s: Scalar) -> R<u32> {
+        let st = self.w.scalar(s);
+        let w0 = self.word(src, at);
+        Ok(match s {
+            Scalar::I32 => w0,
+            Scalar::F32 => self.value(st, op::Bitcast, &[w0]),
+            Scalar::I1 => {
+                let zero = self.w.uint(0);
+                self.value(st, op::INotEqual, &[w0, zero])
+            }
+            Scalar::I64 | Scalar::F64 => {
+                let w1 = self.word(src, at.plus(1));
+                let u32t = self.w.uint_ty(32);
+                let pair = self.w.vector_ty(u32t, 2);
+                let v = self.value(pair, op::CompositeConstruct, &[w0, w1]);
+                self.value(st, op::Bitcast, &[v])
+            }
+            Scalar::I16 | Scalar::F16 => {
+                return unsupported("16-bit members of an array of structs inside a struct");
+            }
+        })
+    }
+
+    fn write_scalar(&mut self, dst: &mut WordDst, at: WordIndex, s: Scalar, x: u32) -> R<()> {
+        let u32t = self.w.uint_ty(32);
+        let words = match s {
+            Scalar::I32 => vec![x],
+            Scalar::F32 => vec![self.value(u32t, op::Bitcast, &[x])],
+            Scalar::I1 => {
+                let (one, zero) = (self.w.uint(1), self.w.uint(0));
+                vec![self.value(u32t, op::Select, &[x, one, zero])]
+            }
+            Scalar::I64 | Scalar::F64 => {
+                let pair = self.w.vector_ty(u32t, 2);
+                let v = self.value(pair, op::Bitcast, &[x]);
+                (0..2)
+                    .map(|k| self.value(u32t, op::CompositeExtract, &[v, k]))
+                    .collect()
+            }
+            Scalar::I16 | Scalar::F16 => {
+                return unsupported("16-bit members of an array of structs inside a struct");
+            }
+        };
+        for (k, w) in words.into_iter().enumerate() {
+            let at = at.plus(k as u64);
+            match dst {
+                WordDst::Ptr { words, class } => {
+                    let p = self.word_ptr(*words, *class, at);
+                    self.emit(op::Store, &[p, w]);
+                }
+                WordDst::Val(out) => {
+                    debug_assert!(
+                        at.dynamic.is_none(),
+                        "a value's words are reached by constants"
+                    );
+                    out[at.fixed as usize] = w;
+                }
+            }
+        }
         Ok(())
     }
 
@@ -1138,15 +1707,30 @@ impl<'w, 'm> Body<'w, 'm> {
         ops: &[Value],
         rt: Option<u32>,
     ) -> R<Option<u32>> {
-        let ptr = self.val(ops[0])?;
-        let mut vals = Vec::new();
-        for &v in &ops[1..] {
-            vals.push(self.val(v)?);
-        }
         let ty = match self.w.m.data(self.f.ty(ops[0])) {
             TypeData::Ptr { pointee, .. } => Some(*pointee),
             _ => None,
         };
+        let ptr = match self.places.get(&ops[0]) {
+            // A 32-bit integer is its word.
+            Some(&Place::Words { words, at })
+                if ty.is_some_and(|t| self.scalar_of(t) == Some(Scalar::I32)) =>
+            {
+                let (class, _) = self.pointer(ops[0])?;
+                self.word_ptr(words, class, at)
+            }
+            Some(_) => {
+                return unsupported(
+                    "an atomic on an array of structs inside a struct, other than on a 32-bit \
+                     integer",
+                );
+            }
+            None => self.val(ops[0])?,
+        };
+        let mut vals = Vec::new();
+        for &v in &ops[1..] {
+            vals.push(self.val(v)?);
+        }
         if ty.is_some_and(|t| self.scalar_of(t) == Some(Scalar::I64)) {
             self.w.capability(cap::Int64Atomics);
         }
@@ -1903,5 +2487,14 @@ impl Body<'_, '_> {
         operands.extend(args);
         self.value(void, op::ExtInst, &operands);
         Ok(())
+    }
+}
+
+/// The bytes a scalar takes in laid-out memory (a bool takes a word).
+fn scalar_bytes(s: Scalar) -> u64 {
+    match s {
+        Scalar::I16 | Scalar::F16 => 2,
+        Scalar::I64 | Scalar::F64 => 8,
+        _ => 4,
     }
 }

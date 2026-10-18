@@ -37,21 +37,12 @@ public struct MaterialEntry
     public uint2 Spare;
 }
 
-/// An instance's current transform, then last frame's (for motion vectors), each as the rows of
-/// a 3x4 matrix. The rows are vector fields rather than two `Rows3x4` fields: NVIDIA's driver
-/// (2026-10, through the descriptor heap) reads every struct-typed member of a buffer element at
-/// offset 0, so buffer types keep their members vectors, scalars and arrays.
+/// An instance's current transform.
 public struct InstanceTransforms
 {
-    public float4 CurrentR0;
-    public float4 CurrentR1;
-    public float4 CurrentR2;
-    public float4 PreviousR0;
-    public float4 PreviousR1;
-    public float4 PreviousR2;
-
-    public Rows3x4 Current => Rows3x4 { R0 = CurrentR0, R1 = CurrentR1, R2 = CurrentR2 };
-    public Rows3x4 Previous => Rows3x4 { R0 = PreviousR0, R1 = PreviousR1, R2 = PreviousR2 };
+    public Rows3x4 Current;
+    /// Last frame's: for motion vectors.
+    public Rows3x4 Previous;
 }
 
 public struct ScatterArgs

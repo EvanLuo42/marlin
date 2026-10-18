@@ -869,5 +869,5 @@ R1k（0008 §8，材质最小集）做完时（2026-10-18）定下的细节：
   - 实现接口时，签名里的关联类型按实现者的取值比较（`Tree Surface(...)` 和 `Slab Surface(...)` 匹配）。
   - 经类型参数调用接口方法时，接口的关联类型变成 `M.Tree`；`M.Tree` 类型的值能找到它约束接口上的成员（`tree.Emit(...)`）。`hir_ty` 和 `lower` 各加了测试（后者在解释器里跑单态化后的结果）。
   - `marlin-gpu-test-support` 的测试 shader 能给泛型入口传类型实参，session 里多了 `Marlin.Substrate`。
-- **驱动问题**：NVIDIA 驱动经 descriptor heap 读 buffer 时，忽略类型是 struct 的成员的 offset（0016 §4.2）。`InstanceTransforms` 因此改成 6 个 `float4` 字段，`Current`、`Previous` 是拼出 `Rows3x4` 的属性。
+- **驱动问题**：NVIDIA 驱动经 descriptor heap 读 buffer 时，忽略类型是 struct 的成员的 offset（0016 §4.2）。`InstanceTransforms` 因此改成 6 个 `float4` 字段，`Current`、`Previous` 是拼出 `Rows3x4` 的属性。之后 SPIR-V 后端绕开了这个问题，`InstanceTransforms` 恢复成两个 `Rows3x4` 字段（0016 §4.2）。
 - **测试**（`marlin-material/tests/gpu/materials.rs`，两种材质：默认材质和测试包里的 `Material.Stripes`，所以有两个 permutation）：每个被覆盖的像素恰好进一个 bin、恰好解算一次，closure 数为 1 且走快路径，反照率、F0、粗糙度是各自材质给的值（8 位编码的误差内）；天空全 0；正对相机的面法线正确；静止时速度为 0，实例右移 0.1 时速度和投影算出的一致，相机转动时天空的速度和 tan(θ)·P00/2 一致。三张调试视图（反照率、法线、粗糙度/F0/快路径）有 golden。GPU Scene 的测试（render crate）检查材质表和每个 permutation 的参数表，包括换 permutation 和删除。3 张前向 golden 和 `sample_first_frame` 不变。开窗口跑 `samples/basic` 10 秒，没有报错。
