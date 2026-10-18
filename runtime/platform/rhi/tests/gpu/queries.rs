@@ -53,13 +53,14 @@ fn occlusion_queries_count_samples() {
         run(device, |list| {
             target.begin(list, [0.0; 4]);
             list.set_graphics_pipeline(&pipeline);
+            // One occlusion query active at a time: each pool gets its own draw.
             for (i, mode) in [FULL, SLIVER].into_iter().enumerate() {
                 list.push_constants(0, &solid_constants(WHITE, mode, 0.5, [0.0; 4]));
-                list.begin_query(&counts, i as u32);
-                list.begin_query(&binary, i as u32);
-                list.draw(3, 1, 0, 0);
-                list.end_query(&binary, i as u32);
-                list.end_query(&counts, i as u32);
+                for pool in [&counts, &binary] {
+                    list.begin_query(pool, i as u32);
+                    list.draw(3, 1, 0, 0);
+                    list.end_query(pool, i as u32);
+                }
             }
             target.finish(list);
             list.resolve_queries(&counts, 0, 2, &out, 0);

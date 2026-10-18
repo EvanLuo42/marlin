@@ -340,6 +340,8 @@ impl FeatureChain {
             (self.v12.timelineSemaphore, "timelineSemaphore"),
             (self.v12.bufferDeviceAddress, "bufferDeviceAddress"),
             (self.v12.runtimeDescriptorArray, "runtimeDescriptorArray"),
+            // Shaders declare their own buffer offsets (0016 §4.2).
+            (self.v12.scalarBlockLayout, "scalarBlockLayout"),
             (self.v13.synchronization2, "synchronization2"),
             (self.v13.dynamicRendering, "dynamicRendering"),
             (self.v13.maintenance4, "maintenance4"),

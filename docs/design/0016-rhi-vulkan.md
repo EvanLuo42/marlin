@@ -55,7 +55,7 @@
 ## 3. 基线与特性
 
 **必需**（缺了 `create_device` 返回 `Unsupported`）：
-- `apiVersion >= 1.4`。1.4 核心里用到：timeline semaphore、synchronization2、dynamic rendering、buffer device address、maintenance4–6、`shaderDrawParameters`、`hostQueryReset`、`descriptorIndexing` 系列（运行时数组、non-uniform 下标）。
+- `apiVersion >= 1.4`。1.4 核心里用到：timeline semaphore、synchronization2、dynamic rendering、buffer device address、maintenance4–6、`shaderDrawParameters`、`hostQueryReset`、`scalarBlockLayout`（buffer 布局由 shader 决定，§4.2）、`descriptorIndexing` 系列（运行时数组、non-uniform 下标）。
 - `VK_EXT_descriptor_heap`（§4）。
 - `VK_EXT_mesh_shader`：`taskShader` + `meshShader`。
 - `VK_EXT_device_generated_commands`：indirect 命令写 `INDIRECT_CONSTANT_WORD`（§6）。
@@ -110,10 +110,12 @@ adapter：`AdapterPreference::HighPerformance` 选独显优先、然后显存最
 占位 SPIR-V 的编译命令（只用 SDK 的 dxc，离线手工跑一次，不进任何构建）：
 
 ```text
-dxc -spirv -fspv-target-env=vulkan1.3 -HV 2021 -fvk-bind-resource-heap 0 0 -fvk-bind-sampler-heap 1 0 -fvk-bind-register b0 0 2 0 -T <stage>_6_6 -E <entry> -Fo <name>.<stage>.spv <name>.hlsl
+dxc -spirv -fspv-target-env=vulkan1.3 -HV 2021 -fvk-bind-resource-heap 0 0 -fvk-bind-sampler-heap 1 0 -fvk-bind-register b0 0 2 0 -fvk-use-scalar-layout -T <stage>_6_6 -E <entry> -Fo <name>.<stage>.spv <name>.hlsl
 ```
 
 dxc 的 `-fspv-use-descriptor-heap`（原生）目前不支持 UAV，所以占位品用映射方式。
+
+buffer 成员的 offset 由 shader 自己声明（SPIR-V 的 `Offset` 装饰），RHI 不规定布局，只打开 `scalarBlockLayout`，让任意自然对齐的 offset 都合法。布局规则归自研 shader 编译器定（它产出的 offset 要和手写的 Rust 结构体一致，用反射检查），见 §11。占位 shader 用 `-fvk-use-scalar-layout`：紧密排列、按标量自然对齐，和现在 `#[repr(C)]` 的结构体一致。
 
 ### 4.3 push constants
 
@@ -179,5 +181,6 @@ dxc 的 `-fspv-use-descriptor-heap`（原生）目前不支持 UAV，所以占�
 ## 11. 待定
 
 - 自研编译器产出原生 `SPV_EXT_descriptor_heap` 时，槽宽怎么传给 shader（specialization constant、编译期常量、还是统一取各厂商最大值固定下来）。
+- buffer 布局规则（shader 编译器决定；它产出的 `Offset` 和手写 Rust 结构体靠反射对齐）。
 - Linux 的 Wayland/X11 surface（等 L1 Linux 窗口）。
 - 内存子分配（现在 committed = 每资源一次 `vkAllocateMemory`，测试规模够用；Windows 上 `maxMemoryAllocationCount` 通常 4096）。

@@ -621,7 +621,8 @@ impl CommandList {
     /// Starts counting into scoped query `index` ([`QueryKind::Occlusion`],
     /// [`BinaryOcclusion`](QueryKind::BinaryOcclusion),
     /// [`PipelineStatistics`](QueryKind::PipelineStatistics)). Each begin pairs with an
-    /// [`end_query`](Self::end_query) in the same list.
+    /// [`end_query`](Self::end_query) in the same list. At most one occlusion query (of either
+    /// kind) and one pipeline statistics query are active at a time (Vulkan's rule).
     pub fn begin_query(&mut self, pool: &QueryPool, index: u32) {
         self.check_scoped(pool, index);
         Backend::begin_query(&mut self.raw, &pool.raw, index);

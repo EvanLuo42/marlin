@@ -14,7 +14,7 @@
 //!
 //! ```text
 //! dxc -HV 2021 -Qstrip_debug -Qstrip_reflect -T cs_6_6 -E main -Fo texel_load.cs.dxil texel_load.hlsl
-//! dxc -spirv -fspv-target-env=vulkan1.3 -HV 2021 -fvk-bind-resource-heap 0 0 -fvk-bind-sampler-heap 1 0 -fvk-bind-register b0 0 2 0 -T cs_6_6 -E main -Fo texel_load.cs.spv texel_load.hlsl
+//! dxc -spirv -fspv-target-env=vulkan1.3 -HV 2021 -fvk-bind-resource-heap 0 0 -fvk-bind-sampler-heap 1 0 -fvk-bind-register b0 0 2 0 -fvk-use-scalar-layout -T cs_6_6 -E main -Fo texel_load.cs.spv texel_load.hlsl
 //! ```
 
 use marlin_cook_texture::{

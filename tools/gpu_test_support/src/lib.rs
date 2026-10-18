@@ -36,8 +36,9 @@
 //! and to SPIR-V with the Vulkan SDK's dxc, resources at the set 0 bindings of
 //! docs/design/0016-rhi-vulkan.md §4.2 (`$VK` stands for
 //! `-spirv -fspv-target-env=vulkan1.3 -HV 2021 -fvk-bind-resource-heap 0 0
-//! -fvk-bind-sampler-heap 1 0 -fvk-bind-register b0 0 2 0`), each checked with
-//! `spirv-val --target-env vulkan1.3`:
+//! -fvk-bind-sampler-heap 1 0 -fvk-bind-register b0 0 2 0 -fvk-use-scalar-layout`: buffers packed tightly, as `#[repr(C)]` lays them out),
+//! each checked with
+//! `spirv-val --target-env vulkan1.3 --scalar-block-layout`:
 //!
 //! ```text
 //! dxc $VK -T cs_6_6 -E main         -Fo fill.cs.spv fill.hlsl

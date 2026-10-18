@@ -25,8 +25,9 @@ pub(crate) struct QueryState {
     predicating: bool,
 }
 
-/// Every statistic the RHI's `PipelineStatistics` has but the mesh primitive count, in its field
-/// order (which is Vulkan's bit order, so the results come out in the struct's layout).
+/// Every statistic the RHI's `PipelineStatistics` has but the mesh primitive count (D3D12 only;
+/// Vulkan's `MESH_PRIMITIVES_GENERATED` query cannot be active over draws without mesh shaders), in
+/// its field order (which is Vulkan's bit order, so the results come out in the struct's layout).
 const ALL_STATISTICS: VkQueryPipelineStatisticFlags =
     VK_QUERY_PIPELINE_STATISTIC_INPUT_ASSEMBLY_VERTICES_BIT
         | VK_QUERY_PIPELINE_STATISTIC_INPUT_ASSEMBLY_PRIMITIVES_BIT
@@ -44,16 +45,13 @@ const ALL_STATISTICS: VkQueryPipelineStatisticFlags =
 
 /// Byte offsets in one `PipelineStatistics` record.
 const COMPUTE_INVOCATIONS_OFFSET: u64 = 10 * 8;
-const MESH_PRIMITIVES_OFFSET: u64 = 13 * 8;
 
 pub(crate) struct QueryPool {
     shared: Arc<Shared>,
     raw: VkQueryPool,
     kind: QueryKind,
-    /// Pipeline statistics only: the `MESH_PRIMITIVES_GENERATED` counts graphics lists add, and a
-    /// compute-only pool for lists of families without graphics (which may not count graphics
-    /// statistics).
-    mesh: VkQueryPool,
+    /// Pipeline statistics only: a compute-only pool for lists of families without graphics
+    /// (which may not count graphics statistics).
     compute: VkQueryPool,
 }
 
@@ -70,7 +68,7 @@ impl QueryPool {
 impl Drop for QueryPool {
     fn drop(&mut self) {
         let s = &self.shared;
-        for pool in [self.raw, self.mesh, self.compute] {
+        for pool in [self.raw, self.compute] {
             if pool != 0 {
                 // SAFETY: no pending submission uses the pool (the public API's contract).
                 unsafe { (s.fns.vkDestroyQueryPool)(s.raw, pool, ptr::null()) };
@@ -119,7 +117,6 @@ pub(crate) fn create_query_pool(device: &Device, desc: &QueryPoolDesc) -> Result
         shared: s.clone(),
         raw: 0,
         kind: desc.kind,
-        mesh: 0,
         compute: 0,
     };
     let count = desc.count;
@@ -136,7 +133,6 @@ pub(crate) fn create_query_pool(device: &Device, desc: &QueryPoolDesc) -> Result
     };
     // `pool` destroys what was created if a later step fails.
     if desc.kind == QueryKind::PipelineStatistics {
-        pool.mesh = raw_pool(s, VK_QUERY_TYPE_MESH_PRIMITIVES_GENERATED_EXT, count, 0)?;
         pool.compute = raw_pool(
             s,
             VK_QUERY_TYPE_PIPELINE_STATISTICS,
@@ -232,7 +228,7 @@ pub(crate) fn write_timestamp(list: &mut CommandList, pool: &QueryPool, index: u
 /// The pools a scoped query of `pool` counts into on `list`, in begin order.
 fn scoped_pools(list: &CommandList, pool: &QueryPool) -> alloc::vec::Vec<VkQueryPool> {
     match pool.kind {
-        QueryKind::PipelineStatistics if graphics_family(list) => alloc::vec![pool.raw, pool.mesh],
+        QueryKind::PipelineStatistics if graphics_family(list) => alloc::vec![pool.raw],
         QueryKind::PipelineStatistics => alloc::vec![pool.compute],
         _ => alloc::vec![pool.raw],
     }
@@ -283,12 +279,9 @@ pub(crate) fn resolve_queries(
         }
     };
     match pool.kind {
-        QueryKind::PipelineStatistics if graphics_family(list) => {
-            copy(pool.raw, offset);
-            copy(pool.mesh, offset + MESH_PRIMITIVES_OFFSET);
-        }
         QueryKind::PipelineStatistics => {
-            // Only compute invocations were counted: zero the rest of each record first.
+            // Vulkan writes 13 of the record's 14 counters (none for mesh primitives), and lists
+            // of compute-only families only compute invocations: zero each record first.
             // SAFETY: a recording buffer; whole words within `dst` (checked by `commands.rs`).
             unsafe { (fns.vkCmdFillBuffer)(raw, dst, offset, stride * count as u64, 0) };
             let barrier = VkMemoryBarrier2 {
@@ -305,7 +298,10 @@ pub(crate) fn resolve_queries(
             };
             // SAFETY: a recording buffer and a valid barrier.
             unsafe { (fns.vkCmdPipelineBarrier2)(raw, &info) };
-            copy(pool.compute, offset + COMPUTE_INVOCATIONS_OFFSET);
+            match graphics_family(list) {
+                true => copy(pool.raw, offset),
+                false => copy(pool.compute, offset + COMPUTE_INVOCATIONS_OFFSET),
+            }
         }
         _ => copy(pool.raw, offset),
     }

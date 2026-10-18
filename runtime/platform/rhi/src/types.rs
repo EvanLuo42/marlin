@@ -230,7 +230,7 @@ pub struct Features {
     /// Pixels per side of one shading-rate image texel (8, 16 or 32), with
     /// [`VariableRateShading::Image`]; 0 otherwise.
     pub shading_rate_tile_size: u32,
-    /// [`QueryKind::PipelineStatistics`], mesh and amplification counts included.
+    /// [`QueryKind::PipelineStatistics`], amplification and mesh shader invocations included.
     pub pipeline_statistics: bool,
     /// [`CommandList::write_marker`](crate::CommandList::write_marker) on every queue type.
     pub buffer_markers: bool,
@@ -2139,6 +2139,8 @@ pub struct PipelineStatistics {
     pub compute_invocations: u64,
     pub amplification_invocations: u64,
     pub mesh_invocations: u64,
+    /// Primitives mesh shaders emitted. D3D12 only: Vulkan cannot count them in a scope that
+    /// also draws without mesh shaders, so it reports 0.
     pub mesh_primitives: u64,
 }
 
