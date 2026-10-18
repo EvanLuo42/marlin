@@ -23,7 +23,7 @@ pub use update::{
     MaterialUpdate, MeshUpdate, ResidentMesh, SceneUpdates, UpdateStream, flags,
 };
 
-use crate::renderer::{Environment, MeshHandle};
+use crate::meshes::{Environment, MeshHandle};
 
 /// Rows of one table that changed since the GPU Scene was last written, with what changed.
 #[derive(Default)]
@@ -481,7 +481,7 @@ impl RenderScene {
 
     /// Live instances whose mesh is resident and that are not hidden, as (row, renderer mesh,
     /// transform).
-    pub(crate) fn drawable(&self) -> impl Iterator<Item = (u32, MeshHandle, Transform)> + '_ {
+    pub fn drawable(&self) -> impl Iterator<Item = (u32, MeshHandle, Transform)> + '_ {
         (0..self.instance_rows.len()).filter_map(move |row| {
             if !self.instance_rows.alive[row] || self.instance_flags[row] & flags::HIDDEN != 0 {
                 return None;

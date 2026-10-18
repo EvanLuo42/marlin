@@ -1,0 +1,13 @@
+!Version 1
+
+// The default material's resolve permutation (docs/design/0011-material-system.md §6.1): the
+// generic `Marlin.Engine.Material.ResolvePixel` for `Marlin.Engine.DefaultMaterial`, which the
+// package's library cannot hold. The engine finds it by name.
+Shader
+{
+    !Uuid = "019a3c41-0a7e-7c22-8b10-6d2e4f5a7b91"
+    !Name = "Marlin.Engine.DefaultMaterial.Resolve"
+    Package = <shaders/package:Marlin.Engine #01a14e23-41a7-7240-a3d8-65abdeb55b0e>
+    Entry = "Marlin.Engine.Material.ResolvePixel"
+    TypeArgs = ["Marlin.Engine.DefaultMaterial"]
+}

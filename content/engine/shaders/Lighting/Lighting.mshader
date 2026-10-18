@@ -1,0 +1,47 @@
+namespace Marlin.Engine.Lighting;
+
+// Direct lighting, R1's minimal set (0010): one directional light and ambient over the material
+// buffer's proxy lobe, Lambert diffuse, into the HDR scene. Pixels without closures (the sky)
+// get the environment's clear color. Specular and every other light come with 0010's final
+// shading.
+
+using Marlin.Substrate;
+
+public struct LightConstants
+{
+    /// xyz: the direction the light travels, normalized.
+    public float4 Direction;
+    /// rgb: linear radiance.
+    public float4 Color;
+    /// rgb: linear radiance.
+    public float4 Ambient;
+    /// Linear RGBA.
+    public float4 Clear;
+}
+
+public struct DirectArgs
+{
+    public Uniform<LightConstants> Light;
+    public Texture2D<uint4> MaterialBuffer;
+    public StorageTexture2D<float4> Output;
+    public uint Width;
+    public uint Height;
+}
+
+[Compute(8, 8, 1)]
+public void DirectLight([DispatchThreadId] uint3 id, [Push] in DirectArgs a)
+{
+    if (id.x >= a.Width || id.y >= a.Height)
+        return;
+    int2 px = (int2)id.xy;
+    LightConstants l = a.Light.Value;
+    Proxy p = UnpackProxy(a.MaterialBuffer.Load(px));
+    if (p.Count == 0)
+    {
+        a.Output[px] = l.Clear;
+        return;
+    }
+    float lit = Saturate(Dot(p.Normal, -l.Direction.xyz));
+    float3 radiance = l.Ambient.xyz + l.Color.xyz * lit;
+    a.Output[px] = float4(p.Albedo * radiance, 1);
+}

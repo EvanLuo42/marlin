@@ -18,8 +18,8 @@ use marlin_rhi::{
 };
 use marlin_serial::cooked::Pod;
 
-use crate::Renderer;
-use crate::renderer::Camera;
+use crate::Meshes;
+use crate::meshes::Camera;
 use crate::scene::{GpuScene, RenderScene};
 
 /// The visibility pipeline's shaders (`Marlin.Engine.Visibility`), which the engine gets from
@@ -124,7 +124,8 @@ pub struct Visibility {
     raster: MeshPipeline,
     clear: ComputePipeline,
     depth: ComputePipeline,
-    /// The screen-space error, in pixels, a LOD may have (as [`Renderer::lod_error_pixels`]).
+    /// The screen-space error, in pixels, a LOD may have: each instance draws its coarsest LOD
+    /// whose error, projected at the instance's distance, stays within it.
     pub lod_error_pixels: f32,
 }
 
@@ -184,13 +185,13 @@ impl Visibility {
     }
 
     /// Declares the visibility passes of `scene` seen from `camera` into a `width` × `height`
-    /// visibility buffer, reading the GPU Scene `gpu` (after its scatter). `renderer` holds the
+    /// visibility buffer, reading the GPU Scene `gpu` (after its scatter). `meshes` holds the
     /// meshes: the visible-cluster buffer is sized for every drawable instance's largest LOD.
     #[allow(clippy::too_many_arguments, reason = "one view's inputs")]
     pub fn add_passes<'g>(
         &'g self,
         g: &mut RenderGraph<'g>,
-        renderer: &Renderer,
+        meshes: &Meshes,
         scene: &RenderScene,
         gpu: GpuScene<'g>,
         camera: (Transform, Camera),
@@ -203,7 +204,7 @@ impl Visibility {
             * eye.to_matrix().inverse_affine();
         let needed: u64 = scene
             .drawable()
-            .map(|(_, mesh, _)| u64::from(renderer.meshlet_capacity(mesh)))
+            .map(|(_, mesh, _)| u64::from(meshes.meshlet_capacity(mesh)))
             .sum();
         let capacity = (needed.min(u64::from(MAX_CLUSTERS)) as u32)
             .max(MIN_CLUSTER_CAPACITY)

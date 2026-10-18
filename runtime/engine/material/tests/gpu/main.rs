@@ -6,4 +6,5 @@
 #![cfg(marlin_platform = "windows")]
 
 mod materials;
+mod scenes;
 mod support;

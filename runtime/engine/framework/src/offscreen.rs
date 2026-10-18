@@ -46,7 +46,7 @@ impl Offscreen {
                 TextureDesc::new_2d(width, height, OFFSCREEN_FORMAT)
                     .with_clear(ClearValue::Color(clear)),
             );
-            let (target, _) = render.add_passes(g, target);
+            let target = render.add_passes(g, target);
             g.readback_texture(target)
         })?;
         let bytes = self.frame.wait_readback(ticket)?;

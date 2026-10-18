@@ -97,8 +97,8 @@
 - **引擎 shader** 由 cooker 编译，作为资产交给引擎，引擎自己不带 shader（2026-10-18 定）。
   - `marlin_render::RendererDesc::shaders` 由创建方传入。
   - 源码在 `content/engine/shaders/`（`Marlin.Engine` 包），`cook_shader` 把它编成库（0003 §4.4）。
-  - `framework::run` 按包名从挂载的内容里加载这个库，取 `Marlin.Engine.ForwardVs` / `ForwardPs`。
-  - 测试经 `marlin-gpu-test-support` 在运行时编译同一份源码（`shader("Marlin.Engine.ForwardVs")`）；端到端测试则用 cook 出来的包。
+  - `framework::run` 按包名从挂载的内容里加载这个库，取各个 pass 的入口（`Marlin.Engine.Visibility.*`、`Marlin.Engine.Material.*`、`Marlin.Engine.Lighting.DirectLight`……）；泛型入口的 permutation（默认材质的 `ResolvePixel`）是单独 cook 的 `Shader` 资产，也按名字找。
+  - 测试经 `marlin-gpu-test-support` 在运行时编译同一份源码（`shader("Marlin.Engine.Lighting.DirectLight")`，泛型入口用 `with_type_args`）；端到端测试则用 cook 出来的包。
 - 编译器只产出 SPIR-V。后端格式不是 SPIR-V（D3D12）时没有测试 shader 可用；D3D12 只留给 Xbox（0016）。
 
 ## 6. SPIR-V 绑定（Vulkan）

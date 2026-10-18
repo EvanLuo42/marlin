@@ -3,7 +3,7 @@
 //! compiled for the platform's target, by full name.
 //!
 //! The package's name is the object's `!Name`, and the build's name table finds a package by
-//! it, so the engine asks for `Marlin.Engine` and then for `Marlin.Engine.ForwardVs`; nothing
+//! it, so the engine asks for `Marlin.Engine` and then for `Marlin.Engine.Lighting.DirectLight`; nothing
 //! names a shader by path or UUID in code.
 //!
 //! A [`Shader`] is one permutation (type arguments, static parameters) that a material links
@@ -25,7 +25,7 @@ use crate::reflect::{ConstValue, ShaderReflection};
 /// {
 ///     !Uuid = "…"
 ///     !Name = "Marlin.Engine"
-///     Sources = [`source:shaders/Forward.mshader`]
+///     Sources = [`source:shaders/Lighting/Lighting.mshader`]
 /// }
 /// ```
 #[derive(Clone, PartialEq, Debug, Default, Reflect)]
@@ -91,7 +91,7 @@ pub struct ShaderLibrary {
 #[derive(Clone, PartialEq, Debug, Default, Reflect)]
 #[reflect(default)]
 pub struct LibraryEntry {
-    /// The entry's full path (`Marlin.Engine.ForwardVs`).
+    /// The entry's full path (`Marlin.Engine.Lighting.DirectLight`).
     pub name: String,
     /// The code for the target's graphics API (SPIR-V for Vulkan); the module's entry point is
     /// `main`.

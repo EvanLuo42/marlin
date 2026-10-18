@@ -53,23 +53,23 @@ fn cooks_then_hits_the_cache_then_reports_failures() {
     let (ok, text) = run(&["cook", r]);
     assert!(ok, "{text}");
     assert!(
-        text.contains("3 units (3 cooked, 0 cached), 0 failed"),
+        text.contains("4 units (4 cooked, 0 cached), 0 failed"),
         "{text}"
     );
     assert!(manifest_path.is_file());
 
     let (ok, text) = run(&["cook", r, "--threads", "2"]);
     assert!(ok, "{text}");
-    assert!(text.contains("(0 cooked, 3 cached)"), "{text}");
+    assert!(text.contains("(0 cooked, 4 cached)"), "{text}");
 
     let (ok, text) = run(&["package", r, "--bulk-codec", "gdeflate"]);
     assert!(ok, "{text}");
-    assert!(text.contains("3 units"), "{text}");
+    assert!(text.contains("4 units"), "{text}");
     let package_path = build.join(format!("{}.mpak", Platform::host().name));
     let package = marlin_asset::Package::open(package_path.to_str().unwrap()).unwrap();
-    // The engine's content (its shader package and the Substrate library) is in the build with
-    // the project's.
-    assert_eq!(package.index().units.len(), 3);
+    // The engine's content (its shader package, the Substrate library and the default
+    // material's resolve permutation) is in the build with the project's.
+    assert_eq!(package.index().units.len(), 4);
     let (ok, text) = run(&["package", r, "--bulk-codec", "brotli"]);
     assert!(!ok && text.contains("usage"), "{text}");
 
@@ -124,14 +124,14 @@ fn shader_packages_cook_for_both_profiles_and_names_are_validated() {
 
     let (ok, text) = run(&["cook", r]);
     assert!(ok, "{text}");
-    assert!(text.contains("(3 cooked, 0 cached)"), "{text}");
+    assert!(text.contains("(4 cooked, 0 cached)"), "{text}");
     // A shipping build is another key for shaders.
     let (ok, text) = run(&["cook", r, "--shipping"]);
     assert!(ok, "{text}");
-    assert!(text.contains("(3 cooked, 0 cached)"), "{text}");
+    assert!(text.contains("(4 cooked, 0 cached)"), "{text}");
     let (ok, text) = run(&["cook", r, "--shipping", "--threads", "1"]);
     assert!(ok, "{text}");
-    assert!(text.contains("(0 cooked, 3 cached)"), "{text}");
+    assert!(text.contains("(0 cooked, 4 cached)"), "{text}");
 
     let (ok, text) = run(&["validate", r]);
     assert!(ok, "{text}");

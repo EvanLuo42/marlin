@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 use marlin_math::Transform;
 
 use super::id::{InstanceId, LightId, MaterialId, MeshId};
-use crate::renderer::{Environment, MeshHandle};
+use crate::meshes::{Environment, MeshHandle};
 
 /// Changes to one table, in order.
 #[derive(Clone, PartialEq, Debug)]
@@ -145,13 +145,13 @@ impl Bounds {
     }
 }
 
-/// A mesh on the GPU, as the GPU Scene's mesh table describes it ([`Renderer::resident_mesh`]
+/// A mesh on the GPU, as the GPU Scene's mesh table describes it ([`Meshes::resident_mesh`]
 /// gives it).
 ///
-/// [`Renderer::resident_mesh`]: crate::Renderer::resident_mesh
+/// [`Meshes::resident_mesh`]: crate::Meshes::resident_mesh
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct ResidentMesh {
-    /// The renderer's mesh: its buffer.
+    /// The resident mesh: its buffer.
     pub handle: MeshHandle,
     /// The view of its geometry buffer (`crate::geometry`).
     pub geometry: u32,

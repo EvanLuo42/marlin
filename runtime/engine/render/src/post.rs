@@ -17,10 +17,10 @@ use marlin_rhi::{
 };
 use marlin_serial::cooked::Pod;
 
-/// The format of the HDR scene the post chain reads: what the forward pass draws into.
+/// The format of the HDR scene the post chain reads: what the lighting writes.
 pub const HDR_FORMAT: Format = Format::Rgba16Float;
 
-/// The post chain's shaders (`Marlin.Engine.Post`), from the cooker like the forward pass's.
+/// The post chain's shaders (`Marlin.Engine.Post`), from the cooker like every engine shader.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct PostShaders<'a> {
     pub bloom_down: ShaderModule<'a>,

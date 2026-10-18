@@ -35,7 +35,7 @@ pub struct Dependency {
 
 impl Dependency {
     /// One of its source paths as [`CookContext::read_source`] takes it from any mount:
-    /// qualified, `/Engine/shaders/Forward.mshader`.
+    /// qualified, `/Engine/shaders/Lighting/Lighting.mshader`.
     pub fn source(&self, path: &str) -> String {
         format!("/{}/{path}", self.mount)
     }

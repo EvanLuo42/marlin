@@ -5,30 +5,32 @@
 //! tables of meshes, instances and lights live on the GPU as well, the GPU Scene, which one
 //! scatter pass a frame brings up to date by writing just the rows that changed.
 //!
-//! So far a forward renderer for opaque meshes, lit by one directional light plus ambient. Draws
-//! are instanced per mesh; vertices are pulled from bindless buffers, transforms and colors read
-//! from the GPU Scene. See `docs/design/0002-shader-interface.md` for the shader side.
+//! A frame (0008 §3), each step declared into the frame's render graph:
+//! - the GPU Scene's scatter ([`RenderScene::add_passes`]);
+//! - the visibility passes ([`Visibility`]): instance and cluster culling on the GPU, meshlets
+//!   drawn by a mesh shader into a 64-bit visibility buffer;
+//! - the material passes (the `marlin-material` crate): the visibility buffer's pixels binned
+//!   by material and resolved into the material buffer;
+//! - direct lighting ([`Lighting`]) into an HDR scene;
+//! - the post chain ([`PostProcess`]): bloom, a luminance histogram and auto-exposure on the
+//!   compute queue, and a filmic tonemap into the output.
 //!
-//! The renderer declares its work into the frame's render graph ([`Renderer::add_passes`]):
-//! the depth buffer is a transient, the frame constants and instance lists go through the
-//! frame's upload memory, and the caller gives the color target, a swapchain image or an
-//! offscreen one. The post chain ([`PostProcess`]) takes the HDR scene to the output: bloom, a
-//! luminance histogram and auto-exposure on the compute queue, and a filmic tonemap.
+//! Meshes stay resident as their cooked LOD pages ([`Meshes`], [`geometry`]). See
+//! `docs/design/0002-shader-interface.md` for the shader side.
 #![cfg_attr(not(test), no_std)]
 
 extern crate alloc;
 
 pub mod asset;
 pub mod geometry;
+pub mod lighting;
+mod meshes;
 mod post;
-mod renderer;
 pub mod scene;
 pub mod visibility;
 
+pub use lighting::{LIGHTING_PUSH_BYTES, Lighting};
+pub use meshes::{Camera, Environment, LodIndices, MeshHandle, Meshes};
 pub use post::{HDR_FORMAT, PostOutput, PostProcess, PostSettings, PostShaders};
-pub use renderer::{
-    Camera, Environment, FORWARD_PUSH_BYTES, ForwardOutput, ForwardShaders, MeshHandle,
-    RenderStats, Renderer, RendererDesc,
-};
 pub use scene::{GpuScene, RenderScene, ScatterShader, SceneIds, SceneUpdates};
 pub use visibility::{Visibility, VisibilityOutput, VisibilityShaders};

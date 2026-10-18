@@ -6,10 +6,10 @@ use marlin_asset_db::{Content, ENGINE_MOUNT};
 use marlin_cook_core::{
     CookOptions, Cookers, Ddc, LocalDdc, Platform, Profile, cook_all, named_objects, unit_key,
 };
-use marlin_cook_shader::ShaderPackageCooker;
+use marlin_cook_shader::{ShaderCooker, ShaderPackageCooker};
 use marlin_reflect::type_info;
 use marlin_serial::cooked::CookedBuffer;
-use marlin_shader::asset::{ShaderLibrary, ShaderPackage};
+use marlin_shader::asset::{Shader, ShaderLibrary, ShaderPackage};
 use marlin_shader::reflect::Stage;
 
 use crate::support::{Project, uuid};
@@ -30,6 +30,9 @@ fn cookers() -> Cookers {
     let mut cookers = Cookers::new();
     cookers
         .register_named::<ShaderPackage>(ShaderPackageCooker::new())
+        .unwrap();
+    cookers
+        .register_named::<Shader>(ShaderCooker::new())
         .unwrap();
     cookers
 }
@@ -432,8 +435,8 @@ fn cooking_is_deterministic() {
     assert_eq!(one.get(key).unwrap(), two.get(key).unwrap());
 }
 
-/// The engine's own package (`content/engine/shaders/`) cooks, with the forward pass, the post
-/// chain, the GPU Scene's scatter and the visibility pipeline in it.
+/// The engine's own package (`content/engine/shaders/`) cooks, with the post chain, the GPU
+/// Scene's scatter, the visibility and material passes and the lighting in it.
 #[test]
 fn the_engine_package_cooks() {
     let p = Project::new("engine");
@@ -460,16 +463,32 @@ fn the_engine_package_cooks() {
     let ddc = p.ddc("ddc");
     let (report, manifest) = cook_all(&db, &cookers(), &ddc, &CookOptions::default());
     assert!(report.errors.is_empty(), "{:?}", report.errors);
-    let id = manifest
-        .named("Marlin.Engine")
-        .expect("the engine package by name");
-    let bytes = unit(&ddc, report.units[0].key);
-    let view = UnitView::new(&bytes).unwrap();
-    let (_, entry) = view.find(id).unwrap();
-    let lib: ShaderLibrary = marlin_serial::from_bytes(view.payload(&entry)).unwrap();
+    // The library of the object named `name`, from whichever unit holds it.
+    let library = |name: &str| -> ShaderLibrary {
+        let id = manifest
+            .named(name)
+            .unwrap_or_else(|| panic!("{name} by name"));
+        report
+            .units
+            .iter()
+            .find_map(|u| {
+                let bytes = unit(&ddc, u.key);
+                let view = UnitView::new(&bytes).unwrap();
+                let (_, entry) = view.find(id)?;
+                Some(marlin_serial::from_bytes(view.payload(&entry)).unwrap())
+            })
+            .unwrap_or_else(|| panic!("{name} in a unit"))
+    };
+    let lib = library("Marlin.Engine");
+    // The default material's resolve permutation: the generic entry, instantiated.
+    let resolve = library("Marlin.Engine.DefaultMaterial.Resolve");
+    let e = resolve
+        .entry("Marlin.Engine.Material.ResolvePixel")
+        .expect("the resolve");
+    assert_eq!(e.reflection.entry.stage, Stage::Compute);
     for (name, stage) in [
-        ("Marlin.Engine.ForwardPs", Stage::Pixel),
-        ("Marlin.Engine.ForwardVs", Stage::Vertex),
+        ("Marlin.Engine.Lighting.DirectLight", Stage::Compute),
+        ("Marlin.Engine.Material.Classify", Stage::Compute),
         ("Marlin.Engine.Post.TonemapPs", Stage::Pixel),
         ("Marlin.Engine.Scene.Scatter", Stage::Compute),
         ("Marlin.Engine.Visibility.VisMesh", Stage::Mesh),
@@ -479,9 +498,9 @@ fn the_engine_package_cooks() {
         assert_eq!(e.reflection.entry.stage, stage);
         assert_eq!(e.code[..4], SPIRV_MAGIC);
     }
-    // The forward pass's push constants: eight 32-bit words (0002).
-    let vs = lib.entry("Marlin.Engine.ForwardVs").unwrap();
-    assert_eq!(vs.reflection.push.as_ref().unwrap().size, 32);
+    // The lighting's push constants: five 32-bit words.
+    let light = lib.entry("Marlin.Engine.Lighting.DirectLight").unwrap();
+    assert_eq!(light.reflection.push.as_ref().unwrap().size, 20);
 }
 
 /// `Marlin` and `Marlin.…` are the engine's package names, and the engine uses no others: a

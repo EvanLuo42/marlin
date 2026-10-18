@@ -10,11 +10,14 @@ use marlin_render::scene::{
     MeshUpdate,
 };
 use marlin_render::{
-    Camera, Environment, RenderScene, Renderer, RendererDesc, ScatterShader, SceneUpdates,
-    Visibility, VisibilityShaders,
+    Camera, Environment, Lighting, Meshes, RenderScene, ScatterShader, SceneUpdates, Visibility,
+    VisibilityShaders,
 };
-use marlin_render_graph::{FrameContext, FrameContextDesc};
-use marlin_rhi::{Device, Format};
+use marlin_render_graph::{
+    Access, FrameContext, FrameContextDesc, PassContext, TextureDesc as GraphTextureDesc,
+};
+use marlin_rhi::{ComputePipeline, ComputePipelineDesc, Device, Format};
+use marlin_serial::cooked::Pod;
 
 /// The render crate's test meshes, cooked by the real cooker.
 #[path = "../../../render/tests/support/cook.rs"]
@@ -29,11 +32,13 @@ pub const STRIPES: u32 = 1;
 
 pub struct Harness {
     pub device: &'static Device,
-    pub renderer: Renderer,
+    pub meshes: Meshes,
     pub scene: RenderScene,
     scatter: ScatterShader,
     vis: Visibility,
     pub materials: Materials,
+    lighting: Lighting,
+    unorm: &'static ComputePipeline,
     pub updates: SceneUpdates,
     pub camera: (Transform, Camera),
     /// The camera of the last frame.
@@ -63,14 +68,6 @@ impl Harness {
     /// The pipelines, an empty scene and a camera at (0, 0, 4) looking down -Z.
     pub fn new() -> Self {
         let device = hardware_device();
-        let renderer = Renderer::new(
-            device,
-            &RendererDesc {
-                color_format: Format::Rgba8Unorm,
-                shaders: None,
-            },
-        )
-        .unwrap();
         let scatter = ScatterShader::new(device, shader("Marlin.Engine.Scene.Scatter")).unwrap();
         let v = |name: &str| shader(&format!("Marlin.Engine.Visibility.{name}"));
         let mut vis = Visibility::new(
@@ -117,13 +114,26 @@ impl Harness {
             .register(device, "Material.Stripes", resolve("Material.Stripes"))
             .unwrap();
         assert_eq!((default, stripes), (DEFAULT, STRIPES));
+        let lighting = Lighting::new(device, shader("Marlin.Engine.Lighting.DirectLight")).unwrap();
+        let unorm = Box::leak(Box::new(
+            device
+                .create_compute_pipeline(&ComputePipelineDesc {
+                    shader: Shader::new("Material.ToUnorm")
+                        .in_crate(env!("CARGO_MANIFEST_DIR"))
+                        .module(),
+                    cache: None,
+                })
+                .unwrap(),
+        ));
         Self {
             device,
-            renderer,
+            meshes: Meshes::new(),
             scene: RenderScene::new(),
             scatter,
             vis,
             materials,
+            lighting,
+            unorm,
             updates: SceneUpdates {
                 environment: Some(Environment::default()),
                 ..SceneUpdates::default()
@@ -139,12 +149,12 @@ impl Harness {
 
     pub fn upload(&mut self, mesh: &cook::Cooked) -> MeshId {
         let handle = self
-            .renderer
+            .meshes
             .upload_mesh(self.device, &mesh.view(), &mesh.pages())
             .unwrap();
         let id = self.scene.ids().meshes.reserve();
         self.updates.meshes.push(id, MeshUpdate::Add);
-        let resident = self.renderer.resident_mesh(handle).unwrap();
+        let resident = self.meshes.resident_mesh(handle).unwrap();
         self.updates.meshes.push(id, MeshUpdate::Resident(resident));
         id
     }
@@ -184,8 +194,8 @@ impl Harness {
     pub fn frame(&mut self, debug: Option<MaterialDebug>) -> Frame {
         let updates = core::mem::take(&mut self.updates);
         self.scene.apply(&updates);
-        let (renderer, scene, scatter, vis, materials) = (
-            &self.renderer,
+        let (meshes, scene, scatter, vis, materials) = (
+            &self.meshes,
             &mut self.scene,
             &self.scatter,
             &self.vis,
@@ -196,7 +206,7 @@ impl Harness {
             .frame
             .execute(self.device, |g, _| {
                 let gpu = scene.add_passes(g, scatter);
-                let v = vis.add_passes(g, renderer, scene, gpu, camera, WIDTH, HEIGHT);
+                let v = vis.add_passes(g, meshes, scene, gpu, camera, WIDTH, HEIGHT);
                 let out = materials.add_passes(g, gpu, &v, camera, previous, WIDTH, HEIGHT);
                 let debug = debug.map(|mode| {
                     let view = materials.add_debug_pass(g, &out, mode);
@@ -266,5 +276,66 @@ pub fn proxy(d: [u32; 4]) -> Proxy {
         albedo: color(d[2]),
         roughness: (d[2] >> 24) as f32 / 255.0,
         f0: color(d[3]),
+    }
+}
+
+#[repr(C)]
+#[derive(Pod, Clone, Copy)]
+struct UnormArgs {
+    scene: u32,
+    output: u32,
+    width: u32,
+    height: u32,
+}
+
+impl Harness {
+    /// Applies the pending updates and draws one `width` × `height` frame through the whole
+    /// pipeline, lit, as an RGBA8 image clamped to [0, 1] (what the forward pass's targets held).
+    pub fn lit_image(&mut self, width: u32, height: u32) -> Image {
+        let updates = core::mem::take(&mut self.updates);
+        self.scene.apply(&updates);
+        let (meshes, scene, scatter, vis, materials, lighting, unorm) = (
+            &self.meshes,
+            &mut self.scene,
+            &self.scatter,
+            &self.vis,
+            &self.materials,
+            &self.lighting,
+            self.unorm,
+        );
+        let (camera, previous) = (self.camera, self.previous);
+        let ticket = self
+            .frame
+            .execute(self.device, |g, _| {
+                let gpu = scene.add_passes(g, scatter);
+                let v = vis.add_passes(g, meshes, scene, gpu, camera, width, height);
+                let out = materials.add_passes(g, gpu, &v, camera, previous, width, height);
+                let env = *scene.environment();
+                let lit = lighting.add_passes(g, Some(out.material), &env, width, height);
+                let target = g.create_texture(
+                    "Unorm",
+                    GraphTextureDesc::new_2d(width, height, Format::Rgba8Unorm),
+                );
+                let target = g.add_compute("ToUnorm", |b| {
+                    let lit = b.read_texture(lit, Access::ComputeRead);
+                    let target = b.write_texture(target, Access::ComputeWrite);
+                    (target, move |ctx: &mut PassContext<'_>| {
+                        ctx.set_pipeline(unorm);
+                        ctx.push(&UnormArgs {
+                            scene: ctx.srv(lit),
+                            output: ctx.uav(target),
+                            width,
+                            height,
+                        });
+                        ctx.dispatch(width.div_ceil(8), height.div_ceil(8), 1);
+                    })
+                });
+                g.readback_texture(target)
+            })
+            .unwrap();
+        let pixels = self.frame.wait_readback(ticket).unwrap();
+        assert_eq!(self.device.validation_errors(), 0);
+        self.previous = Some(self.camera);
+        Image::new(width, height, pixels)
     }
 }

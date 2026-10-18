@@ -27,7 +27,7 @@ pub const SHARED: &str = "Test";
 pub const SUBSTRATE: &str = "Marlin.Substrate";
 
 /// The engine's shader package (`content/engine/shaders/`): its entries are named in full
-/// (`Marlin.Engine.ForwardVs`).
+/// (`Marlin.Engine.Lighting.DirectLight`).
 pub const ENGINE: &str = "Marlin.Engine";
 
 const TARGET: &str = "vulkan-1.4";

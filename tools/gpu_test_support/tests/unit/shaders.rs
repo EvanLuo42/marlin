@@ -39,8 +39,9 @@ const ENTRIES: &[(&str, &str)] = &[
 
 /// Every entry of the engine's package, with its stage.
 const ENGINE_ENTRIES: &[(&str, &str)] = &[
-    ("Marlin.Engine.ForwardVs", "Vertex"),
-    ("Marlin.Engine.ForwardPs", "Pixel"),
+    ("Marlin.Engine.Lighting.DirectLight", "Compute"),
+    ("Marlin.Engine.Visibility.VisMesh", "Mesh"),
+    ("Marlin.Engine.Visibility.VisPs", "Pixel"),
 ];
 
 /// Khronos' spirv-val on `bytes`, when `MARLIN_SPIRV_VAL` names it (0014 §6.1).

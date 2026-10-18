@@ -1,0 +1,20 @@
+namespace Material;
+
+// The lit HDR scene as the forward pass's RGBA8 targets held it, clamped to [0, 1], so the
+// pipeline's lighting compares with the forward renderer's references.
+
+public struct UnormArgs
+{
+    public Texture2D<float4> Scene;
+    public StorageTexture2D<float4> Output;
+    public uint Width;
+    public uint Height;
+}
+
+[Compute(8, 8, 1)]
+public void ToUnorm([DispatchThreadId] uint3 id, [Push] in UnormArgs a)
+{
+    if (id.x >= a.Width || id.y >= a.Height)
+        return;
+    a.Output[(int2)id.xy] = Saturate(a.Scene.Load((int2)id.xy));
+}

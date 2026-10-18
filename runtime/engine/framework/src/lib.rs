@@ -25,12 +25,12 @@ mod run;
 pub mod shaders;
 
 pub use boot::{Boot, BootError, ContentSettings, boot, mount, register_cvars};
-pub use delta::{MeshUpload, RenderDelta, RenderSide};
+pub use delta::{MeshUpload, RenderDelta, RenderSide, RenderSideError};
 pub use engine::{Engine, EngineError, FlyCamera, FromLevel, Spin, StaticMesh};
 pub use level::{Component, Level, LevelEntity, LevelEnvironment, TransformDesc};
 pub use offscreen::{OFFSCREEN_FORMAT, Offscreen};
 pub use run::{RunError, run};
 pub use shaders::{
-    ShaderError, forward_shaders, load_engine_shaders, post_shaders, scatter_shader,
-    visibility_shaders,
+    ShaderError, lighting_shader, load_default_resolve, load_engine_shaders, material_shaders,
+    post_shaders, resolve_shader, scatter_shader, visibility_shaders,
 };

@@ -28,7 +28,8 @@ pub fn engine_cookers() -> Cookers {
         .and_then(|()| cookers.register::<AnimationClip>(AnimationCooker))
         .and_then(|()| cookers.register::<StringTable>(StringTableCooker))
         .and_then(|()| cookers.register_named::<ShaderPackage>(ShaderPackageCooker::new()))
-        .and_then(|()| cookers.register::<Shader>(ShaderCooker::new()))
+        // Permutations are found by name too (the default material's resolve).
+        .and_then(|()| cookers.register_named::<Shader>(ShaderCooker::new()))
         .and_then(|()| cookers.register_generic::<Level>());
     if let Err(e) = registered {
         // Two engine types with one text name: a programming error, caught by any run.

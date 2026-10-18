@@ -2,20 +2,20 @@
 //! (`content/engine/shaders/`, `docs/design/0003-asset-pipeline.md` §4.4), found by package name
 //! and then by entry path. Nothing here names a shader by path or UUID.
 
-use alloc::vec::Vec;
 use core::fmt;
 
 use marlin_asset::{AssetError, AssetServer, Handle, LoadState, Vfs};
 use marlin_jobs::JobSystem;
-use marlin_render::{FORWARD_PUSH_BYTES, ForwardShaders, PostShaders, VisibilityShaders};
+use marlin_material::MaterialShaders;
+use marlin_render::{PostShaders, VisibilityShaders};
 use marlin_rhi::ShaderModule;
 use marlin_shader::asset::{LibraryEntry, ShaderLibrary};
-use marlin_shader::reflect::{Stage, StageBinding};
+use marlin_shader::reflect::Stage;
 
 /// The engine's shader package.
 pub const ENGINE_SHADERS: &str = "Marlin.Engine";
-pub const FORWARD_VS: &str = "Marlin.Engine.ForwardVs";
-pub const FORWARD_PS: &str = "Marlin.Engine.ForwardPs";
+/// The default material's resolve permutation (`content/engine/shaders/DefaultMaterialResolve.masset`).
+pub const DEFAULT_RESOLVE: &str = "Marlin.Engine.DefaultMaterial.Resolve";
 
 /// The entry point the compiler gives every module.
 const MODULE_ENTRY: &str = "main";
@@ -59,78 +59,32 @@ pub fn load_engine_shaders(
     vfs: &Vfs,
     jobs: Option<&JobSystem>,
 ) -> Result<Handle<ShaderLibrary>, ShaderError> {
-    let uuid = vfs.named(ENGINE_SHADERS).ok_or(ShaderError::NotMounted)?;
+    load_named(assets, vfs, ENGINE_SHADERS, jobs)
+}
+
+/// Loads the default material's resolve permutation (a cooked `Shader`, found by name
+/// [`DEFAULT_RESOLVE`]), blocking as [`load_engine_shaders`] does.
+pub fn load_default_resolve(
+    assets: &mut AssetServer,
+    vfs: &Vfs,
+    jobs: Option<&JobSystem>,
+) -> Result<Handle<ShaderLibrary>, ShaderError> {
+    load_named(assets, vfs, DEFAULT_RESOLVE, jobs)
+}
+
+fn load_named(
+    assets: &mut AssetServer,
+    vfs: &Vfs,
+    name: &str,
+    jobs: Option<&JobSystem>,
+) -> Result<Handle<ShaderLibrary>, ShaderError> {
+    let uuid = vfs.named(name).ok_or(ShaderError::NotMounted)?;
     let handle = assets.load::<ShaderLibrary>(uuid);
     assets.update_blocking(vfs, jobs);
     match assets.state(&handle) {
         LoadState::Loaded => Ok(handle),
         LoadState::Failed(e) => Err(ShaderError::Load(e)),
         LoadState::Loading => Err(ShaderError::Load(AssetError::NotFound)),
-    }
-}
-
-/// The forward pass's shaders from the engine's library, checked against what the renderer
-/// expects (stages, push constants, one color target) and against each other (every pixel
-/// input is a vertex output of the same type), so a mismatch is a clear error at startup rather
-/// than a pipeline the driver rejects.
-pub fn forward_shaders(library: &ShaderLibrary) -> Result<ForwardShaders<'_>, ShaderError> {
-    let vs = entry(library, FORWARD_VS, Stage::Vertex)?;
-    let ps = entry(library, FORWARD_PS, Stage::Pixel)?;
-    let mismatch = |problem| ShaderError::Mismatch {
-        entry: FORWARD_PS,
-        problem,
-    };
-    for input in &ps.reflection.inputs {
-        let StageBinding::Location(at) = input.binding else {
-            continue;
-        };
-        match vs
-            .reflection
-            .outputs
-            .iter()
-            .find(|o| o.binding == StageBinding::Location(at))
-        {
-            Some(output) if output.ty == input.ty => {}
-            Some(_) => return Err(mismatch("an input's type differs from the vertex output's")),
-            None => return Err(mismatch("reads an input the vertex shader does not write")),
-        }
-    }
-    let targets: Vec<u32> = ps
-        .reflection
-        .outputs
-        .iter()
-        .filter_map(|o| match o.binding {
-            StageBinding::Target { index, .. } => Some(index),
-            _ => None,
-        })
-        .collect();
-    if targets != [0] {
-        return Err(mismatch("does not write exactly render target 0"));
-    }
-    Ok(ForwardShaders {
-        vertex: module(vs),
-        pixel: module(ps),
-    })
-}
-
-fn entry<'a>(
-    library: &'a ShaderLibrary,
-    name: &'static str,
-    stage: Stage,
-) -> Result<&'a LibraryEntry, ShaderError> {
-    let e = library.entry(name).ok_or(ShaderError::MissingEntry(name))?;
-    let mismatch = |problem| ShaderError::Mismatch {
-        entry: name,
-        problem,
-    };
-    if e.reflection.entry.stage != stage {
-        return Err(mismatch("not the stage the forward pass uses it as"));
-    }
-    match &e.reflection.push {
-        Some(push) if push.size == FORWARD_PUSH_BYTES => Ok(e),
-        _ => Err(mismatch(
-            "its push constants are not the forward pass's eight 32-bit words",
-        )),
     }
 }
 
@@ -251,3 +205,70 @@ pub fn visibility_shaders(library: &ShaderLibrary) -> Result<VisibilityShaders<'
         depth: get(v[8], Stage::Compute, TARGET_PUSH_BYTES)?,
     })
 }
+
+/// The material passes' entries (`Marlin.Engine.Material`).
+pub const MATERIAL: [&str; 4] = [
+    "Marlin.Engine.Material.Classify",
+    "Marlin.Engine.Material.Bins",
+    "Marlin.Engine.Material.Scatter",
+    "Marlin.Engine.Material.MaterialDebug",
+];
+
+/// The direct lighting entry.
+pub const DIRECT_LIGHT: &str = "Marlin.Engine.Lighting.DirectLight";
+
+/// An entry of `library` checked for its stage and push constant size.
+fn checked<'a>(
+    library: &'a ShaderLibrary,
+    name: &'static str,
+    stage: Stage,
+    push: u32,
+) -> Result<ShaderModule<'a>, ShaderError> {
+    let e = library.entry(name).ok_or(ShaderError::MissingEntry(name))?;
+    let mismatch = |problem| ShaderError::Mismatch {
+        entry: name,
+        problem,
+    };
+    if e.reflection.entry.stage != stage {
+        return Err(mismatch("not the stage the engine uses it as"));
+    }
+    if e.reflection.push.as_ref().map(|p| p.size) != Some(push) {
+        return Err(mismatch("its push constants are not what the engine sets"));
+    }
+    Ok(module(e))
+}
+
+/// The material passes' shaders from the engine's library (marlin-material's sizes).
+pub fn material_shaders(library: &ShaderLibrary) -> Result<MaterialShaders<'_>, ShaderError> {
+    use marlin_material::{CLASSIFY_PUSH_BYTES, DEBUG_PUSH_BYTES};
+    Ok(MaterialShaders {
+        classify: checked(library, MATERIAL[0], Stage::Compute, CLASSIFY_PUSH_BYTES)?,
+        bins: checked(library, MATERIAL[1], Stage::Compute, CLASSIFY_PUSH_BYTES)?,
+        scatter: checked(library, MATERIAL[2], Stage::Compute, CLASSIFY_PUSH_BYTES)?,
+        debug: checked(library, MATERIAL[3], Stage::Compute, DEBUG_PUSH_BYTES)?,
+    })
+}
+
+/// The direct lighting shader from the engine's library.
+pub fn lighting_shader(library: &ShaderLibrary) -> Result<ShaderModule<'_>, ShaderError> {
+    checked(
+        library,
+        DIRECT_LIGHT,
+        Stage::Compute,
+        marlin_render::LIGHTING_PUSH_BYTES,
+    )
+}
+
+/// The resolve entry of a material's permutation library (a cooked `Shader` of
+/// `Marlin.Engine.Material.ResolvePixel`).
+pub fn resolve_shader(permutation: &ShaderLibrary) -> Result<ShaderModule<'_>, ShaderError> {
+    checked(
+        permutation,
+        RESOLVE,
+        Stage::Compute,
+        marlin_material::RESOLVE_PUSH_BYTES,
+    )
+}
+
+/// The material resolve entry every permutation instantiates.
+pub const RESOLVE: &str = "Marlin.Engine.Material.ResolvePixel";

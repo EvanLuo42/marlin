@@ -11,11 +11,10 @@ use marlin_cook_core::{CookOptions, PackageOptions, cook_all, publish_manifest, 
 use marlin_cookd::{Cookd, CookdOptions, bind};
 use marlin_cooker::{engine_cookers, open_ddc};
 use marlin_framework::{
-    Boot, ContentSettings, Engine, OFFSCREEN_FORMAT, Offscreen, RenderSide, forward_shaders,
+    Boot, ContentSettings, Engine, OFFSCREEN_FORMAT, Offscreen, RenderSide, load_default_resolve,
     load_engine_shaders, mount,
 };
 use marlin_gpu_test_support::{Image, assert_image, hardware_device};
-use marlin_render::{Renderer, RendererDesc};
 use marlin_rhi::Device;
 use marlin_shader::asset::ShaderLibrary;
 use marlin_test_support::{BackgroundService, TempDir, wait_until};
@@ -86,37 +85,14 @@ struct Viewer {
 }
 
 impl Viewer {
-    /// A renderer and post chain with the shaders of `library`, the engine's cooked one.
-    fn new(library: &ShaderLibrary, ids: marlin_render::SceneIds) -> Self {
+    /// The render side made with the engine's cooked shaders: its library and the default
+    /// material's resolve permutation.
+    fn new(library: &ShaderLibrary, resolve: &ShaderLibrary, ids: marlin_render::SceneIds) -> Self {
         let device = hardware_device();
-        let renderer = Renderer::new(
-            device,
-            &RendererDesc {
-                color_format: marlin_render::HDR_FORMAT,
-                shaders: Some(forward_shaders(library).unwrap()),
-            },
-        )
-        .unwrap();
-        let post = marlin_render::PostProcess::new(
-            device,
-            &marlin_framework::post_shaders(library).unwrap(),
-            OFFSCREEN_FORMAT,
-        )
-        .unwrap();
-        let scatter = marlin_render::ScatterShader::new(
-            device,
-            marlin_framework::scatter_shader(library).unwrap(),
-        )
-        .unwrap();
-        // The visibility pipeline's entries are what marlin-render sets (R1k draws with them).
-        marlin_render::Visibility::new(
-            device,
-            &marlin_framework::visibility_shaders(library).unwrap(),
-        )
-        .unwrap();
+        let render = RenderSide::new(device, library, resolve, OFFSCREEN_FORMAT, ids).unwrap();
         let offscreen = Offscreen::new(device, WIDTH, HEIGHT).unwrap();
         Self {
-            render: RenderSide::new(renderer, post, scatter, ids),
+            render,
             offscreen,
             device,
         }
@@ -137,7 +113,12 @@ impl Viewer {
 fn start<'a>(boot: &'a Boot) -> (Engine<'a>, Viewer, Vec<u32>) {
     let mut engine = Engine::new(&boot.vfs).unwrap();
     let library = load_engine_shaders(&mut engine.assets, &boot.vfs, None).unwrap();
-    let mut viewer = Viewer::new(engine.assets.get(&library).unwrap(), engine.scene_ids());
+    let resolve = load_default_resolve(&mut engine.assets, &boot.vfs, None).unwrap();
+    let mut viewer = Viewer::new(
+        engine.assets.get(&library).unwrap(),
+        engine.assets.get(&resolve).unwrap(),
+        engine.scene_ids(),
+    );
     engine.load_level(boot.level);
     wait_until(Duration::from_secs(60), "the level to load", || {
         engine.is_ready() || {

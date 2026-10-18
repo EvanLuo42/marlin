@@ -1,9 +1,7 @@
 //! Resident geometry: cooked LOD pages decoded on the GPU by the engine's own decode
-//! (`Marlin.Engine.Scene`) match the CPU decode, and quantized positions round-trip; instances
-//! draw the LOD their distance allows.
+//! (`Marlin.Engine.Scene`) match the CPU decode, and quantized positions round-trip.
 
 use marlin_gpu_test_support::crate_shader;
-use marlin_math::{Transform, Vec3};
 use marlin_render::Environment;
 use marlin_render::asset::Mesh;
 use marlin_render::asset::PositionPrecision;
@@ -11,7 +9,7 @@ use marlin_render_graph::{Access, BufferDesc, PassContext};
 use marlin_rhi::{ComputePipeline, ComputePipelineDesc};
 use marlin_serial::cooked::Pod;
 
-use crate::support::cook::{Cooked, cook_with, sphere, sphere_source};
+use crate::support::cook::{Cooked, cook_with, sphere_source};
 use crate::support::{Harness, words};
 
 #[repr(C)]
@@ -40,10 +38,10 @@ fn decode_pipeline(h: &Harness) -> &'static ComputePipeline {
 fn gpu_decode(h: &mut Harness, cooked: &Cooked) -> Vec<Vec<([f32; 3], [f32; 3])>> {
     let pipeline = decode_pipeline(h);
     let (mesh, handle) = h.upload(cooked);
-    let geometry = h.renderer.resident_mesh(handle).unwrap().geometry;
+    let geometry = h.meshes.resident_mesh(handle).unwrap().geometry;
     let view = cooked.view();
     let counts: Vec<u32> = view.lods.iter().map(|l| l.vertex_count).collect();
-    let (_, _, tickets) = h.frame_with(|g, gpu| {
+    let tickets = h.frame_with(|g, gpu| {
         let mut tickets = Vec::new();
         for (lod, &count) in counts.iter().enumerate() {
             let out = g.create_buffer("Decoded", BufferDesc::new(u64::from(count) * 24));
@@ -135,63 +133,4 @@ fn the_gpu_decodes_every_lod_as_the_cpu_does() {
             assert!(dot(*n, p.map(|c| c / r)) > 0.99, "{n:?} at {p:?}");
         }
     }
-}
-
-/// At 64×64 pixels even close up a pixel hides LOD 1's error, so the near frame may already
-/// draw a coarser LOD; farther frames never draw finer ones.
-#[test]
-fn far_instances_draw_coarser_lods() {
-    let mut h = Harness::new(Environment::default());
-    let s = sphere(32, 64);
-    let lods: Vec<u32> = s.view().lods.iter().map(|l| l.triangle_count).collect();
-    assert!(lods.len() >= 3, "{lods:?}");
-    let (mesh, _) = h.upload(&s);
-    h.camera_at(0.0);
-    let id = h.add(
-        mesh,
-        Transform::from_translation(Vec3::new(0.0, 0.0, -1.5)),
-        [1.0; 4],
-    );
-    let (_, near) = h.render();
-    let mut last = near.triangles;
-    for z in [-20.0, -100.0, -1000.0] {
-        h.set(
-            id,
-            marlin_render::scene::InstanceUpdate::Transform(Transform::from_translation(
-                Vec3::new(0.0, 0.0, z),
-            )),
-        );
-        let (_, stats) = h.render();
-        assert!(
-            stats.triangles <= last,
-            "{z}: {} after {last}",
-            stats.triangles
-        );
-        assert!(lods.contains(&(stats.triangles as u32)));
-        last = stats.triangles;
-    }
-    assert_eq!(
-        last,
-        u64::from(*lods.last().unwrap()),
-        "far away: the last LOD"
-    );
-    // A tiny error budget: LOD 0 close up; none allowed: LOD 0 everywhere.
-    h.set(
-        id,
-        marlin_render::scene::InstanceUpdate::Transform(Transform::from_translation(Vec3::new(
-            0.0, 0.0, -1.5,
-        ))),
-    );
-    h.renderer.lod_error_pixels = 1e-6;
-    let (_, stats) = h.render();
-    assert_eq!(stats.triangles, u64::from(lods[0]));
-    h.set(
-        id,
-        marlin_render::scene::InstanceUpdate::Transform(Transform::from_translation(Vec3::new(
-            0.0, 0.0, -1000.0,
-        ))),
-    );
-    h.renderer.lod_error_pixels = 0.0;
-    let (_, stats) = h.render();
-    assert_eq!(stats.triangles, u64::from(lods[0]));
 }

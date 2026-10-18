@@ -356,6 +356,15 @@ UiRenderer.add_passes(HUD, external = { main view })   // HUD 以主视图为底
 - 主机后端在私有仓库里跟进，每个阶段的验收在已有的平台上都要过。
 - 光照、几何的 shader 都用 Marlin shader 编写，桌面上产出 SPIR-V（0016），编译器已经具备（0005 §11 第 10 步）；DXIL 只在 Xbox 需要时再做。
 
+**R1 的记录**（2026-10-18 完成）：R1 分成 R1a–R1l 十二步，各步细节在对应文档里：R1a–R1g 在 0007 §11.4（graph、执行、历史和持久资源、异步队列、并行录制、迁移前向渲染器、后处理链），R1h–R1j 在 0009 §13（RenderScene 和 GPU Scene、常驻几何、可见性管线），R1k 在 0011 §14（材质最小集）。R1l（最后一步）定下的细节：
+- **光照最小集**（`content/engine/shaders/Lighting/Lighting.mshader`，`marlin_render::Lighting`）：一个 compute pass 读材质缓冲的 proxy lobe，对环境的方向光做 Lambert 漫反射加环境光，写进 `HDR_FORMAT` 的场景；没有 closure 的像素写清屏色；没有相机时一个只清屏的 raster pass。光照模型和原来前向 pass 的完全一样，所以画面可以和它比较；GGX 镜面和其他光源属于 0010 的最终着色。
+- **帧的组成**（framework 的 `RenderSide`，§3）：GPU Scene 的 scatter → 可见性（剔除、mesh shader 写 visbuffer）→ 材质（分箱、解算、运动向量）→ 直接光照 → R1g 的后处理链（bloom、异步计算的自动曝光、tonemap）。`RenderSide::new(device, engine, default_resolve, output, ids)` 用引擎的 shader 库和默认材质的解算 permutation 建出所有 pass，每个入口都按 stage 和 push constant 大小检查。上一帧的相机给运动向量。
+- **默认材质的解算 permutation**：`content/engine/shaders/DefaultMaterialResolve.masset`，一个 `Shader` 资产（`ResolvePixel` 加类型实参 `Marlin.Engine.DefaultMaterial`），名字是 `Marlin.Engine.DefaultMaterial.Resolve`。cooker 把 `Shader` 也注册成按名字查找的类型（`register_named`），引擎按名字加载它。
+- **验收**：新管线画 `samples/basic` 的第一帧，和前向渲染器留下的参考图 `sample_first_frame` 比较：14400 个像素里 1596 个不同，最多差 2 级（材质缓冲的 8 位编码和随之略变的自动曝光），在参考图的容差（每通道 2）内，参考图没有重新生成。原来 render crate 的 3 张前向 golden（`lit_cube_front`、`rotated_cube`、`depth_ordering`）搬到 marlin-material 的测试里，用整条管线（可见性、材质、光照，再把 HDR 夹到 [0, 1] 写成 RGBA8，和前向 pass 写 RGBA8 目标一样）画，和原来的参考图比较，也都在容差内，参考图原样保留。开窗口跑 `samples/basic` 10 秒，开着验证层，没有报错。
+- **删掉前向渲染器**：`Forward.mshader`、`Renderer::add_passes`、`ForwardShaders`、`FORWARD_PUSH_BYTES`、`RendererDesc`、`RenderStats`、CPU 上的 LOD 选择和 framework 的 `forward_shaders` 都删了。`Renderer` 只剩常驻网格的管理，改名 `Meshes`（`upload_mesh`、`release_mesh`、`resident_mesh`，另有给工具和参考光栅用的 `lod_indices`）。`RenderScene::drawable` 改成公开的。
+- **测试的参照**：可见性测试原来和前向 pass 逐像素比较，现在和 render crate 测试包里的参考光栅器（`Render.ReferenceVs`/`ReferencePs`：每个可绘制实例的 LOD 0 用索引绘制、带深度缓冲、不打光，像素就是实例的颜色）比较，仍然逐像素一致；因为不打光，"每个像素属于哪个实例"现在对所有被覆盖的像素都检查。前向测试里的场景语义（隐藏、删除后行号复用、网格先引用后驻留）改成可见性测试；GPU 选的 LOD 和测试里按同一公式在 CPU 上算的逐个实例比较。
+- **还没做**（原计划 R1l 里的）：visbuffer 的实例、cluster、三角形调试视图，和用 visbuffer 拾取，留到需要它们的工具（editor 视口）来时再做。
+
 ## 9. 待定
 
 - §2.3 每个平台的分辨率和档位要在硬件上实测后再定。
