@@ -95,9 +95,7 @@ pub fn split(indices: &[u32], sections: &[u16], positions: &[[f32; 3]]) -> Vec<C
                     .get_mut(&corners)
                     .and_then(Vec::pop)
                     .unwrap_or_default();
-                cluster
-                    .indices
-                    .extend(corners.map(|l| mesh_of[l as usize]));
+                cluster.indices.extend(corners.map(|l| mesh_of[l as usize]));
                 cluster.sections.push(section);
             }
             cluster

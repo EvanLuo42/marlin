@@ -17,6 +17,7 @@
 mod build;
 pub mod cluster;
 mod cooker;
+pub mod dag;
 pub mod import;
 mod math;
 pub mod meshlet;
