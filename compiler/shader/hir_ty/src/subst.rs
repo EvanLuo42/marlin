@@ -8,6 +8,9 @@ use crate::ty::{ConstTy, GenericArgTy, Ty};
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Subst {
     pub entries: Vec<(ItemId, Vec<Option<GenericArgTy>>)>,
+    /// An interface's associated types (written bare inside it, `Tree`) and what they stand
+    /// for where the interface is reached through a type: `M.Tree` through a parameter `M`.
+    pub assoc: Vec<(ItemId, Ty)>,
 }
 
 impl Subst {
@@ -18,6 +21,12 @@ impl Subst {
     /// Adds `owner`'s parameters, all unknown.
     pub fn with_unknowns(mut self, owner: ItemId, count: usize) -> Self {
         self.entries.push((owner, vec![None; count]));
+        self
+    }
+
+    /// Makes the associated type `item` stand for `ty`.
+    pub fn with_assoc(mut self, item: ItemId, ty: Ty) -> Self {
+        self.assoc.push((item, ty));
         self
     }
 
@@ -69,10 +78,17 @@ impl Subst {
                 Some(GenericArgTy::Type(t)) => t.clone(),
                 _ => ty.clone(),
             },
-            Ty::Adt { item, args } => Ty::Adt {
-                item: *item,
-                args: args.iter().map(|a| self.arg(a)).collect(),
-            },
+            Ty::Adt { item, args } => {
+                if args.is_empty()
+                    && let Some((_, t)) = self.assoc.iter().find(|(a, _)| a == item)
+                {
+                    return t.clone();
+                }
+                Ty::Adt {
+                    item: *item,
+                    args: args.iter().map(|a| self.arg(a)).collect(),
+                }
+            }
             Ty::Array { element, len } => Ty::Array {
                 element: self.ty(element).into(),
                 len: self.konst(len),

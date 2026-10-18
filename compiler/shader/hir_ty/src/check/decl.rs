@@ -408,15 +408,71 @@ impl Decl<'_, '_> {
         if m.params.len() != c.params.len() {
             return Ok(false);
         }
+        // The interface's associated types are what the implementer sets them to.
+        let implementer = ctree.items[candidate.local].parent.map(|p| ItemId {
+            file: candidate.file,
+            local: p,
+        });
+        let expected = |t: &Ty| -> Result<Ty, Cancelled> {
+            let t = subst.ty(t);
+            match implementer {
+                Some(owner) => self.implemented(&t, owner),
+                None => Ok(t),
+            }
+        };
         for (a, b) in m.params.iter().zip(&c.params) {
-            if a.ref_kind != b.ref_kind || subst.ty(&a.ty) != b.ty {
+            if a.ref_kind != b.ref_kind || expected(&a.ty)? != b.ty {
                 return Ok(false);
             }
         }
         Ok(match (&m.ty, &c.ty) {
-            (Some(a), Some(b)) => subst.ty(a) == *b,
+            (Some(a), Some(b)) => expected(a)? == *b,
             (None, None) => true,
             _ => false,
+        })
+    }
+
+    /// `ty` with an interface's associated types (written bare inside the interface, `Tree`)
+    /// replaced by what `owner`, the implementing type, sets them to.
+    fn implemented(&self, ty: &Ty, owner: ItemId) -> Result<Ty, Cancelled> {
+        Ok(match ty {
+            Ty::Adt { item, args } => {
+                let tree = self.cx.get::<ItemTreeQuery>(&item.file)?;
+                let data = &tree.items[item.local];
+                if data.kind == ItemKind::AssocType && args.is_empty() {
+                    let otree = self.cx.get::<ItemTreeQuery>(&owner.file)?;
+                    for &m in &otree.items[owner.local].members {
+                        let d = &otree.items[m];
+                        if d.name != data.name {
+                            continue;
+                        }
+                        let id = ItemId {
+                            file: owner.file,
+                            local: m,
+                        };
+                        if matches!(d.kind, ItemKind::AssocType | ItemKind::TypeAlias) {
+                            if let Some(t) = self.cx.get::<crate::AliasTargetQuery>(&id)? {
+                                return Ok(t);
+                            }
+                        } else if d.kind.is_type() {
+                            return Ok(Ty::adt(id));
+                        }
+                    }
+                    return Ok(ty.clone());
+                }
+                let mut out = Vec::with_capacity(args.len());
+                for a in args.iter() {
+                    out.push(match a {
+                        GenericArgTy::Type(t) => GenericArgTy::Type(self.implemented(t, owner)?),
+                        other => other.clone(),
+                    });
+                }
+                Ty::Adt {
+                    item: *item,
+                    args: out.into(),
+                }
+            }
+            other => other.clone(),
         })
     }
 

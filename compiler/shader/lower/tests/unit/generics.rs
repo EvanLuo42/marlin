@@ -54,4 +54,10 @@ fn generic_structs_interfaces_and_associated_types() {
     );
     assert_eq!(w.run("Game.TwiceMoney", &ints(&[7]))[0], Val::i32(14));
     assert_eq!(w.run("Game.MakeFloat", &[])[0], Val::f32(1.0));
+    // Through `G.Tree`: the implementer's `Twig`, with `Weight` from the bound.
+    assert_eq!(
+        w.run("Game.SecondOfTwo", &[Val::f32(1.0)])[0],
+        Val::f32(9.0)
+    );
+    assert_eq!(w.run("Game.BushWeight", &[Val::f32(2.0)])[0], Val::f32(6.0));
 }

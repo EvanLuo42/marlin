@@ -292,6 +292,11 @@ fn alias_cycle(cx: &Cx<'_>, start: ItemId) -> Result<bool, Cancelled> {
             continue;
         }
         let sig = cx.get::<ItemSignature>(&alias)?;
+        // An interface's associated type has no target, only bounds, and a bound may name the
+        // type itself (`type Tree : ISubstrateNode<Tree>;`): nothing to follow.
+        if sig.ty.is_none() {
+            continue;
+        }
         let resolver = Resolver::for_item(cx, alias)?;
         for (_, ty) in sig.store.types.iter() {
             let TypeRef::Path(path) = ty else { continue };
@@ -320,6 +325,11 @@ impl Query for AliasTargetQuery {
     type Key = ItemId;
     type Value = Option<Ty>;
     fn execute(cx: &Cx<'_>, item: &ItemId) -> Result<Option<Ty>, Cancelled> {
+        // No target, without lowering the item: an interface's associated type may be named by
+        // its own bounds (`type Tree : ISubstrateNode<Tree>;`), which lowering it would cycle on.
+        if cx.get::<ItemSignature>(item)?.ty.is_none() {
+            return Ok(None);
+        }
         Ok(cx.get::<ItemTypesQuery>(item)?.ty.clone())
     }
     fn cycle_fallback(_: &Cycle, _: &ItemId) -> Option<Option<Ty>> {

@@ -107,6 +107,13 @@ impl InferCtx<'_, '_> {
                 if let Some(param) = types.generics.get(*index as usize) {
                     owners = crate::item::bound_interfaces(self.cx, &param.bounds)?;
                 }
+                owners = self.through(owners, ty)?;
+            }
+            // `M.Tree`: the bounds the interface puts on its associated type.
+            Ty::Assoc { base, name } => {
+                let bounds = self.assoc_bounds(base, name)?;
+                owners = crate::item::bound_interfaces(self.cx, &bounds)?;
+                owners = self.through(owners, ty)?;
             }
             _ => {}
         }
@@ -115,6 +122,68 @@ impl InferCtx<'_, '_> {
             found = self.extension_member(ty, name)?;
         }
         Ok(found)
+    }
+
+    /// `owners` (interfaces bounding `ty`) with their associated types standing for `ty`'s:
+    /// a method returning `Tree` returns `M.Tree` when called on an `M`.
+    fn through(
+        &self,
+        owners: Vec<(ItemId, Subst)>,
+        ty: &Ty,
+    ) -> Result<Vec<(ItemId, Subst)>, Cancelled> {
+        let mut out = Vec::with_capacity(owners.len());
+        for (iface, mut subst) in owners {
+            let tree = self.cx.get::<ItemTreeQuery>(&iface.file)?;
+            for &local in &tree.items[iface.local].members {
+                let data = &tree.items[local];
+                let item = ItemId {
+                    file: iface.file,
+                    local,
+                };
+                if data.kind == ItemKind::AssocType
+                    && let Some(name) = &data.name
+                    && self.cx.get::<crate::AliasTargetQuery>(&item)?.is_none()
+                {
+                    let assoc = Ty::Assoc {
+                        base: ty.clone().into(),
+                        name: name.clone(),
+                    };
+                    subst = subst.with_assoc(item, assoc);
+                }
+            }
+            out.push((iface, subst));
+        }
+        Ok(out)
+    }
+
+    /// The bounds an interface bounding `base` puts on its associated type `name`, with the
+    /// interface's associated types standing for `base`'s.
+    fn assoc_bounds(&self, base: &Ty, name: &Name) -> Result<Vec<Ty>, Cancelled> {
+        let Ty::Param { owner, index } = base else {
+            return Ok(Vec::new());
+        };
+        let types = self.cx.get::<ItemTypesQuery>(owner)?;
+        let Some(param) = types.generics.get(*index as usize) else {
+            return Ok(Vec::new());
+        };
+        let owners = crate::item::bound_interfaces(self.cx, &param.bounds)?;
+        let owners = self.through(owners, base)?;
+        for (iface, subst) in owners {
+            let tree = self.cx.get::<ItemTreeQuery>(&iface.file)?;
+            for &local in &tree.items[iface.local].members {
+                let data = &tree.items[local];
+                if data.kind != ItemKind::AssocType || data.name.as_ref() != Some(name) {
+                    continue;
+                }
+                let item = ItemId {
+                    file: iface.file,
+                    local,
+                };
+                let assoc = self.cx.get::<ItemTypesQuery>(&item)?;
+                return Ok(assoc.bases.iter().map(|b| subst.ty(b)).collect());
+            }
+        }
+        Ok(Vec::new())
     }
 
     fn members_named(

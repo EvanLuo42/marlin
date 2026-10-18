@@ -414,7 +414,10 @@ impl Lowering<'_, '_> {
             };
             entries.push((owner, args));
         }
-        instance.subst = Subst { entries };
+        instance.subst = Subst {
+            entries,
+            ..Subst::default()
+        };
         Ok(instance)
     }
 }

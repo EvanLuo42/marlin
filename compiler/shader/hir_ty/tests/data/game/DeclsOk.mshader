@@ -72,3 +72,28 @@ public void Guarded()
 {
     const if (UseWave) { MatMul16(); }
 }
+
+// An associated type bounded by an interface over itself, as a material's `Tree` is: not a
+// cycle (2026-10-18).
+public interface INode<TSelf> where TSelf : INode<TSelf>
+{
+    float Weight();
+}
+
+public interface IHasTree<TSelf> where TSelf : IHasTree<TSelf>
+{
+    type Tree : INode<Tree>;
+    Tree Make();
+}
+
+public struct Leaf : INode<Leaf>
+{
+    public float W;
+    public float Weight() => W;
+}
+
+public struct Planted : IHasTree<Planted>
+{
+    public type Tree = Leaf;
+    public Leaf Make() => Leaf { W = 1 };
+}

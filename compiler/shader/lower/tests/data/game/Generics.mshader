@@ -88,3 +88,57 @@ public struct HasFloat : IHas
 public M.Item Make<M>() where M : IHas => default;
 
 public float MakeFloat() => Make<HasFloat>() + 1;
+
+// An associated type bounded by an interface over itself, used through the type parameter:
+// `G.Tree` comes back from `Grow` and has `Weight` from its bound (a material's `Tree`,
+// 2026-10-18).
+public interface IWeighed<TSelf> where TSelf : IWeighed<TSelf>
+{
+    float Weight();
+}
+
+public interface IGrows<TSelf> where TSelf : IGrows<TSelf>
+{
+    type Tree : IWeighed<Tree>;
+    Tree Grow(float x);
+}
+
+public struct Twig : IWeighed<Twig>
+{
+    public float W;
+    public float Weight() => W;
+}
+
+public struct Bush : IGrows<Bush>
+{
+    public float Height;
+    public type Tree = Twig;
+    public Twig Grow(float x) => Twig { W = x * Height };
+}
+
+public float GrownWeight<G>(G g, float x) where G : IGrows<G>
+{
+    G.Tree t = g.Grow(x);
+    return t.Weight();
+}
+
+public float BushWeight(float x) => GrownWeight(Bush { Height = 3 }, x);
+
+// Two fields of one struct type: each reads its own (2026-10-18).
+public struct Pair3
+{
+    public float4 A;
+    public float4 B;
+}
+
+public struct TwoPairs
+{
+    public Pair3 First;
+    public Pair3 Second;
+}
+
+public float SecondOfTwo(float x)
+{
+    TwoPairs t = TwoPairs { First = Pair3 { A = float4(1, 2, 3, 4), B = float4(5, 6, 7, 8) }, Second = Pair3 { A = float4(x, 0, 0, 0), B = float4(0, 0, 0, x * 2) } };
+    return t.Second.A.x + t.Second.B.w + t.First.B.y;
+}
