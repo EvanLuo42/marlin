@@ -88,3 +88,42 @@ fn cooks_then_hits_the_cache_then_reports_failures() {
         assert!(!ok && text.contains("unknown platform `Windows`"), "{text}");
     }
 }
+
+#[test]
+fn shader_packages_cook_for_both_profiles_and_names_are_validated() {
+    let root = TempDir::new("cook-cli-shaders");
+    let package = |dir: &str, id: u64| {
+        root.write(
+            format!("{dir}/Lib.mshader"),
+            "namespace Lib;\n[Compute(1, 1, 1)] public void Clear() {}\n",
+        );
+        root.write(
+            format!("{dir}/package.masset"),
+            format!(
+                "!Version 1\nShaderPackage {{ !Uuid = \"{}\" !Name = \"Lib\" Sources = [`source:{dir}/Lib.mshader`] }}\n",
+                Uuid::from_u128(test_uuid(id))
+            ),
+        );
+    };
+    package("shaders", 1);
+    let r = root.to_str().unwrap();
+
+    let (ok, text) = run(&["cook", r]);
+    assert!(ok, "{text}");
+    assert!(text.contains("(1 cooked, 0 cached)"), "{text}");
+    // A shipping build is another key for shaders.
+    let (ok, text) = run(&["cook", r, "--shipping"]);
+    assert!(ok, "{text}");
+    assert!(text.contains("(1 cooked, 0 cached)"), "{text}");
+    let (ok, text) = run(&["cook", r, "--shipping", "--threads", "1"]);
+    assert!(ok, "{text}");
+    assert!(text.contains("(0 cooked, 1 cached)"), "{text}");
+
+    let (ok, text) = run(&["validate", r]);
+    assert!(ok, "{text}");
+    // A second package called `Lib`: validation names the clash.
+    package("more", 2);
+    let (ok, text) = run(&["validate", r]);
+    assert!(!ok, "{text}");
+    assert!(text.contains("`Lib` also names"), "{text}");
+}

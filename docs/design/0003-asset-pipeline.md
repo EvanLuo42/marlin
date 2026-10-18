@@ -422,6 +422,7 @@ bulk        GPU 数据（顶点、纹理 mip），对齐到 4 KiB，直接上传
     - `shaders::load_engine_shaders` 和 `forward_shaders` 会检查 stage，以及 push 是否等于 `marlin_render::FORWARD_PUSH_BYTES`；
     - `run` 用 cooked 的 `Marlin.Engine.ForwardVs` / `ForwardPs` 建 renderer，`marlin-game` 重新画出 mesh；
     - 新增 cvar `content.engine`。
+  - `marlin-cook validate` 也报告重名的 shader 包；forward pass 的 shader 在启动时还检查 pixel 输入是不是 vertex 输出（location 和类型都对上），以及是否只写 render target 0。
   - 引擎 shader 源码移到 `content/engine/shaders/Forward.mshader`（`namespace Marlin.Engine`）。gpu-test-support 也编译这个包（`ENGINE`），render 测试用的就是引擎自己的 shader。
   - 测试：
     - cook_shader 单元测试：库、名字、诊断、只读声明过的源文件、依赖报错、键、profile、确定性、引擎包；

@@ -11,7 +11,8 @@
 //!   gdeflate.
 //! - `marlin-cook index <root>`: brings the asset index of `root` up to date and saves it.
 //! - `marlin-cook validate <root>`: the same, then reports content problems (dangling and stale
-//!   links, UUID collisions, parse errors, missing source files). Fails on errors.
+//!   links, UUID collisions, parse errors, missing source files, shader package names given
+//!   twice). Fails on errors.
 //! - `marlin-cook validate <root> --pre-submit`: only what the version control submit would
 //!   contain, plus links into files left out of it or deleted by it.
 //! - `marlin-cook install-hook <root>`: runs the pre-submit validation before every commit.
@@ -25,8 +26,8 @@ use std::time::Instant;
 
 use marlin_asset_db::{AssetDb, Options};
 use marlin_cook_core::{
-    CookOptions, Manifest, PackageOptions, Platform, Profile, cook_all, publish_manifest,
-    write_package,
+    CookOptions, Manifest, PackageOptions, Platform, Profile, cook_all, named_objects,
+    publish_manifest, write_package,
 };
 use marlin_cooker::{engine_cookers, open_ddc};
 use marlin_masset::{NodeKind, parse};
@@ -99,6 +100,12 @@ fn index(root: &str, validate: Validate) -> ExitCode {
         }
     };
     let mut errors = 0;
+    // Names code looks objects up by (shader packages) must be unique across the project.
+    let (_, clashes) = named_objects(&db, &engine_cookers());
+    for clash in &clashes {
+        errors += 1;
+        eprintln!("error: {clash}");
+    }
     for issue in &issues {
         let kind = if issue.kind.is_error() {
             errors += 1;
@@ -108,7 +115,10 @@ fn index(root: &str, validate: Validate) -> ExitCode {
         };
         eprintln!("{kind}: {}", issue.describe(&db));
     }
-    println!("{} issue(s), {errors} error(s)", issues.len());
+    println!(
+        "{} issue(s), {errors} error(s)",
+        issues.len() + clashes.len()
+    );
     if errors == 0 {
         ExitCode::SUCCESS
     } else {
