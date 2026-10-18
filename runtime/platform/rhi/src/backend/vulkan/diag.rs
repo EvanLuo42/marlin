@@ -6,11 +6,15 @@ use core::ffi::{CStr, c_void};
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
+use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 
-use marlin_sync::Once;
+use marlin_sync::{Mutex, Once, OnceLock};
 
 use super::command::CommandList;
+use super::device::Shared;
 use super::ffi::*;
 use super::{Backend, error, handle_ptr};
 use crate::contract::Object;
@@ -85,6 +89,8 @@ unsafe extern "system" fn messenger(
 pub(crate) struct Lost {
     lost: AtomicBool,
     report: Once,
+    /// What the report draws on (crash report section).
+    crash: Crash,
 }
 
 impl Lost {
@@ -120,7 +126,16 @@ impl Lost {
             if let Some(report) = report {
                 report();
             }
+            self.crash.report();
         });
+    }
+
+    /// Lets the crash report reach `shared`, the device this belongs to; called once, when the
+    /// device is created.
+    pub(crate) fn attach(&self, shared: &Arc<Shared>) {
+        if shared.instance.crash_diagnostics {
+            let _ = self.crash.device.set(Arc::downgrade(shared));
+        }
     }
 
     /// Vulkan cannot remove a device on purpose; the RHI reports it lost from now on, which is
@@ -215,17 +230,203 @@ pub(crate) fn native(object: Object<'_, Backend>) -> *mut c_void {
 
 // --- Events (query and diagnostics area) ---
 
+/// A debug utils label of `name`, a NUL-terminated string (debuggers show the region or point).
+fn label(name: &[u8]) -> VkDebugUtilsLabelEXT {
+    VkDebugUtilsLabelEXT {
+        pLabelName: name.as_ptr().cast(),
+        ..Default::default()
+    }
+}
+
+/// Labels need `VK_EXT_debug_utils`; without it events are no-ops. With crash diagnostics,
+/// regions and markers also leave checkpoints for the report.
 pub(crate) fn begin_event(list: &mut CommandList, name: &str) {
-    let _ = (list, name, ptr::null::<u8>());
-    todo!("vulkan: begin_event")
+    checkpoint(list, name);
+    if let Some(begin) = list.shared().instance.fns.vkCmdBeginDebugUtilsLabelEXT {
+        let name = c_name(name);
+        // SAFETY: a recording buffer and a NUL-terminated name that outlives the call.
+        unsafe { begin(list.raw(), &label(&name)) };
+    }
 }
 
 pub(crate) fn end_event(list: &mut CommandList) {
-    let _ = list;
-    todo!("vulkan: end_event")
+    if let Some(end) = list.shared().instance.fns.vkCmdEndDebugUtilsLabelEXT {
+        // SAFETY: a recording buffer with a label open (`begin_event` pairs with this).
+        unsafe { end(list.raw()) };
+    }
 }
 
 pub(crate) fn set_marker(list: &mut CommandList, name: &str) {
-    let _ = (list, name);
-    todo!("vulkan: set_marker")
+    checkpoint(list, name);
+    if let Some(insert) = list.shared().instance.fns.vkCmdInsertDebugUtilsLabelEXT {
+        let name = c_name(name);
+        // SAFETY: as in `begin_event`.
+        unsafe { insert(list.raw(), &label(&name)) };
+    }
+}
+
+// --- Crash reports (query and diagnostics area) ---
+
+/// Distinct checkpoint names kept per device; names past it share the "(unnamed)" marker.
+const MAX_CHECKPOINT_NAMES: usize = 4096;
+
+/// What a lost device's report draws on, with `InstanceDesc::crash_diagnostics`: the device, to
+/// ask it what happened, and the names checkpoints stand for.
+#[derive(Default)]
+struct Crash {
+    /// Set when the device is created with crash diagnostics; weak, since the device owns this.
+    device: OnceLock<Weak<Shared>>,
+    /// Event and marker names; a checkpoint's marker is its name's index plus one (0 for a name
+    /// past the limit).
+    names: Mutex<BTreeMap<Box<str>, usize>>,
+}
+
+impl Crash {
+    /// The checkpoint marker of `name`.
+    fn marker(&self, name: &str) -> usize {
+        let mut names = self.names.lock();
+        if let Some(&marker) = names.get(name) {
+            return marker;
+        }
+        if names.len() >= MAX_CHECKPOINT_NAMES {
+            return 0;
+        }
+        let marker = names.len() + 1;
+        names.insert(name.into(), marker);
+        marker
+    }
+
+    fn name(&self, marker: usize) -> Box<str> {
+        let names = self.names.lock();
+        names
+            .iter()
+            .find(|&(_, &m)| m == marker)
+            .map_or_else(|| "(unnamed)".into(), |(name, _)| name.clone())
+    }
+
+    /// Logs the device fault report and the last checkpoints each queue reached.
+    fn report(&self) {
+        let Some(shared) = self.device.get().and_then(Weak::upgrade) else {
+            return;
+        };
+        fault(&shared);
+        self.checkpoints(&shared);
+    }
+
+    /// `VK_NV_device_diagnostic_checkpoints`: per queue, the last checkpoint each pipeline stage
+    /// reached.
+    fn checkpoints(&self, s: &Shared) {
+        let Some(get) = s
+            .fns
+            .vkGetQueueCheckpointData2NV
+            .filter(|_| s.ext.diagnostic_checkpoints)
+        else {
+            return;
+        };
+        for &family in &s.families.unique {
+            let info = VkDeviceQueueInfo2 {
+                queueFamilyIndex: family,
+                ..Default::default()
+            };
+            let mut queue = ptr::null_mut();
+            // SAFETY: the device has one queue in each family it uses.
+            unsafe { (s.fns.vkGetDeviceQueue2)(s.raw, &info, &mut queue) };
+            let mut count = 0;
+            // SAFETY: the two-call idiom with valid pointers.
+            unsafe { get(queue, &mut count, ptr::null_mut()) };
+            let mut data = alloc::vec![VkCheckpointData2NV::default(); count as usize];
+            // SAFETY: as above; `data` holds `count` entries.
+            unsafe { get(queue, &mut count, data.as_mut_ptr()) };
+            for d in &data[..count as usize] {
+                marlin_diag::error!(
+                    "  queue family {family}: reached \"{}\" at stage {:#x}",
+                    self.name(d.pCheckpointMarker as usize),
+                    d.stage
+                );
+            }
+        }
+    }
+}
+
+/// `VK_EXT_device_fault`: the driver's description, faulting addresses and vendor codes.
+fn fault(s: &Shared) {
+    let Some(get) = s.fns.vkGetDeviceFaultInfoEXT.filter(|_| s.ext.device_fault) else {
+        return;
+    };
+    let mut counts = VkDeviceFaultCountsEXT::default();
+    // SAFETY: a valid output structure.
+    if unsafe { get(s.raw, &mut counts, ptr::null_mut()) } < 0 {
+        return;
+    }
+    let mut addresses =
+        alloc::vec![VkDeviceFaultAddressInfoKHR::default(); counts.addressInfoCount as usize];
+    let mut vendor =
+        alloc::vec![VkDeviceFaultVendorInfoKHR::default(); counts.vendorInfoCount as usize];
+    // The vendor's binary dump is for vendor tools: not asked for.
+    counts.vendorBinarySize = 0;
+    let mut info = VkDeviceFaultInfoEXT {
+        pAddressInfos: addresses.as_mut_ptr(),
+        pVendorInfos: vendor.as_mut_ptr(),
+        ..Default::default()
+    };
+    // SAFETY: arrays of the counted sizes and a valid output structure.
+    if unsafe { get(s.raw, &mut counts, &mut info) } < 0 {
+        return;
+    }
+    fn text(chars: &[core::ffi::c_char]) -> &str {
+        name_of(chars).to_str().unwrap_or("")
+    }
+    marlin_diag::error!("Vulkan device fault: {}", text(&info.description));
+    for a in &addresses[..counts.addressInfoCount as usize] {
+        let kind = match a.addressType {
+            VK_DEVICE_FAULT_ADDRESS_TYPE_READ_INVALID_KHR => "invalid read",
+            VK_DEVICE_FAULT_ADDRESS_TYPE_WRITE_INVALID_KHR => "invalid write",
+            VK_DEVICE_FAULT_ADDRESS_TYPE_EXECUTE_INVALID_KHR => "invalid execute",
+            VK_DEVICE_FAULT_ADDRESS_TYPE_INSTRUCTION_POINTER_UNKNOWN_KHR => {
+                "instruction pointer (unknown fault)"
+            }
+            VK_DEVICE_FAULT_ADDRESS_TYPE_INSTRUCTION_POINTER_INVALID_KHR => {
+                "instruction pointer (invalid instruction)"
+            }
+            VK_DEVICE_FAULT_ADDRESS_TYPE_INSTRUCTION_POINTER_FAULT_KHR => {
+                "instruction pointer (fault)"
+            }
+            _ => "address",
+        };
+        // The address is known to within `addressPrecision` (a power of two) bytes.
+        let precision = a.addressPrecision.max(1);
+        let base = a.reportedAddress & !(precision - 1);
+        marlin_diag::error!(
+            "  {kind} at {:#x} (within {base:#x}..{:#x})",
+            a.reportedAddress,
+            base.saturating_add(precision)
+        );
+    }
+    for v in &vendor[..counts.vendorInfoCount as usize] {
+        marlin_diag::error!(
+            "  vendor fault {:#x} ({:#x}): {}",
+            v.vendorFaultCode,
+            v.vendorFaultData,
+            text(&v.description)
+        );
+    }
+}
+
+/// Leaves a checkpoint named `name` in the list, with crash diagnostics on a device that takes
+/// them.
+fn checkpoint(list: &CommandList, name: &str) {
+    let s = list.shared();
+    let Some(set) = s
+        .fns
+        .vkCmdSetCheckpointNV
+        .filter(|_| s.ext.diagnostic_checkpoints)
+    else {
+        return;
+    };
+    if s.lost.crash.device.get().is_none() {
+        return;
+    }
+    let marker = s.lost.crash.marker(name);
+    // SAFETY: a recording buffer; the marker is an opaque value the driver hands back.
+    unsafe { set(list.raw(), marker as *const c_void) };
 }

@@ -71,6 +71,8 @@ pub(crate) struct InstanceShared {
     pub(crate) fns: InstanceFns,
     pub(crate) get_instance_proc_addr: PFN_vkGetInstanceProcAddr,
     pub(crate) ext: InstanceExtensions,
+    /// `InstanceDesc::crash_diagnostics`: devices record checkpoints and report device faults.
+    pub(crate) crash_diagnostics: bool,
     messenger: VkDebugUtilsMessengerEXT,
     /// The messenger's user data; boxed so its address stays put.
     validation: Option<Box<Validation>>,
@@ -296,6 +298,7 @@ impl Instance {
             fns,
             get_instance_proc_addr: get,
             ext,
+            crash_diagnostics: desc.crash_diagnostics,
             messenger,
             validation,
             _library: library,

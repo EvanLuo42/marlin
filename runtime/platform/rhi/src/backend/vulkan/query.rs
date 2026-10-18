@@ -229,40 +229,31 @@ pub(crate) fn write_timestamp(list: &mut CommandList, pool: &QueryPool, index: u
     };
 }
 
+/// The pools a scoped query of `pool` counts into on `list`, in begin order.
+fn scoped_pools(list: &CommandList, pool: &QueryPool) -> alloc::vec::Vec<VkQueryPool> {
+    match pool.kind {
+        QueryKind::PipelineStatistics if graphics_family(list) => alloc::vec![pool.raw, pool.mesh],
+        QueryKind::PipelineStatistics => alloc::vec![pool.compute],
+        _ => alloc::vec![pool.raw],
+    }
+}
+
 pub(crate) fn begin_query(list: &mut CommandList, pool: &QueryPool, index: u32) {
-    let (fns, raw) = (list.fns(), list.raw());
-    // SAFETY (each call): a recording buffer and a reset query of the pool (checked by
-    // `commands.rs`); its end follows in the same list.
-    unsafe {
-        match pool.kind {
-            QueryKind::Occlusion => {
-                (fns.vkCmdBeginQuery)(raw, pool.raw, index, VK_QUERY_CONTROL_PRECISE_BIT)
-            }
-            QueryKind::BinaryOcclusion => (fns.vkCmdBeginQuery)(raw, pool.raw, index, 0),
-            QueryKind::PipelineStatistics if graphics_family(list) => {
-                (fns.vkCmdBeginQuery)(raw, pool.raw, index, 0);
-                (fns.vkCmdBeginQuery)(raw, pool.mesh, index, 0);
-            }
-            QueryKind::PipelineStatistics => (fns.vkCmdBeginQuery)(raw, pool.compute, index, 0),
-            QueryKind::Timestamp | QueryKind::CopyTimestamp => {
-                unreachable!("timestamps are written")
-            }
-        }
+    let flags = match pool.kind {
+        QueryKind::Occlusion => VK_QUERY_CONTROL_PRECISE_BIT,
+        _ => 0,
+    };
+    for scoped in scoped_pools(list, pool) {
+        // SAFETY: a recording buffer and a reset query of the pool (checked by `commands.rs`);
+        // its end follows in the same list.
+        unsafe { (list.fns().vkCmdBeginQuery)(list.raw(), scoped, index, flags) };
     }
 }
 
 pub(crate) fn end_query(list: &mut CommandList, pool: &QueryPool, index: u32) {
-    let (fns, raw) = (list.fns(), list.raw());
-    // SAFETY (each call): a recording buffer and a query this list began.
-    unsafe {
-        match pool.kind {
-            QueryKind::PipelineStatistics if graphics_family(list) => {
-                (fns.vkCmdEndQuery)(raw, pool.mesh, index);
-                (fns.vkCmdEndQuery)(raw, pool.raw, index);
-            }
-            QueryKind::PipelineStatistics => (fns.vkCmdEndQuery)(raw, pool.compute, index),
-            _ => (fns.vkCmdEndQuery)(raw, pool.raw, index),
-        }
+    for scoped in scoped_pools(list, pool).into_iter().rev() {
+        // SAFETY: a recording buffer and a query this list began.
+        unsafe { (list.fns().vkCmdEndQuery)(list.raw(), scoped, index) };
     }
 }
 

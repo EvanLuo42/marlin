@@ -5151,6 +5151,12 @@ pub(crate) const VK_COPY_ACCELERATION_STRUCTURE_MODE_COMPACT_KHR: VkCopyAccelera
 pub(crate) const VK_FORMAT_R32G32B32_SFLOAT: VkFormat = 106;
 pub(crate) const VK_INDEX_TYPE_NONE_KHR: VkIndexType = 1000165000;
 pub(crate) const VK_STRUCTURE_TYPE_CHECKPOINT_DATA_2_NV: VkStructureType = 1000314009;
+pub(crate) const VK_DEVICE_FAULT_ADDRESS_TYPE_READ_INVALID_KHR: VkDeviceFaultAddressTypeKHR = 1;
+pub(crate) const VK_DEVICE_FAULT_ADDRESS_TYPE_WRITE_INVALID_KHR: VkDeviceFaultAddressTypeKHR = 2;
+pub(crate) const VK_DEVICE_FAULT_ADDRESS_TYPE_EXECUTE_INVALID_KHR: VkDeviceFaultAddressTypeKHR = 3;
+pub(crate) const VK_DEVICE_FAULT_ADDRESS_TYPE_INSTRUCTION_POINTER_UNKNOWN_KHR: VkDeviceFaultAddressTypeKHR = 4;
+pub(crate) const VK_DEVICE_FAULT_ADDRESS_TYPE_INSTRUCTION_POINTER_INVALID_KHR: VkDeviceFaultAddressTypeKHR = 5;
+pub(crate) const VK_DEVICE_FAULT_ADDRESS_TYPE_INSTRUCTION_POINTER_FAULT_KHR: VkDeviceFaultAddressTypeKHR = 6;
 
 // --- Referenced types ---
 

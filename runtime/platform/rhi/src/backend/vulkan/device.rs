@@ -719,6 +719,7 @@ pub(crate) fn create(instance: &Instance, desc: &DeviceDesc) -> Result<(Device, 
         bindless: ManuallyDrop::new(bindless),
         internal,
     });
+    shared.lost.attach(&shared);
     let queues = Queues {
         graphics: Queue::new(&shared, QueueType::Graphics, families.graphics),
         compute: families
