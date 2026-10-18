@@ -573,6 +573,17 @@ R1f 做完时（2026-10-18）定下的细节（§11.2 的第 1 条验收）：
 - **`Offscreen`**：自己持有一个 `FrameContext`；每次渲染用一张瞬态 RGBA8 目标（clear value 取环境的清屏色）加 `g.readback_texture`，不再自己维护目标、视图和回读 buffer。
 - **验收**：迁移前后，`marlin-render` 的 3 张 golden 和 framework 端到端测试的 `sample_first_frame`，在逐通道容差为 0 时都和参考图完全相同（迁移前先用 0 容差确认参考图就是旧代码的输出，迁移后再用 0 容差跑一遍）。`samples/basic` cook、打包后用 `marlin-game` 开窗口跑 10 秒，开着验证层，没有报错。
 
+R1g 做完时（2026-10-18）定下的细节（§11.2 的第 2 条验收）：
+- **shader**：`content/engine/shaders/Post/Post.mshader`，命名空间 `Marlin.Engine.Post`，和 forward pass 一样由 cooker 编进引擎的 shader 库。framework 的 `post_shaders` 按入口名取出，并检查 stage 和 push constant 的大小。
+- **`marlin-render::PostProcess::add_passes(g, scene, output, view, dt)`**：
+  - 场景先画进一张瞬态的 `HDR_FORMAT`（`Rgba16Float`）纹理；
+  - **bloom**：逐级减半的降采样，用 Jimenez 的 13-tap 滤波，第一级按组做 Karis 加权防闪烁；再逐级升采样，3×3 tent 加回上一级。每一级都是单独的瞬态纹理，链上的纹理会别名。最多 6 级，目标小时更少；
+  - **曝光**（异步计算）：先清零直方图，再统计 256 个 bin 的亮度直方图（bin 0 放黑色，1–255 覆盖 log2 亮度 −12 到 10），然后单线程求平均：去掉最暗 60% 和最亮 5% 的像素，算 log2 平均亮度，再按 `1 − e^(−dt·速度)` 向它适应。用 EV100 和 `1 / (1.2 · 2^EV100)` 求曝光。适应后的亮度和曝光放在每个视图一个的持久 buffer（`g.persistent("Exposure", view, …)`）里；`fresh` 时直接取测得的值；
+  - **tonemap**：一个全屏三角形（不剔除）把 `(场景 + bloom · 强度 / 级数) · 曝光` 过 ACES 拟合曲线（Narkowicz），写进输出。输出格式决定编码（sRGB 的 swapchain 在写入时编码）。可编程的显示变换（`IDisplayTransform`、ACES 2.0、3D LUT，0010 §8.3）在 R5 做，这里先用这条固定曲线代替。
+- **framework**：`RenderDelta` 带上这一帧的 `dt`；`RenderSide` 持有 `PostProcess`，`add_passes` 先画场景再接后处理。游戏窗口和 `Offscreen` 都走这条路径，用视图 0 的曝光。端到端测试里时间不走（`dt = 0`），第一帧取测得的曝光，之后不再变化，所以画面仍然是确定的。
+- `sample_first_frame` 的参考图因此改变，单独提交重新生成的参考图。端到端测试对背景的检查改成相对检查（两个上角颜色相同、偏蓝），实时编辑测试的"变绿"改成"绿色通道明显高于另外两个"，因为曝光和 tonemap 会把每个通道都抬高。
+- GPU 测试：亮度为 0.05、1、40 的均匀场景，输出都是同一个灰度（和 CPU 上按同样公式算的值相差不超过 3）；场景从亮变暗时，第一帧偏暗，之后逐帧变亮，最后回到同一个灰度；bloom 链的纹理 heap 小于各级纹理之和（发生了别名）；有专用 compute 队列时，直方图和曝光的三个 pass 都在 Compute 队列上。验证层没有报错。开窗口跑 `samples/basic` 10 秒，没有报错。
+
 ## 12. 测试
 
 测试放在各 crate 的 `tests/` 里。

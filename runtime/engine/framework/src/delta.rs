@@ -13,9 +13,15 @@ use alloc::vec::Vec;
 use marlin_asset::Uuid;
 use marlin_containers::{HashMap, HashMapExt};
 use marlin_math::Transform;
-use marlin_render::{Camera, Environment, MeshHandle, RenderStats, Renderer, Scene, SceneInstance};
-use marlin_render_graph::{FRAMES_IN_FLIGHT, RenderGraph, TextureHandle};
-use marlin_rhi::Device;
+use marlin_render::{
+    Camera, Environment, HDR_FORMAT, MeshHandle, PostProcess, RenderStats, Renderer, Scene,
+    SceneInstance,
+};
+use marlin_render_graph::{FRAMES_IN_FLIGHT, RenderGraph, TextureDesc, TextureHandle};
+use marlin_rhi::{ClearValue, Device};
+
+/// The view whose exposure the game's frames adapt.
+const MAIN_VIEW: u64 = 0;
 
 use crate::loaders::MeshGeometry;
 
@@ -40,6 +46,8 @@ pub struct RenderInstance {
 pub struct RenderDelta {
     /// The simulation frame it was taken at.
     pub frame: u64,
+    /// The frame's time step, seconds: how far exposure adapts.
+    pub dt: f32,
     pub uploads: Vec<MeshUpload>,
     /// Meshes no instance uses any more: their GPU copies may go.
     pub releases: Vec<Uuid>,
@@ -50,7 +58,11 @@ pub struct RenderDelta {
 
 /// The renderer and the GPU copies of meshes, by asset.
 pub struct RenderSide {
+    /// Draws into an [`HDR_FORMAT`] scene, which `post` tonemaps into the output.
     pub renderer: Renderer,
+    pub post: PostProcess,
+    /// The last applied delta's time step.
+    dt: f32,
     meshes: HashMap<Uuid, (MeshHandle, u32)>,
     /// Meshes replaced or released, freed once the frames that drew them are done.
     retired: Vec<(u64, MeshHandle)>,
@@ -60,9 +72,12 @@ pub struct RenderSide {
 }
 
 impl RenderSide {
-    pub fn new(renderer: Renderer) -> Self {
+    /// `renderer` draws in [`HDR_FORMAT`]; `post` writes the output's format.
+    pub fn new(renderer: Renderer, post: PostProcess) -> Self {
         Self {
             renderer,
+            post,
+            dt: 0.0,
             meshes: HashMap::new(),
             retired: Vec::new(),
             frames_in_flight: FRAMES_IN_FLIGHT as u64,
@@ -111,6 +126,7 @@ impl RenderSide {
             }
         });
         self.renderer.environment = delta.environment;
+        self.dt = delta.dt;
         self.scene.camera = delta.camera;
         self.scene.instances.clear();
         for i in &delta.instances {
@@ -125,12 +141,22 @@ impl RenderSide {
         Ok(())
     }
 
-    /// Declares the last applied delta's scene into `g`, drawn into `target` ([`Renderer::add_passes`]).
+    /// Declares the last applied delta's frame into `g`: the scene into a transient
+    /// [`HDR_FORMAT`] target the size of `target` ([`Renderer::add_passes`]), then the post chain
+    /// into `target` ([`PostProcess::add_passes`]). Needs a graph with a state table.
     pub fn add_passes<'g>(
         &'g self,
         g: &mut RenderGraph<'g>,
         target: TextureHandle<'g>,
     ) -> (TextureHandle<'g>, RenderStats) {
-        self.renderer.add_passes(g, target, &self.scene)
+        let size = *g.texture_desc(target);
+        let scene = g.create_texture(
+            "Scene",
+            TextureDesc::new_2d(size.width, size.height, HDR_FORMAT)
+                .with_clear(ClearValue::Color(self.renderer.environment.clear_color)),
+        );
+        let (scene, stats) = self.renderer.add_passes(g, scene, &self.scene);
+        let out = self.post.add_passes(g, scene, target, MAIN_VIEW, self.dt);
+        (out.output, stats)
     }
 }

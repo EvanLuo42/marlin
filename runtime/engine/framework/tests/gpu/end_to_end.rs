@@ -86,20 +86,26 @@ struct Viewer {
 }
 
 impl Viewer {
-    /// A renderer with the forward shaders of `library`, the engine's cooked one.
+    /// A renderer and post chain with the shaders of `library`, the engine's cooked one.
     fn new(library: &ShaderLibrary) -> Self {
         let device = hardware_device();
         let renderer = Renderer::new(
             device,
             &RendererDesc {
-                color_format: OFFSCREEN_FORMAT,
+                color_format: marlin_render::HDR_FORMAT,
                 shaders: Some(forward_shaders(library).unwrap()),
             },
         )
         .unwrap();
+        let post = marlin_render::PostProcess::new(
+            device,
+            &marlin_framework::post_shaders(library).unwrap(),
+            OFFSCREEN_FORMAT,
+        )
+        .unwrap();
         let offscreen = Offscreen::new(device, WIDTH, HEIGHT).unwrap();
         Self {
-            render: RenderSide::new(renderer),
+            render: RenderSide::new(renderer, post),
             offscreen,
             device,
         }
@@ -142,17 +148,20 @@ fn at(pixels: &[u32], x: u32, y: u32) -> [u8; 3] {
     rgb(pixels[(y * WIDTH + x) as usize])
 }
 
-/// What the sample must look like: background at the top corners, the orange sphere in the
-/// middle, the grey ground at the bottom.
+/// What the sample must look like: the same blue-black background at both top corners (the
+/// clear color, exposed and tonemapped), the orange sphere in the middle, the grey ground at the
+/// bottom.
 fn check_sample(pixels: &[u32]) {
-    let clear = [5, 8, 13]; // ClearColor (0.02, 0.03, 0.05) in 8-bit linear
-    for (x, y) in [(1, 1), (WIDTH - 2, 1)] {
-        let p = at(pixels, x, y);
-        assert!(
-            p.iter().zip(clear).all(|(a, b)| a.abs_diff(b) <= 1),
-            "background at ({x}, {y}): {p:?}"
-        );
-    }
+    let clear = at(pixels, 1, 1);
+    assert!(
+        clear[2] > clear[1] && clear[1] > clear[0],
+        "a blue background: {clear:?}"
+    );
+    let other = at(pixels, WIDTH - 2, 1);
+    assert!(
+        other.iter().zip(clear).all(|(a, b)| a.abs_diff(b) <= 1),
+        "background at both corners: {other:?} and {clear:?}"
+    );
     let center = at(pixels, WIDTH / 2, HEIGHT / 2);
     assert!(
         center[0] > center[1] && center[1] > center[2] && center[0] > 60,
@@ -161,7 +170,7 @@ fn check_sample(pixels: &[u32]) {
     let ground = at(pixels, WIDTH / 2, HEIGHT - 3);
     let spread = ground.iter().max().unwrap() - ground.iter().min().unwrap();
     assert!(ground[0] > 20 && spread < 12, "the grey ground: {ground:?}");
-    let lit = pixels.iter().filter(|&&p| rgb(p) != [5, 8, 13]).count();
+    let lit = pixels.iter().filter(|&&p| rgb(p) != clear).count();
     assert!(
         lit > pixels.len() / 3,
         "the scene covers the view: {lit} pixels"
@@ -258,7 +267,8 @@ fn editing_the_level_changes_the_picture_live() {
     wait_until(Duration::from_secs(30), "the sphere to turn green", || {
         let pixels = viewer.frame(&mut engine);
         let [r, g, b] = at(&pixels, WIDTH / 2, HEIGHT / 2).map(u32::from);
-        g > r * 2 && g > b * 2
+        // Exposed and tonemapped, so all channels rise: green clearly ahead of the others.
+        g > r.max(b) + 40
     });
     // Only the level reloaded; its meshes stayed on the GPU.
     assert_eq!(viewer.render.mesh_count(), 3);

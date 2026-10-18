@@ -1,0 +1,217 @@
+namespace Marlin.Engine.Post;
+
+// The post-processing chain of marlin-render (0007 §11.2): bloom (a chain of downsamples and
+// upsamples), a luminance histogram and the exposure it gives, and the tonemap into the output.
+// Every `*Args` struct is what marlin-render pushes for that entry.
+
+/// Rec.709 luminance of linear RGB.
+float Luminance(float3 c) => Dot(c, float3(0.2126, 0.7152, 0.0722));
+
+public struct BloomDownArgs
+{
+    /// The level above: the HDR scene for the first downsample.
+    public Texture2D<float4> Source;
+    public Sampler Linear;
+    /// A writable view of this level.
+    public StorageTexture2D<float4> Target;
+    /// 1 on the first downsample: groups are weighted against fireflies.
+    public uint First;
+}
+
+/// The weight of one group of the 13-tap downsample: `weight`, divided by the group's
+/// brightness on the first downsample.
+float GroupWeight(float4 average, float weight, uint first) =>
+    first != 0 ? weight / (1 + Luminance(average.xyz)) : weight;
+
+/// Halves `Source` into `Target` with the 13-tap filter of Jimenez (2014): five overlapping
+/// groups of four taps, the inner one weighted 0.5 and the others 0.125. The first downsample
+/// weights each group by its brightness (Karis average) so single bright pixels do not flicker.
+[Compute(8, 8, 1)]
+public void BloomDown([DispatchThreadId] uint3 id, [Push] in BloomDownArgs a)
+{
+    uint2 size = a.Target.Size;
+    if (id.x >= size.x || id.y >= size.y)
+        return;
+    float2 texel = float2(1, 1) / (float2)a.Source.Size;
+    float2 uv = ((float2)id.xy + 0.5) / (float2)size;
+    Texture2D<float4> s = a.Source;
+    float4 ta = s.Sample(a.Linear, uv + texel * float2(-2, -2), lod: 0);
+    float4 tb = s.Sample(a.Linear, uv + texel * float2(0, -2), lod: 0);
+    float4 tc = s.Sample(a.Linear, uv + texel * float2(2, -2), lod: 0);
+    float4 td = s.Sample(a.Linear, uv + texel * float2(-2, 0), lod: 0);
+    float4 te = s.Sample(a.Linear, uv, lod: 0);
+    float4 tf = s.Sample(a.Linear, uv + texel * float2(2, 0), lod: 0);
+    float4 tg = s.Sample(a.Linear, uv + texel * float2(-2, 2), lod: 0);
+    float4 th = s.Sample(a.Linear, uv + texel * float2(0, 2), lod: 0);
+    float4 ti = s.Sample(a.Linear, uv + texel * float2(2, 2), lod: 0);
+    float4 tj = s.Sample(a.Linear, uv + texel * float2(-1, -1), lod: 0);
+    float4 tk = s.Sample(a.Linear, uv + texel * float2(1, -1), lod: 0);
+    float4 tl = s.Sample(a.Linear, uv + texel * float2(-1, 1), lod: 0);
+    float4 tm = s.Sample(a.Linear, uv + texel * float2(1, 1), lod: 0);
+    float4 g0 = (ta + tb + td + te) * 0.25;
+    float4 g1 = (tb + tc + te + tf) * 0.25;
+    float4 g2 = (td + te + tg + th) * 0.25;
+    float4 g3 = (te + tf + th + ti) * 0.25;
+    float4 g4 = (tj + tk + tl + tm) * 0.25;
+    float w0 = GroupWeight(g0, 0.125, a.First);
+    float w1 = GroupWeight(g1, 0.125, a.First);
+    float w2 = GroupWeight(g2, 0.125, a.First);
+    float w3 = GroupWeight(g3, 0.125, a.First);
+    float w4 = GroupWeight(g4, 0.5, a.First);
+    float4 sum = g0 * w0 + g1 * w1 + g2 * w2 + g3 * w3 + g4 * w4;
+    a.Target[(int2)id.xy] = sum / (w0 + w1 + w2 + w3 + w4);
+}
+
+public struct BloomUpArgs
+{
+    /// The smaller level, already upsampled into.
+    public Texture2D<float4> Low;
+    /// This level's downsample.
+    public Texture2D<float4> High;
+    public Sampler Linear;
+    public StorageTexture2D<float4> Target;
+    /// The tent's radius in texels of `Low`.
+    public float Radius;
+}
+
+/// `High` plus `Low` upsampled with a 3x3 tent: each level adds the blur of all smaller ones.
+[Compute(8, 8, 1)]
+public void BloomUp([DispatchThreadId] uint3 id, [Push] in BloomUpArgs a)
+{
+    uint2 size = a.Target.Size;
+    if (id.x >= size.x || id.y >= size.y)
+        return;
+    float2 texel = a.Radius / (float2)a.Low.Size;
+    float2 uv = ((float2)id.xy + 0.5) / (float2)size;
+    Texture2D<float4> l = a.Low;
+    float4 tent = l.Sample(a.Linear, uv, lod: 0) * 4
+        + (l.Sample(a.Linear, uv + texel * float2(-1, 0), lod: 0)
+            + l.Sample(a.Linear, uv + texel * float2(1, 0), lod: 0)
+            + l.Sample(a.Linear, uv + texel * float2(0, -1), lod: 0)
+            + l.Sample(a.Linear, uv + texel * float2(0, 1), lod: 0)) * 2
+        + l.Sample(a.Linear, uv + texel * float2(-1, -1), lod: 0)
+        + l.Sample(a.Linear, uv + texel * float2(1, -1), lod: 0)
+        + l.Sample(a.Linear, uv + texel * float2(-1, 1), lod: 0)
+        + l.Sample(a.Linear, uv + texel * float2(1, 1), lod: 0);
+    a.Target[(int2)id.xy] = a.High.Sample(a.Linear, uv, lod: 0) + tent / 16;
+}
+
+public struct HistogramArgs
+{
+    public Texture2D<float4> Scene;
+    /// 256 counters, cleared before: bin 0 holds the black pixels, 1 to 255 the range of log2
+    /// luminance from `MinLogLuminance` over `LogLuminanceRange`.
+    public Buffer<uint> Histogram;
+    public float MinLogLuminance;
+    public float InverseLogLuminanceRange;
+}
+
+/// Counts every pixel of the scene into the bin of its log luminance.
+[Compute(16, 16, 1)]
+public void Histogram([DispatchThreadId] uint3 id, [Push] in HistogramArgs a)
+{
+    uint2 size = a.Scene.Size;
+    if (id.x >= size.x || id.y >= size.y)
+        return;
+    float luminance = Luminance(a.Scene[(int2)id.xy].xyz);
+    uint bin = 0;
+    if (luminance > 0.00001)
+    {
+        float t = Saturate((Log2(luminance) - a.MinLogLuminance) * a.InverseLogLuminanceRange);
+        bin = (uint)(t * 254) + 1;
+    }
+    a.Histogram.AtomicAdd(bin, 1);
+}
+
+public struct ExposureArgs
+{
+    public ReadOnlyBuffer<uint> Histogram;
+    /// Word 0: the adapted log2 luminance; word 1: the exposure the tonemap multiplies by.
+    public ByteBuffer Exposure;
+    public uint Pixels;
+    public float MinLogLuminance;
+    public float LogLuminanceRange;
+    /// How far this frame moves the adapted luminance toward the measured one, 0 to 1.
+    public float Adapt;
+    /// 1 when there is no adapted luminance yet: take the measured one.
+    public uint Fresh;
+    /// Stops added to the exposure.
+    public float Compensation;
+    /// The darkest and brightest fractions of pixels left out of the average.
+    public float LowFraction;
+    public float HighFraction;
+}
+
+/// The average log luminance of the pixels between `LowFraction` and `HighFraction` of the
+/// histogram, adapted over time, and the exposure for it: EV100 from the average (sensor
+/// calibration 12.5, ISO 100) and the saturation-based exposure `1 / (1.2 * 2^EV100)`.
+[Compute(1, 1, 1)]
+public void Exposure([Push] in ExposureArgs a)
+{
+    float low = a.LowFraction * (float)a.Pixels;
+    float high = a.HighFraction * (float)a.Pixels;
+    float below = 0;
+    float sum = 0;
+    float weight = 0;
+    for (uint bin = 0; bin < 256; bin++)
+    {
+        float count = (float)a.Histogram[bin];
+        // The part of this bin's pixels that lies between `low` and `high`.
+        float from = Max(below, low);
+        float to = Min(below + count, high);
+        below = below + count;
+        if (bin == 0 || to <= from)
+            continue;
+        float logLuminance =
+            a.MinLogLuminance + ((float)bin - 0.5) / 254 * a.LogLuminanceRange;
+        sum = sum + logLuminance * (to - from);
+        weight = weight + (to - from);
+    }
+    float measured = weight > 0 ? sum / weight : a.MinLogLuminance;
+    float previous = AsFloat(a.Exposure.Load(0));
+    float adapted = a.Fresh != 0 ? measured : Lerp(previous, measured, a.Adapt);
+    float ev100 = adapted + Log2(100.0 / 12.5);
+    float exposure = Exp2(a.Compensation) / (1.2 * Exp2(ev100));
+    a.Exposure.Store(0, AsUInt(adapted));
+    a.Exposure.Store(4, AsUInt(exposure));
+}
+
+public struct TonemapArgs
+{
+    public Texture2D<float4> Scene;
+    public Texture2D<float4> Bloom;
+    public Sampler Linear;
+    public ReadOnlyByteBuffer Exposure;
+    /// The bloom's share of the light, already divided by the number of levels it sums.
+    public float BloomIntensity;
+}
+
+public struct FullscreenVertex
+{
+    [Position] public float4 Pos;
+    public float2 Uv;
+}
+
+/// One triangle covering the target: vertex ids 0, 1, 2.
+[Vertex]
+public FullscreenVertex FullscreenVs([VertexId] uint vertex)
+{
+    float2 uv = float2((float)((vertex << 1) & 2), (float)(vertex & 2));
+    return FullscreenVertex { Pos = float4(uv * float2(2, -2) + float2(-1, 1), 0, 1), Uv = uv };
+}
+
+/// ACES filmic curve fit (Narkowicz 2015), on exposed linear color.
+float3 Aces(float3 x) =>
+    Saturate(x * (x * 2.51 + 0.03) / (x * (x * 2.43 + 0.59) + 0.14));
+
+/// The exposed scene plus bloom, through the filmic curve. The target's format encodes it
+/// (sRGB targets do it on write).
+[Pixel]
+public float4 TonemapPs(in FullscreenVertex i, [Push] in TonemapArgs a)
+{
+    float exposure = AsFloat(a.Exposure.Load(4));
+    float3 scene = a.Scene.Sample(a.Linear, i.Uv, lod: 0).xyz;
+    float3 bloom = a.Bloom.Sample(a.Linear, i.Uv, lod: 0).xyz;
+    float3 color = (scene + bloom * a.BloomIntensity) * exposure;
+    return float4(Aces(color), 1);
+}

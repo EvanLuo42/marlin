@@ -134,7 +134,8 @@ impl<'v> Engine<'v> {
         if let Some(input) = input {
             self.fly(input, dt);
         }
-        let delta = self.extract();
+        let mut delta = self.extract();
+        delta.dt = dt;
         // The frame's changes have been extracted: start the next change-detection period.
         self.world.clear_trackers();
         delta
@@ -276,6 +277,7 @@ impl<'v> Engine<'v> {
         uploads.sort_unstable_by_key(|u| u.mesh);
         RenderDelta {
             frame: self.frame,
+            dt: 0.0,
             uploads,
             releases: core::mem::take(&mut self.released),
             camera: self

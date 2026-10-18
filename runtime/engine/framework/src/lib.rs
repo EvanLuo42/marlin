@@ -29,4 +29,4 @@ pub use engine::{Engine, EngineError, FlyCamera, FromLevel, Spin, StaticMesh};
 pub use level::{Component, Level, LevelEntity, LevelEnvironment, TransformDesc};
 pub use offscreen::{OFFSCREEN_FORMAT, Offscreen};
 pub use run::{RunError, run};
-pub use shaders::{ShaderError, forward_shaders, load_engine_shaders};
+pub use shaders::{ShaderError, forward_shaders, load_engine_shaders, post_shaders};

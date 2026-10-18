@@ -7,7 +7,7 @@ use core::fmt;
 
 use marlin_asset::{AssetError, AssetServer, Handle, LoadState, Vfs};
 use marlin_jobs::JobSystem;
-use marlin_render::{FORWARD_PUSH_BYTES, ForwardShaders};
+use marlin_render::{FORWARD_PUSH_BYTES, ForwardShaders, PostShaders};
 use marlin_rhi::ShaderModule;
 use marlin_shader::asset::{LibraryEntry, ShaderLibrary};
 use marlin_shader::reflect::{Stage, StageBinding};
@@ -139,4 +139,43 @@ fn module(entry: &LibraryEntry) -> ShaderModule<'_> {
         code: &entry.code,
         entry: MODULE_ENTRY,
     }
+}
+
+/// The post chain's entries (`Marlin.Engine.Post`).
+pub const POST: [&str; 6] = [
+    "Marlin.Engine.Post.BloomDown",
+    "Marlin.Engine.Post.BloomUp",
+    "Marlin.Engine.Post.Histogram",
+    "Marlin.Engine.Post.Exposure",
+    "Marlin.Engine.Post.FullscreenVs",
+    "Marlin.Engine.Post.TonemapPs",
+];
+
+/// The post chain's shaders from the engine's library, checked for their stages and the push
+/// constants marlin-render's post chain sets.
+pub fn post_shaders(library: &ShaderLibrary) -> Result<PostShaders<'_>, ShaderError> {
+    let get = |name: &'static str, stage: Stage, push: Option<u32>| {
+        let e = library.entry(name).ok_or(ShaderError::MissingEntry(name))?;
+        let mismatch = |problem| ShaderError::Mismatch {
+            entry: name,
+            problem,
+        };
+        if e.reflection.entry.stage != stage {
+            return Err(mismatch("not the stage the post chain uses it as"));
+        }
+        if e.reflection.push.as_ref().map(|p| p.size) != push {
+            return Err(mismatch(
+                "its push constants are not what the post chain sets",
+            ));
+        }
+        Ok(module(e))
+    };
+    Ok(PostShaders {
+        bloom_down: get(POST[0], Stage::Compute, Some(16))?,
+        bloom_up: get(POST[1], Stage::Compute, Some(20))?,
+        histogram: get(POST[2], Stage::Compute, Some(16))?,
+        exposure: get(POST[3], Stage::Compute, Some(40))?,
+        fullscreen: get(POST[4], Stage::Vertex, None)?,
+        tonemap: get(POST[5], Stage::Pixel, Some(20))?,
+    })
 }

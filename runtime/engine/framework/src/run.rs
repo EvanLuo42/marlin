@@ -11,7 +11,7 @@ use marlin_app::{App, Event, Surface, WindowDesc};
 use marlin_diag::{FixedBuf, info};
 use marlin_input::{GamepadButton, Input, Key};
 use marlin_jobs::{Config, JobSystem};
-use marlin_render::{Renderer, RendererDesc};
+use marlin_render::{HDR_FORMAT, PostProcess, Renderer, RendererDesc};
 use marlin_render_graph::{FrameContext, FrameContextDesc, GpuTimeline};
 use marlin_rhi::{
     DeviceDesc, Instance, InstanceDesc, PresentMode, PresentStatus, SurfaceHandle, Swapchain,
@@ -22,7 +22,7 @@ use marlin_time::Instant;
 use crate::boot::{Boot, R_VSYNC, WINDOW_HEIGHT, WINDOW_WIDTH};
 use crate::delta::{RenderDelta, RenderSide};
 use crate::engine::{Engine, EngineError};
-use crate::shaders::{ShaderError, forward_shaders, load_engine_shaders};
+use crate::shaders::{ShaderError, forward_shaders, load_engine_shaders, post_shaders};
 
 #[derive(Debug, marlin_error::Error)]
 pub enum RunError {
@@ -86,7 +86,7 @@ pub fn run(boot: &Boot, title: &str) -> Result<(), RunError> {
     )?;
 
     let mut engine = Engine::new(&boot.vfs)?;
-    // The forward pass's shaders, cooked from content/engine like any asset.
+    // The renderer's shaders, cooked from content/engine like any asset.
     let library = load_engine_shaders(&mut engine.assets, &boot.vfs, Some(&jobs))?;
     let shaders = engine
         .assets
@@ -95,11 +95,12 @@ pub fn run(boot: &Boot, title: &str) -> Result<(), RunError> {
     let renderer = Renderer::new(
         &device,
         &RendererDesc {
-            color_format: swapchain.format(),
+            color_format: HDR_FORMAT,
             shaders: Some(forward_shaders(shaders)?),
         },
     )?;
-    let mut render = RenderSide::new(renderer);
+    let post = PostProcess::new(&device, &post_shaders(shaders)?, swapchain.format())?;
+    let mut render = RenderSide::new(renderer, post);
     engine.load_level(boot.level);
 
     let mut pending: Option<RenderDelta> = None;
