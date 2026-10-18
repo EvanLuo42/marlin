@@ -81,12 +81,15 @@ fn tables_match_the_scene_and_transforms_shift_on_the_gpu() {
         transforms(&t, second),
         (rows(&b).to_vec(), rows(&b).to_vec())
     );
-    // World bounds: the unit cube's sphere (radius √3 / 2), moved and scaled by 2.
+    // World bounds: the cooked cube's sphere (at least the exact √3 / 2), moved and scaled by 2.
     let at = second.index() as usize * 4;
     let sphere = floats(&t.bounds[at..at + 4]);
-    let expected = 3f32.sqrt();
-    assert!((sphere[3] - expected).abs() < 1e-4, "{sphere:?}");
-    assert!((sphere[0] + 1.0).abs() < 1e-5 && (sphere[1] - 0.5).abs() < 1e-5);
+    let local = h.scene.mesh(h.cube).unwrap().unwrap().bounds;
+    assert!(local.radius >= 3f32.sqrt() / 2.0 - 1e-5);
+    let center = b.transform_point(Vec3::from(local.center));
+    assert!((sphere[3] - local.radius * 2.0).abs() < 1e-4, "{sphere:?}");
+    let at_center = Vec3::new(sphere[0], sphere[1], sphere[2]) - center;
+    assert!(at_center.length() < 1e-4, "{sphere:?}");
 
     // Moving: the GPU shifts the old current into previous.
     h.set(first, InstanceUpdate::Transform(c));

@@ -3,28 +3,26 @@
 use marlin_gpu_test_support::assert_image;
 use marlin_math::{Quat, Transform, Vec3};
 use marlin_render::scene::MeshId;
-use marlin_render::{Camera, Environment, MeshData, RenderStats, Vertex};
+use marlin_render::{Camera, Environment, RenderStats};
 
 use crate::support::Harness;
+use crate::support::cook::cook;
 
 const ORANGE: [f32; 4] = [0.9, 0.55, 0.2, 1.0];
 
 /// A 2×2 quad in the XZ plane facing +Y.
 fn floor(h: &mut Harness) -> MeshId {
-    let vertex = |x, z| Vertex {
-        position: [x, 0.0, z],
-        normal: [0.0, 1.0, 0.0],
-    };
-    let vertices = [
-        vertex(-1.0, -1.0),
-        vertex(-1.0, 1.0),
-        vertex(1.0, 1.0),
-        vertex(1.0, -1.0),
+    let positions = [
+        [-1.0, 0.0, -1.0],
+        [-1.0, 0.0, 1.0],
+        [1.0, 0.0, 1.0],
+        [1.0, 0.0, -1.0],
     ];
-    h.upload(&MeshData {
-        vertices: &vertices,
-        indices: &[0, 1, 2, 0, 2, 3],
-    })
+    h.upload(&cook(
+        &positions,
+        &[[0.0, 1.0, 0.0]; 4],
+        &[0, 1, 2, 0, 2, 3],
+    ))
     .0
 }
 
@@ -98,7 +96,8 @@ fn meshes_overlap_and_intersect_in_depth() {
         stats,
         RenderStats {
             instances: 4,
-            draws: 2
+            draws: 2,
+            triangles: 38,
         }
     );
     assert_image!("depth_ordering", &image);

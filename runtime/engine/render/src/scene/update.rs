@@ -124,14 +124,26 @@ impl Bounds {
     }
 }
 
-/// What the GPU knows of a resident mesh.
+/// A mesh on the GPU, as the GPU Scene's mesh table describes it ([`Renderer::resident_mesh`]
+/// gives it).
+///
+/// [`Renderer::resident_mesh`]: crate::Renderer::resident_mesh
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct ResidentMesh {
-    /// The renderer's mesh: its buffers.
+    /// The renderer's mesh: its buffer.
     pub handle: MeshHandle,
-    /// Its vertices' view index and index count, for the GPU mesh table.
-    pub vertices: u32,
-    pub index_count: u32,
+    /// The view of its geometry buffer (`crate::geometry`).
+    pub geometry: u32,
+    pub lods: u32,
+    /// `MeshFlags`.
+    pub flags: u32,
+    /// Bytes per vertex: positions | attributes << 8 | skin << 16.
+    pub strides: u32,
+    pub uv_sets: u32,
+    /// Quantized positions decode as `offset + q * scale`.
+    pub position_offset: [f32; 3],
+    pub position_scale: [f32; 3],
+    /// Local bounds.
     pub bounds: Bounds,
 }
 

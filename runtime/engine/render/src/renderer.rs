@@ -10,11 +10,12 @@ use marlin_render_graph::{
 use marlin_rhi::{
     Buffer, BufferBarrier, BufferDesc, BufferState, BufferUsage, BufferViewDesc, BufferViewKind,
     ClearValue, ColorTargetState, DepthState, Device, Error, ErrorKind, Format, GraphicsPipeline,
-    GraphicsPipelineDesc, IndexFormat, LoadOp, MemoryLocation, MultisampleState, PrimitiveTopology,
-    RasterState, Result, ShaderModule, ShaderView, StoreOp,
+    GraphicsPipelineDesc, LoadOp, MemoryLocation, MultisampleState, PrimitiveTopology, RasterState,
+    Result, ShaderModule, ShaderView, StoreOp,
 };
 
-use crate::mesh::{MeshData, Vertex};
+use crate::asset::mesh::MeshView;
+use crate::geometry::{self, LodDraw};
 use crate::scene::{Bounds, GpuScene, RenderScene, ResidentMesh};
 
 /// The view a [`Renderer`] draws from: put it on an entity with a [`Transform`]. The camera looks
@@ -73,40 +74,44 @@ pub struct RendererDesc<'a> {
     pub shaders: Option<ForwardShaders<'a>>,
 }
 
-/// The forward pass: vertex pulling and per-instance transforms, one directional light plus
-/// ambient. Its push constants are the frame constants', instances' and vertices' view indices
-/// and the draw's first instance (`docs/design/0002-shader-interface.md`).
+/// The forward pass: vertices decoded from the mesh's resident LOD page, per-instance transforms
+/// from the GPU Scene, one directional light plus ambient. Its push constants are the views of
+/// the frame constants, the instance list, the GPU Scene's tables and the mesh's geometry, the
+/// LOD and the draw's first instance (`docs/design/0002-shader-interface.md`).
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct ForwardShaders<'a> {
     pub vertex: ShaderModule<'a>,
     pub pixel: ShaderModule<'a>,
 }
 
-/// Bytes of push constants the forward pass sets: six 32-bit words (0002). Its shaders' `[Push]`
-/// struct must be this size.
-pub const FORWARD_PUSH_BYTES: u32 = 24;
+/// Bytes of push constants the forward pass sets: eight 32-bit words (0002). Its shaders'
+/// `[Push]` struct must be this size.
+pub const FORWARD_PUSH_BYTES: u32 = 32;
 
 /// What a [`Renderer::add_passes`] call draws.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct RenderStats {
     pub instances: u32,
     pub draws: u32,
+    /// Triangles drawn, at the LODs picked.
+    pub triangles: u64,
 }
 
 const DEPTH_FORMAT: Format = Format::D32Float;
 
 struct Mesh {
-    vertex_view: ShaderView,
-    _vertices: Buffer,
-    indices: Buffer,
-    index_count: u32,
+    view: ShaderView,
+    buffer: Buffer,
+    lods: Vec<LodDraw>,
+    resident: ResidentMesh,
 }
 
 /// One instanced draw of the forward pass.
 struct Draw<'g> {
-    indices: &'g Buffer,
-    index_count: u32,
-    vertices: u32,
+    buffer: &'g Buffer,
+    lod: u32,
+    draw: LodDraw,
+    geometry: u32,
     first: u32,
     count: u32,
 }
@@ -116,6 +121,9 @@ pub struct Renderer {
     /// `None` without shaders: frames are only cleared.
     pipeline: Option<GraphicsPipeline>,
     meshes: SlotMap<Mesh>,
+    /// The screen-space error, in pixels, a LOD may have: each instance draws the coarsest LOD
+    /// whose error, projected at the instance's distance, stays within it.
+    pub lod_error_pixels: f32,
 }
 
 impl Renderer {
@@ -139,42 +147,32 @@ impl Renderer {
         Ok(Self {
             pipeline,
             meshes: SlotMap::new(),
+            lod_error_pixels: 1.0,
         })
     }
 
-    /// Uploads a mesh, blocking until the GPU has copied it.
-    pub fn upload_mesh(&mut self, device: &Device, data: &MeshData<'_>) -> Result<MeshHandle> {
-        if data.vertices.is_empty() || data.indices.is_empty() {
-            return Err(Error::from_kind(ErrorKind::InvalidInput));
-        }
-        // SAFETY: Vertex is plain f32 data without padding.
-        let vertex_bytes = unsafe {
-            core::slice::from_raw_parts(
-                data.vertices.as_ptr().cast::<u8>(),
-                size_of_val(data.vertices),
-            )
-        };
-        let index_bytes: Vec<u8> = data.indices.iter().flat_map(|i| i.to_le_bytes()).collect();
-        let (vertex_size, index_size) = (vertex_bytes.len() as u64, index_bytes.len() as u64);
-
+    /// Uploads a cooked mesh's LOD pages as they are (the [`geometry`](crate::geometry) layout),
+    /// blocking until the GPU has copied them. `pages` are the mesh's bulk blobs; each LOD page
+    /// is checked first. Malformed pages are `InvalidInput`.
+    pub fn upload_mesh(
+        &mut self,
+        device: &Device,
+        mesh: &MeshView<'_>,
+        pages: &[&[u8]],
+    ) -> Result<MeshHandle> {
+        let (bytes, lods) =
+            geometry::build(mesh, pages).map_err(|_| Error::from_kind(ErrorKind::InvalidInput))?;
+        let size = bytes.len() as u64;
         let staging = device.create_buffer(&BufferDesc {
-            size: vertex_size + index_size,
+            size,
             usage: BufferUsage::COPY_SRC,
             memory: MemoryLocation::Upload,
         })?;
         // SAFETY: the GPU has no work using the new buffer.
-        unsafe {
-            staging.write(0, vertex_bytes);
-            staging.write(vertex_size, &index_bytes);
-        }
-        let vertices = device.create_buffer(&BufferDesc {
-            size: vertex_size,
-            usage: BufferUsage::SHADER_READ | BufferUsage::COPY_DST,
-            memory: MemoryLocation::GpuOnly,
-        })?;
-        let indices = device.create_buffer(&BufferDesc {
-            size: index_size,
-            usage: BufferUsage::INDEX | BufferUsage::COPY_DST,
+        unsafe { staging.write(0, &bytes) };
+        let buffer = device.create_buffer(&BufferDesc {
+            size,
+            usage: BufferUsage::SHADER_READ | BufferUsage::INDEX | BufferUsage::COPY_DST,
             memory: MemoryLocation::GpuOnly,
         })?;
 
@@ -182,40 +180,55 @@ impl Renderer {
         let mut list = device.create_command_list(&pool)?;
         let fence = device.create_fence(0)?;
         list.begin(&mut pool)?;
-        list.copy_buffer(&staging, 0, &vertices, 0, vertex_size);
-        list.copy_buffer(&staging, vertex_size, &indices, 0, index_size);
-        list.buffer_barriers(&[
-            BufferBarrier {
-                buffer: &vertices,
-                before: BufferState::COPY_DST,
-                after: BufferState::SHADER_READ,
+        list.copy_buffer(&staging, 0, &buffer, 0, size);
+        list.buffer_barriers(&[BufferBarrier {
+            buffer: &buffer,
+            before: BufferState::COPY_DST,
+            after: BufferState {
+                stage: BufferState::SHADER_READ
+                    .stage
+                    .union(BufferState::INDEX.stage),
+                access: BufferState::SHADER_READ
+                    .access
+                    .union(BufferState::INDEX.access),
             },
-            BufferBarrier {
-                buffer: &indices,
-                before: BufferState::COPY_DST,
-                after: BufferState::INDEX,
-            },
-        ]);
+        }]);
         list.end()?;
         // SAFETY: everything the list uses lives until the wait below returns.
         unsafe { device.queue().submit(&[&list], Some((&fence, 1)))? };
         fence.wait(1, None)?;
 
-        let vertex_view = device.create_buffer_view(
-            &vertices,
-            &BufferViewDesc::whole(
-                BufferViewKind::Structured {
-                    stride: size_of::<Vertex>() as u32,
-                },
-                false,
-            ),
-        )?;
-        Ok(MeshHandle(self.meshes.insert(Mesh {
-            vertex_view,
-            _vertices: vertices,
-            indices,
-            index_count: data.indices.len() as u32,
-        })))
+        let view = device
+            .create_buffer_view(&buffer, &BufferViewDesc::whole(BufferViewKind::Raw, false))?;
+        let h = mesh.header;
+        let s = h.sphere;
+        let resident = ResidentMesh {
+            // Set below, once the slot is known.
+            handle: MeshHandle(Handle::default()),
+            geometry: view.index(),
+            lods: lods.len() as u32,
+            flags: h.flags,
+            strides: h.position_stride | h.attribute_stride << 8 | h.skin_stride << 16,
+            uv_sets: h.uv_sets,
+            position_offset: h.position_offset,
+            position_scale: h.position_scale,
+            bounds: Bounds {
+                center: [s[0], s[1], s[2]],
+                radius: s[3],
+                min: h.bounds_min,
+                max: h.bounds_max,
+            },
+        };
+        let handle = MeshHandle(self.meshes.insert(Mesh {
+            view,
+            buffer,
+            lods,
+            resident,
+        }));
+        if let Some(m) = self.meshes.get_mut(handle.0) {
+            m.resident.handle = handle;
+        }
+        Ok(handle)
     }
 
     /// Frees a mesh's GPU buffers. Its handle draws nothing from now on.
@@ -232,24 +245,38 @@ impl Renderer {
         self.meshes.len()
     }
 
-    /// What the GPU Scene's mesh table needs of `mesh`, its bounds computed from `data` (the
-    /// geometry it was uploaded from). `None` if the mesh was released.
-    pub fn resident_mesh(&self, mesh: MeshHandle, data: &MeshData<'_>) -> Option<ResidentMesh> {
-        let m = self.meshes.get(mesh.0)?;
-        Some(ResidentMesh {
-            handle: mesh,
-            vertices: m.vertex_view.index(),
-            index_count: m.index_count,
-            bounds: Bounds::of(data.vertices.iter().map(|v| v.position)),
-        })
+    /// What the GPU Scene's mesh table needs of `mesh` (for `MeshUpdate::Resident`). `None` if
+    /// the mesh was released.
+    pub fn resident_mesh(&self, mesh: MeshHandle) -> Option<ResidentMesh> {
+        self.meshes.get(mesh.0).map(|m| m.resident)
+    }
+
+    /// The LOD an instance of `mesh` draws: the coarsest whose error, scaled by the instance's
+    /// largest scale and projected at the distance of its bounding sphere's near side, is at
+    /// most [`lod_error_pixels`](Self::lod_error_pixels). `pixels_per_unit` is the projection's
+    /// pixels per world unit at distance 1.
+    fn pick_lod(&self, mesh: &Mesh, transform: &Transform, eye: Vec3, pixels_per_unit: f32) -> u32 {
+        let b = mesh.resident.bounds;
+        let center = transform.transform_point(Vec3::new(b.center[0], b.center[1], b.center[2]));
+        let s = transform.scale.abs();
+        let scale = s.x.max(s.y).max(s.z);
+        let distance = ((center - eye).length() - b.radius * scale).max(1e-4);
+        let limit = self.lod_error_pixels * distance / (pixels_per_unit * scale);
+        let mut lod = 0;
+        for (i, l) in mesh.lods.iter().enumerate() {
+            if l.error <= limit {
+                lod = i;
+            }
+        }
+        lod as u32
     }
 
     /// Declares the forward pass into `g` (0007 §11.2): one raster pass that clears `target` and
     /// a transient depth buffer and draws every drawable instance of `scene` seen from `camera`,
-    /// one instanced draw per mesh. Transforms and colors come from the GPU Scene `gpu` (after
-    /// its scatter); the pass uploads only the frame constants and the instance rows grouped by
-    /// mesh. Without a camera, or shaders, it only clears. Returns the target's new handle and
-    /// what the pass draws.
+    /// one instanced draw per mesh and LOD. Transforms and colors come from the GPU Scene `gpu`
+    /// (after its scatter), vertices from the meshes' resident pages; the pass uploads only the
+    /// frame constants and the instance rows grouped by draw. Without a camera, or shaders, it
+    /// only clears. Returns the target's new handle and what the pass draws.
     pub fn add_passes<'g>(
         &'g self,
         g: &mut RenderGraph<'g>,
@@ -261,35 +288,48 @@ impl Renderer {
         let size = g.texture_desc(target);
         let (width, height) = (size.width, size.height);
         let camera = camera.filter(|_| self.pipeline.is_some());
-        let mut rows: Vec<(MeshHandle, u32)> = Vec::new();
-        if camera.is_some() {
-            rows.extend(scene.drawable().map(|(row, mesh)| (mesh, row)));
-            rows.sort_unstable_by_key(|&(mesh, row)| (mesh.0, row));
+        // (mesh, LOD, row) for every drawable instance, grouped into draws.
+        let mut rows: Vec<(Handle<Mesh>, u32, u32)> = Vec::new();
+        if let Some((eye, camera)) = camera {
+            let pixels_per_unit =
+                height as f32 / (2.0 * marlin_math::scalar::tan(camera.fov_y * 0.5));
+            for (row, mesh, transform) in scene.drawable() {
+                if let Some(m) = self.meshes.get(mesh.0) {
+                    let lod = self.pick_lod(m, &transform, eye.translation, pixels_per_unit);
+                    rows.push((mesh.0, lod, row));
+                }
+            }
+            rows.sort_unstable();
         }
         let mut draws: Vec<Draw<'g>> = Vec::new();
         let mut list: Vec<u32> = Vec::with_capacity(rows.len());
+        let mut triangles = 0u64;
         let mut start = 0;
         while start < rows.len() {
-            let handle = rows[start].0;
+            let (handle, lod, _) = rows[start];
             let count = rows[start..]
                 .iter()
-                .take_while(|(m, _)| *m == handle)
+                .take_while(|(m, l, _)| (*m, *l) == (handle, lod))
                 .count();
-            if let Some(mesh) = self.meshes.get(handle.0) {
+            if let Some(mesh) = self.meshes.get(handle) {
+                let draw = mesh.lods[lod as usize];
+                triangles += u64::from(draw.index_count / 3) * count as u64;
                 draws.push(Draw {
-                    indices: &mesh.indices,
-                    index_count: mesh.index_count,
-                    vertices: mesh.vertex_view.index(),
+                    buffer: &mesh.buffer,
+                    lod,
+                    draw,
+                    geometry: mesh.view.index(),
                     first: list.len() as u32,
                     count: count as u32,
                 });
-                list.extend(rows[start..start + count].iter().map(|(_, r)| *r));
+                list.extend(rows[start..start + count].iter().map(|(_, _, r)| *r));
             }
             start += count;
         }
         let stats = RenderStats {
             instances: list.len() as u32,
             draws: draws.len() as u32,
+            triangles,
         };
         let env = *scene.environment();
         let constants = camera.map(|(transform, camera)| {
@@ -315,6 +355,7 @@ impl Renderer {
             b.depth(depth, LoadOp::Clear(0.0), StoreOp::DontCare);
             let transforms = b.read_buffer(gpu.instance_transforms, Access::VertexRead);
             let instances = b.read_buffer(gpu.instance_data, Access::VertexRead);
+            let meshes = b.read_buffer(gpu.meshes, Access::VertexRead);
             (target, move |ctx: &mut PassContext<'_>| {
                 let (Some(pipeline), Some(constants)) = (pipeline, constants) else {
                     return;
@@ -324,19 +365,14 @@ impl Renderer {
                 }
                 let frame = ctx.upload(&constants);
                 let list = ctx.upload_slice(&list);
-                let (transforms, instances) = (ctx.srv(transforms), ctx.srv(instances));
+                let tables = [transforms, instances, meshes].map(|h| ctx.srv(h));
                 ctx.set_pipeline(pipeline);
-                for draw in &draws {
-                    ctx.resident_index_buffer(draw.indices, 0, IndexFormat::U32);
+                for d in &draws {
+                    ctx.resident_index_buffer(d.buffer, d.draw.indices, d.draw.format);
                     ctx.push_words(&[
-                        frame,
-                        list,
-                        transforms,
-                        instances,
-                        draw.vertices,
-                        draw.first,
+                        frame, list, tables[0], tables[1], tables[2], d.geometry, d.lod, d.first,
                     ]);
-                    ctx.draw_indexed(draw.index_count, draw.count, 0, 0, 0);
+                    ctx.draw_indexed(d.draw.index_count, d.count, 0, 0, 0);
                 }
             })
         });

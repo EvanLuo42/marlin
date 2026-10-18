@@ -474,9 +474,9 @@ fn the_engine_package_cooks() {
         assert_eq!(e.reflection.entry.stage, stage);
         assert_eq!(e.code[..4], SPIRV_MAGIC);
     }
-    // The forward pass's push constants: six 32-bit words (0002).
+    // The forward pass's push constants: eight 32-bit words (0002).
     let vs = lib.entry("Marlin.Engine.ForwardVs").unwrap();
-    assert_eq!(vs.reflection.push.as_ref().unwrap().size, 24);
+    assert_eq!(vs.reflection.push.as_ref().unwrap().size, 32);
 }
 
 /// `Marlin` and `Marlin.…` are the engine's package names, and the engine uses no others: a

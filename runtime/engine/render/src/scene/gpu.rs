@@ -8,7 +8,7 @@
 //! | instance data | 8 | mesh row, flags, 2 spare, color (float4) |
 //! | instance transforms | 24 | current, then previous: 3 rows of a 3×4 matrix each |
 //! | instance bounds | 4 | world bounding sphere: center, radius |
-//! | meshes | 8 | vertices view, index count, resident (0/1), spare, local bounding sphere |
+//! | meshes | 16 | geometry view, LOD count, flags, strides; position offset (3), resident (0/1); position scale (3), UV sets; local bounding sphere (`Marlin.Engine.Scene.MeshEntry`) |
 //! | lights | 16 | kind, range, cone (2); radiance + spare; position + spare; direction + spare |
 //!
 //! The buffers are graph persistent resources keyed by the scene: they keep their contents
@@ -26,7 +26,7 @@ use marlin_serial::cooked::Pod;
 use super::{RenderScene, dirty};
 
 /// Words per row of each table, in table order.
-const STRIDES: [u32; 5] = [8, 24, 4, 8, 16];
+const STRIDES: [u32; 5] = [8, 24, 4, 16, 16];
 const DATA: u32 = 0;
 const TRANSFORMS: u32 = 1;
 const BOUNDS: u32 = 2;
@@ -207,20 +207,28 @@ impl RenderScene {
             if !self.mesh_rows.alive[i] {
                 continue;
             }
-            let mut words = [0u32; 8];
+            // Not resident: all zero (`Resident` = 0).
+            let mut words = [0u32; 16];
             if let Some(m) = self.mesh_resident[i] {
-                words[0] = m.vertices;
-                words[1] = m.index_count;
-                words[2] = 1;
-                let b = m.bounds;
-                for (w, f) in words[4..].iter_mut().zip(floats(&[
-                    b.center[0],
-                    b.center[1],
-                    b.center[2],
-                    b.radius,
-                ])) {
-                    *w = f;
-                }
+                let (o, s, b) = (m.position_offset, m.position_scale, m.bounds);
+                words = [
+                    m.geometry,
+                    m.lods,
+                    m.flags,
+                    m.strides,
+                    o[0].to_bits(),
+                    o[1].to_bits(),
+                    o[2].to_bits(),
+                    1,
+                    s[0].to_bits(),
+                    s[1].to_bits(),
+                    s[2].to_bits(),
+                    m.uv_sets,
+                    b.center[0].to_bits(),
+                    b.center[1].to_bits(),
+                    b.center[2].to_bits(),
+                    b.radius.to_bits(),
+                ];
             }
             ops.push(MESHES, WRITE, row, &words);
         }

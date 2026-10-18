@@ -2,8 +2,8 @@
 //!
 //! - [`Level`]: as authored (marlin-serial).
 //! - `ShaderLibrary` (a cooked `ShaderPackage`): as cooked (marlin-serial); see [`crate::shaders`].
-//! - `Mesh` → [`LoadedMesh`]: LOD 0 decoded for the forward renderer, shared with the render side
-//!   (which uploads it) through an `Arc`.
+//! - `Mesh` → [`LoadedMesh`]: the cooked mesh in place, shared with the render side (which uploads
+//!   its LOD pages as they are) through an `Arc`.
 //! - `Texture`, `Skeleton`, `AnimationClip` → [`InPlace`]: the cooked layout checked once and
 //!   kept in the unit's bytes, read through its view without copying. Texture upload arrives
 //!   with the renderer that samples textures.
@@ -19,32 +19,23 @@ use marlin_reflect::type_info;
 use marlin_render::asset::mesh::MeshView;
 use marlin_render::asset::texture::TextureView;
 use marlin_render::asset::{Mesh, Texture};
-use marlin_render::{MeshData, Vertex};
 use marlin_shader::asset::ShaderLibrary;
 
 use crate::level::Level;
 
-/// A mesh's LOD 0 in the forward renderer's form.
-#[derive(Clone, PartialEq, Debug, Default)]
-pub struct MeshGeometry {
-    pub vertices: Vec<Vertex>,
-    pub indices: Vec<u32>,
-    /// Bounding sphere center and radius.
-    pub sphere: [f32; 4],
-}
+/// A loaded `Mesh`: its cooked payload and pages, checked but for the pages' contents (the
+/// renderer checks those when it uploads them).
+#[derive(Clone)]
+pub struct LoadedMesh(pub Arc<InPlace<Mesh>>);
 
-impl MeshGeometry {
-    pub fn data(&self) -> MeshData<'_> {
-        MeshData {
-            vertices: &self.vertices,
-            indices: &self.indices,
-        }
+impl core::fmt::Debug for LoadedMesh {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("LoadedMesh")
+            .field("payload", &self.0.payload().len())
+            .field("pages", &self.0.bulk_count())
+            .finish()
     }
 }
-
-/// A loaded `Mesh`.
-#[derive(Clone, Debug)]
-pub struct LoadedMesh(pub Arc<MeshGeometry>);
 
 /// A cooked payload used where it was loaded: the unit's bytes stay alive with it.
 pub struct InPlace<T> {
@@ -94,6 +85,17 @@ impl InPlace<Texture> {
     }
 }
 
+impl InPlace<Mesh> {
+    pub fn view(&self) -> MeshView<'_> {
+        MeshView::new(self.payload(), &self.bulk_sizes()).expect("checked at load")
+    }
+
+    /// The bulk blobs, indexed as `MeshLod::bulk` counts them.
+    pub fn pages(&self) -> Vec<&[u8]> {
+        (0..self.bulk_count()).map(|i| self.bulk(i)).collect()
+    }
+}
+
 impl InPlace<Skeleton> {
     pub fn view(&self) -> SkeletonView<'_> {
         SkeletonView::new(self.payload()).expect("checked at load")
@@ -108,20 +110,8 @@ impl InPlace<AnimationClip> {
 
 fn load_mesh(ctx: &mut LoadContext<'_>) -> Result<LoadedMesh, alloc::string::String> {
     let sizes: Vec<u64> = ctx.bulk.iter().map(|(_, b)| b.len() as u64).collect();
-    let view = MeshView::new(ctx.payload, &sizes).map_err(|e| alloc::format!("{e:?}"))?;
-    let page = ctx
-        .bulk
-        .get(view.lods[0].bulk as usize)
-        .ok_or("LOD 0 page missing")?
-        .1;
-    let (vertices, indices) = view
-        .decode_lod(0, page)
-        .map_err(|e| alloc::format!("{e:?}"))?;
-    Ok(LoadedMesh(Arc::new(MeshGeometry {
-        vertices,
-        indices,
-        sphere: view.header.sphere,
-    })))
+    MeshView::new(ctx.payload, &sizes).map_err(|e| alloc::format!("{e:?}"))?;
+    Ok(LoadedMesh(Arc::new(InPlace::new(ctx))))
 }
 
 /// Every engine asset type's loader.

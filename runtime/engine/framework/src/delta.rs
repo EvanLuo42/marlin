@@ -8,7 +8,6 @@
 //! it uploads, applies the updates and draws. So the two run on different jobs, the simulation
 //! one frame ahead.
 
-use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use marlin_containers::{HashMap, HashMapExt};
@@ -24,7 +23,7 @@ use marlin_rhi::{ClearValue, Device};
 /// The view whose exposure the game's frames adapt.
 const MAIN_VIEW: u64 = 0;
 
-use crate::loaders::MeshGeometry;
+use crate::loaders::LoadedMesh;
 
 /// A mesh the render side should have, at a version.
 #[derive(Clone, Debug)]
@@ -32,7 +31,8 @@ pub struct MeshUpload {
     pub mesh: MeshId,
     /// The asset's reload count: a higher one replaces the GPU copy.
     pub version: u32,
-    pub geometry: Arc<MeshGeometry>,
+    /// The cooked mesh, uploaded as it is.
+    pub cooked: LoadedMesh,
 }
 
 /// One frame of the simulation, for the renderer.
@@ -108,9 +108,11 @@ impl RenderSide {
             {
                 continue;
             }
-            let data = upload.geometry.data();
-            let handle = self.renderer.upload_mesh(device, &data)?;
-            if let Some(m) = self.renderer.resident_mesh(handle, &data) {
+            let cooked = &upload.cooked.0;
+            let handle = self
+                .renderer
+                .upload_mesh(device, &cooked.view(), &cooked.pages())?;
+            if let Some(m) = self.renderer.resident_mesh(handle) {
                 resident.meshes.push(upload.mesh, MeshUpdate::Resident(m));
             }
             if let Some((old, _)) = self.meshes.insert(upload.mesh, (handle, upload.version)) {

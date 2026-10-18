@@ -10,6 +10,7 @@ ShaderPackage
     Sources = [
         `source:shaders/Forward.mshader`,
         `source:shaders/Post/Post.mshader`,
+        `source:shaders/Scene/Geometry.mshader`,
         `source:shaders/Scene/Scene.mshader`,
     ]
 }

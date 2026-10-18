@@ -1,19 +1,21 @@
 //! The forward renderer on the shared hardware device, drawing a [`RenderScene`] through a frame
 //! context into a small transient target that is read back after each frame. Tests change the
 //! scene the way extract does, with updates on reserved handles. Used by the `gpu` and `golden`
-//! binaries.
+//! binaries. Meshes are cooked by the real cooker ([`cook`]).
+
+pub mod cook;
 
 use marlin_gpu_test_support::{Image, hardware_device, shader};
 use marlin_math::{Transform, Vec3};
-use marlin_render::scene::{
-    InstanceDesc, InstanceId, InstanceUpdate, MeshId, MeshUpdate, ResidentMesh,
-};
+use marlin_render::scene::{InstanceDesc, InstanceId, InstanceUpdate, MeshId, MeshUpdate};
 use marlin_render::{
-    Camera, Environment, ForwardShaders, GpuScene, MeshData, MeshHandle, RenderScene, RenderStats,
-    Renderer, RendererDesc, ScatterShader, SceneUpdates, cube,
+    Camera, Environment, ForwardShaders, GpuScene, MeshHandle, RenderScene, RenderStats, Renderer,
+    RendererDesc, ScatterShader, SceneUpdates,
 };
 use marlin_render_graph::{FrameContext, FrameContextDesc, Readback, TextureDesc};
 use marlin_rhi::{ClearValue, Device, Format};
+
+use cook::Cooked;
 
 pub const SIZE: u32 = 64;
 
@@ -52,17 +54,7 @@ impl Harness {
             environment: Some(environment),
             ..SceneUpdates::default()
         };
-        let (vertices, indices) = cube();
-        let (cube, _) = upload(
-            device,
-            &mut renderer,
-            &scene,
-            &mut updates,
-            &MeshData {
-                vertices: &vertices,
-                indices: &indices,
-            },
-        );
+        let (cube, _) = upload(device, &mut renderer, &scene, &mut updates, &cook::cube());
         Self {
             device,
             renderer,
@@ -75,21 +67,15 @@ impl Harness {
         }
     }
 
-    /// Uploads `data` and adds it to the scene, resident.
-    #[allow(dead_code, reason = "the gpu binary uploads through the renderer")]
-    pub fn upload(&mut self, data: &MeshData<'_>) -> (MeshId, MeshHandle) {
+    /// Uploads `mesh` and adds it to the scene, resident.
+    pub fn upload(&mut self, mesh: &Cooked) -> (MeshId, MeshHandle) {
         upload(
             self.device,
             &mut self.renderer,
             &self.scene,
             &mut self.updates,
-            data,
+            mesh,
         )
-    }
-
-    #[allow(dead_code, reason = "the golden binary keeps meshes resident")]
-    pub fn resident(&self, handle: MeshHandle, data: &MeshData<'_>) -> ResidentMesh {
-        self.renderer.resident_mesh(handle, data).unwrap()
     }
 
     /// Adds an instance of `mesh`.
@@ -192,12 +178,14 @@ fn upload(
     renderer: &mut Renderer,
     scene: &RenderScene,
     updates: &mut SceneUpdates,
-    data: &MeshData<'_>,
+    mesh: &Cooked,
 ) -> (MeshId, MeshHandle) {
-    let handle = renderer.upload_mesh(device, data).unwrap();
+    let handle = renderer
+        .upload_mesh(device, &mesh.view(), &mesh.pages())
+        .unwrap();
     let id = scene.ids().meshes.reserve();
     updates.meshes.push(id, MeshUpdate::Add);
-    let resident = renderer.resident_mesh(handle, data).unwrap();
+    let resident = renderer.resident_mesh(handle).unwrap();
     updates.meshes.push(id, MeshUpdate::Resident(resident));
     (id, handle)
 }

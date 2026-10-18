@@ -19,12 +19,11 @@
 extern crate alloc;
 
 pub mod asset;
-mod mesh;
+pub mod geometry;
 mod post;
 mod renderer;
 pub mod scene;
 
-pub use mesh::{MeshData, Vertex, cube};
 pub use post::{HDR_FORMAT, PostOutput, PostProcess, PostSettings, PostShaders};
 pub use renderer::{
     Camera, Environment, FORWARD_PUSH_BYTES, ForwardShaders, MeshHandle, RenderStats, Renderer,

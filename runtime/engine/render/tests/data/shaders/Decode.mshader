@@ -1,0 +1,26 @@
+namespace Render;
+
+// Decodes every vertex of one LOD of a resident mesh with the engine's own decode
+// (`Marlin.Engine.Scene`), storing position and normal as six floats at `v * 24` of a raw buffer.
+
+public struct DecodeArgs
+{
+    public ReadOnlyBuffer<Marlin.Engine.Scene.MeshEntry> Meshes;
+    public ReadOnlyByteBuffer Geometry;
+    public ByteBuffer Output;
+    public uint Mesh;
+    public uint Lod;
+}
+
+[Compute(64, 1, 1)]
+public void DecodeVertices([DispatchThreadId] uint3 id, [Push] in DecodeArgs a)
+{
+    Marlin.Engine.Scene.MeshEntry mesh = a.Meshes[a.Mesh];
+    Marlin.Engine.Scene.LodStreams lod = Marlin.Engine.Scene.Lod(a.Geometry, a.Lod);
+    if (id.x >= lod.VertexCount)
+        return;
+    float3 p = Marlin.Engine.Scene.DecodePosition(a.Geometry, mesh, lod, id.x);
+    float3 n = Marlin.Engine.Scene.DecodeVertexNormal(a.Geometry, mesh, lod, id.x);
+    a.Output.Store3(id.x * 24, AsUInt(p));
+    a.Output.Store3(id.x * 24 + 12, AsUInt(n));
+}

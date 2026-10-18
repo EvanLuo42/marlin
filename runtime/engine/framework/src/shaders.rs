@@ -129,7 +129,7 @@ fn entry<'a>(
     match &e.reflection.push {
         Some(push) if push.size == FORWARD_PUSH_BYTES => Ok(e),
         _ => Err(mismatch(
-            "its push constants are not the forward pass's six 32-bit words",
+            "its push constants are not the forward pass's eight 32-bit words",
         )),
     }
 }

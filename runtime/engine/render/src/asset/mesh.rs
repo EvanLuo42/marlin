@@ -606,6 +606,13 @@ pub fn read_attributes(
     }
 }
 
+/// A vertex position and normal, decoded ([`MeshView::decode_lod`]).
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub struct DecodedVertex {
+    pub position: [f32; 3],
+    pub normal: [f32; 3],
+}
+
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct VertexAttributes {
     pub normal: [f32; 3],
@@ -616,14 +623,14 @@ pub struct VertexAttributes {
 }
 
 impl MeshView<'_> {
-    /// LOD `lod`'s triangles in the forward renderer's form: positions and normals, 32-bit
-    /// indices. A CPU decode of its page (checked first), for the forward path until the
-    /// visibility buffer consumes pages as they are.
+    /// LOD `lod`'s vertices (positions and normals) and 32-bit indices: a CPU decode of its page
+    /// (checked first), the reference the GPU's decode is tested against and what CPU-side tools
+    /// read.
     pub fn decode_lod(
         &self,
         lod: usize,
         page: &[u8],
-    ) -> Result<(Vec<crate::mesh::Vertex>, Vec<u32>), MeshError> {
+    ) -> Result<(Vec<DecodedVertex>, Vec<u32>), MeshError> {
         self.check_page(lod, page)?;
         let h = self.header;
         let l = &self.lods[lod];
@@ -644,7 +651,7 @@ impl MeshView<'_> {
                     dequantize_position(q, h.position_offset, h.position_scale)
                 };
                 let normal = read_attributes(attributes, h.attribute_stride as usize, v, 0).normal;
-                crate::mesh::Vertex { position, normal }
+                DecodedVertex { position, normal }
             })
             .collect();
         let indices = if l.index_size == 2 {

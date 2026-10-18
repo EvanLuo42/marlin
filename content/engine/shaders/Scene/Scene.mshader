@@ -47,7 +47,7 @@ public struct ScatterArgs
 }
 
 /// Words per row of table `t`.
-uint Stride(uint t) => t == 0 ? 8 : t == 1 ? 24 : t == 2 ? 4 : t == 3 ? 8 : 16;
+uint Stride(uint t) => t == 0 ? 8 : t == 1 ? 24 : t == 2 ? 4 : 16;
 
 uint Read(in ScatterArgs a, uint t, uint word)
 {

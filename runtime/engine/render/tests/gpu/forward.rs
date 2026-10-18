@@ -2,9 +2,10 @@
 
 use marlin_math::{Quat, Transform, Vec3};
 use marlin_render::scene::{InstanceUpdate, MeshUpdate, flags};
-use marlin_render::{Environment, MeshData, RenderStats, cube};
+use marlin_render::{Environment, RenderStats};
 
 use crate::support::Harness;
+use crate::support::cook::cube;
 
 const BLACK: u32 = 0xff00_0000;
 const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
@@ -34,7 +35,8 @@ fn draws_a_cube_in_front_of_the_camera() {
         stats,
         RenderStats {
             instances: 1,
-            draws: 1
+            draws: 1,
+            triangles: 12,
         }
     );
     assert_eq!(pixel(&pixels, 32, 32), 0xff00_00ff, "the red front face");
@@ -68,7 +70,8 @@ fn instances_of_one_mesh_share_a_draw_and_depth_sorts_them() {
         stats,
         RenderStats {
             instances: 3,
-            draws: 1
+            draws: 1,
+            triangles: 36,
         }
     );
     // Cube centers project to x ≈ 32 ± 12.3.
@@ -145,11 +148,7 @@ fn updates_change_only_what_they_name() {
 fn a_mesh_draws_once_resident_and_a_released_one_draws_nothing() {
     let mut h = Harness::new(flat_environment());
     h.camera_at(3.0);
-    let (vertices, indices) = cube();
-    let data = MeshData {
-        vertices: &vertices,
-        indices: &indices,
-    };
+    let data = cube();
     // Referenced, not resident yet.
     let mesh = h.scene.ids().meshes.reserve();
     h.updates.meshes.push(mesh, MeshUpdate::Add);
@@ -159,8 +158,11 @@ fn a_mesh_draws_once_resident_and_a_released_one_draws_nothing() {
     assert!(pixels.iter().all(|&p| p == BLACK));
 
     // Resident on a mesh the renderer then releases: nothing is drawn with the dead handle.
-    let old = h.renderer.upload_mesh(h.device, &data).unwrap();
-    let resident = h.resident(old, &data);
+    let old = h
+        .renderer
+        .upload_mesh(h.device, &data.view(), &data.pages())
+        .unwrap();
+    let resident = h.renderer.resident_mesh(old).unwrap();
     h.updates.meshes.push(mesh, MeshUpdate::Resident(resident));
     let (pixels, stats) = h.render();
     assert_eq!(stats.draws, 1);
@@ -168,14 +170,17 @@ fn a_mesh_draws_once_resident_and_a_released_one_draws_nothing() {
     h.wait_idle();
     // SAFETY: the GPU is idle.
     unsafe { h.renderer.release_mesh(old) };
-    let new = h.renderer.upload_mesh(h.device, &data).unwrap();
+    let new = h
+        .renderer
+        .upload_mesh(h.device, &data.view(), &data.pages())
+        .unwrap();
     assert_ne!(new, old);
     let (pixels, stats) = h.render();
     assert_eq!(stats.draws, 0, "the old handle draws nothing");
     assert!(pixels.iter().all(|&p| p == BLACK));
 
     // A reload: the new copy replaces it.
-    let resident = h.resident(new, &data);
+    let resident = h.renderer.resident_mesh(new).unwrap();
     h.updates.meshes.push(mesh, MeshUpdate::Resident(resident));
     let (pixels, stats) = h.render();
     assert_eq!(stats.draws, 1);

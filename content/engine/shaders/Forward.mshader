@@ -1,18 +1,21 @@
 namespace Marlin.Engine;
 
-// The renderer's forward opaque pass (`Marlin.Engine.ForwardVs` / `ForwardPs`): vertex pulling,
-// per-instance transforms and colors from the GPU Scene (`Marlin.Engine.Scene`), one directional
-// light plus ambient. `ForwardArgs` is what marlin-render's forward pass pushes
-// (docs/design/0002-shader-interface.md).
+// The renderer's forward opaque pass (`Marlin.Engine.ForwardVs` / `ForwardPs`): per-instance
+// transforms and colors from the GPU Scene (`Marlin.Engine.Scene`), vertices decoded from the
+// mesh's resident LOD page, one directional light plus ambient. `ForwardArgs` is what
+// marlin-render's forward pass pushes (docs/design/0002-shader-interface.md).
 
 public struct ForwardArgs
 {
     public Uniform<Frame> Frame;
-    /// GPU Scene instance rows, grouped by mesh: this draw's start at `BaseInstance`.
+    /// GPU Scene instance rows, grouped by mesh and LOD: this draw's start at `BaseInstance`.
     public ReadOnlyBuffer<uint> InstanceList;
     public ReadOnlyBuffer<Marlin.Engine.Scene.InstanceTransforms> Transforms;
     public ReadOnlyBuffer<Marlin.Engine.Scene.InstanceData> Instances;
-    public ReadOnlyBuffer<Vertex> Vertices;
+    public ReadOnlyBuffer<Marlin.Engine.Scene.MeshEntry> Meshes;
+    /// The draw's mesh geometry and the LOD drawn from it.
+    public ReadOnlyByteBuffer Geometry;
+    public uint Lod;
     public uint BaseInstance;
 }
 
@@ -28,12 +31,6 @@ public struct Frame
     public float4 Ambient;
 }
 
-public struct Vertex
-{
-    public float3 Position;
-    public float3 Normal;
-}
-
 public struct ForwardVertex
 {
     [Position] public float4 Pos;
@@ -41,20 +38,25 @@ public struct ForwardVertex
     public float4 Color;
 }
 
+/// `vertexId` is the LOD's vertex: the draw indexes with the LOD's own index list.
 [Vertex]
 public ForwardVertex ForwardVs(
     [VertexId] uint vertexId, [InstanceId] uint instanceId, [Push] in ForwardArgs a)
 {
     uint row = a.InstanceList[a.BaseInstance + instanceId];
     Marlin.Engine.Scene.InstanceTransforms t = a.Transforms[row];
-    Vertex vertex = a.Vertices[vertexId];
-    float4 world = float4(Marlin.Engine.Scene.Apply(t.Current, float4(vertex.Position, 1)), 1);
+    Marlin.Engine.Scene.InstanceData instance = a.Instances[row];
+    Marlin.Engine.Scene.MeshEntry mesh = a.Meshes[instance.Mesh];
+    Marlin.Engine.Scene.LodStreams lod = Marlin.Engine.Scene.Lod(a.Geometry, a.Lod);
+    float3 position = Marlin.Engine.Scene.DecodePosition(a.Geometry, mesh, lod, vertexId);
+    float3 normal = Marlin.Engine.Scene.DecodeVertexNormal(a.Geometry, mesh, lod, vertexId);
+    float4 world = float4(Marlin.Engine.Scene.Apply(t.Current, float4(position, 1)), 1);
     return ForwardVertex
     {
         Pos = a.Frame.Value.ViewProjection * world,
         // Exact for rotation and uniform scale; non-uniform scale needs the inverse transpose.
-        Normal = Marlin.Engine.Scene.Apply(t.Current, float4(vertex.Normal, 0)),
-        Color = a.Instances[row].Color,
+        Normal = Marlin.Engine.Scene.Apply(t.Current, float4(normal, 0)),
+        Color = instance.Color,
     };
 }
 

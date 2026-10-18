@@ -20,5 +20,6 @@ marlin-serial.workspace = true
 workspace = true
 
 [dev-dependencies]
+marlin-cook-mesh.workspace = true
 marlin-gpu-test-support.workspace = true
 marlin-render-graph.workspace = true

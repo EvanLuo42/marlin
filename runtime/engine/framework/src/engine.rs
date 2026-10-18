@@ -288,7 +288,7 @@ impl<'v> Engine<'v> {
                     uploads.push(MeshUpload {
                         mesh: entry.id,
                         version,
-                        geometry: loaded.0.clone(),
+                        cooked: loaded.clone(),
                     });
                     entry.sent = Some(version);
                 }

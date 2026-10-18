@@ -2,9 +2,10 @@
 //!
 //! One compiler session per test binary holds the shared package `Test` (this crate's
 //! `shaders/`), the engine's own package `Marlin.Engine` (`content/engine/shaders/`, the source
-//! the cooker compiles for the engine) and, for a test that asks with [`Shader::in_crate`] or [`crate_shader!`], the
-//! package of its own crate (its `tests/data/shaders/`), which may use the shared one. Every
-//! result is kept for the binary's life, like [`crate::devices`].
+//! the cooker compiles for the engine) and, for a test that asks with [`Shader::in_crate`] or
+//! [`crate_shader!`], the package of its own crate (its `tests/data/shaders/`), which may use the
+//! shared one and the engine's. Every result is kept for the binary's life, like
+//! [`crate::devices`].
 //!
 //! The compiler writes SPIR-V (the `vulkan-1.4` target) with the Development profile; there are
 //! no test shaders for a backend that takes another format.
@@ -163,7 +164,7 @@ impl Compiler {
         self.session
             .add_package(&PackageDesc {
                 name: &name,
-                dependencies: &["Marlin", SHARED],
+                dependencies: &["Marlin", SHARED, ENGINE],
             })
             .unwrap_or_else(|e| panic!("the test shaders of {manifest_dir}: {e}"));
         self.crates.push(manifest_dir.to_string());

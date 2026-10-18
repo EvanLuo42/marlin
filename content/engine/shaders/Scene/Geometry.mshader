@@ -1,0 +1,118 @@
+namespace Marlin.Engine.Scene;
+
+// Resident geometry (0009 §3.2, R1's discrete LODs): a cooked mesh's LOD pages on the GPU as
+// they are, decoded where they are read. marlin-render's `geometry` module writes the buffer:
+// one LOD record per LOD, the LODs' section tables, then each LOD's page. Offsets are bytes
+// from the start of the buffer. The streams are `marlin_render::asset::mesh`'s.
+
+/// A row of the GPU Scene's mesh table.
+public struct MeshEntry
+{
+    /// The geometry buffer's view.
+    public uint Geometry;
+    public uint Lods;
+    /// `MeshFlags`: 1 float positions, 2 skin, 4 color.
+    public uint Flags;
+    /// Bytes per vertex: positions | attributes << 8 | skin << 16.
+    public uint Strides;
+    /// Quantized positions decode as `PositionOffset + q * PositionScale`.
+    public float3 PositionOffset;
+    /// 1 once the geometry is on the GPU.
+    public uint Resident;
+    public float3 PositionScale;
+    public uint UvSets;
+    /// Local bounding sphere: center, radius.
+    public float4 Sphere;
+}
+
+/// Where one LOD's streams are in the geometry buffer.
+public struct LodStreams
+{
+    public uint VertexCount;
+    public uint TriangleCount;
+    public uint MeshletCount;
+    /// Object-space error, as float bits.
+    public uint Error;
+    /// 2 or 4.
+    public uint IndexSize;
+    public uint Positions;
+    public uint Attributes;
+    public uint Skin;
+    public uint Meshlets;
+    public uint MeshletVertices;
+    public uint MeshletTriangles;
+    public uint Indices;
+    /// The LOD's section table: `LodSection`s, one per mesh section.
+    public uint Sections;
+    public uint SectionCount;
+}
+
+/// LOD `lod`'s record: 16 words at `lod * 64`.
+public LodStreams Lod(ReadOnlyByteBuffer g, uint lod)
+{
+    uint at = lod * 64;
+    uint4 a = g.Load4(at);
+    uint4 b = g.Load4(at + 16);
+    uint4 c = g.Load4(at + 32);
+    uint4 d = g.Load4(at + 48);
+    return LodStreams
+    {
+        VertexCount = a.x,
+        TriangleCount = a.y,
+        MeshletCount = a.z,
+        Error = a.w,
+        IndexSize = b.x,
+        Positions = b.y,
+        Attributes = b.z,
+        Skin = b.w,
+        Meshlets = c.x,
+        MeshletVertices = c.y,
+        MeshletTriangles = c.z,
+        Indices = c.w,
+        Sections = d.x,
+        SectionCount = d.y,
+    };
+}
+
+/// Vertex `v`'s object-space position.
+public float3 DecodePosition(ReadOnlyByteBuffer g, in MeshEntry m, in LodStreams l, uint v)
+{
+    if ((m.Flags & 1) != 0)
+        return AsFloat(g.Load3(l.Positions + v * 12));
+    uint2 w = g.Load2(l.Positions + v * 8);
+    float3 q = float3((float)(w.x & 65535), (float)(w.x >> 16), (float)(w.y & 65535));
+    return m.PositionOffset + q * m.PositionScale;
+}
+
+/// An octahedral-encoded unit vector, each coordinate in [-1, 1].
+public float3 OctDecode(float2 e)
+{
+    float z = 1 - Abs(e.x) - Abs(e.y);
+    float t = Max(-z, 0);
+    float x = e.x + (e.x >= 0 ? -t : t);
+    float y = e.y + (e.y >= 0 ? -t : t);
+    return Normalize(float3(x, y, z));
+}
+
+/// The normal of a packed tangent frame (`encode_tangent_frame`: bits 0–19).
+public float3 DecodeNormal(uint frame)
+{
+    float2 e = float2((float)(frame & 1023), (float)((frame >> 10) & 1023)) / 1023 * 2 - 1;
+    return OctDecode(e);
+}
+
+/// Vertex `v`'s object-space normal.
+public float3 DecodeVertexNormal(ReadOnlyByteBuffer g, in MeshEntry m, in LodStreams l, uint v)
+{
+    uint stride = (m.Strides >> 8) & 255;
+    return DecodeNormal(g.Load(l.Attributes + v * stride));
+}
+
+/// Index `i` of the LOD's triangle list.
+public uint LoadIndex(ReadOnlyByteBuffer g, in LodStreams l, uint i)
+{
+    if (l.IndexSize == 4)
+        return g.Load(l.Indices + i * 4);
+    uint w = g.Load(l.Indices + (i >> 1) * 4);
+    return (i & 1) != 0 ? w >> 16 : w & 65535;
+}

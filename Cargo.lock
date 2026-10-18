@@ -842,6 +842,7 @@ dependencies = [
  "marlin-anim",
  "marlin-asset",
  "marlin-containers",
+ "marlin-cook-mesh",
  "marlin-gpu-test-support",
  "marlin-jobs",
  "marlin-math",

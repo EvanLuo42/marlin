@@ -379,8 +379,9 @@ impl RenderScene {
             .then(|| self.light_desc[id.index as usize])
     }
 
-    /// Live instances whose mesh is resident and that are not hidden, as (row, renderer mesh).
-    pub(crate) fn drawable(&self) -> impl Iterator<Item = (u32, MeshHandle)> + '_ {
+    /// Live instances whose mesh is resident and that are not hidden, as (row, renderer mesh,
+    /// transform).
+    pub(crate) fn drawable(&self) -> impl Iterator<Item = (u32, MeshHandle, Transform)> + '_ {
         (0..self.instance_rows.len()).filter_map(move |row| {
             if !self.instance_rows.alive[row] || self.instance_flags[row] & flags::HIDDEN != 0 {
                 return None;
@@ -389,7 +390,8 @@ impl RenderScene {
             if !self.mesh_rows.live(mesh) {
                 return None;
             }
-            self.mesh_resident[mesh.index as usize].map(|m| (row as u32, m.handle))
+            self.mesh_resident[mesh.index as usize]
+                .map(|m| (row as u32, m.handle, self.instance_transform[row]))
         })
     }
 
