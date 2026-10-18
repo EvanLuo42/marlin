@@ -322,3 +322,52 @@ impl<'g, B: Backend> RenderGraph<'g, B> {
         res
     }
 }
+
+/// The scope captures ([`RenderGraph::capture`]) keep their copies in.
+pub const CAPTURE_SCOPE: u64 = u64::MAX - 1;
+
+/// A handle a capture can copy: [`TextureHandle`] or [`BufferHandle`].
+pub trait Capture<'g>: Copy + capture::Sealed {
+    #[doc(hidden)]
+    fn capture<B: Backend>(self, g: &mut RenderGraph<'g, B>, name: &str);
+}
+
+mod capture {
+    pub trait Sealed {}
+    impl Sealed for crate::TextureHandle<'_> {}
+    impl Sealed for crate::BufferHandle<'_> {}
+}
+
+impl<'g> Capture<'g> for TextureHandle<'g> {
+    fn capture<B: Backend>(self, g: &mut RenderGraph<'g, B>, name: &str) {
+        let desc = g.textures[self.index as usize].desc;
+        let copy = g.persistent(name, CAPTURE_SCOPE, desc).handle;
+        let whole = TextureHandle::new(self.index, self.version);
+        g.add_builtin("Capture", crate::graph::Builtin::Capture, |b| {
+            b.read_texture(whole, crate::Access::CopySrc);
+            b.write_texture(copy, crate::Access::CopyDst);
+        });
+    }
+}
+
+impl<'g> Capture<'g> for BufferHandle<'g> {
+    fn capture<B: Backend>(self, g: &mut RenderGraph<'g, B>, name: &str) {
+        let desc = g.buffers[self.index as usize].desc;
+        let copy = g.persistent(name, CAPTURE_SCOPE, desc).handle;
+        let whole = BufferHandle::new(self.index, self.version);
+        g.add_builtin("Capture", crate::graph::Builtin::Capture, |b| {
+            b.read_buffer(whole, crate::Access::CopySrc);
+            b.write_buffer(copy, crate::Access::CopyDst);
+        });
+    }
+}
+
+impl<'g, B: Backend> RenderGraph<'g, B> {
+    /// Copies all of the resource `h` names, as it is at this point of the frame, into a
+    /// persistent copy named `name` (0007 §10.4): debug views and tools read it after the frame
+    /// (`FrameContext::captured_texture`). Captures change the topology, so a frame with one has
+    /// a plan of its own. Requires a graph with a state table.
+    pub fn capture(&mut self, h: impl Capture<'g>, name: &str) {
+        h.capture(self, name);
+    }
+}

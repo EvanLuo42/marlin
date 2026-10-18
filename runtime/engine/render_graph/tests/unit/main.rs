@@ -9,6 +9,7 @@ mod alias;
 mod barriers;
 mod cache;
 mod cull;
+mod debug;
 mod queues;
 mod retained;
 mod state;

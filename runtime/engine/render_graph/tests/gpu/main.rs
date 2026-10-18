@@ -5,4 +5,5 @@
 
 mod frame;
 mod queues;
+mod recording;
 mod retained;

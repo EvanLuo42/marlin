@@ -124,6 +124,9 @@ pub struct CompiledPlan {
     pub(crate) buffer_finals: Vec<(u32, BufferState)>,
     /// Bytes of each transient heap kind: buffers, textures, targets.
     pub(crate) heap_sizes: [u64; 3],
+    /// Resource names, by slot: for dumps.
+    pub(crate) texture_names: Vec<String>,
+    pub(crate) buffer_names: Vec<String>,
     /// In submission order.
     pub(crate) segments: Vec<Segment>,
     pub(crate) segment_passes: Vec<u32>,

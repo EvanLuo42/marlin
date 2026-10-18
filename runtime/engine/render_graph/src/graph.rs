@@ -129,6 +129,8 @@ pub(crate) enum Builtin {
     ReadbackBuffer(u32),
     /// Copies one mip and layer of a texture out to CPU-readable memory.
     ReadbackTexture(u32),
+    /// Copies a resource into its capture (the second access) whole.
+    Capture,
 }
 
 /// What [`RenderGraph::readback`] copies out: available once the GPU finished the frame
@@ -145,6 +147,8 @@ pub(crate) struct PassNode<'g, B: Backend> {
     pub kind: PassKind,
     pub queue: QueueType,
     pub side_effect: bool,
+    /// A raster pass recording its draws in [`PassContext::parallel`] sub-lists.
+    pub parallel: bool,
     /// Recording cost hint, microseconds.
     pub cost_us: Option<u32>,
     /// Range into [`RenderGraph::accesses`].
@@ -358,7 +362,7 @@ impl<'g, B: Backend> RenderGraph<'g, B> {
         }
     }
 
-    fn add_builtin(
+    pub(crate) fn add_builtin(
         &mut self,
         name: &str,
         builtin: Builtin,
@@ -429,6 +433,7 @@ impl<'g, B: Backend> RenderGraph<'g, B> {
             kind,
             queue: QueueType::Graphics,
             side_effect: false,
+            parallel: false,
             cost_us: None,
             accesses: start..start,
             colors: ArrayVec::new(),
@@ -694,6 +699,12 @@ impl<'g, B: Backend> PassBuilder<'_, 'g, B> {
             "pass {}: the copy queue cannot clear; clear on the graphics or compute queue",
             self.pass_name()
         );
+    }
+
+    /// The raster pass records its draws in sub-lists ([`PassContext::parallel`]): its own list
+    /// opens no render pass, each sub-list opens one.
+    pub fn record_in_parallel(&mut self) {
+        self.graph.passes[self.pass].parallel = true;
     }
 
     /// Keeps the pass even when nothing reads what it writes: readbacks, presents, captures.

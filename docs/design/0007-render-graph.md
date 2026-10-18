@@ -555,6 +555,17 @@ R1d 做完时（2026-10-18）定下的细节：
 - readback 的数据在整帧的最后一个 fence 值之后才可读（一开始记成了帧开始时的值，多段提交时会提前读，GPU 测试和验证层都抓到了）。
 - GPU 测试（RTX 5060，有专用 compute 和 copy 队列）：Graphics → 异步计算 → Graphics 的链加一个独立的异步 pass，连续 4 帧的读回和 `single_queue` 逐字节相同；Copy 队列上的拷贝结果正确；验证层没有报错。
 
+R1e 做完时（2026-10-18）定下的细节：
+- **入口**：`FrameContext::execute_on(device, Some(&jobs), …)` 把录制分给 job；`execute` 是 `execute_on(device, None, …)`，切出同样的 list，只是在当前线程上依次录制。
+- **分块**：每个同步段再按录制代价切成块，一块一个 job、一串 command list，目标是每块约 `CHUNK_COST_US`（200 μs）。pass 的代价取它上一次的 CPU 录制时间（按 pass 名记，平滑为 3/4 旧值 + 1/4 新值），没有记录就用 `b.cost()`，再没有按 25 μs 算。代价随帧变化，所以分块在执行时做，不进 plan，plan 的缓存不受影响。同步段内的块按顺序合在一次提交里。
+- **command list 的池**：每个帧槽每个队列一个空闲表，元素是 (pool, list)。一个块或一个子 list 取一个，帧提交后挂到帧槽上，帧槽下一次轮到时 reset 并放回空闲表。每个 list 有自己的 pool，所以可以同时录制。上传内存和退休表在帧内共享，用 fiber 感知的锁保护。
+- **`ctx.parallel(n, |i, sub| …)`**：当前 list 在这里结束，后面接 n 个子 list（有 job 系统时并行录制），再接一个新 list 继续这个 pass。compute 和 copy pass 可以分任意多次，子 list 里不能再分。raster pass 要先用 `b.record_in_parallel()` 声明：它自己的 list 不开 render pass，每个子 list 各开一次，第一个用 pass 的 load op、最后一个用它的 store op，中间是 Load/Store；raster pass 只能分一次，它的 draw 都在子 list 里，在外面 draw 会 panic。声明了却没有分，结束时补一个空的 render pass，让 load/store 照样生效。这个声明会进拓扑键。
+- **计时与标记**：每个 pass 包一对 `begin_event`/`end_event`，前后各写一个 timestamp。每个帧槽每个队列一个 query pool，每个 pass 两个下标，每块在它最后一个 list 的末尾把自己那段 resolve 到回读内存（Vulkan 的 resolve 带 WAIT，所以只 resolve 写过的）。Copy 队列只在 `Features::copy_queue_timestamps` 时计时。帧槽下一次轮到时读出结果：`FrameContext::gpu_timings()` 给出这一帧每个 pass 的 GPU 纳秒；`FrameContextDesc::timeline` 给了 `GpuTimeline` 时，再按各队列的 `clock_calibration` 换到 CPU 时钟，交给 `marlin_profile::set_gpu_timings`，每个队列一条 track。pass 名在帧 arena 里，交给 profiler 前按名字驻留一份 `'static`。
+- **图导出**：`CompiledPlan::to_json(timings)`，`FrameContext::dump()` 是上一帧的 plan 加最近的 GPU 时间。JSON 由 crate 里一个很小的写出器生成，内容有 pass（队列、类型、barrier、`gpu_ns`）、剔除的 pass、依赖边、段和等待、资源（名字、usage、生命周期、放置），以及各 heap 的大小。plan 为此多存了资源名。
+- **资源捕获**：`g.capture(h, "name")` 在这个位置把 h 的**整个**资源（所有 mip 和 layer，忽略句柄的范围）拷进一个 `CAPTURE_SCOPE` 下名为 name 的持久资源。它是一个内置的 side-effect copy pass，会改变拓扑。同一帧对同一名字捕获两次会 panic。`FrameContext::captured_texture`/`captured_buffer` 给编辑器拿对象；之后的帧也可以用 `g.persistent(name, CAPTURE_SCOPE, desc)` 在图里读它。
+- 没做的（§13 待定）：提交流水化；按 GPU 计时做调度提示。
+- GPU 测试：24 个 pass 各自一块，用 4 个 worker 录制和单线程录制的读回逐字节相同；compute pass 分成 4 个子 list；raster pass 分成 2 个子 list，clear 只发生一次、第二个子 list 画在上面；4 帧之后能拿到每个 pass 的 GPU 时间，dump 里有 `gpu_ns`；捕获的 buffer 在下一帧读回正确。验证层都没有报错。
+
 ## 12. 测试
 
 测试放在各 crate 的 `tests/` 里。

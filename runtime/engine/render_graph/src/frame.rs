@@ -6,8 +6,8 @@
 //!
 //! Each of the plan's segments is one command list, submitted in order with its waits and a
 //! signal on its queue; the frame ends with a graphics submission that waits for the other
-//! queues, so one graphics fence value covers the whole frame. Recording is on one thread for now;
-//! parallel recording comes next (0007 §6).
+//! queues, so one graphics fence value covers the whole frame. Each segment is recorded as chunks
+//! of about [`CHUNK_COST_US`], as jobs when the frame runs on a job system (0007 §6).
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -15,20 +15,25 @@ use core::marker::PhantomData;
 use core::ptr;
 
 use marlin_containers::{HashMap, HashMapExt, SmallVec};
+use marlin_hash::fast_hash;
+use marlin_jobs::JobSystem;
+use marlin_jobs::sync::Mutex;
 use marlin_rhi::{
     Buffer, BufferBarrier, BufferDesc as RhiBufferDesc, BufferTextureCopy, BufferUsage,
-    BufferViewDesc, BufferViewKind, ColorAttachment, CommandList, CommandPool, DepthAttachment,
+    BufferViewDesc, BufferViewKind, ColorAttachment, CommandList, DepthAttachment,
     DepthStencilView, DepthStencilViewDesc, Device, Fence, Heap, HeapDesc, HeapKind,
-    MAX_COLOR_ATTACHMENTS, MemoryLocation, QueueType, Rect, RenderPassDesc, RenderTargetView,
-    RenderTargetViewDesc, Result, ShaderView, SubmitDesc, Texture, TextureBarrier,
-    TextureDimension, TextureViewDesc, TextureViewDimension, Viewport, aligned_row_pitch,
+    MAX_COLOR_ATTACHMENTS, MemoryLocation, QueryKind, QueryPool, QueryPoolDesc, QueueType,
+    RenderTargetView, RenderTargetViewDesc, Result, ShaderView, SubmitDesc, Texture,
+    TextureBarrier, TextureCopy, TextureDimension, TextureViewDesc, TextureViewDimension,
+    aligned_row_pitch,
 };
 use marlin_std::mem::{Arena, FrameArenas};
+use marlin_std::time::Instant;
 
 use crate::access::{Access, PassKind, Use};
 use crate::backend::{Backend as _, Rhi};
 use crate::cache::{Lookup, PlanCache};
-use crate::context::{NO_VIEW, PassContext, RhiParts};
+use crate::context::{ListSeq, Lists, NO_VIEW, PassContext, Recorder, RenderPass, RhiParts};
 use crate::desc::{BufferDesc, TextureDesc};
 use crate::graph::{AccessRec, Builtin, Exec, Imported, Readback, RenderGraph, Res, Source};
 use crate::plan::CompiledPlan;
@@ -48,6 +53,8 @@ pub struct FrameContextDesc {
     pub upload_chunk: u64,
     /// Run every pass on the graphics queue ([`RenderGraph::set_single_queue`]).
     pub single_queue: bool,
+    /// Where the passes' GPU times go, for the profiler ([`marlin_profile::set_gpu_timings`]).
+    pub timeline: Option<&'static GpuTimeline>,
 }
 
 impl Default for FrameContextDesc {
@@ -56,6 +63,7 @@ impl Default for FrameContextDesc {
             arena_capacity: 256 << 20,
             upload_chunk: 4 << 20,
             single_queue: false,
+            timeline: None,
         }
     }
 }
@@ -78,6 +86,8 @@ pub struct FrameStats {
     pub lookup: Lookup,
     /// Passes recorded.
     pub passes: usize,
+    /// Command lists submitted (each chunk and each `ctx.parallel` sub-list is one).
+    pub lists: usize,
     /// RHI objects created for the plan: heaps, placed resources and views (upload views not
     /// counted). Zero in the steady state.
     pub created: u32,
@@ -157,16 +167,21 @@ struct Physical {
 }
 
 struct Slot {
-    /// Per queue (graphics, compute, copy), made when first needed.
-    pools: [Option<CommandPool>; 3],
-    /// Per queue, one per segment; reused frame after frame.
-    lists: [Vec<CommandList>; 3],
+    /// Per queue (graphics, compute, copy): command lists free to record, and those the slot's
+    /// last frame submitted (reset and freed when the slot comes round again).
+    free: [Mutex<Vec<Recorder>>; 3],
+    used: [Vec<Recorder>; 3],
+    /// Per queue: timestamp queries and where they are resolved to.
+    queries: [Option<(QueryPool, Buffer)>; 3],
+    /// The passes the slot's last frame timed, and the profiler frame that submitted them.
+    timing: Vec<TimedPass>,
+    timing_frame: u64,
     /// Fence value of the slot's last submission.
     value: u64,
     /// Buffers, textures, targets.
     heaps: [Option<Heap>; 3],
     physical: Vec<Physical>,
-    upload: Upload,
+    upload: Mutex<Upload>,
 }
 
 /// A view of an imported object, by the object's key.
@@ -221,6 +236,14 @@ pub struct FrameContext {
     readbacks: Vec<PendingReadback>,
     stats: Option<FrameStats>,
     single_queue: bool,
+    /// Recording time per pass name (hash), microseconds, smoothed: how passes are split into
+    /// command lists.
+    costs: HashMap<u64, u32>,
+    timeline: Option<&'static GpuTimeline>,
+    /// The GPU times of the last frame whose timestamps were read.
+    gpu_times: Vec<PassTiming>,
+    /// Timestamp ticks per second, per queue.
+    frequencies: [u64; 3],
 }
 
 const fn heap_slot(kind: HeapKind) -> usize {
@@ -238,16 +261,19 @@ impl FrameContext {
         let mut slots = Vec::with_capacity(FRAMES_IN_FLIGHT);
         for _ in 0..FRAMES_IN_FLIGHT {
             slots.push(Slot {
-                pools: [None, None, None],
-                lists: Default::default(),
+                free: Default::default(),
+                used: Default::default(),
+                queries: [None, None, None],
+                timing: Vec::new(),
+                timing_frame: 0,
                 value: 0,
                 heaps: [None, None, None],
                 physical: Vec::new(),
-                upload: Upload {
+                upload: Mutex::new(Upload {
                     chunks: Vec::new(),
                     current: 0,
                     chunk_size: desc.upload_chunk,
-                },
+                }),
             });
         }
         let arenas = FrameArenas::new(desc.arena_capacity)
@@ -267,6 +293,15 @@ impl FrameContext {
             readbacks: Vec::new(),
             stats: None,
             single_queue: desc.single_queue,
+            costs: HashMap::new(),
+            timeline: desc.timeline,
+            gpu_times: Vec::new(),
+            frequencies: core::array::from_fn(|q| {
+                device
+                    .queue_for(sync::queue_type(q as u8))
+                    .timestamp_frequency()
+                    .unwrap_or(1)
+            }),
         })
     }
 
@@ -296,6 +331,20 @@ impl FrameContext {
         device: &Device,
         declare: impl for<'g> FnOnce(&mut RenderGraph<'g>, &'g FrameInfo<'env>) -> R,
     ) -> Result<R> {
+        self.execute_on(device, None, declare)
+    }
+
+    /// As [`execute`](Self::execute), recording the command lists as jobs of `jobs` (0007 §6):
+    /// each queue's passes are split into lists of about [`CHUNK_COST_US`] of recording, by
+    /// the time each pass took the last time (its `b.cost` hint before that), and the lists are
+    /// recorded at once and submitted in order. Without `jobs`, the same lists are recorded one
+    /// after another on this thread.
+    pub fn execute_on<'env, R>(
+        &mut self,
+        device: &Device,
+        jobs: Option<&JobSystem>,
+        declare: impl for<'g> FnOnce(&mut RenderGraph<'g>, &'g FrameInfo<'env>) -> R,
+    ) -> Result<R> {
         let frame = self.states.frame();
         // Outlives the graph, which borrows it for `'g`.
         let info = FrameInfo {
@@ -322,16 +371,25 @@ impl FrameContext {
             readbacks,
             stats,
             single_queue,
+            costs,
+            timeline,
+            gpu_times,
+            frequencies,
         } = self;
 
         // The slot's previous frame finished: its pool, upload memory and arena are free.
         let slot = &mut slots[slot_index];
-        for pool in slot.pools.iter_mut().flatten() {
-            // SAFETY: the fence shows the GPU finished the slot's last frame, which covers every
-            // queue's work recorded from the slot's pools.
-            unsafe { pool.reset()? };
+        read_timings(slot, device, timeline, gpu_times, frequencies);
+        for (used, free) in slot.used.iter_mut().zip(&slot.free) {
+            let mut free = free.lock();
+            for mut recorder in used.drain(..) {
+                // SAFETY: the fence shows the GPU finished the slot's last frame, which covers
+                // every list recorded from the slot's pools.
+                unsafe { recorder.pool.reset()? };
+                free.push(recorder);
+            }
         }
-        slot.upload.reset();
+        slot.upload.get_mut().reset();
         // SAFETY: frame `frame - FRAMES_IN_FLIGHT`, the arena's last user, ended inside its own
         // `execute` (its graph and closures are gone), and only this frame allocates from it.
         let arena: &Arena = unsafe { arenas.begin(frame) };
@@ -559,14 +617,172 @@ impl FrameContext {
             });
         }
 
-        // Record.
+        // Record: what each retained pass needs, in a form the recording jobs can share.
         let mut execs: Vec<Option<Exec<'_, Rhi>>, &Arena> =
             Vec::with_capacity_in(g.passes.len(), arena);
         execs.extend(g.passes.iter_mut().map(|p| p.exec.take()));
-        let mut retire_now: Vec<Box<dyn Send>> = Vec::new();
-        let (pools, lists, upload) = (&mut slot.pools, &mut slot.lists, &mut slot.upload);
-        let mut used_lists = [0usize; 3];
-        // Each segment's signal value on its queue, for the waits on it.
+        let descs: Vec<TextureDesc, &Arena> = {
+            let mut v = Vec::with_capacity_in(g.textures.len(), arena);
+            v.extend(g.textures.iter().map(|t| t.desc));
+            v
+        };
+        let mut records: Vec<PassRecord<'_>, &Arena> =
+            Vec::with_capacity_in(plan.passes.len(), arena);
+        for pp in &plan.passes {
+            let pass = &g.passes[pp.node as usize];
+            let readback = match pass.builtin {
+                Some(Builtin::ReadbackBuffer(index) | Builtin::ReadbackTexture(index)) => Some(
+                    &readbacks[first_readback..]
+                        .iter()
+                        .find(|r| r.ticket.index == index)
+                        .expect("made above")
+                        .buffer,
+                ),
+                _ => None,
+            };
+            let render = (pass.kind == PassKind::Raster && pass.builtin.is_none())
+                .then(|| render_pass_of(&g, pass, physical, import_views, &textures, &buffers));
+            records.push(PassRecord {
+                name: intern(pass.name),
+                builtin: pass.builtin,
+                accesses: pass.accesses.clone(),
+                render,
+                readback,
+            });
+        }
+
+        // Chunks of each segment, by estimated recording cost, each a job and its own lists.
+        let timed = [true, true, device.features().copy_queue_timestamps];
+        let mut per_queue = [0u32; 3];
+        let mut chunks: Vec<Chunk, &Arena> = Vec::new_in(arena);
+        for (si, segment) in plan.segments.iter().enumerate() {
+            let q = sync::queue_index(segment.queue) as usize;
+            let passes = plan.segment_passes(si);
+            let mut start = 0;
+            let mut cost = 0;
+            for (i, &pos) in passes.iter().enumerate() {
+                let pass = &g.passes[plan.passes[pos as usize].node as usize];
+                cost += costs
+                    .get(&fast_hash(pass.name))
+                    .copied()
+                    .or(pass.cost_us)
+                    .unwrap_or(DEFAULT_COST_US);
+                let last = i + 1 == passes.len();
+                if cost >= CHUNK_COST_US || last {
+                    chunks.push(Chunk {
+                        segment: si as u32,
+                        queue: q as u8,
+                        passes: &passes[start..=i],
+                        first_query: per_queue[q] * 2,
+                    });
+                    per_queue[q] += (i + 1 - start) as u32;
+                    start = i + 1;
+                    cost = 0;
+                }
+            }
+        }
+        for q in 0..3 {
+            let needed = u64::from(per_queue[q]) * 2;
+            let have = slot.queries[q]
+                .as_ref()
+                .map_or(0, |(p, _)| u64::from(p.desc().count));
+            if timed[q] && needed > have {
+                let count = needed.next_power_of_two().max(64) as u32;
+                let kind = if q == 2 {
+                    QueryKind::CopyTimestamp
+                } else {
+                    QueryKind::Timestamp
+                };
+                let pool = device.create_query_pool(&QueryPoolDesc { kind, count })?;
+                let results = device.create_buffer(&RhiBufferDesc {
+                    size: u64::from(count) * 8,
+                    usage: BufferUsage::COPY_DST,
+                    memory: MemoryLocation::Readback,
+                })?;
+                slot.queries[q] = Some((pool, results));
+            }
+        }
+        let retire_now: Mutex<Vec<Box<dyn Send>>> = Mutex::new(Vec::new());
+        let env = RecordEnv {
+            device,
+            jobs,
+            plan,
+            records: &records,
+            recs: &g.accesses,
+            views: &views,
+            textures: &textures,
+            buffers: &buffers,
+            shapes: &shapes,
+            descs: &descs,
+            upload: &slot.upload,
+            retire: &retire_now,
+        };
+        let lists: [Lists<'_>; 3] = core::array::from_fn(|q| Lists {
+            device,
+            queue: sync::queue_type(q as u8),
+            free: &slot.free[q],
+        });
+        let mut work: Vec<(usize, Vec<Option<Exec<'_, Rhi>>>)> = Vec::with_capacity(chunks.len());
+        for (ci, chunk) in chunks.iter().enumerate() {
+            let mine = chunk
+                .passes
+                .iter()
+                .map(|&pos| execs[plan.passes[pos as usize].node as usize].take())
+                .collect();
+            work.push((ci, mine));
+        }
+        let mut outs: Vec<Option<Result<ChunkOut>>> = Vec::with_capacity(chunks.len());
+        outs.resize_with(chunks.len(), || None);
+        {
+            let (env, chunks, lists, slot_queries) = (&env, &chunks, &lists, &slot.queries);
+            let run = move |ci: usize, execs: Vec<Option<Exec<'_, Rhi>>>| {
+                let chunk = &chunks[ci];
+                let q = chunk.queue as usize;
+                let queries = slot_queries[q]
+                    .as_ref()
+                    .filter(|_| timed[q])
+                    .map(|(p, b)| (p, b, chunk.first_query));
+                record_chunk(env, &lists[q], chunk.passes, execs, queries)
+            };
+            match jobs {
+                Some(jobs) => jobs.scope(|s| {
+                    for ((ci, execs), out) in work.drain(..).zip(outs.iter_mut()) {
+                        let run = &run;
+                        s.spawn(move || *out = Some(run(ci, execs)));
+                    }
+                }),
+                None => {
+                    for ((ci, execs), out) in work.drain(..).zip(outs.iter_mut()) {
+                        *out = Some(run(ci, execs));
+                    }
+                }
+            }
+        }
+        let mut segment_lists: Vec<Vec<Recorder>> = Vec::with_capacity(plan.segments.len());
+        segment_lists.resize_with(plan.segments.len(), Vec::new);
+        let mut timings: Vec<TimedPass> = Vec::new();
+        for (chunk, out) in chunks.iter().zip(outs.drain(..)) {
+            let out = out.expect("every chunk ran")?;
+            for &(pos, micros) in &out.cpu {
+                let name = g.passes[plan.passes[pos as usize].node as usize].name;
+                let c = costs.entry(fast_hash(name)).or_insert(micros);
+                *c = (*c * 3 + micros) / 4;
+            }
+            if timed[chunk.queue as usize] {
+                for (i, &pos) in chunk.passes.iter().enumerate() {
+                    timings.push(TimedPass {
+                        name: records[pos as usize].name,
+                        queue: chunk.queue,
+                        query: chunk.first_query + 2 * i as u32,
+                    });
+                }
+            }
+            segment_lists[chunk.segment as usize].extend(out.lists);
+        }
+
+        let list_count: usize = segment_lists.iter().map(Vec::len).sum();
+
+        // Submit, segment by segment.
         let mut segment_values: Vec<u64, &Arena> =
             Vec::with_capacity_in(plan.segments.len(), arena);
         let mut waited_last_frame = [false; 3];
@@ -574,84 +790,6 @@ impl FrameContext {
         let mut last_async = [0u64; 3];
         for (si, segment) in plan.segments.iter().enumerate() {
             let q = sync::queue_index(segment.queue) as usize;
-            if pools[q].is_none() {
-                pools[q] = Some(device.create_command_pool_for(segment.queue)?);
-            }
-            let pool = pools[q].as_mut().expect("made above");
-            if lists[q].len() == used_lists[q] {
-                lists[q].push(device.create_command_list(pool)?);
-            }
-            let list = &mut lists[q][used_lists[q]];
-            used_lists[q] += 1;
-            list.begin(pool)?;
-            for &pos in plan.segment_passes(si) {
-                let pos = pos as usize;
-                let pp = &plan.passes[pos];
-                let pass = &g.passes[pp.node as usize];
-                list.begin_event(&pp.name);
-                record_barriers(list, plan, pos, &textures, &buffers);
-                let recs = &g.accesses[pass.accesses.start as usize..pass.accesses.end as usize];
-                match pass.builtin {
-                    Some(Builtin::Present) => {}
-                    Some(Builtin::ReadbackBuffer(index) | Builtin::ReadbackTexture(index)) => {
-                        let dst = &readbacks[first_readback..]
-                            .iter()
-                            .find(|r| r.ticket.index == index)
-                            .expect("made above")
-                            .buffer;
-                        let rec = &recs[0];
-                        match rec.res {
-                            Res::Buffer(b) => {
-                                let src = buffers[b as usize].expect("a used buffer");
-                                list.copy_buffer(src, rec.bytes.0, dst, 0, rec.bytes.1);
-                            }
-                            Res::Texture(t) => {
-                                let src = textures[t as usize].expect("a used texture");
-                                let copy = texture_copy(&g.textures[t as usize].desc, rec);
-                                list.copy_texture_to_buffer(src, dst, &copy);
-                            }
-                        }
-                    }
-                    None => {
-                        let raster = pass.kind == PassKind::Raster;
-                        if raster {
-                            begin_render_pass(
-                                list,
-                                &g,
-                                pass,
-                                physical,
-                                &*import_views,
-                                &textures,
-                                &buffers,
-                            );
-                        }
-                        if let Some(exec) = execs[pp.node as usize].take() {
-                            let views =
-                                &views[pass.accesses.start as usize..pass.accesses.end as usize];
-                            let mut ctx = PassContext {
-                                parts: RhiParts {
-                                    list: &mut *list,
-                                    device,
-                                    pass: pass.name,
-                                    recs,
-                                    views,
-                                    textures: &textures,
-                                    buffers: &buffers,
-                                    shapes: &shapes,
-                                    upload: &mut *upload,
-                                    retire: &mut retire_now,
-                                },
-                            };
-                            exec(&mut ctx);
-                        }
-                        if raster {
-                            list.end_render_pass();
-                        }
-                    }
-                }
-                list.end_event();
-            }
-            list.end()?;
             let mut waits: SmallVec<(&Fence, u64), 4> = segment
                 .waits
                 .iter()
@@ -679,6 +817,8 @@ impl FrameContext {
                 last_async[q] = v;
                 (&async_fences[q - 1], v)
             };
+            let refs: SmallVec<&CommandList, 8> =
+                segment_lists[si].iter().map(|r| &r.list).collect();
             // SAFETY: what the lists use stays alive until the frame's graphics fence value, which
             // comes after every list of the frame (the last graphics submission waits for the
             // other queues): transients and their views in the slot's physical set (dropped
@@ -689,12 +829,18 @@ impl FrameContext {
             unsafe {
                 device.queue_for(segment.queue).submit_with(&SubmitDesc {
                     waits: &waits,
-                    lists: &[&*list],
+                    lists: &refs,
                     signals: &[(signal_fence, value)],
                 })?
             };
             segment_values.push(value);
         }
+        // The lists wait for the slot's next turn to be reset and reused.
+        for (segment, recorders) in plan.segments.iter().zip(segment_lists.drain(..)) {
+            slot.used[sync::queue_index(segment.queue) as usize].extend(recorders);
+        }
+        slot.timing = timings;
+        slot.timing_frame = marlin_profile::frame_index();
         // The frame ends on the graphics queue, after the other queues' work: one value covers
         // the whole frame.
         let async_waits: SmallVec<(&Fence, u64), 2> = (1..3)
@@ -720,12 +866,17 @@ impl FrameContext {
             };
             v
         };
+        // Done with the frame's tables (they borrow the graph, the caches and the state table).
+        drop(records);
+        drop(textures);
+        drop(buffers);
+        drop(work);
         slot.value = value;
         // Readbacks hold their data once the whole frame is done.
         for r in &mut readbacks[first_readback..] {
             r.value = value;
         }
-        for object in retire_now {
+        for object in retire_now.into_inner() {
             retired.push((value, object));
         }
 
@@ -733,6 +884,7 @@ impl FrameContext {
             key: plan.key,
             lookup,
             passes: plan.passes.len(),
+            lists: list_count,
             created,
         });
         let frame_states = g.frame_states(plan);
@@ -1177,17 +1329,16 @@ fn record_barriers(
     }
 }
 
-/// Binds a raster pass's attachments and sets the viewport and scissor to the first one.
-fn begin_render_pass(
-    list: &mut CommandList,
+/// A raster pass's attachments, load and store ops, and the size of its first attachment.
+fn render_pass_of<'a>(
     g: &RenderGraph<'_>,
     pass: &crate::graph::PassNode<'_, Rhi>,
-    physical: &Physical,
-    import_views: &HashMap<(u64, ViewSpec), Cached>,
-    textures: &[Option<&Texture>],
-    buffers: &[Option<&Buffer>],
-) {
-    let attachment_view = |access: u32| -> &View {
+    physical: &'a Physical,
+    import_views: &'a HashMap<(u64, ViewSpec), Cached>,
+    textures: &[Option<&'a Texture>],
+    buffers: &[Option<&'a Buffer>],
+) -> RenderPass<'a> {
+    let attachment_view = |access: u32| -> &'a View {
         let rec = &g.accesses[access as usize];
         if is_transient(g, rec.res) {
             unreachable!("transient attachments are looked up directly")
@@ -1235,25 +1386,23 @@ fn begin_render_pass(
             stencil_store: d.stencil_store,
         }
     });
-    list.begin_render_pass(&RenderPassDesc {
-        color: &colors,
-        depth,
-    });
     let first = pass
         .colors
         .first()
         .map(|c| (c.texture, c.mip))
         .or(pass.depth.map(|d| (d.texture, d.mip)));
-    if let Some((t, mip)) = first {
-        let desc = textures[t as usize].expect("an attachment").desc();
-        let (w, h) = desc.mip_size(mip);
-        list.set_viewport(&Viewport::full(w, h));
-        list.set_scissor(&Rect {
-            x: 0,
-            y: 0,
-            width: w,
-            height: h,
-        });
+    let size = first.map(|(t, mip)| {
+        textures[t as usize]
+            .expect("an attachment")
+            .desc()
+            .mip_size(mip)
+    });
+    RenderPass {
+        colors,
+        depth,
+        size,
+        parallel: pass.parallel,
+        done: false,
     }
 }
 
@@ -1262,5 +1411,347 @@ fn queue_fence<'f>(graphics: &'f Fence, others: &'f [Fence; 2], q: usize) -> &'f
     match q {
         0 => graphics,
         q => &others[q - 1],
+    }
+}
+
+/// Recording one list takes about this long: long enough that a list is worth a job, short
+/// enough to spread a frame over the workers (0007 §4.7: 0.1–0.3 ms).
+pub const CHUNK_COST_US: u32 = 200;
+/// The recording cost assumed for a pass never timed and without a `b.cost` hint.
+const DEFAULT_COST_US: u32 = 25;
+
+/// What recording one retained pass needs, shareable between the recording jobs.
+struct PassRecord<'a> {
+    name: &'static str,
+    builtin: Option<Builtin>,
+    accesses: core::ops::Range<u32>,
+    /// Raster passes.
+    render: Option<RenderPass<'a>>,
+    readback: Option<&'a Buffer>,
+}
+
+/// Consecutive passes of one segment recorded by one job into lists of their own.
+struct Chunk<'p> {
+    segment: u32,
+    queue: u8,
+    /// Positions of retained passes.
+    passes: &'p [u32],
+    /// The chunk's first timestamp query on its queue: two per pass.
+    first_query: u32,
+}
+
+struct ChunkOut {
+    lists: Vec<Recorder>,
+    /// Recording time per pass position, microseconds.
+    cpu: Vec<(u32, u32)>,
+}
+
+/// What every recording job reads.
+struct RecordEnv<'a> {
+    device: &'a Device,
+    jobs: Option<&'a JobSystem>,
+    plan: &'a CompiledPlan,
+    records: &'a [PassRecord<'a>],
+    recs: &'a [AccessRec],
+    views: &'a [u32],
+    textures: &'a [Option<&'a Texture>],
+    buffers: &'a [Option<&'a Buffer>],
+    shapes: &'a [(u32, u32)],
+    descs: &'a [TextureDesc],
+    upload: &'a Mutex<Upload>,
+    retire: &'a Mutex<Vec<Box<dyn Send>>>,
+}
+
+/// A pass whose GPU time a frame slot will read.
+struct TimedPass {
+    name: &'static str,
+    queue: u8,
+    /// Its first query; the second follows.
+    query: u32,
+}
+
+/// One pass's GPU time in a frame.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct PassTiming {
+    pub name: &'static str,
+    pub queue: QueueType,
+    pub nanoseconds: u64,
+}
+
+/// Records one chunk: barriers, timestamps, markers and the passes' own commands.
+fn record_chunk<'a>(
+    env: &RecordEnv<'a>,
+    lists: &Lists<'a>,
+    passes: &[u32],
+    execs: Vec<Option<Exec<'_, Rhi>>>,
+    queries: Option<(&QueryPool, &Buffer, u32)>,
+) -> Result<ChunkOut> {
+    let mut seq = ListSeq {
+        current: lists.take()?,
+        done: Vec::new(),
+    };
+    let mut cpu = Vec::with_capacity(passes.len());
+    for (i, (&pos, exec)) in passes.iter().zip(execs).enumerate() {
+        let started = Instant::now();
+        let record = &env.records[pos as usize];
+        let recs = &env.recs[record.accesses.start as usize..record.accesses.end as usize];
+        let list = &mut seq.current.list;
+        list.begin_event(record.name);
+        if let Some((pool, _, first)) = queries {
+            list.write_timestamp(pool, first + 2 * i as u32);
+        }
+        record_barriers(list, env.plan, pos as usize, env.textures, env.buffers);
+        match record.builtin {
+            Some(Builtin::Present) => {}
+            Some(Builtin::ReadbackBuffer(_) | Builtin::ReadbackTexture(_)) => {
+                let dst = record.readback.expect("made with the frame");
+                let rec = &recs[0];
+                match rec.res {
+                    Res::Buffer(b) => {
+                        let src = env.buffers[b as usize].expect("a used buffer");
+                        list.copy_buffer(src, rec.bytes.0, dst, 0, rec.bytes.1);
+                    }
+                    Res::Texture(t) => {
+                        let src = env.textures[t as usize].expect("a used texture");
+                        let copy = texture_copy(&env.descs[t as usize], rec);
+                        list.copy_texture_to_buffer(src, dst, &copy);
+                    }
+                }
+            }
+            Some(Builtin::Capture) => match (recs[0].res, recs[1].res) {
+                (Res::Texture(s), Res::Texture(d)) => {
+                    let src = env.textures[s as usize].expect("a used texture");
+                    let dst = env.textures[d as usize].expect("a used texture");
+                    let desc = src.desc();
+                    for layer in 0..desc.array_layers {
+                        for mip in 0..desc.mip_levels {
+                            let (w, h) = desc.mip_size(mip);
+                            list.copy_texture(
+                                src,
+                                dst,
+                                &TextureCopy {
+                                    src_mip: mip,
+                                    src_layer: layer,
+                                    src_offset: [0; 3],
+                                    dst_mip: mip,
+                                    dst_layer: layer,
+                                    dst_offset: [0; 3],
+                                    size: [w, h, desc.mip_depth(mip)],
+                                },
+                            );
+                        }
+                    }
+                }
+                (Res::Buffer(s), Res::Buffer(d)) => {
+                    let src = env.buffers[s as usize].expect("a used buffer");
+                    let dst = env.buffers[d as usize].expect("a used buffer");
+                    list.copy_buffer(src, 0, dst, 0, src.desc().size);
+                }
+                _ => unreachable!("a capture copies into its own kind"),
+            },
+            None => {
+                let eager = record.render.as_ref().filter(|r| !r.parallel);
+                if let Some(r) = eager {
+                    r.begin(list, true, true);
+                }
+                let mut ctx = PassContext {
+                    parts: RhiParts {
+                        seq: &mut seq,
+                        lists,
+                        jobs: env.jobs,
+                        device: env.device,
+                        pass: record.name,
+                        recs,
+                        views: &env.views
+                            [record.accesses.start as usize..record.accesses.end as usize],
+                        textures: env.textures,
+                        buffers: env.buffers,
+                        shapes: env.shapes,
+                        upload: env.upload,
+                        retire: env.retire,
+                        render: record.render.clone(),
+                        nested: false,
+                    },
+                };
+                if let Some(exec) = exec {
+                    exec(&mut ctx);
+                }
+                let split = ctx.parts.render.as_ref().is_some_and(|r| r.done);
+                drop(ctx);
+                if eager.is_some() {
+                    seq.current.list.end_render_pass();
+                } else if let Some(r) = record.render.as_ref().filter(|_| !split) {
+                    // Declared parallel but never split: the load and store ops still apply.
+                    r.begin(&mut seq.current.list, true, true);
+                    seq.current.list.end_render_pass();
+                }
+            }
+        }
+        let list = &mut seq.current.list;
+        if let Some((pool, _, first)) = queries {
+            list.write_timestamp(pool, first + 2 * i as u32 + 1);
+        }
+        list.end_event();
+        cpu.push((pos, started.elapsed().as_micros() as u32));
+    }
+    if let Some((pool, results, first)) = queries {
+        let count = 2 * passes.len() as u32;
+        seq.current
+            .list
+            .resolve_queries(pool, first, count, results, u64::from(first) * 8);
+    }
+    seq.current.list.end()?;
+    let mut lists = seq.done;
+    lists.push(seq.current);
+    Ok(ChunkOut { lists, cpu })
+}
+
+/// Reads the GPU times of the frame that last used the slot (its fence has passed): into the
+/// last-frame list and, converted to the CPU clock, into the timeline.
+fn read_timings(
+    slot: &mut Slot,
+    device: &Device,
+    timeline: &Option<&'static GpuTimeline>,
+    gpu_times: &mut Vec<PassTiming>,
+    frequencies: &[u64; 3],
+) {
+    if slot.timing.is_empty() {
+        return;
+    }
+    let calibrations: [Option<marlin_rhi::ClockCalibration>; 3] = core::array::from_fn(|q| {
+        timeline.and_then(|_| {
+            device
+                .queue_for(sync::queue_type(q as u8))
+                .clock_calibration()
+                .ok()
+        })
+    });
+    let cpu_per_second = i128::from(marlin_std::time::ticks_per_second());
+    gpu_times.clear();
+    for t in slot.timing.drain(..) {
+        let q = t.queue as usize;
+        let Some((_, results)) = &slot.queries[q] else {
+            continue;
+        };
+        let base = results.mapped().expect("readback memory is mapped");
+        let read = |i: u32| {
+            let mut word = [0u8; 8];
+            // SAFETY: the buffer is mapped for its life, holds a `u64` per query, and the GPU
+            // finished writing it (the slot's fence passed).
+            unsafe {
+                ptr::copy_nonoverlapping(base.as_ptr().add(i as usize * 8), word.as_mut_ptr(), 8);
+            }
+            u64::from_le_bytes(word)
+        };
+        let (start, end) = (read(t.query), read(t.query + 1));
+        let freq = i128::from(frequencies[q].max(1));
+        let ticks = i128::from(end.saturating_sub(start));
+        gpu_times.push(PassTiming {
+            name: t.name,
+            queue: sync::queue_type(t.queue),
+            nanoseconds: (ticks * 1_000_000_000 / freq) as u64,
+        });
+        if let (Some(timeline), Some(cal)) = (timeline, calibrations[q]) {
+            let to_cpu = |gpu: u64| {
+                let delta = i128::from(gpu) - i128::from(cal.gpu);
+                (i128::from(cal.cpu) + delta * cpu_per_second / freq).max(0) as u64
+            };
+            timeline.zones.lock().push(marlin_profile::GpuZone {
+                frame: slot.timing_frame,
+                name: t.name,
+                queue: q as u32,
+                start: to_cpu(start),
+                end: to_cpu(end),
+            });
+        }
+    }
+}
+
+/// GPU timings for the profiler: install it with [`marlin_profile::set_gpu_timings`] and give it
+/// to the frame context ([`FrameContextDesc::timeline`]).
+pub struct GpuTimeline {
+    zones: Mutex<Vec<marlin_profile::GpuZone>>,
+}
+
+impl GpuTimeline {
+    pub const fn new() -> Self {
+        Self {
+            zones: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl Default for GpuTimeline {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl core::fmt::Debug for GpuTimeline {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("GpuTimeline")
+    }
+}
+
+impl marlin_profile::GpuTimings for GpuTimeline {
+    fn collect(&self, out: &mut dyn FnMut(marlin_profile::GpuZone)) {
+        for zone in self.zones.lock().drain(..) {
+            out(zone);
+        }
+    }
+
+    fn queue_name(&self, queue: u32) -> &str {
+        match queue {
+            1 => "GPU compute",
+            2 => "GPU copy",
+            _ => "GPU graphics",
+        }
+    }
+}
+
+/// Pass names live in frame arenas; timings outlive them. Interned once per distinct name.
+fn intern(name: &str) -> &'static str {
+    static NAMES: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
+    let mut names = NAMES.lock();
+    if let Some(&n) = names.iter().find(|&&n| n == name) {
+        return n;
+    }
+    let leaked: &'static str = Box::leak(alloc::string::String::from(name).into_boxed_str());
+    names.push(leaked);
+    leaked
+}
+
+impl FrameContext {
+    /// The GPU time of each pass of the last frame whose timestamps came back (a couple of
+    /// frames ago).
+    pub fn gpu_timings(&self) -> &[PassTiming] {
+        &self.gpu_times
+    }
+
+    /// The copy a capture named `name` made ([`RenderGraph::capture`]), as of the last frame
+    /// that captured it. Valid until the next frame.
+    pub fn captured_texture(&self, name: &str) -> Option<&Texture> {
+        let key = crate::retained::retained_key(name, crate::retained::CAPTURE_SCOPE);
+        match self.retained.get(&(key, 0))? {
+            RetainedObject::Texture(t) => Some(t),
+            RetainedObject::Buffer(_) => None,
+        }
+    }
+
+    pub fn captured_buffer(&self, name: &str) -> Option<&Buffer> {
+        let key = crate::retained::retained_key(name, crate::retained::CAPTURE_SCOPE);
+        match self.retained.get(&(key, 0))? {
+            RetainedObject::Buffer(b) => Some(b),
+            RetainedObject::Texture(_) => None,
+        }
+    }
+}
+
+impl FrameContext {
+    /// The last frame's plan as JSON ([`CompiledPlan::to_json`]) with the latest GPU times.
+    pub fn dump(&self) -> Option<alloc::string::String> {
+        let stats = self.stats?;
+        let plan = self.cache.plan(stats.key)?;
+        Some(plan.to_json(&self.gpu_times))
     }
 }

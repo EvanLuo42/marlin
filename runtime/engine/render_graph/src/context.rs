@@ -4,10 +4,14 @@
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
+use marlin_containers::ArrayVec;
+use marlin_jobs::JobSystem;
+use marlin_jobs::sync::Mutex;
 use marlin_rhi::{
-    Buffer, BufferTextureCopy, BufferViewDesc, BufferViewKind, ClearColor, CommandList,
-    ComputePipeline, Device, GraphicsPipeline, IndexFormat, IndirectArgs, MAX_PUSH_CONSTANTS,
-    MeshPipeline, Rect, Texture, TextureCopy, Viewport,
+    Buffer, BufferTextureCopy, BufferViewDesc, BufferViewKind, ClearColor, ColorAttachment,
+    CommandList, CommandPool, ComputePipeline, DepthAttachment, Device, GraphicsPipeline,
+    IndexFormat, IndirectArgs, LoadOp, MAX_COLOR_ATTACHMENTS, MAX_PUSH_CONSTANTS, MeshPipeline,
+    QueueType, Rect, RenderPassDesc, Result, StoreOp, Texture, TextureCopy, Viewport,
 };
 use marlin_serial::cooked::Pod;
 
@@ -26,9 +30,111 @@ pub struct PassContext<'a, B: Backend = Rhi> {
     pub(crate) parts: B::Parts<'a>,
 }
 
+/// A command list and the pool it records from: lists recorded at the same time need pools of
+/// their own.
+pub(crate) struct Recorder {
+    pub pool: CommandPool,
+    pub list: CommandList,
+}
+
+/// The lists one job records, in submission order: the finished ones and the one being
+/// recorded.
+pub(crate) struct ListSeq {
+    pub current: Recorder,
+    pub done: Vec<Recorder>,
+}
+
+impl ListSeq {
+    /// Ends the current list and continues in `next` (begun).
+    fn switch(&mut self, next: Recorder) {
+        let finished = core::mem::replace(&mut self.current, next);
+        self.done.push(finished);
+        let last = self.done.last_mut().expect("just pushed");
+        last.list.end().expect("ending a command list");
+    }
+}
+
+/// Hands out begun command lists of one queue, reusing the frame slot's free ones.
+pub(crate) struct Lists<'a> {
+    pub device: &'a Device,
+    pub queue: QueueType,
+    pub free: &'a Mutex<Vec<Recorder>>,
+}
+
+impl Lists<'_> {
+    pub(crate) fn take(&self) -> Result<Recorder> {
+        let mut recorder = match self.free.lock().pop() {
+            Some(r) => r,
+            None => {
+                let pool = self.device.create_command_pool_for(self.queue)?;
+                let list = self.device.create_command_list(&pool)?;
+                Recorder { pool, list }
+            }
+        };
+        recorder.list.begin(&mut recorder.pool)?;
+        Ok(recorder)
+    }
+}
+
+/// A raster pass's attachments, with their load and store ops.
+#[derive(Clone)]
+pub(crate) struct RenderPass<'a> {
+    pub colors: ArrayVec<ColorAttachment<'a>, MAX_COLOR_ATTACHMENTS>,
+    pub depth: Option<DepthAttachment<'a>>,
+    /// The first attachment's size: the default viewport and scissor.
+    pub size: Option<(u32, u32)>,
+    /// Recorded in sub-lists ([`PassContext::parallel`]): no render pass in the pass's own list.
+    pub parallel: bool,
+    /// The sub-lists have run (only once per pass).
+    pub done: bool,
+}
+
+impl<'a> RenderPass<'a> {
+    /// Begins the render pass with the loads of the first instance (`first`) or loading what
+    /// the previous one stored, and the stores of the last instance (`last`) or storing, and
+    /// sets the default viewport and scissor.
+    pub(crate) fn begin(&self, list: &mut CommandList, first: bool, last: bool) {
+        let mut colors = self.colors.clone();
+        for c in &mut colors {
+            if !first {
+                c.load = LoadOp::Load;
+            }
+            if !last {
+                c.store = StoreOp::Store;
+            }
+        }
+        let depth = self.depth.map(|mut d| {
+            if !first {
+                d.load = LoadOp::Load;
+                d.stencil_load = LoadOp::Load;
+            }
+            if !last {
+                d.store = StoreOp::Store;
+                d.stencil_store = StoreOp::Store;
+            }
+            d
+        });
+        list.begin_render_pass(&RenderPassDesc {
+            color: &colors,
+            depth,
+        });
+        if let Some((w, h)) = self.size {
+            list.set_viewport(&Viewport::full(w, h));
+            list.set_scissor(&Rect {
+                x: 0,
+                y: 0,
+                width: w,
+                height: h,
+            });
+        }
+    }
+}
+
 /// What a context records with on the RHI.
 pub struct RhiParts<'a> {
-    pub(crate) list: &'a mut CommandList,
+    pub(crate) seq: &'a mut ListSeq,
+    pub(crate) lists: &'a Lists<'a>,
+    pub(crate) jobs: Option<&'a JobSystem>,
     pub(crate) device: &'a Device,
     pub(crate) pass: &'a str,
     /// The pass's accesses and, for each, its view's index or [`NO_VIEW`].
@@ -39,9 +145,28 @@ pub struct RhiParts<'a> {
     pub(crate) buffers: &'a [Option<&'a Buffer>],
     /// Mips and layers of every texture slot, to resolve handle ranges.
     pub(crate) shapes: &'a [(u32, u32)],
-    pub(crate) upload: &'a mut Upload,
+    pub(crate) upload: &'a Mutex<Upload>,
     /// Objects to drop once this frame's GPU work is done.
-    pub(crate) retire: &'a mut Vec<Box<dyn Send>>,
+    pub(crate) retire: &'a Mutex<Vec<Box<dyn Send>>>,
+    /// A raster pass's render pass.
+    pub(crate) render: Option<RenderPass<'a>>,
+    /// A sub-list of [`PassContext::parallel`]: it cannot split again.
+    pub(crate) nested: bool,
+}
+
+impl RhiParts<'_> {
+    fn list(&mut self) -> &mut CommandList {
+        &mut self.seq.current.list
+    }
+
+    /// Draws need the render pass, which a pass recorded in sub-lists only has inside them.
+    fn draws(&self) {
+        assert!(
+            !self.render.as_ref().is_some_and(|r| r.parallel) || self.nested,
+            "pass {}: records in parallel; draw inside ctx.parallel",
+            self.pass
+        );
+    }
 }
 
 /// What a view lookup wants.
@@ -164,7 +289,7 @@ impl<'a> PassContext<'a, Rhi> {
     }
 
     pub fn set_pipeline(&mut self, pipeline: &impl Pipeline) {
-        pipeline.bind(self.parts.list);
+        pipeline.bind(self.parts.list());
     }
 
     /// Writes `value` into the push constants (0002 §2.1: at most 128 bytes, whole words).
@@ -191,7 +316,7 @@ impl<'a> PassContext<'a, Rhi> {
             self.parts.pass,
             words.len()
         );
-        self.parts.list.push_constants(0, words);
+        self.parts.list().push_constants(0, words);
     }
 
     /// Copies `value` into this frame's upload memory; returns a uniform view of it.
@@ -220,36 +345,128 @@ impl<'a> PassContext<'a, Rhi> {
     }
 
     fn upload_view(&mut self, bytes: &[u8], align: u64, kind: BufferViewKind, size: u64) -> u32 {
-        let p = &mut self.parts;
-        let (buffer, offset) = p.upload.write(p.device, bytes, align, size);
-        let view = p
-            .device
-            .create_buffer_view(
-                buffer,
-                &BufferViewDesc {
-                    kind,
-                    writable: false,
-                    offset,
-                    size,
-                },
-            )
-            .expect("a view of upload memory");
+        let p = &self.parts;
+        let view = {
+            let mut upload = p.upload.lock();
+            let (buffer, offset) = upload.write(p.device, bytes, align, size);
+            p.device
+                .create_buffer_view(
+                    buffer,
+                    &BufferViewDesc {
+                        kind,
+                        writable: false,
+                        offset,
+                        size,
+                    },
+                )
+                .expect("a view of upload memory")
+        };
         let index = view.index();
-        p.retire.push(Box::new(view));
+        p.retire.lock().push(Box::new(view));
         index
     }
 
+    /// Records the pass's work as `n` command lists recorded at once (on the job system, when
+    /// the frame runs on one), then continues in the pass's own list: `f(i, sub)` records list
+    /// `i`, and the lists run in order of `i` (0007 §6.3). For the shadow views of many lights,
+    /// say, or a large pass split by ranges of draws.
+    ///
+    /// A raster pass that records this way declares it (`b.record_in_parallel()`); its draws are
+    /// all inside `f`, each sub-list opens and closes the render pass, the first one with the
+    /// pass's load ops and the last one with its store ops. A raster pass splits once; compute
+    /// and copy passes any number of times. Sub-lists cannot split again.
+    pub fn parallel(&mut self, n: usize, f: impl Fn(usize, &mut PassContext<'_, Rhi>) + Sync) {
+        let p = &mut self.parts;
+        assert!(!p.nested, "pass {}: a sub-list cannot split again", p.pass);
+        if let Some(r) = &p.render {
+            assert!(
+                r.parallel,
+                "pass {}: a raster pass splits in parallel only when declared with \
+                 b.record_in_parallel()",
+                p.pass
+            );
+            assert!(!r.done, "pass {}: a raster pass splits once", p.pass);
+        }
+        if n == 0 {
+            return;
+        }
+        let mut seqs: Vec<ListSeq> = (0..n)
+            .map(|_| ListSeq {
+                current: p.lists.take().expect("a command list"),
+                done: Vec::new(),
+            })
+            .collect();
+        let render = p.render.clone();
+        let (device, lists, jobs, pass, recs, views, textures, buffers, shapes, upload, retire) = (
+            p.device, p.lists, p.jobs, p.pass, p.recs, p.views, p.textures, p.buffers, p.shapes,
+            p.upload, p.retire,
+        );
+        let record = |i: usize, seq: &mut ListSeq| {
+            if let Some(r) = &render {
+                r.begin(&mut seq.current.list, i == 0, i == n - 1);
+            }
+            let mut sub = PassContext {
+                parts: RhiParts {
+                    seq,
+                    lists,
+                    jobs: None,
+                    device,
+                    pass,
+                    recs,
+                    views,
+                    textures,
+                    buffers,
+                    shapes,
+                    upload,
+                    retire,
+                    render: render.clone(),
+                    nested: true,
+                },
+            };
+            f(i, &mut sub);
+            if render.is_some() {
+                sub.parts.list().end_render_pass();
+            }
+        };
+        match jobs {
+            Some(jobs) => jobs.scope(|s| {
+                for (i, seq) in seqs.iter_mut().enumerate() {
+                    let record = &record;
+                    s.spawn(move || record(i, seq));
+                }
+            }),
+            None => {
+                for (i, seq) in seqs.iter_mut().enumerate() {
+                    record(i, seq);
+                }
+            }
+        }
+        // This list ends here; the sub-lists follow it, then a new one for the rest.
+        let next = p.lists.take().expect("a command list");
+        p.seq.switch(next);
+        for mut seq in seqs {
+            seq.current.list.end().expect("ending a command list");
+            p.seq.done.extend(seq.done);
+            p.seq.done.push(seq.current);
+        }
+        if let Some(r) = &mut p.render {
+            r.done = true;
+        }
+    }
+
     pub fn dispatch(&mut self, x: u32, y: u32, z: u32) {
-        self.parts.list.dispatch(x, y, z);
+        self.parts.list().dispatch(x, y, z);
     }
 
     pub fn dispatch_mesh(&mut self, x: u32, y: u32, z: u32) {
-        self.parts.list.dispatch_mesh(x, y, z);
+        self.parts.draws();
+        self.parts.list().dispatch_mesh(x, y, z);
     }
 
     pub fn draw(&mut self, vertices: u32, instances: u32, first_vertex: u32, first_instance: u32) {
+        self.parts.draws();
         self.parts
-            .list
+            .list()
             .draw(vertices, instances, first_vertex, first_instance);
     }
 
@@ -261,7 +478,8 @@ impl<'a> PassContext<'a, Rhi> {
         vertex_offset: i32,
         first_instance: u32,
     ) {
-        self.parts.list.draw_indexed(
+        self.parts.draws();
+        self.parts.list().draw_indexed(
             indices,
             instances,
             first_index,
@@ -273,7 +491,7 @@ impl<'a> PassContext<'a, Rhi> {
     /// Binds a buffer declared with [`Access::Index`].
     pub fn index_buffer(&mut self, h: BufferHandle<'_>, format: IndexFormat) {
         let buffer = self.buffer(h, Access::Index);
-        self.parts.list.set_index_buffer(buffer, h.offset, format);
+        self.parts.list().set_index_buffer(buffer, h.offset, format);
     }
 
     /// `max_count` dispatches from arguments at `args` (declared [`Access::Indirect`]); with
@@ -285,7 +503,7 @@ impl<'a> PassContext<'a, Rhi> {
         count: Option<BufferHandle<'_>>,
     ) {
         let args = self.indirect(args, max_count, count);
-        self.parts.list.dispatch_indirect(&args);
+        self.parts.list().dispatch_indirect(&args);
     }
 
     pub fn dispatch_mesh_indirect(
@@ -294,8 +512,9 @@ impl<'a> PassContext<'a, Rhi> {
         max_count: u32,
         count: Option<BufferHandle<'_>>,
     ) {
+        self.parts.draws();
         let args = self.indirect(args, max_count, count);
-        self.parts.list.dispatch_mesh_indirect(&args);
+        self.parts.list().dispatch_mesh_indirect(&args);
     }
 
     pub fn draw_indirect(
@@ -304,8 +523,9 @@ impl<'a> PassContext<'a, Rhi> {
         max_count: u32,
         count: Option<BufferHandle<'_>>,
     ) {
+        self.parts.draws();
         let args = self.indirect(args, max_count, count);
-        self.parts.list.draw_indirect(&args);
+        self.parts.list().draw_indirect(&args);
     }
 
     pub fn draw_indexed_indirect(
@@ -314,8 +534,9 @@ impl<'a> PassContext<'a, Rhi> {
         max_count: u32,
         count: Option<BufferHandle<'_>>,
     ) {
+        self.parts.draws();
         let args = self.indirect(args, max_count, count);
-        self.parts.list.draw_indexed_indirect(&args);
+        self.parts.list().draw_indexed_indirect(&args);
     }
 
     fn indirect(
@@ -336,15 +557,15 @@ impl<'a> PassContext<'a, Rhi> {
 
     /// Raster passes start with the viewport and scissor covering their first attachment.
     pub fn set_viewport(&mut self, viewport: &Viewport) {
-        self.parts.list.set_viewport(viewport);
+        self.parts.list().set_viewport(viewport);
     }
 
     pub fn set_scissor(&mut self, rect: &Rect) {
-        self.parts.list.set_scissor(rect);
+        self.parts.list().set_scissor(rect);
     }
 
     pub fn set_stencil_reference(&mut self, reference: u8) {
-        self.parts.list.set_stencil_reference(reference);
+        self.parts.list().set_stencil_reference(reference);
     }
 
     /// Copies `size` bytes between buffers declared [`Access::CopySrc`] and [`Access::CopyDst`],
@@ -360,7 +581,7 @@ impl<'a> PassContext<'a, Rhi> {
         let s = self.buffer(src, Access::CopySrc);
         let d = self.buffer(dst, Access::CopyDst);
         self.parts
-            .list
+            .list()
             .copy_buffer(s, src.offset + src_offset, d, dst.offset + dst_offset, size);
     }
 
@@ -372,7 +593,7 @@ impl<'a> PassContext<'a, Rhi> {
     ) {
         let s = self.texture(src, Access::CopySrc);
         let d = self.texture(dst, Access::CopyDst);
-        self.parts.list.copy_texture(s, d, region);
+        self.parts.list().copy_texture(s, d, region);
     }
 
     pub fn copy_buffer_to_texture(
@@ -383,7 +604,7 @@ impl<'a> PassContext<'a, Rhi> {
     ) {
         let s = self.buffer(src, Access::CopySrc);
         let d = self.texture(dst, Access::CopyDst);
-        self.parts.list.copy_buffer_to_texture(s, d, region);
+        self.parts.list().copy_buffer_to_texture(s, d, region);
     }
 
     pub fn copy_texture_to_buffer(
@@ -394,7 +615,7 @@ impl<'a> PassContext<'a, Rhi> {
     ) {
         let s = self.texture(src, Access::CopySrc);
         let d = self.buffer(dst, Access::CopyDst);
-        self.parts.list.copy_texture_to_buffer(s, d, region);
+        self.parts.list().copy_texture_to_buffer(s, d, region);
     }
 
     /// Fills what `h` covers (declared [`Access::Clear`]) with `value`.
@@ -404,7 +625,7 @@ impl<'a> PassContext<'a, Rhi> {
             u64::MAX => buffer.desc().size - h.offset,
             n => n,
         };
-        self.parts.list.fill_buffer(buffer, h.offset, size, value);
+        self.parts.list().fill_buffer(buffer, h.offset, size, value);
     }
 
     /// Clears what `h` covers (one mip, declared [`Access::Clear`]) to `value`.
@@ -414,7 +635,7 @@ impl<'a> PassContext<'a, Rhi> {
         let range = self.parts.recs[i].range.to_rhi();
         let texture = self.texture(h, Access::Clear);
         self.parts
-            .list
+            .list()
             .clear_storage_texture(texture, &range, value);
     }
 

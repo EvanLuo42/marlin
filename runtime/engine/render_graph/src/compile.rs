@@ -92,6 +92,8 @@ pub(crate) fn compile<B: Backend>(
         texture_finals,
         buffer_finals,
         heap_sizes,
+        texture_names: g.textures.iter().map(|t| t.name.to_string()).collect(),
+        buffer_names: g.buffers.iter().map(|b| b.name.to_string()).collect(),
         segments,
         segment_passes,
     })

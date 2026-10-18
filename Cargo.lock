@@ -855,6 +855,8 @@ dependencies = [
  "marlin-containers",
  "marlin-gpu-test-support",
  "marlin-hash",
+ "marlin-jobs",
+ "marlin-profile",
  "marlin-rhi",
  "marlin-serial",
  "marlin-std",

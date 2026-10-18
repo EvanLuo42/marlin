@@ -19,7 +19,8 @@
 //! compiles it or takes the cached plan, places the plan's transients in the frame slot's heaps,
 //! records the passes and submits them. A [`StateTable`] carries imported objects' states from
 //! frame to frame. The async compute and copy queues and parallel recording come in the next
-//! steps of 0007.
+//! records each queue's work in parallel as jobs, times every pass on the GPU, dumps the plan as
+//! JSON and captures resources for debug views (0007 §10).
 //!
 //! The graph is generic over a [`Backend`]: [`Rhi`] in the engine, [`recording::Recording`] in
 //! tests that run without a GPU.
@@ -34,6 +35,7 @@ mod cache;
 mod compile;
 mod context;
 mod desc;
+mod dump;
 mod frame;
 mod graph;
 mod handle;
@@ -49,14 +51,20 @@ pub use backend::{Backend, Queues, Rhi};
 pub use cache::{Lookup, PlanCache};
 pub use context::{PassContext, Pipeline, RhiParts, ViewHandle};
 pub use desc::{BufferDesc, TextureDesc};
-pub use frame::{FRAMES_IN_FLIGHT, FrameContext, FrameContextDesc, FrameInfo, FrameStats};
+pub use frame::{
+    CHUNK_COST_US, FRAMES_IN_FLIGHT, FrameContext, FrameContextDesc, FrameInfo, FrameStats,
+    GpuTimeline, PassTiming,
+};
 pub use graph::{ImportBuffer, ImportTexture, PassBuilder, Readback, RenderGraph};
 pub use handle::{BufferHandle, TextureHandle};
 pub use plan::{
     BufferTransition, CompiledPlan, Lifetime, Placement, PlannedBuffer, PlannedPass,
     PlannedTexture, Segment, TextureFinal, TextureTransition,
 };
-pub use retained::{GLOBAL_SCOPE, History, Persistent, RETIRE_FRAMES, RetainedDesc, RetainedKind};
+pub use retained::{
+    CAPTURE_SCOPE, Capture, GLOBAL_SCOPE, History, Persistent, RETIRE_FRAMES, RetainedDesc,
+    RetainedKind,
+};
 pub use state::{FrameStates, StateTable};
 
 impl<B: Backend> RenderGraph<'_, B> {

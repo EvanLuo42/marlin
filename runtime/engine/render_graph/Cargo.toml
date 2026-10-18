@@ -8,6 +8,8 @@ publish.workspace = true
 [dependencies]
 marlin-containers.workspace = true
 marlin-hash.workspace = true
+marlin-jobs.workspace = true
+marlin-profile.workspace = true
 marlin-rhi.workspace = true
 marlin-serial.workspace = true
 marlin-std.workspace = true
@@ -17,3 +19,4 @@ workspace = true
 
 [dev-dependencies]
 marlin-gpu-test-support.workspace = true
+marlin-jobs.workspace = true
