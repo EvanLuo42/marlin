@@ -284,7 +284,7 @@ pub(crate) unsafe fn import_texture(
     device.lost.check()?;
     let external = External::import(&device.shared, handle)?;
     let texture =
-        resource::create_texture_with(device, desc, external.image_info(), external.memory_info());
+        resource::import_texture_with(device, desc, external.image_info(), external.memory_info());
     if texture.is_err() {
         external.release_import();
     }
