@@ -117,6 +117,8 @@ file == 1 {
     line = trim($0)
     if (line == "" || line ~ /^#/) next
     split(line, p, /[ \t]+/)
+    # Areas may list the same item in their own sections: emit it once.
+    if ((p[1], p[2]) in want) next
     want[p[1], p[2]] = 1
     order[++norder] = p[1] " " p[2]
     next

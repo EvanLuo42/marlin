@@ -3870,21 +3870,6 @@ impl Default for VkClearValue {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub(crate) union VkClearColorValue {
-    pub float32: [f32; 4],
-    pub int32: [i32; 4],
-    pub uint32: [u32; 4],
-}
-
-impl Default for VkClearColorValue {
-    fn default() -> Self {
-        // SAFETY: all-zero is valid for this plain C structure.
-        unsafe { core::mem::zeroed() }
-    }
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
 pub(crate) struct VkClearDepthStencilValue {
     pub depth: f32,
     pub stencil: u32,
@@ -4705,14 +4690,6 @@ pub(crate) const VK_CULL_MODE_BACK_BIT: VkCullModeFlags = 0x00000002;
 pub(crate) const VK_FRONT_FACE_COUNTER_CLOCKWISE: VkFrontFace = 0;
 pub(crate) const VK_FRONT_FACE_CLOCKWISE: VkFrontFace = 1;
 pub(crate) const VK_CONSERVATIVE_RASTERIZATION_MODE_OVERESTIMATE_EXT: VkConservativeRasterizationModeEXT = 1;
-pub(crate) const VK_COMPARE_OP_NEVER: VkCompareOp = 0;
-pub(crate) const VK_COMPARE_OP_LESS: VkCompareOp = 1;
-pub(crate) const VK_COMPARE_OP_EQUAL: VkCompareOp = 2;
-pub(crate) const VK_COMPARE_OP_LESS_OR_EQUAL: VkCompareOp = 3;
-pub(crate) const VK_COMPARE_OP_GREATER: VkCompareOp = 4;
-pub(crate) const VK_COMPARE_OP_NOT_EQUAL: VkCompareOp = 5;
-pub(crate) const VK_COMPARE_OP_GREATER_OR_EQUAL: VkCompareOp = 6;
-pub(crate) const VK_COMPARE_OP_ALWAYS: VkCompareOp = 7;
 pub(crate) const VK_STENCIL_OP_KEEP: VkStencilOp = 0;
 pub(crate) const VK_STENCIL_OP_ZERO: VkStencilOp = 1;
 pub(crate) const VK_STENCIL_OP_REPLACE: VkStencilOp = 2;
@@ -4764,7 +4741,6 @@ pub(crate) const VK_ATTACHMENT_STORE_OP_DONT_CARE: VkAttachmentStoreOp = 1;
 pub(crate) const VK_ATTACHMENT_STORE_OP_NONE: VkAttachmentStoreOp = 1000301000;
 pub(crate) const VK_INDEX_TYPE_UINT16: VkIndexType = 0;
 pub(crate) const VK_INDEX_TYPE_UINT32: VkIndexType = 1;
-pub(crate) const VK_SAMPLE_COUNT_1_BIT: VkSampleCountFlags = 0x00000001;
 pub(crate) const VK_STENCIL_FACE_FRONT_AND_BACK: VkStencilFaceFlags = 0x00000003;
 pub(crate) const VK_FRAGMENT_SHADING_RATE_COMBINER_OP_KEEP_KHR: VkFragmentShadingRateCombinerOpKHR = 0;
 pub(crate) const VK_FRAGMENT_SHADING_RATE_COMBINER_OP_REPLACE_KHR: VkFragmentShadingRateCombinerOpKHR = 1;
@@ -4776,29 +4752,8 @@ pub(crate) const VK_INDIRECT_COMMANDS_TOKEN_TYPE_DRAW_EXT: VkIndirectCommandsTok
 pub(crate) const VK_INDIRECT_COMMANDS_TOKEN_TYPE_DRAW_INDEXED_EXT: VkIndirectCommandsTokenTypeEXT = 5;
 pub(crate) const VK_INDIRECT_COMMANDS_TOKEN_TYPE_DISPATCH_EXT: VkIndirectCommandsTokenTypeEXT = 9;
 pub(crate) const VK_INDIRECT_COMMANDS_TOKEN_TYPE_DRAW_MESH_TASKS_EXT: VkIndirectCommandsTokenTypeEXT = 1000328000;
-pub(crate) const VK_IMAGE_USAGE_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR: VkImageUsageFlags = 0x00000100;
-pub(crate) const VK_FORMAT_UNDEFINED: VkFormat = 0;
-pub(crate) const VK_FORMAT_R8_UINT: VkFormat = 13;
-pub(crate) const VK_FORMAT_R8_SINT: VkFormat = 14;
-pub(crate) const VK_FORMAT_R8G8_UINT: VkFormat = 20;
-pub(crate) const VK_FORMAT_R8G8_SINT: VkFormat = 21;
-pub(crate) const VK_FORMAT_R8G8B8A8_UINT: VkFormat = 41;
-pub(crate) const VK_FORMAT_R8G8B8A8_SINT: VkFormat = 42;
 pub(crate) const VK_FORMAT_B8G8R8A8_UINT: VkFormat = 48;
 pub(crate) const VK_FORMAT_B8G8R8A8_SINT: VkFormat = 49;
-pub(crate) const VK_FORMAT_R16_UINT: VkFormat = 74;
-pub(crate) const VK_FORMAT_R16_SINT: VkFormat = 75;
-pub(crate) const VK_FORMAT_R16G16_UINT: VkFormat = 81;
-pub(crate) const VK_FORMAT_R16G16_SINT: VkFormat = 82;
-pub(crate) const VK_FORMAT_R16G16B16A16_UINT: VkFormat = 95;
-pub(crate) const VK_FORMAT_R16G16B16A16_SINT: VkFormat = 96;
-pub(crate) const VK_FORMAT_R32_UINT: VkFormat = 98;
-pub(crate) const VK_FORMAT_R32_SINT: VkFormat = 99;
-pub(crate) const VK_FORMAT_R32G32_UINT: VkFormat = 101;
-pub(crate) const VK_FORMAT_R32G32_SINT: VkFormat = 102;
-pub(crate) const VK_FORMAT_R32G32B32A32_UINT: VkFormat = 107;
-pub(crate) const VK_FORMAT_R32G32B32A32_SINT: VkFormat = 108;
-pub(crate) const VK_FORMAT_A2B10G10R10_UINT_PACK32: VkFormat = 68;
 pub(crate) const VK_FORMAT_A2B10G10R10_SINT_PACK32: VkFormat = 69;
 pub(crate) const VK_FORMAT_A2R10G10B10_UINT_PACK32: VkFormat = 62;
 pub(crate) const VK_FORMAT_A2R10G10B10_SINT_PACK32: VkFormat = 63;
