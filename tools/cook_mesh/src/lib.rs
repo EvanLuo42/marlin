@@ -11,6 +11,7 @@
 //! - [`page`]: cluster pages of at most 128 KiB, the page table and the group hierarchy.
 //! - [`quantize`]: cluster vertex streams: positions over the mesh bounds, octahedral frames,
 //!   UVs over each cluster's range.
+//! - [`rt`]: the RT LOD, a DAG cut of about a quarter of the triangles for the BLAS.
 //! - [`tangent`]: tangent frames for meshes imported without them.
 //! - [`MeshCooker`], [`SkeletonCooker`], [`AnimationCooker`]: the cookers for
 //!   `marlin_render::asset::Mesh` and `marlin_anim::asset::{Skeleton, AnimationClip}`.
@@ -27,6 +28,7 @@ pub mod meshlet;
 pub mod optimize;
 pub mod page;
 pub mod quantize;
+pub mod rt;
 pub mod simplify;
 pub mod tangent;
 

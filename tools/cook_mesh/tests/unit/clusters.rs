@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use marlin_cook_mesh::{cluster, dag, page, quantize};
+use marlin_cook_mesh::{cluster, dag, page, quantize, rt};
 use marlin_math::Rng;
 use marlin_render::asset::cluster::{
     HIERARCHY_LEAF, HIERARCHY_NONE, HierarchyChild, PAGE_SIZE, PageLayout, PageView, UvRange,
@@ -790,4 +790,65 @@ fn damaged_pages_are_refused() {
         }
         let _ = PageView::new(&bad, layout);
     }
+}
+
+#[test]
+fn the_rt_lod_is_a_watertight_quarter() {
+    let s = icosphere(5);
+    let sections = banded_sections(&s.positions, &s.indices);
+    let section_count = sections.iter().copied().max().unwrap() as usize + 1;
+    let dag = dag_of(&s, &sections);
+    let source = s.indices.len() / 3;
+    let lod = rt::build(&dag, source, rt::DEFAULT_FRACTION, section_count);
+    let tris = lod.indices.len() / 3;
+    assert!(
+        (source / 6..=source / 3).contains(&tris),
+        "{tris} of {source} triangles"
+    );
+    assert!(lod.error > 0.0);
+
+    // Sections in order, covering every index, each triangle in its source section.
+    assert_eq!(lod.sections.len(), section_count);
+    let mut next = 0;
+    for &(first, count) in &lod.sections {
+        assert_eq!(first, next);
+        assert_eq!(count % 3, 0);
+        next += count;
+    }
+    assert_eq!(next as usize, lod.indices.len());
+    let mut section_of: HashMap<[u32; 3], u16> = HashMap::new();
+    for (t, &sec) in s.indices.as_chunks::<3>().0.iter().zip(&sections) {
+        section_of.insert(*t, sec);
+    }
+    for c in dag.cut(lod.error) {
+        let cl = &dag.clusters[c as usize].cluster;
+        for (t, &sec) in cl.indices.as_chunks::<3>().0.iter().zip(&cl.sections) {
+            if let Some(&source_section) = section_of.get(t) {
+                assert_eq!(source_section, sec);
+            }
+        }
+    }
+
+    // Watertight, over the mesh's positions.
+    let ids = position_ids(&s.positions);
+    let mut edges: HashMap<(u32, u32), u32> = HashMap::new();
+    for t in lod.indices.as_chunks::<3>().0 {
+        let p = t.map(|l| ids[lod.vertices[l as usize] as usize]);
+        if p[0] == p[1] || p[1] == p[2] || p[0] == p[2] {
+            continue;
+        }
+        for k in 0..3 {
+            *edges.entry((p[k], p[(k + 1) % 3])).or_default() += 1;
+        }
+    }
+    for (&(a, b), &n) in &edges {
+        assert_eq!(n, 1);
+        assert_eq!(edges.get(&(b, a)), Some(&1));
+    }
+
+    // The fraction steers it.
+    let half = rt::build(&dag, source, 0.5, section_count);
+    assert!(half.indices.len() > lod.indices.len());
+    let full = rt::build(&dag, source, 1.0, section_count);
+    assert_eq!(full.indices.len() / 3, source);
 }
