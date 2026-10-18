@@ -1,0 +1,97 @@
+// Textures and samplers (0004 §10, §10.4): each a 32-bit bindless index. Textures and samplers
+// stay apart; a sample takes the sampler. The level is `lod:`, `bias:` or `grad: (dx, dy)` (at
+// most one); with none, it comes from the pixel's derivatives (pixel entries only). An array's
+// layer, a multisampled texture's sample and a load's mip are named arguments too.
+namespace Marlin;
+
+/// Filtering and addressing for samples, from the sampler table.
+[Builtin("sampler")]
+public readonly struct Sampler { }
+
+/// A sampler that compares against a reference (shadow maps).
+[Builtin("comparison_sampler")]
+public readonly struct ComparisonSampler { }
+
+[Builtin("texture2d")]
+public readonly struct Texture2D<T>
+{
+    [Intrinsic("tex.sample")]
+    public T Sample(Sampler s, float2 uv, float lod = 0, float bias = 0, (float2, float2) grad = default);
+
+    /// The texel at `px` of mip `mip`.
+    [Intrinsic("tex.load")] public T Load(int2 px, int mip = 0);
+
+    /// The texel at `px` of mip 0.
+    [Intrinsic("tex.load")] public T this[int2 px] { get; }
+}
+
+[Builtin("texture2d_array")]
+public readonly struct Texture2DArray<T>
+{
+    [Intrinsic("tex.sample")]
+    public T Sample(
+        Sampler s, float2 uv, int layer, float lod = 0, float bias = 0,
+        (float2, float2) grad = default);
+
+    [Intrinsic("tex.load")] public T Load(int2 px, int layer, int mip = 0);
+}
+
+[Builtin("texture3d")]
+public readonly struct Texture3D<T>
+{
+    [Intrinsic("tex.sample")]
+    public T Sample(Sampler s, float3 uvw, float lod = 0, float bias = 0, (float3, float3) grad = default);
+
+    [Intrinsic("tex.load")] public T Load(int3 p, int mip = 0);
+    [Intrinsic("tex.load")] public T this[int3 p] { get; }
+}
+
+[Builtin("texture_cube")]
+public readonly struct TextureCube<T>
+{
+    /// `dir` need not be of unit length.
+    [Intrinsic("tex.sample")]
+    public T Sample(Sampler s, float3 dir, float lod = 0, float bias = 0, (float3, float3) grad = default);
+}
+
+[Builtin("texture_cube_array")]
+public readonly struct TextureCubeArray<T>
+{
+    [Intrinsic("tex.sample")]
+    public T Sample(
+        Sampler s, float3 dir, int layer, float lod = 0, float bias = 0,
+        (float3, float3) grad = default);
+}
+
+/// A multisampled texture, read one sample at a time.
+[Builtin("texture2d_ms")]
+public readonly struct Texture2DMS<T>
+{
+    [Intrinsic("tex.load")] public T Load(int2 px, int sample);
+}
+
+[Builtin("texture2d_ms_array")]
+public readonly struct Texture2DMSArray<T>
+{
+    [Intrinsic("tex.load")] public T Load(int2 px, int layer, int sample);
+}
+
+/// One mip of a 2D texture, read and written by texel (0004 §10.2).
+[Builtin("storage_texture2d")]
+public readonly struct StorageTexture2D<T>
+{
+    [Intrinsic("tex.texel")] public T this[int2 px] { get; set; }
+}
+
+[Builtin("storage_texture2d_array")]
+public readonly struct StorageTexture2DArray<T>
+{
+    [Intrinsic("tex.texel")] public T this[int2 px, int layer] { get; set; }
+}
+
+/// One mip of a volume texture, every slice.
+[Builtin("storage_texture3d")]
+public readonly struct StorageTexture3D<T>
+{
+    [Intrinsic("tex.texel")] public T this[int3 p] { get; set; }
+}

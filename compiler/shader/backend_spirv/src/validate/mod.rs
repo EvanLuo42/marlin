@@ -398,6 +398,24 @@ impl Validator {
                     req(cap::DescriptorHeapEXT, "descriptor heaps");
                     ext.push(("SPV_EXT_descriptor_heap", name.clone()));
                 }
+                // (result, sampled type, dim, depth, arrayed, ms, sampled, format)
+                op::TypeImage => {
+                    let (dim, arrayed, ms, sampled) = (i.ops[2], i.ops[4], i.ops[5], i.ops[6]);
+                    if dim == 3 && arrayed == 1 && sampled == 1 {
+                        req(cap::SampledCubeArray, "sampled cube arrays");
+                    }
+                    if ms == 1 && arrayed == 1 {
+                        req(cap::ImageMSArray, "multisampled arrays");
+                    }
+                }
+                op::ImageRead => req(
+                    cap::StorageImageReadWithoutFormat,
+                    "reading storage images without a format",
+                ),
+                op::ImageWrite => req(
+                    cap::StorageImageWriteWithoutFormat,
+                    "writing storage images without a format",
+                ),
                 op::GroupNonUniformElect => req(cap::GroupNonUniform, "wave operations"),
                 op::GroupNonUniformAll | op::GroupNonUniformAny | op::GroupNonUniformAllEqual => {
                     req(cap::GroupNonUniformVote, "wave votes")
@@ -521,6 +539,18 @@ impl Validator {
             if self.defs.get(&f).map(|&k| self.insts[k].opcode) != Some(op::Function) {
                 self.error(format!("entry point `{name}`: %{f} is not a function"));
                 continue;
+            }
+            // Implicit levels come from derivatives, which only fragments have (Vulkan; the
+            // modules here hold one entry point).
+            if e.ops[0] != crate::spirv::execution_model::Fragment
+                && self
+                    .insts
+                    .iter()
+                    .any(|i| i.opcode == op::ImageSampleImplicitLod)
+            {
+                self.error(format!(
+                    "entry point `{name}`: an implicit-level sample outside a fragment entry point"
+                ));
             }
             if e.ops[0] == crate::spirv::execution_model::Fragment
                 && !modes.iter().any(|m| {

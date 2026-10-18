@@ -29,7 +29,7 @@ use crate::infer::{Existing, result_types_in};
 use crate::module::{Binding, Builtin, Const, ConstValue, Module, Stage};
 use crate::op::{
     AccessStep, AtomicOp, BinaryOp, ConvertOp, IntCmp, MathOp, MemOrder, Op, QuadOp, ReduceOp,
-    Scope, UnaryOp, VoteOp, WaveOp,
+    Scope, TexArg, UnaryOp, VoteOp, WaveOp,
 };
 use crate::print::{FuncText, type_name};
 use crate::ty::{ResourceKind, Scalar, Space, Type, TypeData};
@@ -539,7 +539,11 @@ impl<'a> Verifier<'a> {
                 }
                 for inst in Self::placed_insts(func) {
                     let op = &func.insts[inst].op;
-                    let pixel_only = matches!(op, Op::Discard | Op::IsHelper | Op::Deriv { .. });
+                    // Implicit levels (and `bias`) come from derivatives, which pixels have.
+                    let implicit = matches!(op, Op::TexSample(a)
+                        if !a.contains(&TexArg::Lod) && !a.contains(&TexArg::Grad));
+                    let pixel_only =
+                        implicit || matches!(op, Op::Discard | Op::IsHelper | Op::Deriv { .. });
                     if pixel_only && entry.stage != Stage::Pixel {
                         problems.push(format!(
                             "`@{}` uses a pixel-only operation, reached from a {} entry point",
@@ -1348,6 +1352,7 @@ impl<'v, 'a> FunctionVerifier<'v, 'a> {
                 (!index_ok(args[1])).then(|| "the index is an integer scalar".into())
             }
             Op::UniformPtr | Op::BufferLength | Op::DescGet { .. } => count(1),
+            Op::TexSample(a) | Op::TexLoad(a) | Op::TexStore(a) => tex_problem(v, op, a, args),
             Op::Atomic { op, scope, order } => {
                 let n = match op {
                     AtomicOp::Load => 1,
@@ -1847,4 +1852,106 @@ impl<'v, 'a> FunctionVerifier<'v, 'a> {
             self.error(p);
         }
     }
+}
+
+/// What is wrong with a texture operation's operands (0006 §8.6), if anything.
+fn tex_problem(v: &Verifier<'_>, op: &Op, a: &[TexArg], args: &[Type]) -> Option<String> {
+    let lead = match op {
+        Op::TexLoad(_) => 2,
+        _ => 3,
+    };
+    let want = lead
+        + a.iter()
+            .map(|&x| 1 + (x == TexArg::Grad) as usize)
+            .sum::<usize>();
+    if args.len() != want {
+        return Some(format!("takes {want} operand(s)"));
+    }
+    let TypeData::Handle(kind) = v.data(args[0]) else {
+        return Some("the first operand is a texture handle".into());
+    };
+    let Some(shape) = kind.kind.texture() else {
+        return Some("the first operand is a texture handle".into());
+    };
+    let has = |x: TexArg| a.contains(&x);
+    let int_scalar = |t: Type| {
+        v.shape(t)
+            .is_some_and(|(s, n)| s.is_int() && s != Scalar::I1 && n == 1)
+    };
+    let float_scalar = |t: Type| v.shape(t).is_some_and(|(s, n)| s.is_float() && n == 1);
+    // The extra operands, in order.
+    let mut k = lead;
+    for &x in a {
+        let ok = match x {
+            TexArg::Lod | TexArg::Bias => float_scalar(args[k]),
+            TexArg::Grad => {
+                let g = |t: Type| v.shape(t) == Some((Scalar::F32, shape.dims));
+                g(args[k]) && g(args[k + 1])
+            }
+            TexArg::Layer | TexArg::Mip | TexArg::Sample => int_scalar(args[k]),
+        };
+        if !ok {
+            return Some(format!("`{}` has the wrong type", x.name()));
+        }
+        k += 1 + (x == TexArg::Grad) as usize;
+    }
+    if shape.array != has(TexArg::Layer) {
+        return Some(if shape.array {
+            "an array texture takes `layer`".into()
+        } else {
+            "`layer` is for array textures".into()
+        });
+    }
+    match op {
+        Op::TexSample(_) => {
+            if shape.storage || shape.multisampled {
+                return Some("storage and multisampled textures are not sampled".into());
+            }
+            if !matches!(v.data(args[1]), TypeData::Handle(s) if s.kind == ResourceKind::Sampler) {
+                return Some("the second operand is a sampler handle".into());
+            }
+            if v.shape(args[2]) != Some((Scalar::F32, shape.dims)) {
+                return Some(format!("the coordinate is `f32x{}`", shape.dims));
+            }
+            let levels = [TexArg::Lod, TexArg::Bias, TexArg::Grad];
+            if levels.iter().filter(|&&x| has(x)).count() > 1 {
+                return Some("`lod`, `bias` and `grad` exclude each other".into());
+            }
+            if has(TexArg::Mip) || has(TexArg::Sample) {
+                return Some("`mip` and `sample` are for loads".into());
+            }
+        }
+        Op::TexLoad(_) | Op::TexStore(_) => {
+            if shape.cube {
+                return Some("cube textures are sampled, not loaded".into());
+            }
+            let coord = v.shape(args[1]);
+            if !coord.is_some_and(|(s, n)| s.is_int() && s != Scalar::I1 && n == shape.dims) {
+                return Some(format!("the coordinate is `i32x{}`", shape.dims));
+            }
+            if has(TexArg::Lod) || has(TexArg::Bias) || has(TexArg::Grad) {
+                return Some("`lod`, `bias` and `grad` are for sampling".into());
+            }
+            if has(TexArg::Sample) != shape.multisampled {
+                return Some(if shape.multisampled {
+                    "a multisampled load takes `sample`".into()
+                } else {
+                    "`sample` is for multisampled textures".into()
+                });
+            }
+            if has(TexArg::Mip) && (shape.storage || shape.multisampled) {
+                return Some("storage and multisampled textures have one mip".into());
+            }
+            if let Op::TexStore(_) = op {
+                if !shape.storage {
+                    return Some("only storage textures are written".into());
+                }
+                if Some(args[2]) != kind.element {
+                    return Some("the value is the texture's texel type".into());
+                }
+            }
+        }
+        _ => {}
+    }
+    None
 }

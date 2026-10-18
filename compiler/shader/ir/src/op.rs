@@ -152,6 +152,15 @@ words! {
     VoteOp { Any = "any", All = "all", Equal = "equal" }
 }
 
+words! {
+    /// The operands of a texture operation after its coordinate (§8.6), always in this order;
+    /// `grad` is two operands (the derivatives along x and y).
+    TexArg {
+        Lod = "lod", Bias = "bias", Grad = "grad", Layer = "layer", Mip = "mip",
+        Sample = "sample",
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum WaveOp {
     Reduce(ReduceOp),
@@ -295,6 +304,16 @@ pub enum Op {
         op: WaveOp,
         cluster: Option<u32>,
     },
+
+    // ---- textures (§8.6) ----
+    /// Operands: the texture, the sampler, the coordinate, then one per argument. Without
+    /// `lod`, `bias` or `grad` the level comes from derivatives (pixel entries only).
+    TexSample(Vec<TexArg>),
+    /// Operands: the texture (sampled or storage), the integer coordinate, then one per
+    /// argument (`layer`, `mip`, `sample`).
+    TexLoad(Vec<TexArg>),
+    /// Operands: the storage texture, the integer coordinate, the value, then `layer`.
+    TexStore(Vec<TexArg>),
 
     // ---- uniformity (0004 §10.3) ----
     /// The operand, asserted to be the same in every lane of the group (`[Uniform]`).

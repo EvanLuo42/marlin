@@ -2,6 +2,7 @@ format 0 = "acc = {} at {}"
 format 1 = "bad \"index\"\n"
 struct @Light { Color: f32x3, Intensity: f32, Albedo: res<Texture2D<f32x4>> }
 struct @"Game.Grid<4>" { Cells: [f32; 8], Inner: @Light }
+struct @TexArgs { Albedo: res<Texture2D<f32x4>>, Layers: res<Texture2DArray<f32>>, Ms: res<Texture2DMS<f32x4>>, Cubes: res<TextureCubeArray<f32x4>>, Volume: res<StorageTexture3D<i32>>, Linear: res<Sampler> }
 global @lights : ptr<push, res<Buffer<@Light>>>
 global @raw : ptr<push, res<ByteBuffer>>
 global @params : ptr<push, res<Uniform<@Light>>>
@@ -12,6 +13,7 @@ global @color : ptr<output, f32x4> target(0)
 global @color1 : ptr<output, f32x4> target(0, source 1)
 global @table : ptr<constant, [f32; 4]> = (0.5, 1.0, -2.25, 1e-7)
 global @grid : ptr<constant, @"Game.Grid<4>"> = ((1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0), zero)
+global @tex : ptr<push, @TexArgs>
 
 func @Game.Arith(%a: i32, %b: i32, %x: f32, %y: f32) -> (i32, f32) {
 block0:
@@ -233,4 +235,32 @@ func @Game.Twice(%x: i32) -> i32 {
 block0:
     %y = add %x, %x
     return %y
+}
+
+entry pixel @Game.Textured uses(@tex, @uv, @color) {
+block0:
+    %a = load @tex
+    %0 = extract.field %a, .Albedo
+    %albedo = desc.get %0
+    %1 = extract.field %a, .Layers
+    %layers = desc.get %1
+    %2 = extract.field %a, .Ms
+    %ms = desc.get %2
+    %3 = extract.field %a, .Cubes
+    %cubes = desc.get %3
+    %4 = extract.field %a, .Volume
+    %volume = desc.get %4
+    %5 = extract.field %a, .Linear
+    %s = desc.get %5
+    %uv = load @uv
+    %c0 = tex.sample %albedo, %s, %uv
+    %c1 = tex.sample %albedo, %s, %uv { lod: f32 2.0 }
+    %c2 = tex.sample %albedo, %s, %uv { grad: (%uv, %uv) }
+    %c3 = tex.sample %cubes, %s, f32x3 (1.0, 0.0, 0.0) { bias: f32 -0.5, layer: i32 1 }
+    %l = tex.load %layers, i32x2 (3, 4) { layer: i32 2, mip: i32 1 }
+    %m = tex.load %ms, i32x2 (1, 1) { sample: i32 3 }
+    %v = tex.load %volume, i32x3 (1, 2, 3)
+    tex.store %volume, i32x3 (1, 2, 3), i32 7
+    store @color, %c1
+    return
 }

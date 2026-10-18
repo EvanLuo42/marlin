@@ -89,6 +89,7 @@ pub fn result_types_in(
         | Op::Return
         | Op::Unreachable
         | Op::Store { .. }
+        | Op::TexStore(_)
         | Op::Barrier { .. }
         | Op::Discard
         | Op::DebugPrint(_)
@@ -244,6 +245,13 @@ pub fn result_types_in(
             }))
         }
         Op::BufferLength => one(scalar(t, Scalar::I32)),
+        Op::TexSample(_) | Op::TexLoad(_) => match data(t, arg(0)?) {
+            TypeData::Handle(kind) if kind.kind.texture().is_some() => match kind.element {
+                Some(e) => one(Ok(e)),
+                None => Err("a texture without a texel type".into()),
+            },
+            _ => Err("expected a texture handle".into()),
+        },
         Op::DescGet { .. } => match data(t, arg(0)?) {
             TypeData::Res(kind) => one(t.make(TypeData::Handle(kind))),
             _ => Err("expected a resource index".into()),

@@ -25,7 +25,7 @@ table! {
         Nop = 0, Undef = 1, Name = 5, MemberName = 6, String = 7, Extension = 10,
         ExtInstImport = 11, ExtInst = 12, MemoryModel = 14, EntryPoint = 15, ExecutionMode = 16,
         Capability = 17, TypeVoid = 19, TypeBool = 20, TypeInt = 21, TypeFloat = 22,
-        TypeVector = 23, TypeMatrix = 24, TypeImage = 25, TypeSampler = 26, TypeArray = 28,
+        TypeVector = 23, TypeMatrix = 24, TypeImage = 25, TypeSampler = 26, TypeSampledImage = 27, TypeArray = 28,
         TypeRuntimeArray = 29, TypeStruct = 30, TypePointer = 32, TypeFunction = 33,
         ConstantTrue = 41, ConstantFalse = 42, Constant = 43, ConstantComposite = 44,
         ConstantNull = 46, SpecConstantOp = 52, Function = 54, FunctionParameter = 55,
@@ -33,7 +33,9 @@ table! {
         AccessChain = 65, InBoundsAccessChain = 66, ArrayLength = 68, Decorate = 71, MemberDecorate = 72,
         VectorExtractDynamic = 77, VectorInsertDynamic = 78, VectorShuffle = 79,
         CompositeConstruct = 80, CompositeExtract = 81, CompositeInsert = 82, CopyObject = 83,
-        Transpose = 84, ConvertFToU = 109, ConvertFToS = 110, ConvertSToF = 111,
+        Transpose = 84, SampledImage = 86, ImageSampleImplicitLod = 87,
+        ImageSampleExplicitLod = 88, ImageFetch = 95, ImageRead = 98, ImageWrite = 99,
+        ConvertFToU = 109, ConvertFToS = 110, ConvertSToF = 111,
         ConvertUToF = 112, UConvert = 113, SConvert = 114, FConvert = 115, Bitcast = 124,
         SNegate = 126, FNegate = 127, IAdd = 128, FAdd = 129, ISub = 130, FSub = 131,
         IMul = 132, FMul = 133, UDiv = 134, SDiv = 135, FDiv = 136, UMod = 137, SRem = 138,
@@ -78,10 +80,11 @@ table! {
 table! {
     capability {
         Matrix = 0, Shader = 1, Float16 = 9, Float64 = 10, Int64 = 11, Int64Atomics = 12,
-        Int16 = 22, SampleRateShading = 35, GroupNonUniform = 61, GroupNonUniformVote = 62,
+        Int16 = 22, SampleRateShading = 35, SampledCubeArray = 45, ImageMSArray = 48,
+        StorageImageReadWithoutFormat = 55, StorageImageWriteWithoutFormat = 56, GroupNonUniform = 61, GroupNonUniformVote = 62,
         GroupNonUniformArithmetic = 63, GroupNonUniformBallot = 64,
         GroupNonUniformShuffle = 65, GroupNonUniformClustered = 67, GroupNonUniformQuad = 68,
-        DrawParameters = 4427, StorageBuffer16BitAccess = 4433, StoragePushConstant16 = 4435,
+        DrawParameters = 4427, ShaderNonUniform = 5301, StorageBuffer16BitAccess = 4433, StoragePushConstant16 = 4435,
         UntypedPointersKHR = 4473, DescriptorHeapEXT = 5128,
     }
 }
@@ -90,7 +93,8 @@ table! {
     decoration {
         Block = 2, ColMajor = 5, ArrayStride = 6, MatrixStride = 7, BuiltIn = 11,
         NoPerspective = 13, Flat = 14, Centroid = 16, Sample = 17, NonWritable = 24,
-        NonReadable = 25, Location = 30, Index = 32, Offset = 35, ArrayStrideIdEXT = 5124,
+        NonReadable = 25, Location = 30, Index = 32, Offset = 35,
+        ArrayStrideIdEXT = 5124, NonUniform = 5300,
     }
 }
 

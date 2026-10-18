@@ -192,6 +192,17 @@ impl Lowering<'_, '_> {
                         }
                         (false, _) => None,
                     };
+                    // Integer texels are read as unsigned (SPIR-V's image types carry the
+                    // sign, which the IR's signless integers do not).
+                    if kind.texture().is_some()
+                        && let Some(GenericArgTy::Type(e)) = args.first()
+                        && matches!(self.num(e)?, Some(Num::Signed(_)))
+                    {
+                        return Err(LowerError::new(
+                            "E1301",
+                            "textures of signed integers are not lowered yet; use `uint`",
+                        ));
+                    }
                     return Ok(self.module.res(ResKind { kind, element }));
                 }
                 if matches!(
@@ -317,7 +328,12 @@ fn resource_kind(r: Resource) -> ResourceKind {
         Resource::ReadOnlyByteBuffer => ResourceKind::ReadOnlyByteBuffer,
         Resource::Texture2D => ResourceKind::Texture2D,
         Resource::Texture2DArray => ResourceKind::Texture2DArray,
+        Resource::Texture3D => ResourceKind::Texture3D,
         Resource::TextureCube => ResourceKind::TextureCube,
+        Resource::TextureCubeArray => ResourceKind::TextureCubeArray,
+        Resource::Texture2DMS => ResourceKind::Texture2DMS,
+        Resource::Texture2DMSArray => ResourceKind::Texture2DMSArray,
+        Resource::StorageTexture3D => ResourceKind::StorageTexture3D,
         Resource::StorageTexture2D => ResourceKind::StorageTexture2D,
         Resource::StorageTexture2DArray => ResourceKind::StorageTexture2DArray,
         Resource::Sampler => ResourceKind::Sampler,

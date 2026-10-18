@@ -140,3 +140,14 @@ public Matrix<T, C, R> Transpose<T, const int R, const int C>(Matrix<T, R, C> m)
 /// The index of the lowest set bit; all ones when there is none.
 [Intrinsic("firstbit_lo")] public T FirstBitLow<T>(T x) where T : IInteger<T>;
 [Intrinsic("bitreverse")] public T ReverseBits<T>(T x) where T : IInteger<T>;
+
+// ---- bits as another type ----
+
+[Intrinsic("bitcast")] public uint AsUInt(float x);
+[Intrinsic("bitcast")] public Vector<uint, N> AsUInt<const int N>(Vector<float, N> x);
+[Intrinsic("bitcast")] public int AsInt(float x);
+[Intrinsic("bitcast")] public Vector<int, N> AsInt<const int N>(Vector<float, N> x);
+[Intrinsic("bitcast")] public float AsFloat(uint x);
+[Intrinsic("bitcast")] public Vector<float, N> AsFloat<const int N>(Vector<uint, N> x);
+[Intrinsic("bitcast")] public float AsFloat(int x);
+[Intrinsic("bitcast")] public Vector<float, N> AsFloat<const int N>(Vector<int, N> x);

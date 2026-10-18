@@ -98,6 +98,7 @@ pub(crate) struct Writer<'m> {
     /// The variables the entry point uses (its interface).
     pub interface: Vec<u32>,
     heap: Option<u32>,
+    sampler_heap: Option<u32>,
     slot: Option<u32>,
     builtins: HashMap<u32, u32>,
     /// The stage of the entry point being written.
@@ -124,6 +125,7 @@ impl<'m> Writer<'m> {
             module_vars: HashMap::new(),
             interface: Vec::new(),
             heap: None,
+            sampler_heap: None,
             slot: None,
             builtins: HashMap::new(),
         };
@@ -315,6 +317,16 @@ impl<'m> Writer<'m> {
                 let class = storage_class(space)?;
                 let p = self.ty(pointee, laid_out(class))?;
                 self.ptr_ty(class, p)
+            }
+            // Textures and samplers are loaded from the heap; buffers are pointers into it.
+            TypeData::Handle(k) if k.kind.texture().is_some() => self.image_ty(&k)?,
+            TypeData::Handle(k)
+                if matches!(
+                    k.kind,
+                    ResourceKind::Sampler | ResourceKind::ComparisonSampler
+                ) =>
+            {
+                self.sampler_ty()
             }
             TypeData::Handle(_) => self.untyped_ptr_ty(sc::UniformConstant),
             TypeData::RayQuery => return unsupported("a ray query"),
@@ -623,21 +635,30 @@ impl<'m> Writer<'m> {
 
     /// The heap seen as an array of `kind` descriptors.
     pub fn heap_array(&mut self, kind: &ResKind) -> R<u32> {
-        let class = match kind.kind {
+        self.heap_ext();
+        // Images and samplers are descriptors of their own type; buffers `OpTypeBufferEXT`.
+        let (desc, sampler) = match kind.kind {
+            k if k.texture().is_some() => (self.image_ty(kind)?, false),
+            ResourceKind::Sampler | ResourceKind::ComparisonSampler => (self.sampler_ty(), true),
             ResourceKind::Buffer
             | ResourceKind::ReadOnlyBuffer
             | ResourceKind::ByteBuffer
-            | ResourceKind::ReadOnlyByteBuffer => sc::StorageBuffer,
-            ResourceKind::Uniform => sc::Uniform,
+            | ResourceKind::ReadOnlyByteBuffer => (
+                self.once("", op::TypeBufferEXT, vec![sc::StorageBuffer]),
+                false,
+            ),
+            ResourceKind::Uniform => (self.once("", op::TypeBufferEXT, vec![sc::Uniform]), false),
             other => return unsupported(format!("a `{other:?}` resource")),
         };
-        self.heap_ext();
-        let desc = self.once("", op::TypeBufferEXT, vec![class]);
         let key = Key::Words("heap", vec![desc]);
         if let Some(&id) = self.types.get(&key) {
             return Ok(id);
         }
-        let slot = self.slot();
+        let slot = if sampler {
+            self.sampler_slot()
+        } else {
+            self.slot()
+        };
         let id = self.id();
         self.globals.extend(inst(op::TypeRuntimeArray, &[id, desc]));
         self.annotations.extend(inst(
@@ -646,6 +667,80 @@ impl<'m> Writer<'m> {
         ));
         self.types.insert(key, id);
         Ok(id)
+    }
+
+    /// The image type of a texture kind (0006 §8.6): its texel's scalar (integers unsigned),
+    /// dimension, array and multisample bits; storage textures without a format.
+    pub fn image_ty(&mut self, kind: &ResKind) -> R<u32> {
+        let shape = kind.kind.texture().ok_or_else(|| BackendError {
+            message: format!("`{:?}` is not a texture", kind.kind),
+        })?;
+        let texel = kind.element.ok_or_else(|| BackendError {
+            message: "a texture without a texel type".into(),
+        })?;
+        let s = self.m.element_scalar(texel).ok_or_else(|| BackendError {
+            message: "a texel that is not a scalar or vector".into(),
+        })?;
+        let sampled_type = self.scalar(s);
+        let dim = match (shape.cube, shape.dims) {
+            (true, _) => 3,
+            (false, 3) => 2,
+            _ => 1,
+        };
+        if shape.cube && shape.array {
+            self.capability(cap::SampledCubeArray);
+        }
+        if shape.multisampled && shape.array {
+            self.capability(cap::ImageMSArray);
+        }
+        let sampled = if shape.storage { 2 } else { 1 };
+        Ok(self.once(
+            "",
+            op::TypeImage,
+            vec![
+                sampled_type,
+                dim,
+                0,
+                shape.array as u32,
+                shape.multisampled as u32,
+                sampled,
+                0,
+            ],
+        ))
+    }
+
+    pub fn sampler_ty(&mut self) -> u32 {
+        self.once("", op::TypeSampler, vec![])
+    }
+
+    /// The sampler heap variable.
+    pub fn sampler_heap(&mut self) -> u32 {
+        if let Some(h) = self.sampler_heap {
+            return h;
+        }
+        self.heap_ext();
+        let ptr = self.untyped_ptr_ty(sc::UniformConstant);
+        let var = self.id();
+        self.globals.extend(inst(
+            op::UntypedVariableKHR,
+            &[ptr, var, sc::UniformConstant],
+        ));
+        self.decorate(
+            var,
+            decoration::BuiltIn,
+            &[crate::spirv::builtin::SamplerHeapEXT],
+        );
+        self.name(var, "sampler_heap");
+        self.interface.push(var);
+        self.sampler_heap = Some(var);
+        var
+    }
+
+    /// The width of a sampler heap slot: a sampler descriptor's size (0002 §6).
+    fn sampler_slot(&mut self) -> u32 {
+        let u32t = self.uint_ty(32);
+        let sampler = self.sampler_ty();
+        self.once_typed("", op::ConstantSizeOfEXT, u32t, vec![sampler])
     }
 
     /// The whole module: header and sections, around the entry point's code.
@@ -751,5 +846,21 @@ impl Writer<'_> {
     /// `OpUndef` of type id `t`, made once.
     pub fn undef(&mut self, t: u32) -> u32 {
         self.once_typed("undef", op::Undef, t, vec![])
+    }
+}
+
+impl Writer<'_> {
+    /// A vector of `n` `s`s, or `s` itself for 1.
+    pub fn vec_ty(&mut self, s: Scalar, n: u8) -> u32 {
+        let e = self.scalar(s);
+        if n <= 1 {
+            e
+        } else {
+            self.once("", op::TypeVector, vec![e, n as u32])
+        }
+    }
+
+    pub fn sampled_image_ty(&mut self, image: u32) -> u32 {
+        self.once("", op::TypeSampledImage, vec![image])
     }
 }

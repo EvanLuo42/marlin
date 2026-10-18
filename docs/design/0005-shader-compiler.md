@@ -450,6 +450,12 @@ public const ClosureInfo Flatten<M>() where M : IMaterial { ... }
 
 Development 下的 `Debug.Print` 在 SPIR-V 上还写不出来，等调试 buffer 和 RHI 一起做。
 
+第 10b 步加了纹理和采样器：
+- 核心库：`Textures.mshader` 里的十种纹理和两种采样器；`AsUInt`、`AsInt`、`AsFloat`；字节 buffer 的 `Load2`–`Load4`、`Store2`–`Store4`。
+- 降低：可选参数按形参名传，调用没写的就不传；`lod`、`bias`、`grad` 最多写一个；没有 `lod`/`grad` 的采样只在 pixel 入口里允许（E1309）。整数纹素按无符号读，有符号整数的纹理先报 E1301。
+- SPIR-V 后端：纹理和采样器从 heap 里 `OpLoad` 出来；sampler heap 的槽宽是 `OpConstantSizeOfEXT(sampler)`；采样和 fetch 都取四个分量，再按纹素类型截短；storage 纹理用无格式的读写，也都按四个分量；`desc.get nonuniform` 加 `NonUniform` 装饰。
+- 比较采样、gather、偏移、尺寸查询和纹理原子操作，用到时再加。
+
 第 5c 步留到后面的：`[StructLayout]`/`[FieldOffset]`（0004 §16）；mesh 的 `MeshOutput`、`[Payload]` 和 `Mesh.Dispatch` 的检查（§11.6）；长度由 `const` 字段给出的数组，布局要等第 7 步的编译期求值；capability 和具体 target 的对照、`const if` 的裁剪，等第 9 步的 target 描述。
 
 第 7c 步留到后面的：vertex、pixel、mesh 和 amplification 入口以及 stage I/O（第 10 步；location 按声明顺序分配，0004 §11.2）；`[Export]` 和局部 `const` 的编译期求值（第 9 步，和反射一起）；`const` 函数不能访问资源、groupshared 和系统值的检查（verifier）；auto-property。

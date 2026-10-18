@@ -146,3 +146,23 @@ block0:
     barrier exec(group) mem(group) spaces(groupshared)
     return
 }
+
+// ==== textures
+struct @Tex { Albedo: res<Texture2D<f32x4>>, Layers: res<Texture2DArray<f32x4>>, Store: res<StorageTexture2D<f32x4>>, Linear: res<Sampler> }
+global @texargs : ptr<push, @Tex>
+
+entry compute(1, 1, 1) @Textures uses(@texargs) {
+block0:
+    %a = load @texargs
+    %albedo = desc.get (extract.field %a, .Albedo)
+    %layers = desc.get (extract.field %a, .Layers)
+    %store = desc.get (extract.field %a, .Store)
+    %s = desc.get (extract.field %a, .Linear)
+    %implicit = tex.sample %albedo, %s, f32x2 (0.5, 0.5)
+    %both = tex.sample %albedo, %s, f32x2 (0.5, 0.5) { lod: f32 0.0, bias: f32 1.0 }
+    %nolayer = tex.load %layers, i32x2 (0, 0)
+    %wrongcoord = tex.load %albedo, f32x2 (0.0, 0.0)
+    %sampled = tex.sample %store, %s, f32x2 (0.5, 0.5) { lod: f32 0.0 }
+    tex.store %albedo, i32x2 (0, 0), f32x4 zero
+    return
+}

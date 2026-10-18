@@ -56,6 +56,10 @@
 //! next location in declaration order, integers `[Flat]`); a pixel entry returning a scalar or
 //! vector writes target 0.
 //!
+//! Step 10b: textures (`texture.rs`): `Sample`, `Load`, indexers and storage writes as
+//! `tex.*` operations, their optional arguments passed by name only when given; implicit
+//! levels only in pixel entries (E1309); bitcasts; byte buffers' `Load2`-`Store4`.
+//!
 //! Not lowered yet: mesh and amplification entries (step 10c); auto-properties.
 
 mod closures;
@@ -71,6 +75,7 @@ mod pat;
 mod place;
 mod ssa;
 mod stmt;
+mod texture;
 mod types;
 
 use std::collections::{HashMap, HashSet};
@@ -247,7 +252,42 @@ impl<'a, 'b> Lowering<'a, 'b> {
     pub fn finish(mut self) -> R<Module> {
         self.run()?;
         self.entry_uses();
+        self.implicit_levels()?;
         Ok(self.module)
+    }
+
+    /// A sample without `lod:` or `grad:` takes its level from derivatives, which only pixel
+    /// entries have (0004 §10.4): an error in code a module's other entries run.
+    fn implicit_levels(&self) -> R<()> {
+        use marlin_shaderc_ir::{Op, Stage as IrStage, TexArg};
+        if self
+            .module
+            .entries
+            .iter()
+            .all(|e| e.stage == IrStage::Pixel)
+        {
+            return Ok(());
+        }
+        for (_, f) in self.module.funcs.iter() {
+            for &b in &f.layout {
+                for inst in f.insts(b) {
+                    if let Op::TexSample(a) = &f.insts[inst].op
+                        && !a.contains(&TexArg::Lod)
+                        && !a.contains(&TexArg::Grad)
+                    {
+                        return Err(LowerError::new(
+                            "E1309",
+                            format!(
+                                "`{}` samples without `lod:` or `grad:`, which only pixel \
+                                 entries can (their level comes from derivatives)",
+                                f.name
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// The IR function of an instance, declared (and queued) the first time.

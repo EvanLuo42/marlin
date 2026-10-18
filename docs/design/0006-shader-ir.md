@@ -272,6 +272,8 @@ tex.store %st, %coord, %v
 ```
 
 - 操作数包里可以有：`lod`、`bias`、`grad`、`compare`、`offset`、`min_lod`、`sample`（MSAA）、`array`。其中 `lod`、`bias` 和 `grad` 互斥。
+- 第 10b 步实现了 `tex.sample`、`tex.load`、`tex.store`，操作数包是 `lod`、`bias`、`grad: (%dx, %dy)`、`layer`、`mip`、`sample`，必须按这个顺序写，每个最多一次。数组的层写成 `layer`（整数），不并进坐标；后端在需要时再并进去。`compare`、`offset`、`min_lod`、`tex.gather`、`tex.atomic` 和 `tex.query` 等用到时再加。
+- 纹理种类有：`Texture2D`、`Texture2DArray`、`Texture3D`、`TextureCube`、`TextureCubeArray`、`Texture2DMS`、`Texture2DMSArray`、`StorageTexture2D`、`StorageTexture2DArray`、`StorageTexture3D`。verifier 按种类检查坐标的维数、需要的参数（数组要 `layer`，多重采样要 `sample`），以及哪些操作可以做：cube 只能采样，storage 只能按纹素读写，没有 `lod`/`grad` 的采样只能在 pixel 入口里。
 - 只有隐式 LOD 的采样是 convergent 的。
 - `offset` 在 legalize 的 5.6 之后必须是常量。
 

@@ -34,6 +34,14 @@ pub fn layout(opcode: u32) -> Option<&'static str> {
         op::TypeFloat => "rll?",
         op::TypeVector | op::TypeMatrix => "ril",
         op::TypeImage => "rilllllll?",
+        op::TypeSampledImage => "ri",
+        op::SampledImage => "trii",
+        // Image operands: a mask, then its ids.
+        op::ImageSampleImplicitLod
+        | op::ImageSampleExplicitLod
+        | op::ImageFetch
+        | op::ImageRead => "triil?i*",
+        op::ImageWrite => "iiil?i*",
         op::TypeArray => "rii",
         op::TypeRuntimeArray => "ri",
         op::TypeStruct => "ri*",

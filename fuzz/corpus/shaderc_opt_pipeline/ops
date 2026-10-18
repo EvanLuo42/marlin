@@ -229,3 +229,29 @@ block0:
     %y = add %x, %x
     return %y
 }
+
+// Textures (§8.6).
+global @tex : ptr<push, @TexArgs>
+struct @TexArgs { Albedo: res<Texture2D<f32x4>>, Layers: res<Texture2DArray<f32>>, Ms: res<Texture2DMS<f32x4>>, Cubes: res<TextureCubeArray<f32x4>>, Volume: res<StorageTexture3D<i32>>, Linear: res<Sampler> }
+
+entry pixel @Game.Textured uses(@tex, @uv, @color) {
+block0:
+    %a = load @tex
+    %albedo = desc.get (extract.field %a, .Albedo)
+    %layers = desc.get (extract.field %a, .Layers)
+    %ms = desc.get (extract.field %a, .Ms)
+    %cubes = desc.get (extract.field %a, .Cubes)
+    %volume = desc.get (extract.field %a, .Volume)
+    %s = desc.get (extract.field %a, .Linear)
+    %uv = load @uv
+    %c0 = tex.sample %albedo, %s, %uv
+    %c1 = tex.sample %albedo, %s, %uv { lod: f32 2.0 }
+    %c2 = tex.sample %albedo, %s, %uv { grad: (%uv, %uv) }
+    %c3 = tex.sample %cubes, %s, f32x3 (1.0, 0.0, 0.0) { bias: f32 -0.5, layer: i32 1 }
+    %l = tex.load %layers, i32x2 (3, 4) { layer: i32 2, mip: i32 1 }
+    %m = tex.load %ms, i32x2 (1, 1) { sample: i32 3 }
+    %v = tex.load %volume, i32x3 (1, 2, 3)
+    tex.store %volume, i32x3 (1, 2, 3), i32 7
+    store @color, %c1
+    return
+}

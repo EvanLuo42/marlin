@@ -8,10 +8,10 @@
 //! - `Vectors.mshader`: vectors, matrices and their short names (§3.2).
 //! - `Math.mshader`: math functions, with HLSL's names in PascalCase (§17.2).
 //! - `Resources.mshader`: uniforms and buffers with their atomics (§10), `Func`/`Action`.
+//! - `Textures.mshader`: textures, storage textures and samplers (§10.4).
 //! - `Gpu.mshader`: `Barrier`, `Wave`, `Debug`, `NonUniform` (§10.3, §12).
 //!
-//! Textures, samplers, derivatives, ray queries and mesh outputs come with the graphics stages
-//! (step 10).
+//! Derivatives, ray queries and mesh outputs come with the rest of step 10.
 
 /// The package's name.
 pub const PACKAGE: &str = "Marlin";
@@ -31,6 +31,10 @@ pub const FILES: &[(&str, &str)] = &[
     (
         "Scalars.mshader",
         include_str!("../library/Scalars.mshader"),
+    ),
+    (
+        "Textures.mshader",
+        include_str!("../library/Textures.mshader"),
     ),
     (
         "Vectors.mshader",

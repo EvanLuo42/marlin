@@ -383,6 +383,28 @@ impl<'a> FuncText<'a> {
         }
     }
 
+    /// A texture operation's `n` leading operands, then its arguments.
+    fn tex(&self, ops: &[Value], n: usize, args: &[crate::TexArg]) -> String {
+        let n = n.min(ops.len());
+        let mut out = self.values(&ops[..n]);
+        let mut rest = ops[n..].iter();
+        let mut parts = Vec::new();
+        for a in args {
+            let mut next = || rest.next().map_or("?".to_string(), |&v| self.value(v));
+            let v = if *a == crate::TexArg::Grad {
+                let dx = next();
+                format!("({dx}, {})", next())
+            } else {
+                next()
+            };
+            parts.push(format!("{}: {v}", a.name()));
+        }
+        if !parts.is_empty() {
+            out += &format!(" {{ {} }}", parts.join(", "));
+        }
+        out
+    }
+
     fn values(&self, vs: &[Value]) -> String {
         vs.iter()
             .map(|&v| self.value(v))
@@ -591,6 +613,9 @@ impl<'a> FuncText<'a> {
                 format!("access {}", parts.join(", "))
             }
             Op::BufferElem => format!("buffer.elem {}", self.values(ops)),
+            Op::TexSample(a) => format!("tex.sample {}", self.tex(ops, 3, a)),
+            Op::TexLoad(a) => format!("tex.load {}", self.tex(ops, 2, a)),
+            Op::TexStore(a) => format!("tex.store {}", self.tex(ops, 3, a)),
             Op::BufferByte => format!("buffer.byte {}", self.values(ops)),
             Op::UniformPtr => format!("uniform.ptr {}", self.values(ops)),
             Op::BufferLength => format!("buffer.length {}", self.values(ops)),

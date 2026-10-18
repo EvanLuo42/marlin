@@ -137,16 +137,21 @@ pub enum ResourceKind {
     ReadOnlyByteBuffer,
     Texture2D,
     Texture2DArray,
+    Texture3D,
     TextureCube,
+    TextureCubeArray,
+    Texture2DMS,
+    Texture2DMSArray,
     StorageTexture2D,
     StorageTexture2DArray,
+    StorageTexture3D,
     Sampler,
     ComparisonSampler,
     AccelerationStructure,
 }
 
 impl ResourceKind {
-    pub const ALL: [ResourceKind; 13] = [
+    pub const ALL: [ResourceKind; 18] = [
         ResourceKind::Uniform,
         ResourceKind::Buffer,
         ResourceKind::ReadOnlyBuffer,
@@ -154,9 +159,14 @@ impl ResourceKind {
         ResourceKind::ReadOnlyByteBuffer,
         ResourceKind::Texture2D,
         ResourceKind::Texture2DArray,
+        ResourceKind::Texture3D,
         ResourceKind::TextureCube,
+        ResourceKind::TextureCubeArray,
+        ResourceKind::Texture2DMS,
+        ResourceKind::Texture2DMSArray,
         ResourceKind::StorageTexture2D,
         ResourceKind::StorageTexture2DArray,
+        ResourceKind::StorageTexture3D,
         ResourceKind::Sampler,
         ResourceKind::ComparisonSampler,
         ResourceKind::AccelerationStructure,
@@ -171,9 +181,14 @@ impl ResourceKind {
             ResourceKind::ReadOnlyByteBuffer => "ReadOnlyByteBuffer",
             ResourceKind::Texture2D => "Texture2D",
             ResourceKind::Texture2DArray => "Texture2DArray",
+            ResourceKind::Texture3D => "Texture3D",
             ResourceKind::TextureCube => "TextureCube",
+            ResourceKind::TextureCubeArray => "TextureCubeArray",
+            ResourceKind::Texture2DMS => "Texture2DMS",
+            ResourceKind::Texture2DMSArray => "Texture2DMSArray",
             ResourceKind::StorageTexture2D => "StorageTexture2D",
             ResourceKind::StorageTexture2DArray => "StorageTexture2DArray",
+            ResourceKind::StorageTexture3D => "StorageTexture3D",
             ResourceKind::Sampler => "Sampler",
             ResourceKind::ComparisonSampler => "ComparisonSampler",
             ResourceKind::AccelerationStructure => "AccelerationStructure",
@@ -228,4 +243,44 @@ pub enum TypeData {
     /// A materialized descriptor, which stays where it is made.
     Handle(ResKind),
     RayQuery,
+}
+
+/// What a texture kind is like, for texture operations (0006 §8.6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TextureShape {
+    /// Components of a coordinate: 2 (2D), 3 (3D, a cube's direction).
+    pub dims: u8,
+    pub cube: bool,
+    pub array: bool,
+    pub multisampled: bool,
+    /// Written through an indexer, not sampled.
+    pub storage: bool,
+}
+
+impl ResourceKind {
+    /// The shape of a texture kind; `None` for the others.
+    pub fn texture(self) -> Option<TextureShape> {
+        let t = |dims, cube, array, multisampled, storage| {
+            Some(TextureShape {
+                dims,
+                cube,
+                array,
+                multisampled,
+                storage,
+            })
+        };
+        match self {
+            ResourceKind::Texture2D => t(2, false, false, false, false),
+            ResourceKind::Texture2DArray => t(2, false, true, false, false),
+            ResourceKind::Texture3D => t(3, false, false, false, false),
+            ResourceKind::TextureCube => t(3, true, false, false, false),
+            ResourceKind::TextureCubeArray => t(3, true, true, false, false),
+            ResourceKind::Texture2DMS => t(2, false, false, true, false),
+            ResourceKind::Texture2DMSArray => t(2, false, true, true, false),
+            ResourceKind::StorageTexture2D => t(2, false, false, false, true),
+            ResourceKind::StorageTexture2DArray => t(2, false, true, false, true),
+            ResourceKind::StorageTexture3D => t(3, false, false, false, true),
+            _ => None,
+        }
+    }
 }

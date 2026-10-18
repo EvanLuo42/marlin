@@ -82,9 +82,9 @@ pub use module::{
 };
 pub use op::{
     AccessStep, AtomicOp, Axis, BinaryOp, ConvertOp, FloatCmp, IntCmp, MathOp, MemOrder, Op,
-    QuadOp, ReduceOp, Scope, SwitchCase, UnaryOp, VoteOp, WaveOp,
+    QuadOp, ReduceOp, Scope, SwitchCase, TexArg, UnaryOp, VoteOp, WaveOp,
 };
 pub use parse::{ParseError, parse_module};
 pub use print::{FuncText, block_order, const_lit, print_function, print_module, type_name};
-pub use ty::{ResKind, ResourceKind, Scalar, Space, StructId, Type, TypeData};
+pub use ty::{ResKind, ResourceKind, Scalar, Space, StructId, TextureShape, Type, TypeData};
 pub use verify::{VerifyError, verify_module};

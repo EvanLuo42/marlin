@@ -49,3 +49,10 @@ runtime recursion: @Ping -> @Pong -> @Ping (recursion must unroll at compile tim
 @Vs: `@shared` is groupshared, which a vertex entry point has none of
 @Vs: `@Vs` has a group barrier, reached from a vertex entry point
 @Vs: `@Helper` uses a pixel-only operation, reached from a vertex entry point
+== textures
+@Textures: `%both = tex.sample %albedo, %s, f32x2 (0.5, 0.5) { lod: f32 0.0, bias: f32 1.0 }`: `lod`, `bias` and `grad` exclude each other
+@Textures: `%nolayer = tex.load %layers, i32x2 (0, 0)`: an array texture takes `layer`
+@Textures: `%wrongcoord = tex.load %albedo, f32x2 (0.0, 0.0)`: the coordinate is `i32x2`
+@Textures: `%sampled = tex.sample %store, %s, f32x2 (0.5, 0.5) { lod: f32 0.0 }`: storage and multisampled textures are not sampled
+@Textures: `tex.store %albedo, i32x2 (0, 0), f32x4 zero`: only storage textures are written
+@Textures: `@Textures` uses a pixel-only operation, reached from a compute entry point

@@ -12,6 +12,12 @@
 //! - What SPIR-V leaves undefined is made defined, as the IR has it: shift counts are taken
 //!   modulo the width, float-to-integer conversions saturate (NaN to 0).
 //!
+//! Step 10b: textures and samplers. Their handles are loaded from the resource and sampler
+//! heaps (arrays of `OpTypeImage` and `OpTypeSampler`, the sampler slot
+//! `OpConstantSizeOfEXT(sampler)` wide); samples and fetches take four components and narrow
+//! them to the texel; storage images are read and written without a format, four components
+//! at a time; integer texels are unsigned. Non-uniform descriptor indices get `NonUniform`.
+//!
 //! Step 10a: vertex and fragment entry points: `Input`/`Output` variables with `BuiltIn`,
 //! `Location` (and `Index` for target 0's second blend source) and interpolation decorations;
 //! `OriginUpperLeft`, and `DepthReplacing` when the depth is written; `[Position]` is

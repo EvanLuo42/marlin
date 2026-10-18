@@ -516,6 +516,9 @@ impl<'m, 'r> Machine<'m, 'r> {
             Op::Discard | Op::IsHelper | Op::Deriv { .. } => {
                 return Err(self.error(fr, Some(inst), "pixel operations are not interpreted yet"));
             }
+            Op::TexSample(_) | Op::TexLoad(_) | Op::TexStore(_) => {
+                return Err(self.error(fr, Some(inst), "textures are not interpreted yet"));
+            }
             _ => {}
         }
         for &lane in lanes {

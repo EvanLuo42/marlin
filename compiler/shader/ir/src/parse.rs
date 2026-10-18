@@ -17,7 +17,7 @@ use crate::module::{
 use crate::num::f32_to_f16;
 use crate::op::{
     AccessStep, AtomicOp, Axis, BinaryOp, ConvertOp, FloatCmp, IntCmp, MathOp, MemOrder, Op,
-    QuadOp, ReduceOp, Scope, SwitchCase, UnaryOp, VoteOp, WaveOp,
+    QuadOp, ReduceOp, Scope, SwitchCase, TexArg, UnaryOp, VoteOp, WaveOp,
 };
 use crate::ty::{ResKind, ResourceKind, Scalar, Space, StructId, Type, TypeData};
 
@@ -1388,6 +1388,9 @@ impl Parser {
                 }
                 "access" => self.access(b, line)?,
                 "buffer.elem" => (Op::BufferElem, self.operands(b, line, 2)?, None),
+                "tex.sample" => self.tex(b, line, 3, Op::TexSample)?,
+                "tex.load" => self.tex(b, line, 2, Op::TexLoad)?,
+                "tex.store" => self.tex(b, line, 3, Op::TexStore)?,
                 "buffer.byte" => (Op::BufferByte, self.operands(b, line, 2)?, None),
                 "uniform.ptr" => (Op::UniformPtr, self.operands(b, line, 1)?, None),
                 "buffer.length" => (Op::BufferLength, self.operands(b, line, 1)?, None),
@@ -1605,6 +1608,47 @@ impl Parser {
                 self.error(format!("struct `{s}` has no field `{name}`"))
             }
         }
+    }
+
+    /// `tex.* operands { arg: v, grad: (dx, dy) }`: `n` operands, then the arguments, in the
+    /// order `TexArg` lists them.
+    fn tex(
+        &mut self,
+        b: &mut Body,
+        line: u32,
+        n: usize,
+        make: fn(Vec<TexArg>) -> Op,
+    ) -> R<(Op, Vec<Value>, Option<Type>)> {
+        let mut operands = self.operands(b, line, n)?;
+        let mut args = Vec::new();
+        if self.eat_punct('{') {
+            while !self.eat_punct('}') {
+                let w = self.ident()?;
+                let Some(arg) = TexArg::from_name(&w) else {
+                    return self.error(format!("unknown texture argument `{w}`"));
+                };
+                let rank = |a: TexArg| TexArg::ALL.iter().position(|&x| x == a);
+                if args.last().is_some_and(|&last| rank(last) >= rank(arg)) {
+                    return self.error("texture arguments come once each, in their order");
+                }
+                self.expect_punct(':')?;
+                if arg == TexArg::Grad {
+                    self.expect_punct('(')?;
+                    operands.push(self.operand(b, line)?);
+                    self.expect_punct(',')?;
+                    operands.push(self.operand(b, line)?);
+                    self.expect_punct(')')?;
+                } else {
+                    operands.push(self.operand(b, line)?);
+                }
+                args.push(arg);
+                if !self.eat_punct(',') {
+                    self.expect_punct('}')?;
+                    break;
+                }
+            }
+        }
+        Ok((make(args), operands, None))
     }
 
     fn access(&mut self, b: &mut Body, line: u32) -> R<(Op, Vec<Value>, Option<Type>)> {

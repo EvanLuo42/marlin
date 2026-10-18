@@ -1095,6 +1095,14 @@ impl FnCx<'_, '_, '_> {
         if let Some(Callee::Item { item, subst }) = self.infer.callees.get(e).cloned() {
             let subst = self.concrete_subst(&subst);
             let b = self.value(base)?;
+            // A texture's `t[px]`: an operation, not a getter body.
+            if let Some(op) = self.l.cx.get::<ItemTypesQuery>(&item)?.intrinsic.clone() {
+                return self
+                    .intrinsic(e, &op, item, &subst, Some(Receiver::Value(b)), args)?
+                    .ok_or_else(|| {
+                        self.error("E1305", "an indexer without a value", Self::loc(e))
+                    });
+            }
             return self.indexer_get(e, b, args, item, &subst);
         }
         let b = self.value(base)?;
@@ -1120,6 +1128,18 @@ impl FnCx<'_, '_, '_> {
         if let Some(Callee::Item { item, subst }) = self.infer.callees.get(e).cloned() {
             let subst = self.concrete_subst(&subst);
             let b = self.value(base)?;
+            // A storage texture's `t[px] = v` writes the texel; the index is unchanged.
+            if self.l.cx.get::<ItemTypesQuery>(&item)?.intrinsic.as_deref() == Some("tex.texel") {
+                self.texture_op(
+                    e,
+                    "tex.texel",
+                    item,
+                    Some(Receiver::Value(b)),
+                    args,
+                    Some(value),
+                )?;
+                return Ok(());
+            }
             let new = self.indexer_set(e, b, args, value, item, &subst)?;
             return self.assign_place(base, new);
         }
@@ -1488,6 +1508,9 @@ impl FnCx<'_, '_, '_> {
         let _ = subst;
         let picked = self.by_kind(name, args)?;
         let name = picked.unwrap_or(name);
+        if matches!(name, "tex.sample" | "tex.load" | "tex.texel") {
+            return self.texture_op(e, name, item, receiver, args, None);
+        }
         // `Debug.Print($"...")`: the format goes to the module's table.
         if name == "debug.print"
             && let [arg] = args
@@ -1554,20 +1577,30 @@ impl FnCx<'_, '_, '_> {
                 }
             };
             let h = self.op(Op::DescGet { nonuniform: false }, vec![r], None)?;
-            let p = if name == "uniform.value" {
-                self.op(Op::UniformPtr, vec![h], None)?
-            } else {
-                let offset = match args.first() {
-                    Some(a) => self.value(a.expr)?,
-                    None => {
-                        return Err(self.error(
-                            "E1305",
-                            "a byte access without an offset",
-                            Self::loc(e),
-                        ));
-                    }
+            if name == "uniform.value" {
+                let p = self.op(Op::UniformPtr, vec![h], None)?;
+                return self.op(Op::Load { aligned: None }, vec![p], None).map(Some);
+            }
+            let offset = match args.first() {
+                Some(a) => self.value(a.expr)?,
+                None => {
+                    return Err(self.error(
+                        "E1305",
+                        "a byte access without an offset",
+                        Self::loc(e),
+                    ));
+                }
+            };
+            // `Load4`/`Store4` and the like: one word after another.
+            let word = |cx: &mut Self, k: u32| -> R<Value> {
+                let at = if k == 0 {
+                    offset
+                } else {
+                    let t = cx.f.ty(offset);
+                    let step = cx.int_const(t, 4 * k as i64);
+                    cx.op(Op::Binary(IrBin::Add), vec![offset, step], None)?
                 };
-                self.op(Op::BufferByte, vec![h, offset], None)?
+                cx.op(Op::BufferByte, vec![h, at], None)
             };
             if name == "byte.store" {
                 let v = match args.get(1) {
@@ -1576,10 +1609,42 @@ impl FnCx<'_, '_, '_> {
                         return Err(self.error("E1305", "a store without a value", Self::loc(e)));
                     }
                 };
-                self.emit(Op::Store { aligned: None }, vec![p, v], None)?;
+                let n = self.l.module.width(self.f.ty(v)).unwrap_or(1);
+                for k in 0..n as u32 {
+                    let part = if n == 1 {
+                        v
+                    } else {
+                        self.op(Op::Extract(k), vec![v], None)?
+                    };
+                    let p = word(self, k)?;
+                    self.emit(Op::Store { aligned: None }, vec![p, part], None)?;
+                }
                 return Ok(None);
             }
-            return self.op(Op::Load { aligned: None }, vec![p], None).map(Some);
+            let ty = self.concrete(&self.infer.type_of(e));
+            let t = self.l.ty(&ty)?;
+            let n = self.l.module.width(t).unwrap_or(1);
+            let mut parts = Vec::new();
+            for k in 0..n as u32 {
+                let p = word(self, k)?;
+                parts.push(self.op(Op::Load { aligned: None }, vec![p], None)?);
+            }
+            if n == 1 {
+                return Ok(parts.pop());
+            }
+            return self.op(Op::Construct, parts, Some(t)).map(Some);
+        }
+        // `AsUInt(x)` and the like: the same bits as another type.
+        if name == "bitcast" {
+            let x = match args.first() {
+                Some(a) => self.value(a.expr)?,
+                None => return Err(self.error("E1305", "a bitcast of nothing", Self::loc(e))),
+            };
+            let ty = self.concrete(&self.infer.type_of(e));
+            let t = self.l.ty(&ty)?;
+            return self
+                .op(Op::Convert(ConvertOp::Bitcast), vec![x], Some(t))
+                .map(Some);
         }
         let mut operands = Vec::new();
         if let Some(r) = receiver {

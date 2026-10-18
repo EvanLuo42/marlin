@@ -23,3 +23,6 @@ error[E1503]: `Game.Mirror` is not a static parameter (a `const` field of a stru
 == a capability the target lacks
 error[E1504]: `Game.Wide` needs `Float64` (it uses `double`), which the target `vulkan-1.4` does not have
 
+== an implicit level in a compute entry
+error[E1309]: `Game.ImplicitInCompute(@Game.SampleArgs)` samples without `lod:` or `grad:`, which only pixel entries can (their level comes from derivatives)
+

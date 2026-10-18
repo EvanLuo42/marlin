@@ -11,8 +11,8 @@ use std::collections::{HashMap, HashSet};
 
 use marlin_shaderc_ir::{
     AccessStep, AtomicOp, BinaryOp, Block, Builtin, ConvertOp, FloatCmp, Function, Inst, IntCmp,
-    MathOp, MemOrder, Op, QuadOp, ReduceOp, Scalar, Scope, Space, Stage, Type, TypeData, UnaryOp,
-    Value, ValueDef, VoteOp, WaveOp,
+    MathOp, MemOrder, Op, QuadOp, ReduceOp, Scalar, Scope, Space, Stage, TexArg, Type, TypeData,
+    UnaryOp, Value, ValueDef, VoteOp, WaveOp,
 };
 
 use crate::spirv::{builtin, capability as cap, glsl, group_operation, op, scope, semantics};
@@ -611,18 +611,46 @@ impl<'w, 'm> Body<'w, 'm> {
                 }
                 Some(self.value(rt.unwrap_or(0), op::AccessChain, &operands))
             }
-            Op::DescGet { .. } => {
+            Op::DescGet { nonuniform } => {
                 let TypeData::Res(kind) = self.w.m.data(f.ty(ops[0])).clone() else {
                     return unsupported("`desc.get` of something that is not a resource");
                 };
                 let array = self.w.heap_array(&kind)?;
-                let heap = self.w.heap();
+                let sampler = matches!(
+                    kind.kind,
+                    marlin_shaderc_ir::ResourceKind::Sampler
+                        | marlin_shaderc_ir::ResourceKind::ComparisonSampler
+                );
+                let heap = if sampler {
+                    self.w.sampler_heap()
+                } else {
+                    self.w.heap()
+                };
                 let index = a(self, 0)?;
-                Some(self.value(
-                    rt.unwrap_or(0),
-                    op::UntypedAccessChainKHR,
-                    &[array, heap, index],
-                ))
+                let ptr_t = self
+                    .w
+                    .untyped_ptr_ty(crate::spirv::storage_class::UniformConstant);
+                let p = self.value(ptr_t, op::UntypedAccessChainKHR, &[array, heap, index]);
+                // Images and samplers are loaded; a buffer is reached through the pointer.
+                let v = if kind.kind.texture().is_some() || sampler {
+                    self.value(rt.unwrap_or(0), op::Load, &[p])
+                } else {
+                    p
+                };
+                if *nonuniform {
+                    self.w.capability(cap::ShaderNonUniform);
+                    for id in [index, p, v] {
+                        self.w
+                            .decorate(id, crate::spirv::decoration::NonUniform, &[]);
+                    }
+                }
+                Some(v)
+            }
+            Op::TexSample(targs) => Some(self.tex_sample(&ops, targs, rt)?),
+            Op::TexLoad(targs) => Some(self.tex_load(&ops, targs, rt)?),
+            Op::TexStore(targs) => {
+                self.tex_store(&ops, targs)?;
+                None
             }
             Op::BufferElem => {
                 let (bp, readonly) = self.buffer_pointer(ops[0])?;
@@ -1246,5 +1274,184 @@ impl Body<'_, '_> {
                 self.emit(op::Branch, &[l]);
             }
         }
+    }
+}
+
+/// Image operand bits (SPIR-V 3.14).
+mod image_operands {
+    pub const BIAS: u32 = 0x1;
+    pub const LOD: u32 = 0x2;
+    pub const GRAD: u32 = 0x4;
+    pub const SAMPLE: u32 = 0x40;
+}
+
+impl Body<'_, '_> {
+    fn texture_kind(&self, h: Value) -> R<marlin_shaderc_ir::ResKind> {
+        match self.w.m.data(self.f.ty(h)) {
+            TypeData::Handle(k) if k.kind.texture().is_some() => Ok(*k),
+            _ => unsupported("a texture operation on something that is not a texture"),
+        }
+    }
+
+    /// The operands after a texture operation's first `lead`, by argument (`grad`: two).
+    fn tex_args(
+        &mut self,
+        ops: &[Value],
+        lead: usize,
+        targs: &[TexArg],
+    ) -> R<Vec<(TexArg, Vec<u32>)>> {
+        let mut out = Vec::new();
+        let mut k = lead;
+        for &t in targs {
+            let n = if t == TexArg::Grad { 2 } else { 1 };
+            let mut ids = Vec::new();
+            for v in &ops[k..k + n] {
+                ids.push(self.val(*v)?);
+            }
+            out.push((t, ids));
+            k += n;
+        }
+        Ok(out)
+    }
+
+    /// A coordinate with the layer appended (`uv` and a layer as `(u, v, layer)`), as floats
+    /// for sampling.
+    fn with_layer(
+        &mut self,
+        coord: u32,
+        coord_ty: Type,
+        layer: Option<u32>,
+        float: bool,
+    ) -> R<u32> {
+        let Some(layer) = layer else { return Ok(coord) };
+        let (s, n) = match self.w.m.data(coord_ty) {
+            TypeData::Vector(s, n) => (*s, *n),
+            TypeData::Scalar(s) => (*s, 1),
+            _ => return unsupported("a texture coordinate that is not a vector"),
+        };
+        let layer = if float {
+            let f32t = self.w.scalar(Scalar::F32);
+            self.value(f32t, op::ConvertUToF, &[layer])
+        } else {
+            layer
+        };
+        let t = self.w.vec_ty(s, n + 1);
+        Ok(self.value(t, op::CompositeConstruct, &[coord, layer]))
+    }
+
+    /// A four-component texel narrowed to the texel type `rt` (`n` components).
+    fn narrow(&mut self, v4: u32, n: u8, rt: u32) -> u32 {
+        match n {
+            4 => v4,
+            1 => self.value(rt, op::CompositeExtract, &[v4, 0]),
+            _ => {
+                let mut ops = vec![v4, v4];
+                ops.extend(0..n as u32);
+                self.value(rt, op::VectorShuffle, &ops)
+            }
+        }
+    }
+
+    fn texel_shape(&self, kind: &marlin_shaderc_ir::ResKind) -> R<(Scalar, u8)> {
+        let texel = kind
+            .element
+            .ok_or_else(|| marlin_shaderc_target::BackendError {
+                message: "a texture without a texel type".into(),
+            })?;
+        match self.w.m.data(texel) {
+            TypeData::Scalar(s) => Ok((*s, 1)),
+            TypeData::Vector(s, n) => Ok((*s, *n)),
+            _ => unsupported("a texel that is not a scalar or vector"),
+        }
+    }
+
+    fn tex_sample(&mut self, ops: &[Value], targs: &[TexArg], rt: Option<u32>) -> R<u32> {
+        use image_operands::*;
+        let kind = self.texture_kind(ops[0])?;
+        let image = self.val(ops[0])?;
+        let sampler = self.val(ops[1])?;
+        let image_t = self.w.image_ty(&kind)?;
+        let si_t = self.w.sampled_image_ty(image_t);
+        let si = self.value(si_t, op::SampledImage, &[image, sampler]);
+        let args = self.tex_args(ops, 3, targs)?;
+        let get = |t: TexArg| {
+            args.iter()
+                .find(|(a, _)| *a == t)
+                .map(|(_, ids)| ids.clone())
+        };
+        let coord = self.val(ops[2])?;
+        let coord = self.with_layer(
+            coord,
+            self.f.ty(ops[2]),
+            get(TexArg::Layer).map(|v| v[0]),
+            true,
+        )?;
+        let (s, n) = self.texel_shape(&kind)?;
+        let v4 = self.w.vec_ty(s, 4);
+        let (opcode, mask, extra) = if let Some(l) = get(TexArg::Lod) {
+            (op::ImageSampleExplicitLod, Some(LOD), l)
+        } else if let Some(g) = get(TexArg::Grad) {
+            (op::ImageSampleExplicitLod, Some(GRAD), g)
+        } else if let Some(b) = get(TexArg::Bias) {
+            (op::ImageSampleImplicitLod, Some(BIAS), b)
+        } else {
+            (op::ImageSampleImplicitLod, None, Vec::new())
+        };
+        let mut operands = vec![si, coord];
+        if let Some(m) = mask {
+            operands.push(m);
+            operands.extend(extra);
+        }
+        let r4 = self.value(v4, opcode, &operands);
+        Ok(self.narrow(r4, n, rt.unwrap_or(0)))
+    }
+
+    fn tex_load(&mut self, ops: &[Value], targs: &[TexArg], rt: Option<u32>) -> R<u32> {
+        use image_operands::*;
+        let kind = self.texture_kind(ops[0])?;
+        let shape = kind.kind.texture().expect("a texture");
+        let image = self.val(ops[0])?;
+        let args = self.tex_args(ops, 2, targs)?;
+        let get = |t: TexArg| args.iter().find(|(a, _)| *a == t).map(|(_, ids)| ids[0]);
+        let coord = self.val(ops[1])?;
+        let coord = self.with_layer(coord, self.f.ty(ops[1]), get(TexArg::Layer), false)?;
+        let (s, n) = self.texel_shape(&kind)?;
+        let v4 = self.w.vec_ty(s, 4);
+        let r4 = if shape.storage {
+            self.w.capability(cap::StorageImageReadWithoutFormat);
+            self.value(v4, op::ImageRead, &[image, coord])
+        } else if shape.multisampled {
+            let sample = get(TexArg::Sample).unwrap_or_else(|| self.w.uint(0));
+            self.value(v4, op::ImageFetch, &[image, coord, SAMPLE, sample])
+        } else {
+            let mip = get(TexArg::Mip).unwrap_or_else(|| self.w.uint(0));
+            self.value(v4, op::ImageFetch, &[image, coord, LOD, mip])
+        };
+        Ok(self.narrow(r4, n, rt.unwrap_or(0)))
+    }
+
+    fn tex_store(&mut self, ops: &[Value], targs: &[TexArg]) -> R<()> {
+        let kind = self.texture_kind(ops[0])?;
+        let image = self.val(ops[0])?;
+        let args = self.tex_args(ops, 3, targs)?;
+        let layer = args
+            .iter()
+            .find(|(a, _)| *a == TexArg::Layer)
+            .map(|(_, ids)| ids[0]);
+        let coord = self.val(ops[1])?;
+        let coord = self.with_layer(coord, self.f.ty(ops[1]), layer, false)?;
+        let (s, n) = self.texel_shape(&kind)?;
+        let mut texel = self.val(ops[2])?;
+        // Widened to four components, the rest 0.
+        if n < 4 {
+            let v4 = self.w.vec_ty(s, 4);
+            let zero = self.w.lit(s, 1, 0);
+            let mut parts = vec![texel];
+            parts.extend(std::iter::repeat_n(zero, 4 - n as usize));
+            texel = self.value(v4, op::CompositeConstruct, &parts);
+        }
+        self.w.capability(cap::StorageImageWriteWithoutFormat);
+        self.emit(op::ImageWrite, &[image, coord, texel]);
+        Ok(())
     }
 }

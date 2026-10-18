@@ -10,19 +10,47 @@ use crate::spirv::{decoration, op, storage_class as sc};
 pub(crate) enum Ty {
     Void,
     Bool,
-    Int { width: u32, signed: bool },
-    Float { width: u32 },
-    Vector { component: u32, count: u32 },
-    Matrix { column: u32, count: u32 },
-    Array { element: u32, length: u32 },
-    RuntimeArray { element: u32 },
+    Int {
+        width: u32,
+        signed: bool,
+    },
+    Float {
+        width: u32,
+    },
+    Vector {
+        component: u32,
+        count: u32,
+    },
+    Matrix {
+        column: u32,
+        count: u32,
+    },
+    Array {
+        element: u32,
+        length: u32,
+    },
+    RuntimeArray {
+        element: u32,
+    },
     Struct(Vec<u32>),
-    Pointer { class: u32, pointee: u32 },
-    Untyped { class: u32 },
-    Function { ret: u32, params: Vec<u32> },
-    Image,
+    Pointer {
+        class: u32,
+        pointee: u32,
+    },
+    Untyped {
+        class: u32,
+    },
+    Function {
+        ret: u32,
+        params: Vec<u32>,
+    },
+    /// The sampled type, dimension, depth, arrayed, multisampled, sampled and format words.
+    Image(Vec<u32>),
+    SampledImage(u32),
     Sampler,
-    Buffer { class: u32 },
+    Buffer {
+        class: u32,
+    },
 }
 
 #[derive(Default)]
@@ -135,7 +163,8 @@ pub(crate) fn declare(v: &mut Validator, i: &Inst) {
             ret: o[1],
             params: o[2..].to_vec(),
         },
-        op::TypeImage => Ty::Image,
+        op::TypeImage => Ty::Image(o[1..].to_vec()),
+        op::TypeSampledImage => Ty::SampledImage(o[1]),
         op::TypeSampler => Ty::Sampler,
         op::TypeBufferEXT => {
             if !matches!(o[1], sc::StorageBuffer | sc::Uniform) {
@@ -262,7 +291,7 @@ fn laid_out(v: &mut Validator, t: u32, seen: &mut HashSet<u32>) {
         Some(Ty::Array { element, .. } | Ty::RuntimeArray { element }) => {
             let descriptors = matches!(
                 v.types.get(element),
-                Some(Ty::Buffer { .. } | Ty::Image | Ty::Sampler)
+                Some(Ty::Buffer { .. } | Ty::Image(_) | Ty::Sampler)
             );
             match v
                 .decorated(t, decoration::ArrayStride)

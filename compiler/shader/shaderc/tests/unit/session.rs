@@ -127,6 +127,7 @@ fn an_entry_compiles_to_spirv_with_its_reflection() {
             SourcePath::new("Game", "Graphics.mshader"),
             SourcePath::new("Game", "Kernel.mshader"),
             SourcePath::new("Game", "Main.mshader"),
+            SourcePath::new("Game", "Textures.mshader"),
             SourcePath::new("Game", "Wide.mshader"),
         ]
     );
@@ -213,6 +214,10 @@ fn bad_requests_are_diagnostics() {
             request("Game.Mirror", &not_static),
         ),
         ("a capability the target lacks", request("Game.Wide", &[])),
+        (
+            "an implicit level in a compute entry",
+            request("Game.ImplicitInCompute", &[]),
+        ),
     ];
     let mut text = String::new();
     for (what, req) in cases {
@@ -377,6 +382,18 @@ fn the_core_library_compiles_for_vulkan() {
         "Game.ColumnsPs",
         "Game.Instanced",
         "Game.InstancedPs",
+        "Game.QuadVs",
+        "Game.QuadPs",
+        "Game.Levels",
+        "Game.SampleOne",
+        "Game.Stencil",
+        "Game.Multisample",
+        "Game.Cube",
+        "Game.VolumeWrite",
+        "Game.VolumeRead",
+        "Game.TexelLoad",
+        "Game.ForwardVs",
+        "Game.ForwardPs",
     ] {
         let mut req = request(entry, &[]);
         req.profile = Profile::Shipping;

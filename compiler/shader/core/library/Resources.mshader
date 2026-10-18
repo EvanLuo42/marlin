@@ -44,7 +44,13 @@ public readonly struct ReadOnlyBuffer<T>
 public readonly struct ByteBuffer
 {
     [Intrinsic("byte.load")] public uint Load(uint offset);
+    [Intrinsic("byte.load")] public uint2 Load2(uint offset);
+    [Intrinsic("byte.load")] public uint3 Load3(uint offset);
+    [Intrinsic("byte.load")] public uint4 Load4(uint offset);
     [Intrinsic("byte.store")] public void Store(uint offset, uint value);
+    [Intrinsic("byte.store")] public void Store2(uint offset, uint2 value);
+    [Intrinsic("byte.store")] public void Store3(uint offset, uint3 value);
+    [Intrinsic("byte.store")] public void Store4(uint offset, uint4 value);
     /// In bytes.
     [Intrinsic("buffer.length")] public uint Length { get; }
 }
@@ -54,6 +60,9 @@ public readonly struct ByteBuffer
 public readonly struct ReadOnlyByteBuffer
 {
     [Intrinsic("byte.load")] public uint Load(uint offset);
+    [Intrinsic("byte.load")] public uint2 Load2(uint offset);
+    [Intrinsic("byte.load")] public uint3 Load3(uint offset);
+    [Intrinsic("byte.load")] public uint4 Load4(uint offset);
     /// In bytes.
     [Intrinsic("buffer.length")] public uint Length { get; }
 }

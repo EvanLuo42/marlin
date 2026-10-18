@@ -12,6 +12,7 @@ pub(crate) fn is_pure(op: &Op) -> bool {
         || matches!(
             op,
             Op::Store { .. }
+                | Op::TexStore(_)
                 | Op::Atomic { .. }
                 | Op::Barrier { .. }
                 | Op::Discard
