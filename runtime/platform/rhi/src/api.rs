@@ -25,9 +25,10 @@ use crate::{
     MemoryBudget, MemoryLocation, MemoryRequirements, MeshPipelineDesc, MultisampleState,
     OutputInfo, Pageable, PresentMode, PresentStatus, PrimitiveTopology, QueryKind, QueryPoolDesc,
     QueueType, RasterState, RenderTargetViewDesc, ResidencyPriority, Result, SPARSE_TILE_SIZE,
-    SamplerDesc, SamplerReduction, SparseBind, SparseTextureLayout, SparseTextureRegion,
-    SubmitDesc, SubresourceRange, SurfaceHandle, SwapchainDesc, TextureDesc, TextureDimension,
-    TextureUsage, TextureViewDesc, TextureViewDimension, UNIFORM_ALIGNMENT, VariableRateShading,
+    STORAGE_ALIGNMENT, SamplerDesc, SamplerReduction, SparseBind, SparseTextureLayout,
+    SparseTextureRegion, SubmitDesc, SubresourceRange, SurfaceHandle, SwapchainDesc, TextureDesc,
+    TextureDimension, TextureUsage, TextureViewDesc, TextureViewDimension, UNIFORM_ALIGNMENT,
+    VariableRateShading,
 };
 
 pub(crate) fn invalid() -> Error {
@@ -416,10 +417,11 @@ impl Device {
             BufferViewKind::Structured { stride } => {
                 ensure(stride > 0 && stride <= 2048)?;
                 ensure(desc.offset.is_multiple_of(stride as u64))?;
+                ensure(desc.offset.is_multiple_of(STORAGE_ALIGNMENT))?;
                 ensure(size.is_multiple_of(stride as u64))?;
             }
             BufferViewKind::Raw => {
-                ensure(desc.offset.is_multiple_of(4) && size.is_multiple_of(4))?;
+                ensure(desc.offset.is_multiple_of(STORAGE_ALIGNMENT) && size.is_multiple_of(4))?;
             }
         }
         if !desc.writable && desc.kind != BufferViewKind::Uniform {

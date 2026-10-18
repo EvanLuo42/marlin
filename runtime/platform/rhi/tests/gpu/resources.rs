@@ -129,7 +129,8 @@ fn buffer_views_take_distinct_slots_and_reuse_freed_ones() {
             .unwrap_err()
             .kind()
     };
-    // Misaligned uniform offset; stride not dividing the offset; past the end.
+    // Misaligned uniform offset; stride not dividing the offset; a storage view off
+    // STORAGE_ALIGNMENT; past the end.
     for desc in [
         BufferViewDesc {
             kind: BufferViewKind::Uniform,
@@ -142,6 +143,12 @@ fn buffer_views_take_distinct_slots_and_reuse_freed_ones() {
             writable: false,
             offset: 16,
             size: 24,
+        },
+        BufferViewDesc {
+            kind: BufferViewKind::Raw,
+            writable: false,
+            offset: 16,
+            size: 16,
         },
         BufferViewDesc {
             kind: BufferViewKind::Raw,

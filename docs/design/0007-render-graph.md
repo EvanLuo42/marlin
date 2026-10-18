@@ -584,6 +584,9 @@ R1g 做完时（2026-10-18）定下的细节（§11.2 的第 2 条验收）：
 - `sample_first_frame` 的参考图因此改变，单独提交重新生成的参考图。端到端测试对背景的检查改成相对检查（两个上角颜色相同、偏蓝），实时编辑测试的"变绿"改成"绿色通道明显高于另外两个"，因为曝光和 tonemap 会把每个通道都抬高。
 - GPU 测试：亮度为 0.05、1、40 的均匀场景，输出都是同一个灰度（和 CPU 上按同样公式算的值相差不超过 3）；场景从亮变暗时，第一帧偏暗，之后逐帧变亮，最后回到同一个灰度；bloom 链的纹理 heap 小于各级纹理之和（发生了别名）；有专用 compute 队列时，直方图和曝光的三个 pass 都在 Compute 队列上。验证层没有报错。开窗口跑 `samples/basic` 10 秒，没有报错。
 
+R1h（GPU Scene，0009 §13）对本文的修正：
+- `ctx.upload_slice` 的起点按 stride 和 `marlin_rhi::STORAGE_ALIGNMENT`（256，Vulkan 允许的 `minStorageBufferOffsetAlignment` 上限）的最小公倍数对齐。之前只按 stride 对齐，元素是 16 字节倍数时碰巧没事；GPU Scene 上传 `u32` 列表后，验证层报了 storage 视图地址不对齐。RHI 的 `create_buffer_view` 现在对 structured 和 raw 视图检查这个对齐，以后同样的错误在创建视图时就返回 `InvalidInput`。
+
 ## 12. 测试
 
 测试放在各 crate 的 `tests/` 里。

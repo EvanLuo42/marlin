@@ -575,6 +575,9 @@ pub const TEXTURE_ROW_PITCH_ALIGNMENT: u32 = 256;
 pub const TEXTURE_OFFSET_ALIGNMENT: u64 = 512;
 /// Offset and size alignment of uniform buffer views.
 pub const UNIFORM_ALIGNMENT: u64 = 256;
+/// Offset alignment of structured and raw buffer views: the largest
+/// `minStorageBufferOffsetAlignment` Vulkan allows, so it holds on every device.
+pub const STORAGE_ALIGNMENT: u64 = 256;
 /// Largest uniform buffer view.
 pub const MAX_UNIFORM_SIZE: u64 = 65536;
 /// 32-bit words of push constants (Vulkan push data, D3D12 root constants).
@@ -847,10 +850,11 @@ pub enum BufferViewKind {
     /// A uniform (constant) buffer: `ConstantBuffer<T>`. Offset aligned to [`UNIFORM_ALIGNMENT`];
     /// size at most [`MAX_UNIFORM_SIZE`]. Never writable.
     Uniform,
-    /// An array of `stride`-byte elements: `(RW)StructuredBuffer<T>`. Offset and size are
-    /// multiples of `stride`.
+    /// An array of `stride`-byte elements: `(RW)StructuredBuffer<T>`. Offset a multiple of
+    /// `stride` and of [`STORAGE_ALIGNMENT`]; size a multiple of `stride`.
     Structured { stride: u32 },
-    /// 32-bit words: `(RW)ByteAddressBuffer`. Offset and size are multiples of 4.
+    /// 32-bit words: `(RW)ByteAddressBuffer`. Offset a multiple of [`STORAGE_ALIGNMENT`]; size a
+    /// multiple of 4.
     Raw,
 }
 

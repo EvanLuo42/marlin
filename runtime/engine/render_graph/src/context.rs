@@ -11,7 +11,8 @@ use marlin_rhi::{
     Buffer, BufferTextureCopy, BufferViewDesc, BufferViewKind, ClearColor, ColorAttachment,
     CommandList, CommandPool, ComputePipeline, DepthAttachment, Device, GraphicsPipeline,
     IndexFormat, IndirectArgs, LoadOp, MAX_COLOR_ATTACHMENTS, MAX_PUSH_CONSTANTS, MeshPipeline,
-    QueueType, Rect, RenderPassDesc, Result, StoreOp, Texture, TextureCopy, Viewport,
+    QueueType, Rect, RenderPassDesc, Result, STORAGE_ALIGNMENT, StoreOp, Texture, TextureCopy,
+    Viewport,
 };
 use marlin_serial::cooked::Pod;
 
@@ -336,9 +337,11 @@ impl<'a> PassContext<'a, Rhi> {
             self.parts.pass
         );
         let bytes = bytes_of(values);
+        // A whole number of elements in, and where every device can view storage from.
+        let align = lcm(u64::from(stride), STORAGE_ALIGNMENT);
         self.upload_view(
             bytes,
-            u64::from(stride),
+            align,
             BufferViewKind::Structured { stride },
             bytes.len() as u64,
         )
@@ -715,4 +718,12 @@ fn bytes_of<T: Pod>(values: &[T]) -> &[u8] {
     // SAFETY: `T: Pod` has no padding bytes, so every byte of the slice is initialized; the
     // length is the slice's size in bytes.
     unsafe { core::slice::from_raw_parts(values.as_ptr().cast(), size_of_val(values)) }
+}
+
+fn lcm(a: u64, b: u64) -> u64 {
+    let (mut x, mut y) = (a, b);
+    while y != 0 {
+        (x, y) = (y, x % y);
+    }
+    a / x * b
 }

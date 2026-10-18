@@ -100,13 +100,13 @@ pub use types::{
     MultisampleState, OutputInfo, PLACEMENT_ALIGNMENT, Pageable, PipelineStatistics, PolygonMode,
     PredicateSkip, PresentMode, PresentStatus, PrimitiveTopology, QueryKind, QueryPoolDesc,
     QueueType, RasterState, Rect, RenderPassDesc, RenderTargetViewDesc, ResidencyPriority,
-    SPARSE_TILE_SIZE, SamplerDesc, SamplerReduction, ShaderFormat, ShaderModule, ShadingRate,
-    ShadingRateCombiner, SparseBind, SparseTextureLayout, SparseTextureRegion, Stage, StencilFace,
-    StencilOp, StencilState, StoreOp, SubmitDesc, SubresourceRange, SurfaceHandle, SwapchainDesc,
-    TEXTURE_OFFSET_ALIGNMENT, TEXTURE_ROW_PITCH_ALIGNMENT, TextureBarrier, TextureCopy,
-    TextureDesc, TextureDimension, TextureResolve, TextureState, TextureUsage, TextureViewDesc,
-    TextureViewDimension, UNIFORM_ALIGNMENT, VariableRateShading, VertexFormat, Viewport,
-    aligned_row_pitch,
+    SPARSE_TILE_SIZE, STORAGE_ALIGNMENT, SamplerDesc, SamplerReduction, ShaderFormat, ShaderModule,
+    ShadingRate, ShadingRateCombiner, SparseBind, SparseTextureLayout, SparseTextureRegion, Stage,
+    StencilFace, StencilOp, StencilState, StoreOp, SubmitDesc, SubresourceRange, SurfaceHandle,
+    SwapchainDesc, TEXTURE_OFFSET_ALIGNMENT, TEXTURE_ROW_PITCH_ALIGNMENT, TextureBarrier,
+    TextureCopy, TextureDesc, TextureDimension, TextureResolve, TextureState, TextureUsage,
+    TextureViewDesc, TextureViewDimension, UNIFORM_ALIGNMENT, VariableRateShading, VertexFormat,
+    Viewport, aligned_row_pitch,
 };
 
 /// The shader bytecode this build's backend consumes. Engine code picks shader blobs with it
