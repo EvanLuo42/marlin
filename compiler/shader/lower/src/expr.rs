@@ -1128,6 +1128,11 @@ impl FnCx<'_, '_, '_> {
         if let Some(Callee::Item { item, subst }) = self.infer.callees.get(e).cloned() {
             let subst = self.concrete_subst(&subst);
             let b = self.value(base)?;
+            // `o.Vertices[i] = v`: the mesh entry's outputs.
+            if self.l.cx.get::<ItemTypesQuery>(&item)?.intrinsic.as_deref() == Some("mesh.element")
+            {
+                return self.mesh_write(e, b, args, value);
+            }
             // A storage texture's `t[px] = v` writes the texel; the index is unchanged.
             if self.l.cx.get::<ItemTypesQuery>(&item)?.intrinsic.as_deref() == Some("tex.texel") {
                 self.texture_op(
@@ -1510,6 +1515,9 @@ impl FnCx<'_, '_, '_> {
         let name = picked.unwrap_or(name);
         if matches!(name, "tex.sample" | "tex.load" | "tex.texel") {
             return self.texture_op(e, name, item, receiver, args, None);
+        }
+        if name.starts_with("mesh.") {
+            return self.mesh_op(e, name, item, args);
         }
         // `Debug.Print($"...")`: the format goes to the module's table.
         if name == "debug.print"

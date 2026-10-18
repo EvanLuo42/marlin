@@ -14,8 +14,8 @@ use marlin_front_hir_def::{
     item_path,
 };
 use marlin_shaderc_hir_ty::{
-    GenericArgTy, InferLoc, ItemAttributesQuery, KnownAttr, Stage, Subst, SystemValue, Ty,
-    parse_int,
+    BuiltinKind, GenericArgTy, InferLoc, ItemAttributesQuery, KnownAttr, Stage, Subst, SystemValue,
+    Ty, parse_int,
 };
 use marlin_shaderc_ir::{
     Binding, Builtin, Entry, FuncBuilder, FuncId, GlobalData, GlobalId, Interp, Op, Space,
@@ -89,30 +89,49 @@ impl Lowering<'_, '_> {
                 format!("`{path}` is not an entry point"),
             ));
         };
-        let ir_stage = match stage {
-            Stage::Compute => {
-                let mut size = [1u32; 3];
-                let positional: Vec<_> = stage_attr
-                    .args
-                    .iter()
-                    .filter(|(n, _)| n.is_none())
-                    .map(|(_, e)| *e)
-                    .collect();
-                for (k, e) in positional.into_iter().enumerate().take(3) {
-                    let v = self.attribute_int(item, e)?;
-                    size[k] = u32::try_from(v).ok().filter(|&v| v > 0).ok_or_else(|| {
-                        LowerError::new("E1308", "a thread-group size is a positive integer")
-                    })?;
-                }
-                IrStage::Compute(size)
+        let (positional, named) = self.attribute_args(item, &stage_attr.args)?;
+        let mut size = [1u32; 3];
+        if matches!(stage, Stage::Compute | Stage::Mesh | Stage::Amplification) {
+            for (k, &e) in positional.iter().enumerate().take(3) {
+                let v = self.attribute_int(item, e)?;
+                size[k] = u32::try_from(v).ok().filter(|&v| v > 0).ok_or_else(|| {
+                    LowerError::new("E1308", "a thread-group size is a positive integer")
+                })?;
             }
+        }
+        let mut mesh_spec = None;
+        let ir_stage = match stage {
+            Stage::Compute => IrStage::Compute(size),
             Stage::Vertex => IrStage::Vertex,
             Stage::Pixel => IrStage::Pixel,
-            _ => {
-                return Err(LowerError::new(
-                    "E1301",
-                    format!("{stage:?} entry points are not lowered yet"),
-                ));
+            Stage::Mesh => {
+                let field = |l: &mut Self, n: &str| -> R<u32> {
+                    let e = named.iter().find(|(k, _)| k == n).map(|(_, e)| *e);
+                    let e = e.ok_or_else(|| {
+                        LowerError::new("E1308", format!("`[Mesh]` needs `{n} = ...`"))
+                    })?;
+                    let v = l.attribute_int(item, e)?;
+                    u32::try_from(v).map_err(|_| {
+                        LowerError::new("E1308", format!("`{n}` is not a non-negative integer"))
+                    })
+                };
+                let max_vertices = field(self, "MaxVertices")?;
+                let max_primitives = field(self, "MaxPrimitives")?;
+                let topology = match field(self, "Topology")? {
+                    0 => MeshTopology::Point,
+                    1 => MeshTopology::Line,
+                    _ => MeshTopology::Triangle,
+                };
+                mesh_spec = Some(MeshSpec {
+                    max_vertices,
+                    max_primitives,
+                    topology,
+                });
+                IrStage::Mesh(size)
+            }
+            Stage::Amplification => {
+                self.payload_field = Some(self.dispatched_payload(item)?);
+                IrStage::Amplification(size)
             }
         };
 
@@ -196,6 +215,17 @@ impl Lowering<'_, '_> {
                     LowerError::new("E1301", format!("`[{sv:?}]` is not lowered yet"))
                 })?;
                 inputs.push(one(self, Space::Input, Binding::Builtin(builtin)));
+            } else if param_attrs
+                .iter()
+                .any(|a| a.known == Some(KnownAttr::Payload))
+            {
+                inputs.push(one(self, Space::Payload, Binding::None));
+            } else if self.is_builtin(ty, BuiltinKind::MeshOutput) {
+                let spec = mesh_spec.ok_or_else(|| {
+                    LowerError::new("E1308", "a `MeshOutput` is a mesh entry's parameter")
+                })?;
+                self.mesh_outputs(&name, ty, spec)?;
+                inputs.push(Input::Marker);
             } else if let Some(fields) = self.io_fields(ty)? {
                 let mut gs = Vec::new();
                 for f in fields {
@@ -262,6 +292,8 @@ impl Lowering<'_, '_> {
                     let p = b.global(*g);
                     args.push(b.value(Op::Load { aligned: None }, vec![p]));
                 }
+                // A mesh entry's outputs are module variables; the parameter is a marker.
+                Input::Marker => args.push(b.int(marlin_shaderc_ir::Scalar::I32, 0)),
                 Input::Fields(t, gs) => {
                     let mut parts = Vec::new();
                     for &g in gs {
@@ -483,6 +515,8 @@ impl Lowering<'_, '_> {
 /// An entry parameter's module variables.
 enum Input {
     One(GlobalId),
+    /// A `MeshOutput`: a value standing for the mesh outputs.
+    Marker,
     /// A stage I/O struct of this type: one variable per field.
     Fields(Type, Vec<GlobalId>),
 }
@@ -494,4 +528,181 @@ struct IoField {
     /// `None`: a location, assigned in declaration order.
     binding: Option<Binding>,
     interp: Option<Interp>,
+}
+
+/// What a `[Mesh]` attribute says beside the group size.
+#[derive(Clone, Copy)]
+struct MeshSpec {
+    max_vertices: u32,
+    max_primitives: u32,
+    topology: MeshTopology,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MeshTopology {
+    Point,
+    Line,
+    Triangle,
+}
+
+/// A mesh entry's output variables: one array per field of the vertex and primitive types,
+/// and the index list.
+#[derive(Clone, Debug)]
+pub(crate) struct MeshOutputs {
+    pub vertices: Vec<GlobalId>,
+    pub primitives: Vec<GlobalId>,
+    pub indices: GlobalId,
+    pub topology: MeshTopology,
+}
+
+/// The values of `MeshOutput`'s lists (`o.Vertices`, `o.Primitives`, `o.Triangles`, ...), which
+/// stand for the variables they write.
+pub(crate) const MESH_VERTICES: i64 = 0;
+pub(crate) const MESH_PRIMITIVES: i64 = 1;
+pub(crate) const MESH_TRIANGLES: i64 = 2;
+pub(crate) const MESH_LINES: i64 = 3;
+pub(crate) const MESH_POINTS: i64 = 4;
+
+impl Lowering<'_, '_> {
+    pub(crate) fn is_builtin(&self, ty: &Ty, kind: BuiltinKind) -> bool {
+        matches!(ty, Ty::Adt { item, .. } if self.builtins.kind(*item) == Some(kind))
+    }
+
+    /// The output variables of a mesh entry's `MeshOutput<TVertex, TPrimitive>` parameter
+    /// (0004 §11.6): arrays as long as `[Mesh]` allows, the fields' locations in declaration
+    /// order, the vertices' first.
+    fn mesh_outputs(&mut self, name: &str, ty: &Ty, spec: MeshSpec) -> R<()> {
+        let Ty::Adt { args, .. } = ty else {
+            return Err(LowerError::new("E1305", "a `MeshOutput` without its types"));
+        };
+        let arg = |k: usize| match args.get(k) {
+            Some(GenericArgTy::Type(t)) => Some(t.clone()),
+            _ => None,
+        };
+        let mut location = 0;
+        let mut arrays = |l: &mut Self, t: Option<Ty>, space: Space, n: u32, what: &str| {
+            let Some(t) = t else { return Ok(Vec::new()) };
+            let fields = l.io_fields(&t)?.ok_or_else(|| {
+                LowerError::new("E1308", format!("a mesh entry's {what} type is a struct"))
+            })?;
+            let mut out = Vec::new();
+            for f in fields {
+                let array = l.module.ty(TypeData::Array(f.ty, n));
+                out.push(l.io_global(
+                    &format!("{name}.{what}"),
+                    space,
+                    IoField { ty: array, ..f },
+                    &mut location,
+                )?);
+            }
+            Ok::<_, LowerError>(out)
+        };
+        let vertices = arrays(self, arg(0), Space::MeshVertex, spec.max_vertices, "vertex")?;
+        let primitives = arrays(
+            self,
+            arg(1),
+            Space::MeshPrimitive,
+            spec.max_primitives,
+            "primitive",
+        )?;
+        let width = match spec.topology {
+            MeshTopology::Point => 1,
+            MeshTopology::Line => 2,
+            MeshTopology::Triangle => 3,
+        };
+        let element = self.module.vector(marlin_shaderc_ir::Scalar::I32, width);
+        let list = self
+            .module
+            .ty(TypeData::Array(element, spec.max_primitives));
+        let ptr = self.module.ptr(Space::MeshIndex, false, list);
+        let indices = self.module.add_global(GlobalData {
+            name: format!("{name}.indices").into(),
+            ty: ptr,
+            binding: Binding::None,
+            interp: None,
+            init: None,
+        });
+        self.mesh = Some(MeshOutputs {
+            vertices,
+            primitives,
+            indices,
+            topology: spec.topology,
+        });
+        Ok(())
+    }
+
+    /// The `[GroupShared]` field an amplification entry passes to `Mesh.Dispatch`, which must
+    /// be the last statement of its body, its only call and with no `return` before it (0004
+    /// §11.6, the first version's rule).
+    fn dispatched_payload(&mut self, item: ItemId) -> R<ItemId> {
+        let owner = BodyOwner {
+            item,
+            part: BodyPart::Main,
+        };
+        let body = self.cx.get::<marlin_front_hir_def::BodyQuery>(&owner)?;
+        let infer = self.cx.get::<marlin_shaderc_hir_ty::InferQuery>(&owner)?;
+        let fail = |what: &str| {
+            Err(LowerError::new(
+                "E1308",
+                format!(
+                    "an amplification entry ends with `Mesh.Dispatch(x, y, z, payload)`, its \
+                     one call to it, with no `return` before ({what})"
+                ),
+            ))
+        };
+        let mut dispatches = Vec::new();
+        for (e, expr) in body.store.exprs.iter() {
+            if let Expr::Call { .. } = expr
+                && let Some(marlin_shaderc_hir_ty::Callee::Item { item: f, .. }) =
+                    infer.callees.get(e)
+                && self
+                    .cx
+                    .get::<marlin_shaderc_hir_ty::ItemTypesQuery>(f)?
+                    .intrinsic
+                    .as_deref()
+                    == Some("mesh.dispatch")
+            {
+                dispatches.push(e);
+            }
+        }
+        if body
+            .store
+            .stmts
+            .iter()
+            .any(|(_, s)| matches!(s, marlin_front_hir_def::store::Stmt::Return(_)))
+        {
+            return fail("it returns early");
+        }
+        let [call] = dispatches[..] else {
+            return fail(if dispatches.is_empty() {
+                "it has none"
+            } else {
+                "it has more than one"
+            });
+        };
+        let last = match body.root {
+            Some(marlin_front_hir_def::store::LambdaBody::Block(s)) => match &body.store.stmts[s] {
+                marlin_front_hir_def::store::Stmt::Block(stmts) => stmts.last().copied(),
+                _ => None,
+            },
+            _ => None,
+        };
+        let is_last = last.is_some_and(|s| {
+            matches!(body.store.stmts[s], marlin_front_hir_def::store::Stmt::Expr(x) if x == call)
+        });
+        if !is_last {
+            return fail("it is not the last statement");
+        }
+        let Expr::Call { args, .. } = &body.store.exprs[call] else {
+            return fail("not a call");
+        };
+        let payload = args.get(3).and_then(|a| infer.paths.get(a.expr));
+        match payload {
+            Some(p) if p.steps.is_empty() => match p.root {
+                marlin_shaderc_hir_ty::Root::Item(field) if self.is_shared(field)? => Ok(field),
+                _ => fail("its payload is not a `[GroupShared]` field"),
+            },
+            _ => fail("its payload is not a `[GroupShared]` field"),
+        }
+    }
 }

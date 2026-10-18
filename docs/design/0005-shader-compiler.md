@@ -456,6 +456,12 @@ Development 下的 `Debug.Print` 在 SPIR-V 上还写不出来，等调试 buffe
 - SPIR-V 后端：纹理和采样器从 heap 里 `OpLoad` 出来；sampler heap 的槽宽是 `OpConstantSizeOfEXT(sampler)`；采样和 fetch 都取四个分量，再按纹素类型截短；storage 纹理用无格式的读写，也都按四个分量；`desc.get nonuniform` 加 `NonUniform` 装饰。
 - 比较采样、gather、偏移、尺寸查询和纹理原子操作，用到时再加。
 
+第 10c 步加了 mesh 和 amplification：
+- 核心库：`MeshTopology`，`MeshOutput<TVertex>`、`MeshOutput<TVertex, TPrimitive>`（`SetCounts`、`Vertices`、`Primitives`，以及 `Triangles`、`Lines`、`Points`），只能写的 `MeshElements<T>`，`Mesh.Dispatch`，`[Mesh]` 的 `MaxVertices`、`MaxPrimitives`、`Topology` 字段，`[Payload]`。
+- 前端：`Name = value` 写法的 attribute 实参不算位置实参。
+- 降低：`MeshOutput` 参数变成 mesh 输出变量，它本身和它的列表只是常量标记，写入时找到对应的变量；amplification 入口传给 `Mesh.Dispatch` 的 `[GroupShared]` 字段放在 `payload` 空间里；第一版的 `Mesh.Dispatch` 规则（必须是最后一条语句，只调用一次，前面不能有 `return`）、写错下标列表、在 `SetCounts` 之前写输出都报 E1308。
+- SPIR-V 后端：`SPV_EXT_mesh_shader` 的 `MeshEXT`、`TaskEXT`；输出是 `Output` 数组，图元输出加 `PerPrimitiveEXT`，下标列表是 `Primitive*IndicesEXT`；`OutputVertices`、`OutputPrimitivesEXT` 和拓扑从输出数组推出来；`OpSetMeshOutputsEXT`；`OpEmitMeshTasksEXT` 带上 payload 变量，结束这个块。
+
 第 5c 步留到后面的：`[StructLayout]`/`[FieldOffset]`（0004 §16）；mesh 的 `MeshOutput`、`[Payload]` 和 `Mesh.Dispatch` 的检查（§11.6）；长度由 `const` 字段给出的数组，布局要等第 7 步的编译期求值；capability 和具体 target 的对照、`const if` 的裁剪，等第 9 步的 target 描述。
 
 第 7c 步留到后面的：vertex、pixel、mesh 和 amplification 入口以及 stage I/O（第 10 步；location 按声明顺序分配，0004 §11.2）；`[Export]` 和局部 `const` 的编译期求值（第 9 步，和反射一起）；`const` 函数不能访问资源、groupshared 和系统值的检查（verifier）；auto-property。

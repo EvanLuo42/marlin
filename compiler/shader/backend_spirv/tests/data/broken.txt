@@ -20,7 +20,7 @@ the module has more than one `OpMemoryModel`
 == a variable missing from the interface
 entry point `main`: it uses %46, which its interface does not list (SPIR-V 1.4)
 == no LocalSize
-entry point `main`: a compute entry point needs `LocalSize`
+entry point `main`: a compute, mesh or task entry point needs `LocalSize`
 == a built-in on the wrong type
 %10: `GlobalInvocationId` is not on a variable of the type it needs
 == a load of the wrong type

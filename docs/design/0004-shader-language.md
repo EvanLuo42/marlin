@@ -587,7 +587,7 @@ public VsOut Vs(...) { }
 [Pixel]
 public float4 Ps(in VsOut i) { }
 
-[Mesh(128, 1, 1, MaxVertices = 64, MaxPrimitives = 126, Topology = Triangle)]
+[Mesh(128, 1, 1, MaxVertices = 64, MaxPrimitives = 126, Topology = MeshTopology.Triangle)]
 public void Ms(...) { }
 
 [Amplification(32, 1, 1)]
@@ -698,7 +698,7 @@ public void As(...)
     Mesh.Dispatch(count, 1, 1, Payload);
 }
 
-[Mesh(128, 1, 1, MaxVertices = 64, MaxPrimitives = 126, Topology = Triangle)]
+[Mesh(128, 1, 1, MaxVertices = 64, MaxPrimitives = 126, Topology = MeshTopology.Triangle)]
 public void Ms([GroupThreadId] uint3 tid, [Payload] in ClusterPayload p,
                MeshOutput<VsOut, PrimOut> o)
 {
@@ -715,6 +715,8 @@ public void Ms([GroupThreadId] uint3 tid, [Payload] in ClusterPayload p,
   - 在 `SetCounts` 之前写输出会报错。
 - amplification 把 payload 写进一个 `[GroupShared]` 字段，然后调用 `Mesh.Dispatch(x, y, z, payload)`。mesh 入口用 `[Payload] in T` 参数接收。
 - 编译器检查：两边的 payload 类型要一致；`Mesh.Dispatch` 在所有控制流路径上恰好调用一次。
+- 拓扑是普通的 enum `MeshTopology`（`Point`、`Line`、`Triangle`），写法照 C#：`Topology = MeshTopology.Triangle`。输出的下标列表跟着拓扑走：`o.Triangles[j] = uint3(...)`、`o.Lines[j] = uint2(...)`、`o.Points[j] = i`（2026-10-17 定）。
+- 第一版对 `Mesh.Dispatch` 的要求更严：它必须是 amplification 入口自己函数体里的最后一条语句，只调用一次，前面不能有 `return`。这样一定满足"每条路径恰好一次"。完整的路径分析以后再做，那时只会放宽（2026-10-17 定）。
 
 ## 12. GPU 特有的部分
 

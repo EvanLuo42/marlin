@@ -380,6 +380,7 @@ impl<'a> Verifier<'a> {
         }
         self.recursion();
         self.entries();
+        self.mesh_writes();
     }
 
     fn globals(&mut self) {
@@ -400,13 +401,19 @@ impl<'a> Verifier<'a> {
             if space == Space::Function {
                 problems.push("a module-level variable is not in the `function` space".into());
             }
-            let io = matches!(space, Space::Input | Space::Output);
+            // A mesh entry's vertex and primitive outputs are arrays of what one holds.
+            let mesh = matches!(space, Space::MeshVertex | Space::MeshPrimitive);
+            let io = mesh || matches!(space, Space::Input | Space::Output);
+            let one = match (mesh, self.ty_ok(pointee).then(|| self.data(pointee))) {
+                (true, Some(TypeData::Array(e, _))) => *e,
+                _ => pointee,
+            };
             match g.binding {
                 Binding::None => {}
                 Binding::Builtin(b) => {
                     if !io {
                         problems.push("a builtin is an `input` or `output`".to_string());
-                    } else if !self.ty_ok(pointee) || !builtin_type_ok(self, b, pointee) {
+                    } else if !self.ty_ok(one) || !builtin_type_ok(self, b, one) {
                         let shown = self.show(pointee);
                         problems.push(format!(
                             "`builtin({})` must be {}, not `{shown}`",
@@ -471,6 +478,16 @@ impl<'a> Verifier<'a> {
             .filter(|b| f.blocks.get(**b).is_some())
             .flat_map(|&b| f.insts(b).take(f.insts.len()).collect::<Vec<_>>())
             .collect()
+    }
+
+    /// In a function that sets a mesh entry's counts, every write to its outputs comes after
+    /// (is dominated by) `mesh.set_counts` (0006 §8.9).
+    fn mesh_writes(&mut self) {
+        for name in early_mesh_writes(self.m) {
+            self.error(format!(
+                "`@{name}`: a mesh output is written before `mesh.set_counts`"
+            ));
+        }
     }
 
     fn entries(&mut self) {
@@ -548,6 +565,23 @@ impl<'a> Verifier<'a> {
                         problems.push(format!(
                             "`@{}` uses a pixel-only operation, reached from a {} entry point",
                             func.name,
+                            entry.stage.name()
+                        ));
+                    }
+                    let wrong = match op {
+                        Op::MeshSetCounts => !matches!(entry.stage, Stage::Mesh(_)),
+                        Op::MeshDispatch => !matches!(entry.stage, Stage::Amplification(_)),
+                        _ => false,
+                    };
+                    if wrong {
+                        problems.push(format!(
+                            "`@{}` uses `{}`, reached from a {} entry point",
+                            func.name,
+                            if matches!(op, Op::MeshSetCounts) {
+                                "mesh.set_counts"
+                            } else {
+                                "mesh.dispatch"
+                            },
                             entry.stage.name()
                         ));
                     }
@@ -1353,6 +1387,18 @@ impl<'v, 'a> FunctionVerifier<'v, 'a> {
             }
             Op::UniformPtr | Op::BufferLength | Op::DescGet { .. } => count(1),
             Op::TexSample(a) | Op::TexLoad(a) | Op::TexStore(a) => tex_problem(v, op, a, args),
+            Op::MeshSetCounts | Op::MeshDispatch => {
+                let n = if matches!(op, Op::MeshSetCounts) {
+                    2
+                } else {
+                    3
+                };
+                if let Some(p) = count(n) {
+                    return Some(p);
+                }
+                (!args.iter().all(|&t| index_ok(t)))
+                    .then(|| "the counts are integer scalars".into())
+            }
             Op::Atomic { op, scope, order } => {
                 let n = match op {
                     AtomicOp::Load => 1,
@@ -1954,4 +2000,70 @@ fn tex_problem(v: &Verifier<'_>, op: &Op, a: &[TexArg], args: &[Type]) -> Option
         _ => {}
     }
     None
+}
+
+/// The functions that write a mesh output before (not dominated by) their `mesh.set_counts`
+/// (0006 §8.9). Writes in functions without one are their callers' to order.
+pub fn early_mesh_writes(m: &Module) -> Vec<String> {
+    let mut out = Vec::new();
+    for (_, f) in m.funcs.iter() {
+        let insts = Verifier::placed_insts(f);
+        let sets: Vec<Inst> = insts
+            .iter()
+            .copied()
+            .filter(|&i| matches!(f.insts[i].op, Op::MeshSetCounts))
+            .collect();
+        if sets.is_empty() {
+            continue;
+        }
+        let cfg = crate::cfg::Cfg::new(f);
+        let block_of = |i: Inst| -> Option<usize> {
+            f.layout.iter().position(|&b| f.insts(b).any(|x| x == i))
+        };
+        let pos_in_block = |i: Inst| -> usize {
+            f.layout
+                .iter()
+                .find_map(|&b| f.insts(b).position(|x| x == i))
+                .unwrap_or(0)
+        };
+        for &i in &insts {
+            if !matches!(f.insts[i].op, Op::Store { .. }) {
+                continue;
+            }
+            // The pointer's root variable.
+            let mut p = f.operands(i)[0];
+            let root = loop {
+                match f.values[p].def {
+                    ValueDef::Global(g) => break Some(g),
+                    ValueDef::Result(d, _) if matches!(f.insts[d].op, Op::Access(_)) => {
+                        p = f.operands(d)[0];
+                    }
+                    _ => break None,
+                }
+            };
+            let Some(g) = root else { continue };
+            let mesh = matches!(
+                m.types[m.globals[g].ty],
+                TypeData::Ptr {
+                    space: Space::MeshVertex | Space::MeshPrimitive | Space::MeshIndex,
+                    ..
+                }
+            );
+            if !mesh {
+                continue;
+            }
+            let (Some(bs), w) = (block_of(i), pos_in_block(i)) else {
+                continue;
+            };
+            let after = sets.iter().any(|&s| match block_of(s) {
+                Some(b) if b == bs => pos_in_block(s) < w,
+                Some(b) => cfg.dominates(b, bs),
+                None => false,
+            });
+            if !after && !out.contains(&f.name.to_string()) {
+                out.push(f.name.to_string());
+            }
+        }
+    }
+    out
 }

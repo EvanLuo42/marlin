@@ -1,0 +1,47 @@
+// Mesh and amplification entries (0004 §11.6): a mesh entry writes its vertices, primitives
+// and index list through its `MeshOutput` parameter after `SetCounts`; an amplification entry
+// ends with `Mesh.Dispatch`.
+namespace Marlin;
+
+/// What a mesh entry's index list holds: points, lines or triangles.
+public enum MeshTopology { Point, Line, Triangle }
+
+/// A mesh entry's outputs, as many as its `[Mesh]` attribute's `MaxVertices` and
+/// `MaxPrimitives` allow; the index list that matches its `Topology`.
+[Builtin("mesh_output")]
+public readonly struct MeshOutput<TVertex>
+{
+    /// How many vertices and primitives this group makes; before any output is written.
+    [Intrinsic("mesh.set_counts")] public void SetCounts(uint vertices, uint primitives);
+    [Intrinsic("mesh.vertices")] public MeshElements<TVertex> Vertices { get; }
+    [Intrinsic("mesh.indices")] public MeshElements<uint3> Triangles { get; }
+    [Intrinsic("mesh.indices")] public MeshElements<uint2> Lines { get; }
+    [Intrinsic("mesh.indices")] public MeshElements<uint> Points { get; }
+}
+
+/// A mesh entry's outputs with attributes per primitive.
+[Builtin("mesh_output")]
+public readonly struct MeshOutput<TVertex, TPrimitive>
+{
+    [Intrinsic("mesh.set_counts")] public void SetCounts(uint vertices, uint primitives);
+    [Intrinsic("mesh.vertices")] public MeshElements<TVertex> Vertices { get; }
+    [Intrinsic("mesh.primitives")] public MeshElements<TPrimitive> Primitives { get; }
+    [Intrinsic("mesh.indices")] public MeshElements<uint3> Triangles { get; }
+    [Intrinsic("mesh.indices")] public MeshElements<uint2> Lines { get; }
+    [Intrinsic("mesh.indices")] public MeshElements<uint> Points { get; }
+}
+
+/// One of a mesh entry's output lists, written by index.
+[Builtin("mesh_elements")]
+public readonly struct MeshElements<T>
+{
+    [Intrinsic("mesh.element")] public T this[uint i] { set; }
+}
+
+public struct Mesh
+{
+    /// Launches `x * y * z` mesh groups, each given `payload` (a `[GroupShared]` field). The last
+    /// statement of an amplification entry's body, called once (0004 §11.6).
+    [Intrinsic("mesh.dispatch")]
+    public static void Dispatch<T>(uint x, uint y, uint z, in T payload);
+}

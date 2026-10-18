@@ -166,3 +166,22 @@ block0:
     tex.store %albedo, i32x2 (0, 0), f32x4 zero
     return
 }
+
+// ==== mesh operations outside their stages
+entry compute(1, 1, 1) @MeshInCompute uses() {
+block0:
+    mesh.set_counts i32 1, i32 1
+    mesh.dispatch i32 1, i32 1, i32 1
+    return
+}
+
+// ==== a mesh output written before its counts
+global @early : ptr<mesh_index, [i32x3; 1]>
+
+entry mesh(1, 1, 1) @EarlyWrite uses(@early) {
+block0:
+    %t = access @early, [i32 0]
+    store %t, i32x3 (0, 1, 2)
+    mesh.set_counts i32 3, i32 1
+    return
+}

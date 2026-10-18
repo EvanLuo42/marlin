@@ -191,6 +191,8 @@ pub fn layout(opcode: u32) -> Option<&'static str> {
         op::TypeBufferEXT => "rl",
         op::BufferPointerEXT => "tri",
         op::ConstantSizeOfEXT => "tri",
+        op::SetMeshOutputsEXT => "ii",
+        op::EmitMeshTasksEXT => "iiii?",
         _ => return None,
     })
 }

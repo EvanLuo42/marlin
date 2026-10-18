@@ -1389,6 +1389,8 @@ impl Parser {
                 "access" => self.access(b, line)?,
                 "buffer.elem" => (Op::BufferElem, self.operands(b, line, 2)?, None),
                 "tex.sample" => self.tex(b, line, 3, Op::TexSample)?,
+                "mesh.set_counts" => (Op::MeshSetCounts, self.operands(b, line, 2)?, None),
+                "mesh.dispatch" => (Op::MeshDispatch, self.operands(b, line, 3)?, None),
                 "tex.load" => self.tex(b, line, 2, Op::TexLoad)?,
                 "tex.store" => self.tex(b, line, 3, Op::TexStore)?,
                 "buffer.byte" => (Op::BufferByte, self.operands(b, line, 2)?, None),

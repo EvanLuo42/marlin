@@ -60,7 +60,13 @@
 //! `tex.*` operations, their optional arguments passed by name only when given; implicit
 //! levels only in pixel entries (E1309); bitcasts; byte buffers' `Load2`-`Store4`.
 //!
-//! Not lowered yet: mesh and amplification entries (step 10c); auto-properties.
+//! Step 10c: mesh and amplification entries (`mesh.rs`). A `MeshOutput` parameter becomes
+//! output arrays (one per field of the vertex and primitive types, and the index list); the
+//! output and its lists are constant markers that writes resolve to those arrays. The field an
+//! amplification entry dispatches lives in `payload` memory; `Mesh.Dispatch` must end the
+//! entry's body (the first version's rule). Writes before `SetCounts` are E1308.
+//!
+//! Not lowered yet: auto-properties.
 
 mod closures;
 mod ctfe;
@@ -71,6 +77,7 @@ mod expr;
 mod func;
 mod intrinsic;
 mod members;
+mod mesh;
 mod pat;
 mod place;
 mod ssa;
@@ -148,6 +155,11 @@ pub struct Lowering<'a, 'b> {
     pub(crate) ctfe: bool,
     /// The index of each source location in the module's table.
     pub(crate) locs: HashMap<marlin_shaderc_ir::SourceLoc, u32>,
+    /// The output variables of the mesh entry being lowered.
+    pub(crate) mesh: Option<entry::MeshOutputs>,
+    /// The `[GroupShared]` field an amplification entry dispatches, which lives in `payload`
+    /// memory.
+    pub(crate) payload_field: Option<ItemId>,
 }
 
 impl<'a, 'b> Lowering<'a, 'b> {
@@ -172,6 +184,8 @@ impl<'a, 'b> Lowering<'a, 'b> {
             shared: HashMap::new(),
             ctfe: false,
             locs: HashMap::new(),
+            mesh: None,
+            payload_field: None,
         })
     }
 
@@ -253,6 +267,12 @@ impl<'a, 'b> Lowering<'a, 'b> {
         self.run()?;
         self.entry_uses();
         self.implicit_levels()?;
+        if let Some(f) = marlin_shaderc_ir::early_mesh_writes(&self.module).first() {
+            return Err(LowerError::new(
+                "E1308",
+                format!("`{f}` writes a mesh output before `SetCounts`"),
+            ));
+        }
         Ok(self.module)
     }
 

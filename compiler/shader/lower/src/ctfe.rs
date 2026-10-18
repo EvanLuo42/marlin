@@ -106,6 +106,8 @@ impl Lowering<'_, '_> {
             shared: HashMap::new(),
             ctfe: true,
             locs: HashMap::new(),
+            mesh: None,
+            payload_field: None,
         };
         let f = scratch.function(item)?;
         scratch.run()?;
@@ -315,6 +317,8 @@ impl Lowering<'_, '_> {
             shared: HashMap::new(),
             ctfe: true,
             locs: HashMap::new(),
+            mesh: None,
+            payload_field: None,
         };
         let f = scratch.instance(Instance {
             owner,

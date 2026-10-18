@@ -87,4 +87,4 @@ pub use op::{
 pub use parse::{ParseError, parse_module};
 pub use print::{FuncText, block_order, const_lit, print_function, print_module, type_name};
 pub use ty::{ResKind, ResourceKind, Scalar, Space, StructId, TextureShape, Type, TypeData};
-pub use verify::{VerifyError, verify_module};
+pub use verify::{VerifyError, early_mesh_writes, verify_module};

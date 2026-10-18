@@ -416,6 +416,16 @@ impl Validator {
                     cap::StorageImageWriteWithoutFormat,
                     "writing storage images without a format",
                 ),
+                op::EntryPoint
+                    if matches!(
+                        i.ops[0],
+                        crate::spirv::execution_model::MeshEXT
+                            | crate::spirv::execution_model::TaskEXT
+                    ) =>
+                {
+                    req(cap::MeshShadingEXT, "mesh and task shaders");
+                    ext.push(("SPV_EXT_mesh_shader", name.clone()));
+                }
                 op::GroupNonUniformElect => req(cap::GroupNonUniform, "wave operations"),
                 op::GroupNonUniformAll | op::GroupNonUniformAny | op::GroupNonUniformAllEqual => {
                     req(cap::GroupNonUniformVote, "wave votes")
@@ -561,13 +571,15 @@ impl Validator {
                     "entry point `{name}`: a fragment entry point needs `OriginUpperLeft` (Vulkan)"
                 ));
             }
-            if e.ops[0] == crate::spirv::execution_model::GLCompute
+            let model = e.ops[0];
+            use crate::spirv::execution_model as em;
+            if matches!(model, em::GLCompute | em::MeshEXT | em::TaskEXT)
                 && !modes
                     .iter()
                     .any(|m| m.ops[0] == f && m.ops[1] == crate::spirv::execution_mode::LocalSize)
             {
                 self.error(format!(
-                    "entry point `{name}`: a compute entry point needs `LocalSize`"
+                    "entry point `{name}`: a compute, mesh or task entry point needs `LocalSize`"
                 ));
             }
             let listed: HashSet<u32> = interface.iter().copied().collect();
@@ -603,9 +615,12 @@ impl Validator {
                     sc::StorageBuffer | sc::Uniform | sc::PushConstant => {
                         laid.push((id, *class, *pointee))
                     }
-                    sc::Function | sc::Private | sc::Workgroup | sc::Input | sc::Output => {
-                        plain.push((id, *class, *pointee))
-                    }
+                    sc::Function
+                    | sc::Private
+                    | sc::Workgroup
+                    | sc::Input
+                    | sc::Output
+                    | sc::TaskPayloadWorkgroupEXT => plain.push((id, *class, *pointee)),
                     _ => {}
                 }
             }
@@ -650,6 +665,17 @@ impl Validator {
                     Some(Ty::Pointer { pointee, .. }) => Some(*pointee),
                     _ => None,
                 };
+                // A mesh entry's outputs are arrays: one element per vertex or primitive.
+                let mesh = self.insts.iter().any(|i| {
+                    i.opcode == op::EntryPoint
+                        && i.ops.first() == Some(&crate::spirv::execution_model::MeshEXT)
+                });
+                let pointee = match pointee.and_then(|t| self.types.get(t)) {
+                    Some(Ty::Array { element, .. }) if mesh && class == sc::Output => {
+                        Some(*element)
+                    }
+                    _ => pointee,
+                };
                 let uint = |v: &Self, t: Option<u32>, n: u32| match t.and_then(|t| v.types.get(t)) {
                     Some(Ty::Int { width: 32, .. }) => n == 1,
                     Some(Ty::Vector { component, count }) => {
@@ -689,6 +715,20 @@ impl Validator {
                         class == sc::Input && uint(self, pointee, 1)
                     }
                     builtin::Position => class == sc::Output && float(self, pointee, 4),
+                    builtin::PrimitiveTriangleIndicesEXT => {
+                        mesh && class == sc::Output && uint(self, pointee, 3)
+                    }
+                    builtin::PrimitiveLineIndicesEXT => {
+                        mesh && class == sc::Output && uint(self, pointee, 2)
+                    }
+                    builtin::PrimitivePointIndicesEXT => {
+                        mesh && class == sc::Output && uint(self, pointee, 1)
+                    }
+                    builtin::CullPrimitiveEXT => {
+                        mesh && class == sc::Output
+                            && matches!(pointee.and_then(|t| self.types.get(t)), Some(Ty::Bool))
+                    }
+                    builtin::PrimitiveId => uint(self, pointee, 1),
                     builtin::FragCoord => class == sc::Input && float(self, pointee, 4),
                     builtin::FragDepth => class == sc::Output && float(self, pointee, 1),
                     builtin::FrontFacing => {

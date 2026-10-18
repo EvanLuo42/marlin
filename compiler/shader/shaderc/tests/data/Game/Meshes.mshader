@@ -1,0 +1,84 @@
+namespace Game;
+
+// The RHI tests' mesh shaders: one quad (a column of the target) per mesh group, directly
+// or two groups per amplification group.
+
+public struct MeshArgs
+{
+    public uint Columns;
+    public uint[30] Unused;
+    public uint First;
+}
+
+public struct ColumnPayload
+{
+    public uint First;
+}
+
+void Quad(uint column, uint columns, MeshOutput<ColumnVertex> o)
+{
+    o.SetCounts(4, 2);
+    float x0 = (float)column / (float)columns * 2 - 1;
+    float x1 = (float)(column + 1) / (float)columns * 2 - 1;
+    o.Vertices[0] = ColumnVertex { Pos = float4(x0, -1, 0.5, 1), Value = column + 1 };
+    o.Vertices[1] = ColumnVertex { Pos = float4(x1, -1, 0.5, 1), Value = column + 1 };
+    o.Vertices[2] = ColumnVertex { Pos = float4(x1, 1, 0.5, 1), Value = column + 1 };
+    o.Vertices[3] = ColumnVertex { Pos = float4(x0, 1, 0.5, 1), Value = column + 1 };
+    o.Triangles[0] = uint3(0, 1, 2);
+    o.Triangles[1] = uint3(0, 2, 3);
+}
+
+[Mesh(1, 1, 1, MaxVertices = 4, MaxPrimitives = 2, Topology = MeshTopology.Triangle)]
+public void MeshMain([GroupId] uint3 group, [Push] in MeshArgs a, MeshOutput<ColumnVertex> o)
+{
+    Quad(a.First + group.x, a.Columns, o);
+}
+
+[GroupShared] ColumnPayload SharedPayload;
+
+[Amplification(1, 1, 1)]
+public void AmplifyMain([GroupId] uint3 group, [Push] in MeshArgs a)
+{
+    SharedPayload.First = a.First + group.x * 2;
+    Mesh.Dispatch(2, 1, 1, SharedPayload);
+}
+
+[Mesh(1, 1, 1, MaxVertices = 4, MaxPrimitives = 2, Topology = MeshTopology.Triangle)]
+public void MeshAmplified(
+    [GroupId] uint3 group,
+    [Payload] in ColumnPayload p,
+    [Push] in MeshArgs a,
+    MeshOutput<ColumnVertex> o)
+{
+    Quad(p.First + group.x, a.Columns, o);
+}
+
+// Errors: `Mesh.Dispatch` not last, an early return, the wrong index list.
+[Amplification(1, 1, 1)]
+public void DispatchNotLast([Push] in MeshArgs a)
+{
+    Mesh.Dispatch(1, 1, 1, SharedPayload);
+    SharedPayload.First = a.First;
+}
+
+[Amplification(1, 1, 1)]
+public void DispatchAfterReturn([GroupId] uint3 group, [Push] in MeshArgs a)
+{
+    if (group.x > a.First)
+        return;
+    Mesh.Dispatch(1, 1, 1, SharedPayload);
+}
+
+[Mesh(1, 1, 1, MaxVertices = 4, MaxPrimitives = 2, Topology = MeshTopology.Line)]
+public void WrongList(MeshOutput<ColumnVertex> o)
+{
+    o.SetCounts(4, 2);
+    o.Triangles[0] = uint3(0, 1, 2);
+}
+
+[Mesh(1, 1, 1, MaxVertices = 4, MaxPrimitives = 2, Topology = MeshTopology.Triangle)]
+public void WriteBeforeCounts(MeshOutput<ColumnVertex> o)
+{
+    o.Triangles[0] = uint3(0, 1, 2);
+    o.SetCounts(4, 2);
+}

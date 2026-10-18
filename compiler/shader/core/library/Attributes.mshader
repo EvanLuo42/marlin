@@ -34,11 +34,18 @@ public struct ComputeAttribute : IAttribute
 public struct VertexAttribute : IAttribute { }
 public struct PixelAttribute : IAttribute { }
 
-/// A mesh entry point with its thread-group size (0004 §11.6).
+/// A mesh entry point with its thread-group size and output capacity (0004 §11.6):
+/// `[Mesh(32, 1, 1, MaxVertices = 64, MaxPrimitives = 126, Topology = MeshTopology.Triangle)]`.
 public struct MeshAttribute : IAttribute
 {
+    public int MaxVertices;
+    public int MaxPrimitives;
+    public MeshTopology Topology;
     public MeshAttribute(int x, int y = 1, int z = 1) { }
 }
+
+/// A mesh entry's input: the payload its amplification entry dispatched (0004 §11.6).
+public struct PayloadAttribute : IAttribute { }
 
 /// An amplification entry point with its thread-group size (0004 §11.6).
 public struct AmplificationAttribute : IAttribute

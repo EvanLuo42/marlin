@@ -73,7 +73,8 @@ table! {
         TypeUntypedPointerKHR = 4417, UntypedVariableKHR = 4418,
         UntypedAccessChainKHR = 4419, UntypedInBoundsAccessChainKHR = 4420,
         UntypedArrayLengthKHR = 4425, TypeBufferEXT = 5115,
-        BufferPointerEXT = 5119, ConstantSizeOfEXT = 5129,
+        BufferPointerEXT = 5119, ConstantSizeOfEXT = 5129, EmitMeshTasksEXT = 5294,
+        SetMeshOutputsEXT = 5295,
     }
 }
 
@@ -85,7 +86,7 @@ table! {
         GroupNonUniformArithmetic = 63, GroupNonUniformBallot = 64,
         GroupNonUniformShuffle = 65, GroupNonUniformClustered = 67, GroupNonUniformQuad = 68,
         DrawParameters = 4427, ShaderNonUniform = 5301, StorageBuffer16BitAccess = 4433, StoragePushConstant16 = 4435,
-        UntypedPointersKHR = 4473, DescriptorHeapEXT = 5128,
+        UntypedPointersKHR = 4473, DescriptorHeapEXT = 5128, MeshShadingEXT = 5283,
     }
 }
 
@@ -94,7 +95,7 @@ table! {
         Block = 2, ColMajor = 5, ArrayStride = 6, MatrixStride = 7, BuiltIn = 11,
         NoPerspective = 13, Flat = 14, Centroid = 16, Sample = 17, NonWritable = 24,
         NonReadable = 25, Location = 30, Index = 32, Offset = 35,
-        ArrayStrideIdEXT = 5124, NonUniform = 5300,
+        ArrayStrideIdEXT = 5124, PerPrimitiveEXT = 5271, NonUniform = 5300,
     }
 }
 
@@ -104,7 +105,8 @@ table! {
         SampleId = 18, SampleMask = 20, FragDepth = 22, WorkgroupId = 26,
         LocalInvocationId = 27, GlobalInvocationId = 28, LocalInvocationIndex = 29,
         SubgroupSize = 36, SubgroupLocalInvocationId = 41, VertexIndex = 42, InstanceIndex = 43,
-        BaseInstance = 4425,
+        BaseInstance = 4425, PrimitivePointIndicesEXT = 5294, PrimitiveLineIndicesEXT = 5295,
+        PrimitiveTriangleIndicesEXT = 5296, CullPrimitiveEXT = 5299,
         SamplerHeapEXT = 5122, ResourceHeapEXT = 5123,
     }
 }
@@ -112,7 +114,7 @@ table! {
 table! {
     storage_class {
         UniformConstant = 0, Input = 1, Uniform = 2, Output = 3, Workgroup = 4, Private = 6,
-        Function = 7, PushConstant = 9, StorageBuffer = 12,
+        Function = 7, PushConstant = 9, StorageBuffer = 12, TaskPayloadWorkgroupEXT = 5402,
     }
 }
 
@@ -128,11 +130,15 @@ table! {
 }
 
 table! {
-    execution_model { Vertex = 0, Fragment = 4, GLCompute = 5 }
+    execution_model { Vertex = 0, Fragment = 4, GLCompute = 5, TaskEXT = 5364, MeshEXT = 5365 }
 }
 
 table! {
-    execution_mode { OriginUpperLeft = 7, DepthReplacing = 12, LocalSize = 17 }
+    execution_mode {
+        OriginUpperLeft = 7, DepthReplacing = 12, LocalSize = 17, OutputVertices = 26,
+        OutputPoints = 27, OutputLinesEXT = 5269, OutputPrimitivesEXT = 5270,
+        OutputTrianglesEXT = 5298,
+    }
 }
 
 table! {

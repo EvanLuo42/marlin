@@ -205,6 +205,13 @@ impl Lowering<'_, '_> {
                     }
                     return Ok(self.module.res(ResKind { kind, element }));
                 }
+                // A mesh entry's outputs are module variables; these values name them.
+                if matches!(
+                    self.builtins.kind(*item),
+                    Some(BuiltinKind::MeshOutput | BuiltinKind::MeshElements)
+                ) {
+                    return Ok(self.module.scalar(marlin_shaderc_ir::Scalar::I32));
+                }
                 if matches!(
                     self.builtins.kind(*item),
                     Some(BuiltinKind::Func | BuiltinKind::Action)

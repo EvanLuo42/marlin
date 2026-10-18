@@ -541,10 +541,13 @@ impl Decl<'_, '_> {
         }
 
         // The stage's own arguments: a thread-group size, or nothing.
+        // `MaxVertices = 64` sets a field, as C# attributes do: not a positional argument.
         let positional: Vec<_> = stage_attr
             .args
             .iter()
-            .filter(|(name, _)| name.is_none())
+            .filter(|(name, e)| {
+                name.is_none() && !matches!(sig.store.exprs[*e], Expr::Assign { op: None, .. })
+            })
             .map(|(_, e)| *e)
             .collect();
         let group_size = matches!(stage, Stage::Compute | Stage::Mesh | Stage::Amplification);

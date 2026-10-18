@@ -56,3 +56,8 @@ runtime recursion: @Ping -> @Pong -> @Ping (recursion must unroll at compile tim
 @Textures: `%sampled = tex.sample %store, %s, f32x2 (0.5, 0.5) { lod: f32 0.0 }`: storage and multisampled textures are not sampled
 @Textures: `tex.store %albedo, i32x2 (0, 0), f32x4 zero`: only storage textures are written
 @Textures: `@Textures` uses a pixel-only operation, reached from a compute entry point
+== mesh operations outside their stages
+@MeshInCompute: `@MeshInCompute` uses `mesh.set_counts`, reached from a compute entry point
+@MeshInCompute: `@MeshInCompute` uses `mesh.dispatch`, reached from a compute entry point
+== a mesh output written before its counts
+`@EarlyWrite`: a mesh output is written before `mesh.set_counts`

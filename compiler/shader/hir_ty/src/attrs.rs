@@ -55,6 +55,9 @@ pub enum KnownAttr {
     /// `[Export]` on a local `const` of an entry point: its value goes into the reflection
     /// (0004 §13.4).
     Export,
+    /// `[Payload]` on a mesh entry's parameter: what its amplification entry dispatched
+    /// (0004 §11.6).
+    Payload,
 }
 
 impl KnownAttr {
@@ -73,6 +76,7 @@ impl KnownAttr {
             "Requires" => KnownAttr::Requires,
             "Uniform" => KnownAttr::Uniform,
             "Export" => KnownAttr::Export,
+            "Payload" => KnownAttr::Payload,
             "Flat" | "NoPerspective" | "Centroid" | "Sample" => KnownAttr::Interpolation,
             _ => KnownAttr::SystemValue(match name {
                 "DispatchThreadId" => DispatchThreadId,

@@ -315,6 +315,13 @@ pub enum Op {
     /// Operands: the storage texture, the integer coordinate, the value, then `layer`.
     TexStore(Vec<TexArg>),
 
+    // ---- mesh and amplification (§8.9) ----
+    /// Operands: the vertex count, the primitive count; before any mesh output is written.
+    MeshSetCounts,
+    /// Operands: the mesh groups to launch, x, y, z. The payload is the module's `payload`
+    /// variable; the amplification entry returns right after.
+    MeshDispatch,
+
     // ---- uniformity (0004 §10.3) ----
     /// The operand, asserted to be the same in every lane of the group (`[Uniform]`).
     AssumeUniform,

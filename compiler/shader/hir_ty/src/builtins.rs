@@ -106,6 +106,10 @@ pub enum BuiltinKind {
     Func,
     /// `Action<...>` of any arity.
     Action,
+    /// A mesh entry's outputs (0004 §11.6).
+    MeshOutput,
+    /// A mesh output's vertices, primitives or index list, written by index.
+    MeshElements,
     /// `string`, which exists only in attribute declarations (0004 §1).
     String,
 }
@@ -121,6 +125,8 @@ impl BuiltinKind {
             "matrix" => BuiltinKind::Matrix,
             "func" => BuiltinKind::Func,
             "action" => BuiltinKind::Action,
+            "mesh_output" => BuiltinKind::MeshOutput,
+            "mesh_elements" => BuiltinKind::MeshElements,
             "string" => BuiltinKind::String,
             "uniform" => BuiltinKind::Resource(Uniform),
             "buffer" => BuiltinKind::Resource(Buffer),

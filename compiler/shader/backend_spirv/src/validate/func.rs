@@ -67,6 +67,7 @@ fn is_terminator(opcode: u32) -> bool {
             | op::Return
             | op::ReturnValue
             | op::Unreachable
+            | op::EmitMeshTasksEXT
     )
 }
 

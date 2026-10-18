@@ -14,6 +14,10 @@ global @color1 : ptr<output, f32x4> target(0, source 1)
 global @table : ptr<constant, [f32; 4]> = (0.5, 1.0, -2.25, 1e-7)
 global @grid : ptr<constant, @"Game.Grid<4>"> = ((1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0), zero)
 global @tex : ptr<push, @TexArgs>
+global @verts : ptr<mesh_vertex, [f32x4; 4]> builtin(Position)
+global @cluster : ptr<mesh_primitive, [i32; 2]> location(0) interp(flat)
+global @tris : ptr<mesh_index, [i32x3; 2]>
+global @payload : ptr<payload, i32>
 
 func @Game.Arith(%a: i32, %b: i32, %x: f32, %y: f32) -> (i32, f32) {
 block0:
@@ -262,5 +266,24 @@ block0:
     %v = tex.load %volume, i32x3 (1, 2, 3)
     tex.store %volume, i32x3 (1, 2, 3), i32 7
     store @color, %c1
+    return
+}
+
+entry mesh(1, 1, 1) @Game.Ms uses(@verts, @cluster, @tris) {
+block0:
+    mesh.set_counts i32 4, i32 2
+    %v = access @verts, [0]
+    store %v, f32x4 zero
+    %c = access @cluster, [1]
+    store %c, i32 7
+    %t = access @tris, [0]
+    store %t, i32x3 (0, 1, 2)
+    return
+}
+
+entry amplification(1, 1, 1) @Game.As uses(@payload) {
+block0:
+    store @payload, i32 3
+    mesh.dispatch i32 2, i32 1, i32 1
     return
 }

@@ -12,6 +12,12 @@
 //! - What SPIR-V leaves undefined is made defined, as the IR has it: shift counts are taken
 //!   modulo the width, float-to-integer conversions saturate (NaN to 0).
 //!
+//! Step 10c: mesh and task shaders (`SPV_EXT_mesh_shader`): mesh outputs are `Output` arrays
+//! (`PerPrimitiveEXT` for primitives, the index list a `Primitive*IndicesEXT` built-in); the
+//! output counts and topology come from those arrays; `OpSetMeshOutputsEXT`; and
+//! `OpEmitMeshTasksEXT` with the payload variable, which ends the block in place of its
+//! return.
+//!
 //! Step 10b: textures and samplers. Their handles are loaded from the resource and sampler
 //! heaps (arrays of `OpTypeImage` and `OpTypeSampler`, the sampler slot
 //! `OpConstantSizeOfEXT(sampler)` wide); samples and fetches take four components and narrow
@@ -42,7 +48,7 @@ mod write;
 
 use std::collections::BTreeSet;
 
-use marlin_shaderc_ir::{FuncId, Module, Stage};
+use marlin_shaderc_ir::{FuncId, Module};
 use marlin_shaderc_target::{Backend, BackendError, Blob, Target};
 
 pub use dis::disassemble;
@@ -68,9 +74,6 @@ pub fn write_module(m: &Module, entry: FuncId) -> Result<Vec<u32>, BackendError>
     let e = m.entry_of(entry).ok_or_else(|| BackendError {
         message: "not an entry point".into(),
     })?;
-    if !matches!(e.stage, Stage::Compute(_) | Stage::Vertex | Stage::Pixel) {
-        return write::unsupported(format!("a {} entry point", e.stage.name()));
-    }
     for (id, _) in m.funcs.iter() {
         if id != entry {
             return write::unsupported(

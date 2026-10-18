@@ -127,6 +127,7 @@ fn an_entry_compiles_to_spirv_with_its_reflection() {
             SourcePath::new("Game", "Graphics.mshader"),
             SourcePath::new("Game", "Kernel.mshader"),
             SourcePath::new("Game", "Main.mshader"),
+            SourcePath::new("Game", "Meshes.mshader"),
             SourcePath::new("Game", "Textures.mshader"),
             SourcePath::new("Game", "Wide.mshader"),
         ]
@@ -217,6 +218,19 @@ fn bad_requests_are_diagnostics() {
         (
             "an implicit level in a compute entry",
             request("Game.ImplicitInCompute", &[]),
+        ),
+        (
+            "Mesh.Dispatch not last",
+            request("Game.DispatchNotLast", &[]),
+        ),
+        (
+            "Mesh.Dispatch after a return",
+            request("Game.DispatchAfterReturn", &[]),
+        ),
+        ("the wrong mesh index list", request("Game.WrongList", &[])),
+        (
+            "a mesh output before SetCounts",
+            request("Game.WriteBeforeCounts", &[]),
         ),
     ];
     let mut text = String::new();
@@ -394,6 +408,9 @@ fn the_core_library_compiles_for_vulkan() {
         "Game.TexelLoad",
         "Game.ForwardVs",
         "Game.ForwardPs",
+        "Game.MeshMain",
+        "Game.AmplifyMain",
+        "Game.MeshAmplified",
     ] {
         let mut req = request(entry, &[]);
         req.profile = Profile::Shipping;

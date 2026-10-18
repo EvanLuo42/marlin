@@ -90,6 +90,8 @@ pub fn result_types_in(
         | Op::Unreachable
         | Op::Store { .. }
         | Op::TexStore(_)
+        | Op::MeshSetCounts
+        | Op::MeshDispatch
         | Op::Barrier { .. }
         | Op::Discard
         | Op::DebugPrint(_)

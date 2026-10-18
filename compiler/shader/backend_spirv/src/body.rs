@@ -36,6 +36,8 @@ pub(crate) struct Body<'w, 'm> {
     /// and switch targets outside the switch (a case may only break or continue from a block
     /// inside it). The label of that block.
     via: HashMap<(Block, usize), u32>,
+    /// `OpEmitMeshTasksEXT` was just written: it ends the block, so its `return` is not.
+    dispatched: bool,
 }
 
 impl<'w, 'm> Body<'w, 'm> {
@@ -50,6 +52,7 @@ impl<'w, 'm> Body<'w, 'm> {
             loops: HashMap::new(),
             stub_continues: HashMap::new(),
             via: HashMap::new(),
+            dispatched: false,
         }
     }
 
@@ -386,6 +389,8 @@ impl<'w, 'm> Body<'w, 'm> {
                 self.emit(op::Switch, &operands);
                 self.through(b);
             }
+            // `OpEmitMeshTasksEXT` ended the block already.
+            Op::Return if self.dispatched => self.dispatched = false,
             Op::Return => {
                 if ops.is_empty() {
                     self.emit(op::Return, &[]);
@@ -647,6 +652,34 @@ impl<'w, 'm> Body<'w, 'm> {
                 Some(v)
             }
             Op::TexSample(targs) => Some(self.tex_sample(&ops, targs, rt)?),
+            Op::MeshSetCounts => {
+                let (nv, np) = (a(self, 0)?, a(self, 1)?);
+                self.emit(op::SetMeshOutputsEXT, &[nv, np]);
+                None
+            }
+            Op::MeshDispatch => {
+                let (x, y, z) = (a(self, 0)?, a(self, 1)?, a(self, 2)?);
+                let mut operands = vec![x, y, z];
+                // The module's payload variable, if it has one.
+                let payload = self.w.m.globals.iter().find_map(|(g, d)| {
+                    matches!(
+                        self.w.m.data(d.ty),
+                        TypeData::Ptr {
+                            space: Space::Payload,
+                            ..
+                        }
+                    )
+                    .then_some(g)
+                });
+                if let Some(g) = payload
+                    && let Global::Var(v) = self.w.module_var(g)?
+                {
+                    operands.push(v);
+                }
+                self.emit(op::EmitMeshTasksEXT, &operands);
+                self.dispatched = true;
+                None
+            }
             Op::TexLoad(targs) => Some(self.tex_load(&ops, targs, rt)?),
             Op::TexStore(targs) => {
                 self.tex_store(&ops, targs)?;
@@ -1249,6 +1282,8 @@ pub(crate) fn builtin_of(b: Builtin, stage: Stage, space: Space) -> R<u32> {
         Builtin::IsFrontFace => builtin::FrontFacing,
         Builtin::SampleIndex => builtin::SampleId,
         Builtin::Depth => builtin::FragDepth,
+        Builtin::PrimitiveId => builtin::PrimitiveId,
+        Builtin::CullPrimitive => builtin::CullPrimitiveEXT,
         other => return unsupported(format!("the built-in `{}`", other.name())),
     })
 }

@@ -26,3 +26,27 @@ error[E1504]: `Game.Wide` needs `Float64` (it uses `double`), which the target `
 == an implicit level in a compute entry
 error[E1309]: `Game.ImplicitInCompute(@Game.SampleArgs)` samples without `lod:` or `grad:`, which only pixel entries can (their level comes from derivatives)
 
+== Mesh.Dispatch not last
+error[E1308]: an amplification entry ends with `Mesh.Dispatch(x, y, z, payload)`, its one call to it, with no `return` before (it is not the last statement)
+  --> Game/Meshes.mshader:58:13
+   |
+58 | public void DispatchNotLast([Push] in MeshArgs a)
+   |             ^^^^^^^^^^^^^^^
+
+== Mesh.Dispatch after a return
+error[E1308]: an amplification entry ends with `Mesh.Dispatch(x, y, z, payload)`, its one call to it, with no `return` before (it returns early)
+  --> Game/Meshes.mshader:65:13
+   |
+65 | public void DispatchAfterReturn([GroupId] uint3 group, [Push] in MeshArgs a)
+   |             ^^^^^^^^^^^^^^^^^^^
+
+== the wrong mesh index list
+error[E1308]: this mesh entry's topology writes `Lines`
+  --> Game/Meshes.mshader:76:5
+   |
+76 |     o.Triangles[0] = uint3(0, 1, 2);
+   |     ^^^^^^^^^^^^^^
+
+== a mesh output before SetCounts
+error[E1308]: `Game.WriteBeforeCounts(i32)` writes a mesh output before `SetCounts`
+

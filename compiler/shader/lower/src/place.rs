@@ -40,7 +40,13 @@ impl Lowering<'_, '_> {
         }
         let types = self.cx.get::<ItemTypesQuery>(&item)?;
         let t = self.ty(types.ty.as_ref().unwrap_or(&Ty::Error))?;
-        let ptr = self.module.ptr(Space::GroupShared, false, t);
+        // The field an amplification entry dispatches is its payload (0004 §11.6).
+        let space = if self.payload_field == Some(item) {
+            Space::Payload
+        } else {
+            Space::GroupShared
+        };
+        let ptr = self.module.ptr(space, false, t);
         let g = self.module.add_global(GlobalData {
             name: path.to_string().into(),
             ty: ptr,
@@ -52,7 +58,7 @@ impl Lowering<'_, '_> {
         Ok(Some(g))
     }
 
-    fn is_shared(&self, item: ItemId) -> R<bool> {
+    pub(crate) fn is_shared(&self, item: ItemId) -> R<bool> {
         let tree = self.cx.get::<ItemTreeQuery>(&item.file)?;
         if tree.items[item.local].kind != ItemKind::Field {
             return Ok(false);

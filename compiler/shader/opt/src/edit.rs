@@ -12,6 +12,8 @@ pub(crate) fn is_pure(op: &Op) -> bool {
         || matches!(
             op,
             Op::Store { .. }
+                | Op::MeshSetCounts
+                | Op::MeshDispatch
                 | Op::TexStore(_)
                 | Op::Atomic { .. }
                 | Op::Barrier { .. }

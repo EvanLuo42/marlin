@@ -127,6 +127,11 @@ ShaderReflection {
         },
         SourceHash {
             package: "Marlin",
+            path: "Mesh.mshader",
+            hash: 0,
+        },
+        SourceHash {
+            package: "Marlin",
             path: "Resources.mshader",
             hash: 0,
         },
@@ -158,6 +163,11 @@ ShaderReflection {
         SourceHash {
             package: "Game",
             path: "Main.mshader",
+            hash: 0,
+        },
+        SourceHash {
+            package: "Game",
+            path: "Meshes.mshader",
             hash: 0,
         },
         SourceHash {

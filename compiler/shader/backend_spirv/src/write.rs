@@ -58,7 +58,9 @@ pub(crate) fn storage_class(space: Space) -> R<u32> {
         Space::Push => sc::PushConstant,
         Space::Input => sc::Input,
         Space::Output => sc::Output,
-        other => return unsupported(format!("the `{other:?}` space")),
+        // A mesh entry's outputs are arrays of `Output` variables (SPV_EXT_mesh_shader).
+        Space::MeshVertex | Space::MeshPrimitive | Space::MeshIndex => sc::Output,
+        Space::Payload => sc::TaskPayloadWorkgroupEXT,
     })
 }
 
@@ -531,6 +533,24 @@ impl<'m> Writer<'m> {
                     }
                     Binding::None => {}
                 }
+                match space {
+                    // Per-primitive outputs of a mesh entry.
+                    Space::MeshPrimitive => self.decorate(var, decoration::PerPrimitiveEXT, &[]),
+                    // The index list: its built-in follows the topology.
+                    Space::MeshIndex => {
+                        let width = match self.m.data(pointee) {
+                            TypeData::Array(e, _) => self.m.width(*e).unwrap_or(3),
+                            _ => 3,
+                        };
+                        let b = match width {
+                            1 => crate::spirv::builtin::PrimitivePointIndicesEXT,
+                            2 => crate::spirv::builtin::PrimitiveLineIndicesEXT,
+                            _ => crate::spirv::builtin::PrimitiveTriangleIndicesEXT,
+                        };
+                        self.decorate(var, decoration::BuiltIn, &[b]);
+                    }
+                    _ => {}
+                }
                 if let Some(i) = data.interp {
                     let d = match i {
                         Interp::Perspective => None,
@@ -745,6 +765,10 @@ impl<'m> Writer<'m> {
 
     /// The whole module: header and sections, around the entry point's code.
     pub fn finish(mut self, entry: u32, name: &str, code: Vec<u32>) -> Vec<u32> {
+        if matches!(self.stage, Stage::Mesh(_) | Stage::Amplification(_)) {
+            self.capability(cap::MeshShadingEXT);
+            self.extension("SPV_EXT_mesh_shader");
+        }
         let glsl = self.glsl;
         let mut out = vec![
             crate::spirv::MAGIC,
@@ -769,17 +793,53 @@ impl<'m> Writer<'m> {
         let execution_model = match self.stage {
             Stage::Vertex => model::Vertex,
             Stage::Pixel => model::Fragment,
-            _ => model::GLCompute,
+            Stage::Mesh(_) => model::MeshEXT,
+            Stage::Amplification(_) => model::TaskEXT,
+            Stage::Compute(_) => model::GLCompute,
         };
         let mut ops = vec![execution_model, entry];
         ops.extend(string("main"));
         ops.extend(&self.interface);
         out.extend(inst(op::EntryPoint, &ops));
+        if let Some(size) = self.stage.group_size() {
+            let mut ops = vec![entry, mode::LocalSize];
+            ops.extend(size);
+            out.extend(inst(op::ExecutionMode, &ops));
+        }
         match self.stage {
-            Stage::Compute(size) => {
-                let mut ops = vec![entry, mode::LocalSize];
-                ops.extend(size);
-                out.extend(inst(op::ExecutionMode, &ops));
+            // The capacity and topology, from the output arrays.
+            Stage::Mesh(_) => {
+                let array = |space: Space| {
+                    self.m
+                        .globals
+                        .iter()
+                        .find_map(|(_, g)| match self.m.data(g.ty) {
+                            TypeData::Ptr {
+                                space: s, pointee, ..
+                            } if *s == space => match self.m.data(*pointee) {
+                                TypeData::Array(e, n) => Some((*e, *n)),
+                                _ => None,
+                            },
+                            _ => None,
+                        })
+                };
+                let vertices = array(Space::MeshVertex).map_or(0, |(_, n)| n);
+                let (primitives, width) = array(Space::MeshIndex)
+                    .map_or((0, 3), |(e, n)| (n, self.m.width(e).unwrap_or(3)));
+                let topology = match width {
+                    1 => mode::OutputPoints,
+                    2 => mode::OutputLinesEXT,
+                    _ => mode::OutputTrianglesEXT,
+                };
+                out.extend(inst(
+                    op::ExecutionMode,
+                    &[entry, mode::OutputVertices, vertices],
+                ));
+                out.extend(inst(
+                    op::ExecutionMode,
+                    &[entry, mode::OutputPrimitivesEXT, primitives],
+                ));
+                out.extend(inst(op::ExecutionMode, &[entry, topology]));
             }
             Stage::Pixel => {
                 // Window coordinates from the top left (0002 §4).
