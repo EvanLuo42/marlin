@@ -165,3 +165,15 @@ fn structs_have_scalar_layout() {
     // `Grid<N>` contains `Grid<N - 1>`, which has no layout until `N` is known.
     assert_eq!(layout("game/Game.mshader", "Game.Grid"), None);
 }
+
+#[test]
+fn fields_of_array_elements_in_buffer_elements_are_assignable() {
+    let world = world(&["game/BufferPlaces.mshader"]);
+    let shown = world.diagnostics(&["game/BufferPlaces.mshader"]);
+    // Only the element of an array returned by value is not a variable.
+    assert_eq!(shown.matches("error[").count(), 1, "{shown}");
+    assert!(
+        shown.contains("error[E1107]") && shown.contains("TwoLinks()[1].A"),
+        "{shown}"
+    );
+}

@@ -114,6 +114,33 @@ impl FnCx<'_, '_, '_> {
         }
     }
 
+    /// `v.yz` with `v` a vector in memory: `v`'s expression and the lanes. Such a swizzle is
+    /// not one place; it is stored lane by lane ([`Self::store_lanes`]).
+    pub(crate) fn lanes_in_memory(&self, e: ExprId) -> R<Option<(ExprId, Vec<u8>)>> {
+        let Expr::Member { receiver, .. } = &self.body.store.exprs[e] else {
+            return Ok(None);
+        };
+        match self.infer.member_steps.get(e) {
+            Some(Step::Swizzle(lanes)) if lanes.len() > 1 && self.is_mem_place(*receiver)? => {
+                Ok(Some((*receiver, lanes.clone())))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Stores the components of `value` to `lanes` of the vector at `p`, each on its own, so
+    /// the other lanes are not written.
+    pub(crate) fn store_lanes(&mut self, p: Value, lanes: &[u8], value: Value) -> R<()> {
+        let i32_ty = self.l.module.scalar(marlin_shaderc_ir::Scalar::I32);
+        for (k, &lane) in lanes.iter().enumerate() {
+            let i = self.int_const(i32_ty, lane as i64);
+            let lp = self.op(Op::Access(vec![AccessStep::Index]), vec![p, i], None)?;
+            let x = self.op(Op::Extract(k as u32), vec![value], None)?;
+            self.emit(Op::Store { aligned: None }, vec![lp, x], None)?;
+        }
+        Ok(())
+    }
+
     /// The pointer to the place in memory `e` names (see [`Self::is_mem_place`]), and the
     /// type there.
     pub(crate) fn mem_place(&mut self, e: ExprId) -> R<(Value, Ty)> {

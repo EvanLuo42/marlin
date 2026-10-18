@@ -144,6 +144,8 @@ public void NestedLayout([Push] in LayoutArgs a)
     a.Rw[2].Inner.P = a.In[1].Inner.P;
     a.Rw[2].Inner.S = a.In[1].Inner.S;
     a.Rw[2].Pairs[0] = a.In[1].Pairs[0];
-    a.Rw[2].Pairs[a.One] = pair;
+    a.Rw[2].Pairs[1].A = pair.A;
+    a.Rw[2].Pairs[a.One].B.x = pair.B.x;
+    a.Rw[2].Pairs[a.One].B.yzw = pair.B.yzw;
     Put(a.Out, 7, Words(a.Rw[1]));
 }

@@ -1,0 +1,25 @@
+namespace Game;
+
+public struct Link
+{
+    public uint3 A;
+    public float3 B;
+}
+
+public struct Chain
+{
+    public uint Tag;
+    public Link[2] Links;
+}
+
+Link[2] TwoLinks() => default;
+
+// Fields of array elements inside buffer elements are variables; elements of arrays that are
+// values are not.
+void Stores(Buffer<Chain> chains, uint i)
+{
+    chains[1].Links[1].A = uint3(1, 2, 3);
+    chains[i].Links[i].B.yz = float2(1, 2);
+    chains[0].Links[0].A.x += 3;
+    TwoLinks()[1].A = uint3(1, 2, 3);
+}

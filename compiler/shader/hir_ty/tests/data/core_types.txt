@@ -198,6 +198,9 @@
 == Marlin.Buffer
   generic T : []
   builtin Resource(Buffer)
+== Marlin.Buffer.<indexer>
+  param uint i
+  type T
 == Marlin.MatMul16
   type void
   intrinsic wave.matmul

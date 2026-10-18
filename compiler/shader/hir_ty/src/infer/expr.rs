@@ -1417,12 +1417,15 @@ impl InferCtx<'_, '_> {
             Expr::Member { receiver, .. } if self.result.paths.get(e).is_none() => {
                 self.in_buffer_element(*receiver)
             }
-            Expr::Index { base, .. } => matches!(
-                self.result.expr_types.get(*base),
-                Some(Ty::Adt { item, .. })
-                    if self.builtins.kind(*item)
+            Expr::Index { base, .. } => match self.result.expr_types.get(*base) {
+                Some(Ty::Adt { item, .. }) => {
+                    self.builtins.kind(*item)
                         == Some(BuiltinKind::Resource(crate::builtins::Resource::Buffer))
-            ),
+                }
+                // An element of an array that is itself part of a buffer element.
+                Some(Ty::Array { .. }) => self.in_buffer_element(*base),
+                _ => false,
+            },
             _ => false,
         }
     }

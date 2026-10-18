@@ -232,3 +232,26 @@ fn local_constants_and_exports_are_evaluated() {
         ]
     );
 }
+
+#[test]
+fn fields_of_array_elements_in_buffer_elements_are_written_in_place() {
+    let w = compute();
+    // Two chains of 13 words: Tag, then two links of A (3 words) and B (3 words).
+    let mut res = Resources {
+        buffers: vec![(0..26u32).flat_map(u32::to_le_bytes).collect()],
+        push: Some(Val::Agg(vec![Val::u32(0)])),
+    };
+    let out = w.dispatch("Game.FillChains", &[], &[], [1, 1, 1], &mut res);
+    assert_eq!(out.out_of_bounds, 0);
+    let mut want: Vec<u32> = (0..26).collect();
+    want[1] += 3;
+    want[13 + 7..13 + 10].copy_from_slice(&[7, 8, 9]);
+    want[13 + 1 + 4] = 2.5f32.to_bits();
+    want[13 + 7 + 4] = 3.5f32.to_bits();
+    want[12] = 4.0f32.to_bits();
+    want[10] = 5.0f32.to_bits();
+    want[14] += 3;
+    want[15] += 2;
+    want[16] += 1;
+    assert_eq!(u32s(&res.buffers[0]), want);
+}

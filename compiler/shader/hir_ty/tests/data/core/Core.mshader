@@ -104,7 +104,10 @@ public enum Capability { Native16Bit, Int64, Float64, WaveMatrix }
 public struct RequiresAttribute : IAttribute { public RequiresAttribute(Capability c) { } }
 
 [Builtin("uniform")] public struct Uniform<T> { }
-[Builtin("buffer")] public struct Buffer<T> { }
+[Builtin("buffer")] public struct Buffer<T>
+{
+    public T this[uint i] { get; set; }
+}
 
 [Requires(Capability.WaveMatrix)]
 [Intrinsic("wave.matmul")]

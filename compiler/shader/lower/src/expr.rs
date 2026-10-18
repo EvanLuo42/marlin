@@ -545,6 +545,10 @@ impl FnCx<'_, '_, '_> {
             self.emit(Op::Store { aligned: None }, vec![p, value], None)?;
             return Ok(());
         }
+        if let Some((vector, lanes)) = self.lanes_in_memory(target)? {
+            let (p, _) = self.mem_place(vector)?;
+            return self.store_lanes(p, &lanes, value);
+        }
         match self.body.store.exprs[target].clone() {
             Expr::DeclVar { binding, .. } => self.write_local(binding, value),
             Expr::DeclTuple(bindings) => {
@@ -969,6 +973,20 @@ impl FnCx<'_, '_, '_> {
                 }
             };
             self.emit(Op::Store { aligned: None }, vec![p, new], None)?;
+            return Ok(new);
+        }
+        if let Some((vector, lanes)) = self.lanes_in_memory(target)? {
+            let (p, _) = self.mem_place(vector)?;
+            let new = match op {
+                None => self.value(value)?,
+                Some(op) => {
+                    let whole = self.op(Op::Load { aligned: None }, vec![p], None)?;
+                    let picks = lanes.iter().map(|&l| l as u32).collect();
+                    let old = self.op(Op::Shuffle(picks), vec![whole, whole], None)?;
+                    self.compound(e, op, target, old, value)?
+                }
+            };
+            self.store_lanes(p, &lanes, new)?;
             return Ok(new);
         }
         let new = match op {

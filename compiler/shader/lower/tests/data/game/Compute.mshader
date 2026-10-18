@@ -144,3 +144,33 @@ public void ReadsRuntimeValue([DispatchThreadId] uint3 id, [Push] in Args a)
     const uint Bad = x + 1;
     a.Out[0] = Bad;
 }
+
+public struct Link
+{
+    public uint3 A;
+    public float3 B;
+}
+
+public struct Chain
+{
+    public uint Tag;
+    public Link[2] Links;
+}
+
+public struct ChainArgs
+{
+    public Buffer<Chain> Chains;
+}
+
+// Fields of array elements inside buffer elements are variables too; swizzles of them store
+// lane by lane.
+[Compute(2, 1, 1)]
+public void FillChains([DispatchThreadId] uint3 id, [Push] in ChainArgs a)
+{
+    a.Chains[1].Links[1].A = uint3(7, 8, 9);
+    a.Chains[1].Links[id.x].B.y = 2.5f + id.x;
+    if (id.x != 0) return;
+    a.Chains[0].Links[0].A.x += 3;
+    a.Chains[0].Links[1].B.zx = float2(4, 5);
+    a.Chains[1].Links[0].A.zyx += uint3(1, 2, 3);
+}
