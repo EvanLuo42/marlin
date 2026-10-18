@@ -6,6 +6,7 @@
 //! [`InferenceResult`] for MIR lowering: types, what paths and members name, the chosen callee
 //! of calls and operators, and implicit conversions.
 
+mod bounds;
 mod call;
 mod conv;
 mod diff;

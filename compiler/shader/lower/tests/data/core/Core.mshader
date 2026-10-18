@@ -31,7 +31,8 @@ public interface IArithmetic<T> where T : IArithmetic<T>
 [Builtin("f32")] public struct Float : IScalar<Float>, IArithmetic<Float> { }
 [Builtin("f64")] public struct Double : IScalar<Double>, IArithmetic<Double> { }
 
-[Builtin("vector")] public struct Vector<T, const int N> where T : IScalar<T> { }
+[Builtin("vector")]
+public struct Vector<T, const int N> : IArithmetic<Vector<T, N>> where T : IScalar<T> { }
 [Builtin("matrix")] public struct Matrix<T, const int R, const int C> where T : IScalar<T> { }
 
 public type float2 = Vector<float, 2>;

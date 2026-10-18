@@ -100,20 +100,50 @@ error[E1111]: `float` has no member `Nope`
 22 |     var noMember = f.Nope;
    |                    ^^^^^^
 
-error[E1124]: this function returns nothing
-  --> game/BodyErrors.mshader:23:12
+error[E1136]: `int` does not implement `IFloat<int>`, which `Sqrt` requires of `T`
+  --> game/BodyErrors.mshader:23:19
    |
-23 |     return 1;
+23 |     var intRoot = Sqrt(n);
+   |                   ^^^^^^^
+
+error[E1136]: `uint3` does not implement `IFloat<uint3>`, which `Sqrt` requires of `T`
+  --> game/BodyErrors.mshader:24:22
+   |
+24 |     var vectorRoot = Sqrt(id);
+   |                      ^^^^^^^^
+
+error[E1136]: `int` does not implement `IFloat<int>`, which `Sqrt` requires of `T`
+  --> game/BodyErrors.mshader:25:24
+   |
+25 |     var explicitRoot = Sqrt<int>(1);
+   |                        ^^^^^^^^^^^^
+
+error[E1136]: `int` does not implement `IFloat<int>`, which `Sqrt` requires of `T`
+  --> game/BodyErrors.mshader:26:34
+   |
+26 |     var groupRoot = TakesIntFunc(Sqrt);
+   |                                  ^^^^
+
+error[E1124]: this function returns nothing
+  --> game/BodyErrors.mshader:27:12
+   |
+27 |     return 1;
    |            ^
 
-error[E1101]: no operator `|` for `Lobe` and `Lobe`
-  --> game/BodyErrors.mshader:32:20
+error[E1136]: `T` does not implement `IFloat<T>`, which `Sqrt` requires of `T`
+  --> game/BodyErrors.mshader:30:48
    |
-32 |     var notFlags = Lobe.Diffuse | Lobe.Specular;
+30 | T NotFloat<T>(T x) where T : IArithmetic<T> => Sqrt(x);
+   |                                                ^^^^^^^
+
+error[E1101]: no operator `|` for `Lobe` and `Lobe`
+  --> game/BodyErrors.mshader:39:20
+   |
+39 |     var notFlags = Lobe.Diffuse | Lobe.Specular;
    |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 error[E1101]: no operator `<` for `Lobe` and `Lobe`
-  --> game/BodyErrors.mshader:33:19
+  --> game/BodyErrors.mshader:40:19
    |
-33 |     var ordered = Lobe.Diffuse < Lobe.Specular;
+40 |     var ordered = Lobe.Diffuse < Lobe.Specular;
    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^

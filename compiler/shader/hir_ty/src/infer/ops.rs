@@ -168,6 +168,7 @@ impl InferCtx<'_, '_> {
                 let chosen = mapped.swap_remove(i);
                 self.coerce(lhs, &lt, &chosen.arg_params[0])?;
                 self.coerce(rhs, &rt, &chosen.arg_params[1])?;
+                self.check_bounds(InferLoc::Expr(e), chosen.item, &chosen.subst)?;
                 let ret = self.cx.get::<ItemTypesQuery>(&chosen.item)?.ty.clone();
                 let ret = chosen.subst.ty(&ret.unwrap_or(Ty::Error));
                 self.result.callees.insert(

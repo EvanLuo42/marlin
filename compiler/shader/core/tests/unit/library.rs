@@ -219,6 +219,27 @@ fn generic_code_uses_zero_and_one() {
     );
 }
 
+#[test]
+fn type_arguments_must_implement_the_bounds() {
+    let w = world(
+        "namespace Game;\n\
+         public int Root(int x) => Sqrt(x);\n\
+         public uint3 Roots(uint3 v) => Sqrt(v);\n\
+         public float Bits(float x) => CountBits(x);\n\
+         public bool Least(bool a, bool b) => Min(a, b);\n",
+    );
+    let d = w.diagnostics();
+    for message in [
+        "`int` does not implement `IFloat<int>`, which `Sqrt` requires of `T`",
+        "`uint3` does not implement `IFloat<uint3>`, which `Sqrt` requires of `T`",
+        "`float` does not implement `IInteger<float>`, which `CountBits` requires of `T`",
+        "`bool` does not implement `IArithmetic<bool>`, which `Min` requires of `T`",
+    ] {
+        assert!(d.contains(message), "`{message}` is missing from:\n{d}");
+    }
+    assert_eq!(d.matches("error[").count(), 4, "one error per call:\n{d}");
+}
+
 fn words(bytes: &[u8]) -> Vec<u32> {
     bytes
         .as_chunks::<4>()

@@ -25,6 +25,9 @@
   param T a
   param T b
   type T
+== Marlin.IFloat
+  generic T : [IFloat<T>]
+  bases [IArithmetic<T>]
 == Marlin.Bool
   bases [IScalar<bool>]
   builtin Scalar(Bool)
@@ -35,17 +38,18 @@
   bases [IScalar<uint>, IArithmetic<uint>]
   builtin Scalar(U32)
 == Marlin.Half
-  bases [IScalar<half>, IArithmetic<half>]
+  bases [IScalar<half>, IFloat<half>]
   builtin Scalar(F16)
 == Marlin.Float
-  bases [IScalar<float>, IArithmetic<float>]
+  bases [IScalar<float>, IFloat<float>]
   builtin Scalar(F32)
 == Marlin.Double
-  bases [IScalar<double>, IArithmetic<double>]
+  bases [IScalar<double>, IFloat<double>]
   builtin Scalar(F64)
 == Marlin.Vector
   generic T : [IScalar<T>]
   generic const int N : []
+  bases [IArithmetic<Vector<T, N>>, IFloat<Vector<T, N>>]
   builtin Vector
 == Marlin.Matrix
   generic T : [IScalar<T>]
@@ -120,6 +124,11 @@
   param T t
   type Vector<T, N>
   intrinsic lerp
+== Marlin.Sqrt
+  generic T : [IFloat<T>]
+  param T x
+  type T
+  intrinsic sqrt
 == Marlin.Max
   param float a
   param float b

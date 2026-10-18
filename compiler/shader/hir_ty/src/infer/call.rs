@@ -390,6 +390,7 @@ impl InferCtx<'_, '_> {
             let target = chosen.arg_params[a].clone();
             self.check_arg(arg, &target)?;
         }
+        self.check_bounds(InferLoc::Expr(call), chosen.item, &chosen.subst)?;
         let types = self.cx.get::<ItemTypesQuery>(&chosen.item)?;
         let kind = self.item_kind(chosen.item)?;
         let _ = kind;

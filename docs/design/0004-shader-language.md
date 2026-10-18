@@ -397,7 +397,7 @@ extension<T>(Vector<T, 3> v) where T : IArithmetic<T>
 - 泛型数学代码一般只需要写 `where T : IFloat<T>`。
 - 核心库里，接口只放运算符和 `Zero`、`One`。`Sqrt`、`Min` 这些是 `Marlin` namespace 里的泛型函数，约束写这些接口（`Sqrt<T>(T x) where T : IFloat<T>`），所以泛型代码和具体类型的代码写法一样，都是 `Sqrt(x)`（第 9d 步）。
 - `IComparable<T>` 的比较运算返回 `bool`，所以泛型代码只比较标量；向量的比较运算返回 bool 向量，写在具体类型上。
-- 调用处还不检查类型实参是否满足 `where` 约束：`Sqrt(1)` 能通过类型检查，到降低时才报错。这一项还没做。
+- 调用处检查类型实参是否满足 `where` 约束（E1136）。选定重载以后，每个类型实参都要实现约束里的接口：可以是类型直接列出的，也可以是经接口继承得到的；类型参数则看它自己的约束。向量按分量满足约束：`Vector<T, N>` 满足 `IFloat<Vector<T, N>>`，前提是 `T` 满足 `IFloat<T>`。所以 `Sqrt(1)` 和 `Sqrt(uint3)` 都在调用处报错。约束不参与重载选择，只检查选中的那个重载。
 
 ## 9. 表达式与语句
 

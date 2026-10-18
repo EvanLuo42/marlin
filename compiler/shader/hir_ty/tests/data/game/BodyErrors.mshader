@@ -20,9 +20,16 @@ void Errors(uint3 id, int n)
     var noDot = Dot(1, 2);
     3 = n;
     var noMember = f.Nope;
+    var intRoot = Sqrt(n);
+    var vectorRoot = Sqrt(id);
+    var explicitRoot = Sqrt<int>(1);
+    var groupRoot = TakesIntFunc(Sqrt);
     return 1;
 }
 
+T NotFloat<T>(T x) where T : IArithmetic<T> => Sqrt(x);
+
+int TakesIntFunc(Func<int, int> f) => f(1);
 float TakesFunc(Func<float, float> f) => f(1);
 float TwoArgs(float a, float b) => a;
 

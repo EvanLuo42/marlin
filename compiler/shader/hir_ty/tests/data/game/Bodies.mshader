@@ -24,6 +24,7 @@ float Luma(float3 c) => Dot(c, float3(0.2126, 0.7152, 0.0722));
 float Luma1(float x) => x;
 
 T Twice<T>(T v) where T : IArithmetic<T> => v + v;
+T Root<T>(T v) where T : IFloat<T> => Sqrt(Twice(v));
 
 float Accumulate(int n, Func<float, float> f)
 {
@@ -86,4 +87,8 @@ void Body(uint3 id, Texture2D<float4> tex, Sampler smp, float4x4 mvp)
     var negated = -c;
     float local(float x) => x * 2;
     var viaLocal = local(3);
+    var root = Sqrt(2.0f);
+    var roots = Sqrt(float3(1, 4, 9));
+    var rootOf = Root<half>(h);
+    var rootGroup = Accumulate(4, Sqrt);
 }

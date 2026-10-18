@@ -130,6 +130,7 @@ impl InferCtx<'_, '_> {
             );
             return Ok(Ty::Error);
         }
+        self.check_bounds(InferLoc::Expr(e), *item, subst)?;
         self.result.method_groups.insert(e, (*item, subst.clone()));
         self.record(e, target.clone());
         Ok(target.clone())

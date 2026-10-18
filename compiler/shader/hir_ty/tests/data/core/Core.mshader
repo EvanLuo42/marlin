@@ -26,14 +26,18 @@ public interface IArithmetic<T> where T : IArithmetic<T>
     static abstract T operator +(T a, T b);
 }
 
+public interface IFloat<T> : IArithmetic<T> where T : IFloat<T> { }
+
 [Builtin("bool")] public struct Bool : IScalar<Bool> { }
 [Builtin("i32")] public struct Int : IScalar<Int>, IArithmetic<Int> { }
 [Builtin("u32")] public struct UInt : IScalar<UInt>, IArithmetic<UInt> { }
-[Builtin("f16")] public struct Half : IScalar<Half>, IArithmetic<Half> { }
-[Builtin("f32")] public struct Float : IScalar<Float>, IArithmetic<Float> { }
-[Builtin("f64")] public struct Double : IScalar<Double>, IArithmetic<Double> { }
+[Builtin("f16")] public struct Half : IScalar<Half>, IFloat<Half> { }
+[Builtin("f32")] public struct Float : IScalar<Float>, IFloat<Float> { }
+[Builtin("f64")] public struct Double : IScalar<Double>, IFloat<Double> { }
 
-[Builtin("vector")] public struct Vector<T, const int N> where T : IScalar<T> { }
+[Builtin("vector")]
+public struct Vector<T, const int N> : IArithmetic<Vector<T, N>>, IFloat<Vector<T, N>>
+    where T : IScalar<T> { }
 [Builtin("matrix")] public struct Matrix<T, const int R, const int C> where T : IScalar<T> { }
 
 public type float2 = Vector<float, 2>;
@@ -74,6 +78,8 @@ public Vector<T, N> Select<T, const int N>(Vector<bool, N> c, Vector<T, N> a, Ve
 [Intrinsic("lerp")]
 public Vector<T, N> Lerp<T, const int N>(Vector<T, N> a, Vector<T, N> b, T t)
     where T : IArithmetic<T>;
+
+[Intrinsic("sqrt")] public T Sqrt<T>(T x) where T : IFloat<T>;
 
 [Intrinsic("max")] public float Max(float a, float b);
 [Intrinsic("max")] public double Max(double a, double b);
