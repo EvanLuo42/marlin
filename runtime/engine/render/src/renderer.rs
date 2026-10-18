@@ -1,17 +1,18 @@
-//! The forward renderer.
+//! The forward renderer, as passes of the frame's render graph.
 
 use alloc::vec::Vec;
 
 use marlin_containers::{Handle, SlotMap};
 use marlin_ecs::World;
 use marlin_math::{Mat4, Transform, Vec3};
+use marlin_render_graph::{
+    PassContext, RenderGraph, TextureDesc as GraphTextureDesc, TextureHandle,
+};
 use marlin_rhi::{
     Buffer, BufferBarrier, BufferDesc, BufferState, BufferUsage, BufferViewDesc, BufferViewKind,
-    ClearValue, ColorAttachment, ColorTargetState, CommandList, DepthAttachment, DepthState,
-    DepthStencilView, DepthStencilViewDesc, Device, Error, ErrorKind, Format, GraphicsPipeline,
+    ClearValue, ColorTargetState, DepthState, Device, Error, ErrorKind, Format, GraphicsPipeline,
     GraphicsPipelineDesc, IndexFormat, LoadOp, MemoryLocation, MultisampleState, PrimitiveTopology,
-    RasterState, Rect, RenderPassDesc, RenderTargetView, Result, ShaderModule, ShaderView, StoreOp,
-    Texture, TextureBarrier, TextureDesc, TextureState, TextureUsage, Viewport,
+    RasterState, Result, ShaderModule, ShaderView, StoreOp,
 };
 
 use crate::mesh::{MeshData, Vertex};
@@ -110,13 +111,8 @@ impl Default for Environment {
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct RendererDesc<'a> {
-    /// Format of the targets [`Renderer::render`] draws into.
+    /// Format of the targets [`Renderer::add_passes`] draws into.
     pub color_format: Format,
-    /// Frames in flight: [`Renderer::render`]'s `frame` is below this.
-    pub frames_in_flight: usize,
-    /// Initial target size; see [`Renderer::resize`].
-    pub width: u32,
-    pub height: u32,
     /// The forward pass's shaders, which the engine gets from the cooker like any asset. Without
     /// them the renderer only clears.
     pub shaders: Option<ForwardShaders<'a>>,
@@ -135,18 +131,15 @@ pub struct ForwardShaders<'a> {
 /// struct must be this size.
 pub const FORWARD_PUSH_BYTES: u32 = 16;
 
-/// What a [`Renderer::render`] call drew.
+/// What a [`Renderer::add_passes`] call draws.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct RenderStats {
     pub instances: u32,
     pub draws: u32,
 }
 
-/// `Frame` in the shader: view-projection, light direction, light color, ambient.
-const FRAME_SIZE: u64 = 256;
 /// `Instance` in the shader: model matrix and color.
 const INSTANCE_WORDS: usize = 20;
-const INSTANCE_SIZE: u64 = INSTANCE_WORDS as u64 * 4;
 const DEPTH_FORMAT: Format = Format::D32Float;
 
 struct Mesh {
@@ -156,20 +149,13 @@ struct Mesh {
     index_count: u32,
 }
 
-/// Per-frame-in-flight upload buffers: written by the CPU while that frame records.
-struct FrameData {
-    frame_view: ShaderView,
-    frame: Buffer,
-    instances_view: ShaderView,
-    instances: Buffer,
-    capacity: u32,
-}
-
-struct DepthTarget {
-    view: DepthStencilView,
-    texture: Texture,
-    /// The texture has left its initial layout (it stays in depth-write afterwards).
-    initialized: bool,
+/// One instanced draw of the forward pass.
+struct Draw<'g> {
+    indices: &'g Buffer,
+    index_count: u32,
+    vertices: u32,
+    first: u32,
+    count: u32,
 }
 
 /// Draws the meshes of a [`World`]: see the crate docs.
@@ -177,31 +163,7 @@ pub struct Renderer {
     /// `None` without shaders: frames are only cleared.
     pipeline: Option<GraphicsPipeline>,
     meshes: SlotMap<Mesh>,
-    frames: Vec<Option<FrameData>>,
-    depth: DepthTarget,
-    size: (u32, u32),
-    /// Scratch: (mesh, instance words), sorted by mesh each frame.
-    instances: Vec<(Handle<Mesh>, [f32; INSTANCE_WORDS])>,
     pub environment: Environment,
-}
-
-fn create_depth(device: &Device, width: u32, height: u32) -> Result<DepthTarget> {
-    let texture = device.create_texture(&TextureDesc {
-        clear_value: Some(ClearValue::Depth(0.0)),
-        ..TextureDesc::new_2d(width, height, DEPTH_FORMAT, TextureUsage::DEPTH_STENCIL)
-    })?;
-    let view = device.create_depth_stencil_view(&texture, &DepthStencilViewDesc::default())?;
-    Ok(DepthTarget {
-        view,
-        texture,
-        initialized: false,
-    })
-}
-
-/// The bytes of `words`.
-fn bytes(words: &[f32]) -> &[u8] {
-    // SAFETY: f32 has no padding or invalid bit patterns as bytes; the length is in bounds.
-    unsafe { core::slice::from_raw_parts(words.as_ptr().cast(), size_of_val(words)) }
 }
 
 impl Renderer {
@@ -225,10 +187,6 @@ impl Renderer {
         Ok(Self {
             pipeline,
             meshes: SlotMap::new(),
-            frames: (0..desc.frames_in_flight.max(1)).map(|_| None).collect(),
-            depth: create_depth(device, desc.width, desc.height)?,
-            size: (desc.width, desc.height),
-            instances: Vec::new(),
             environment: Environment::default(),
         })
     }
@@ -323,213 +281,98 @@ impl Renderer {
         self.meshes.len()
     }
 
-    /// The target size [`render`](Self::render) draws at.
-    pub fn size(&self) -> (u32, u32) {
-        self.size
-    }
-
-    /// Changes the target size, recreating the depth buffer.
-    ///
-    /// # Safety
-    /// The GPU has finished all work this renderer recorded (resizing a swapchain waits for
-    /// that).
-    pub unsafe fn resize(&mut self, device: &Device, width: u32, height: u32) -> Result<()> {
-        if (width, height) != self.size {
-            self.depth = create_depth(device, width, height)?;
-            self.size = (width, height);
-        }
-        Ok(())
-    }
-
-    /// Records the scene into `list`: one render pass that clears `target` (already in
-    /// [`TextureState::RENDER_TARGET`], of the size given at creation or by
-    /// [`resize`](Self::resize)) and draws every [`MeshRenderer`] seen by the first [`Camera`].
-    /// Without a camera the pass only clears.
-    ///
-    /// # Safety
-    /// `frame` (below [`RendererDesc::frames_in_flight`]) names a slot whose previously recorded
-    /// work the GPU has finished, as [`marlin_rhi::FramesInFlight::begin`] guarantees for its
-    /// [`index`](marlin_rhi::FramesInFlight::index). The list is submitted before the slot is
-    /// reused, and the renderer outlives its GPU work.
-    pub unsafe fn render(
-        &mut self,
-        device: &Device,
-        list: &mut CommandList,
-        frame: usize,
-        target: &RenderTargetView,
-        world: &World,
-    ) -> Result<RenderStats> {
-        let scene = Scene::extract(world);
-        // SAFETY: forwarded from the caller.
-        unsafe { self.render_scene(device, list, frame, target, &scene) }
-    }
-
-    /// Records `scene` like [`render`](Self::render) records a world. Instances of released meshes
-    /// are skipped.
-    ///
-    /// # Safety
-    /// As [`render`](Self::render).
-    pub unsafe fn render_scene(
-        &mut self,
-        device: &Device,
-        list: &mut CommandList,
-        frame: usize,
-        target: &RenderTargetView,
+    /// Declares the forward pass into `g` (0007 §11.2): one raster pass that clears `target` and
+    /// a transient depth buffer and draws every instance of `scene` seen from its camera, one
+    /// instanced draw per mesh. Without a camera, or shaders, it only clears. The frame and
+    /// instance constants go through the frame's upload memory. Returns the target's new handle
+    /// and what the pass draws.
+    pub fn add_passes<'g>(
+        &'g self,
+        g: &mut RenderGraph<'g>,
+        target: TextureHandle<'g>,
         scene: &Scene,
-    ) -> Result<RenderStats> {
-        let camera = scene.camera.as_ref().map(|(t, c)| (t, c));
-        self.instances.clear();
+    ) -> (TextureHandle<'g>, RenderStats) {
+        let size = g.texture_desc(target);
+        let (width, height) = (size.width, size.height);
+        let mut instances: Vec<(Handle<Mesh>, [f32; INSTANCE_WORDS])> = Vec::new();
+        let camera = scene.camera.filter(|_| self.pipeline.is_some());
         if camera.is_some() {
             for instance in &scene.instances {
                 let mut words = [0.0; INSTANCE_WORDS];
                 words[..16].copy_from_slice(&instance.transform.to_matrix().to_cols_array());
                 words[16..].copy_from_slice(&instance.color);
-                self.instances.push((instance.mesh.0, words));
+                instances.push((instance.mesh.0, words));
             }
-            self.instances.sort_unstable_by_key(|(mesh, _)| *mesh);
+            instances.sort_unstable_by_key(|(mesh, _)| *mesh);
         }
-
-        if !self.depth.initialized {
-            list.texture_barriers(&[TextureBarrier::new(
-                &self.depth.texture,
-                TextureState::UNDEFINED,
-                TextureState::DEPTH_WRITE,
-            )]);
-            self.depth.initialized = true;
+        let mut draws: Vec<Draw<'g>> = Vec::new();
+        let mut start = 0;
+        while start < instances.len() {
+            let handle = instances[start].0;
+            let count = instances[start..]
+                .iter()
+                .take_while(|(m, _)| *m == handle)
+                .count();
+            if let Some(mesh) = self.meshes.get(handle) {
+                draws.push(Draw {
+                    indices: &mesh.indices,
+                    index_count: mesh.index_count,
+                    vertices: mesh.vertex_view.index(),
+                    first: start as u32,
+                    count: count as u32,
+                });
+            }
+            start += count;
         }
-        list.begin_render_pass(&RenderPassDesc {
-            color: &[ColorAttachment {
-                view: target,
-                load: LoadOp::Clear(self.environment.clear_color),
-                store: StoreOp::Store,
-            }],
-            depth: Some(DepthAttachment {
-                view: &self.depth.view,
-                load: LoadOp::Clear(0.0),
-                store: StoreOp::DontCare,
-                stencil_load: LoadOp::DontCare,
-                stencil_store: StoreOp::DontCare,
-            }),
+        let stats = if draws.is_empty() {
+            RenderStats::default()
+        } else {
+            RenderStats {
+                instances: instances.len() as u32,
+                draws: draws.len() as u32,
+            }
+        };
+        let constants = camera.map(|(transform, camera)| {
+            let aspect = width as f32 / height.max(1) as f32;
+            let view = transform.to_matrix().inverse_affine();
+            let projection = Mat4::perspective_infinite_rh(camera.fov_y, aspect, camera.near);
+            let env = &self.environment;
+            let light = env.light_direction.normalize_or_zero();
+            let mut constants = [0.0f32; 28];
+            constants[..16].copy_from_slice(&(projection * view).to_cols_array());
+            constants[16..19].copy_from_slice(&[light.x, light.y, light.z]);
+            constants[20..23].copy_from_slice(&env.light_color);
+            constants[24..27].copy_from_slice(&env.ambient);
+            constants
         });
-        let mut stats = RenderStats::default();
-        if let Some((camera_transform, camera)) = camera
-            && self.pipeline.is_some()
-            && !self.instances.is_empty()
-        {
-            // SAFETY: forwarded from the caller.
-            let (frame_index, instances_index) =
-                unsafe { self.write_frame(device, frame, camera_transform, camera)? };
-            let (width, height) = self.size;
-            list.set_graphics_pipeline(self.pipeline.as_ref().expect("checked above"));
-            list.set_viewport(&Viewport::full(width, height));
-            list.set_scissor(&Rect {
-                x: 0,
-                y: 0,
-                width,
-                height,
-            });
-            let mut start = 0;
-            while start < self.instances.len() {
-                let handle = self.instances[start].0;
-                let count = self.instances[start..]
-                    .iter()
-                    .take_while(|(m, _)| *m == handle)
-                    .count();
-                let Some(mesh) = self.meshes.get(handle) else {
-                    start += count;
-                    continue;
+        let words: Vec<[f32; INSTANCE_WORDS]> = instances.into_iter().map(|(_, w)| w).collect();
+        let depth = g.create_texture(
+            "Depth",
+            GraphTextureDesc::new_2d(width, height, DEPTH_FORMAT)
+                .with_clear(ClearValue::Depth(0.0)),
+        );
+        let clear = self.environment.clear_color;
+        let pipeline = self.pipeline.as_ref();
+        let target = g.add_raster("Forward", |b| {
+            let target = b.color(target, LoadOp::Clear(clear), StoreOp::Store);
+            b.depth(depth, LoadOp::Clear(0.0), StoreOp::DontCare);
+            (target, move |ctx: &mut PassContext<'_>| {
+                let (Some(pipeline), Some(constants)) = (pipeline, constants) else {
+                    return;
                 };
-                list.set_index_buffer(&mesh.indices, 0, IndexFormat::U32);
-                let push: [u32; FORWARD_PUSH_BYTES as usize / 4] = [
-                    frame_index,
-                    instances_index,
-                    mesh.vertex_view.index(),
-                    start as u32,
-                ];
-                list.push_constants(0, &push);
-                list.draw_indexed(mesh.index_count, count as u32, 0, 0, 0);
-                stats.draws += 1;
-                start += count;
-            }
-            stats.instances = self.instances.len() as u32;
-        }
-        list.end_render_pass();
-        Ok(stats)
+                if draws.is_empty() {
+                    return;
+                }
+                let frame = ctx.upload(&constants);
+                let instances = ctx.upload_slice(&words);
+                ctx.set_pipeline(pipeline);
+                for draw in &draws {
+                    ctx.resident_index_buffer(draw.indices, 0, IndexFormat::U32);
+                    ctx.push_words(&[frame, instances, draw.vertices, draw.first]);
+                    ctx.draw_indexed(draw.index_count, draw.count, 0, 0, 0);
+                }
+            })
+        });
+        (target, stats)
     }
-
-    /// Writes the frame constants and instances into slot `frame`'s upload buffers, growing
-    /// them as needed. Returns the frame constants' and instances' view indices.
-    ///
-    /// # Safety
-    /// As [`render`](Self::render).
-    unsafe fn write_frame(
-        &mut self,
-        device: &Device,
-        frame: usize,
-        camera_transform: &Transform,
-        camera: &Camera,
-    ) -> Result<(u32, u32)> {
-        let needed = self.instances.len() as u32;
-        let slot = &mut self.frames[frame];
-        if slot.as_ref().is_none_or(|d| d.capacity < needed) {
-            // The slot's GPU work is done (caller), so its old buffers may go.
-            *slot = Some(create_frame_data(
-                device,
-                needed.next_power_of_two().max(64),
-            )?);
-        }
-        let data = slot.as_ref().expect("created above");
-
-        let (width, height) = self.size;
-        let aspect = width as f32 / height.max(1) as f32;
-        let view = camera_transform.to_matrix().inverse_affine();
-        let projection = Mat4::perspective_infinite_rh(camera.fov_y, aspect, camera.near);
-        let env = &self.environment;
-        let light = env.light_direction.normalize_or_zero();
-        let mut constants = [0.0f32; 28];
-        constants[..16].copy_from_slice(&(projection * view).to_cols_array());
-        constants[16..19].copy_from_slice(&[light.x, light.y, light.z]);
-        constants[20..23].copy_from_slice(&env.light_color);
-        constants[24..27].copy_from_slice(&env.ambient);
-
-        // SAFETY: the GPU is done with this slot's buffers (caller).
-        unsafe {
-            data.frame.write(0, bytes(&constants));
-            for (i, (_, words)) in self.instances.iter().enumerate() {
-                data.instances.write(i as u64 * INSTANCE_SIZE, bytes(words));
-            }
-        }
-        Ok((data.frame_view.index(), data.instances_view.index()))
-    }
-}
-
-fn create_frame_data(device: &Device, capacity: u32) -> Result<FrameData> {
-    let frame = device.create_buffer(&BufferDesc {
-        size: FRAME_SIZE,
-        usage: BufferUsage::UNIFORM,
-        memory: MemoryLocation::Upload,
-    })?;
-    let instances = device.create_buffer(&BufferDesc {
-        size: capacity as u64 * INSTANCE_SIZE,
-        usage: BufferUsage::SHADER_READ,
-        memory: MemoryLocation::Upload,
-    })?;
-    Ok(FrameData {
-        frame_view: device.create_buffer_view(
-            &frame,
-            &BufferViewDesc::whole(BufferViewKind::Uniform, false),
-        )?,
-        instances_view: device.create_buffer_view(
-            &instances,
-            &BufferViewDesc::whole(
-                BufferViewKind::Structured {
-                    stride: INSTANCE_SIZE as u32,
-                },
-                false,
-            ),
-        )?,
-        frame,
-        instances,
-        capacity,
-    })
 }

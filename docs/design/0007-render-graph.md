@@ -566,6 +566,13 @@ R1e 做完时（2026-10-18）定下的细节：
 - 没做的（§13 待定）：提交流水化；按 GPU 计时做调度提示。
 - GPU 测试：24 个 pass 各自一块，用 4 个 worker 录制和单线程录制的读回逐字节相同；compute pass 分成 4 个子 list；raster pass 分成 2 个子 list，clear 只发生一次、第二个子 list 画在上面；4 帧之后能拿到每个 pass 的 GPU 时间，dump 里有 `gpu_ns`；捕获的 buffer 在下一帧读回正确。验证层都没有报错。
 
+R1f 做完时（2026-10-18）定下的细节（§11.2 的第 1 条验收）：
+- **`marlin-render`**：`Renderer::add_passes(&'g self, g, target, &scene) -> (target, stats)` 声明一个 raster pass：清除 target 和一张瞬态深度（`D32Float`，清成 0，`DontCare` 存储），每个网格一次实例化的 draw。帧常量用 `ctx.upload`，实例数据用 `ctx.upload_slice`，按网格排序的 draw 列表在声明时算好，交给执行闭包。`DepthTarget`、`resize`、每帧自管的 upload buffer、`frames_in_flight` 和 `width`/`height` 都删掉了。旧的 `render`/`render_scene` 也删了，场景用 `Scene::extract(world)` 取。
+- 网格的 index buffer 常驻、不进 graph（§1.2），用新的 `ctx.resident_index_buffer` 绑定。
+- **`marlin-framework`**：`run.rs` 用 `FrameContext` 替代 `FramesInFlight`。每帧 acquire 之后把 swapchain 图像当普通纹理导入（初始状态取状态表：第一次是 undefined，之后是上一帧 present 留下的 `PRESENT`），渲染器画进去，再 `g.present`；录制用 `execute_on(…, Some(&jobs))` 交给 job。窗口 resize 和退出前先 `wait_idle`，再让 graph 忘掉所有 swapchain 图像。`GpuTimeline` 接到 profiler 上。`RenderSide::record` 换成 `add_passes`；退休网格仍按"`FRAMES_IN_FLIGHT` 帧之后"释放，每帧开始时等帧槽 fence，所以条件不变。
+- **`Offscreen`**：自己持有一个 `FrameContext`；每次渲染用一张瞬态 RGBA8 目标（clear value 取环境的清屏色）加 `g.readback_texture`，不再自己维护目标、视图和回读 buffer。
+- **验收**：迁移前后，`marlin-render` 的 3 张 golden 和 framework 端到端测试的 `sample_first_frame`，在逐通道容差为 0 时都和参考图完全相同（迁移前先用 0 容差确认参考图就是旧代码的输出，迁移后再用 0 容差跑一遍）。`samples/basic` cook、打包后用 `marlin-game` 开窗口跑 10 秒，开着验证层，没有报错。
+
 ## 12. 测试
 
 测试放在各 crate 的 `tests/` 里。

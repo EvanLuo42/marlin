@@ -12,9 +12,10 @@ use marlin_diag::{FixedBuf, info};
 use marlin_input::{GamepadButton, Input, Key};
 use marlin_jobs::{Config, JobSystem};
 use marlin_render::{Renderer, RendererDesc};
+use marlin_render_graph::{FrameContext, FrameContextDesc, GpuTimeline};
 use marlin_rhi::{
-    DeviceDesc, FramesInFlight, Instance, InstanceDesc, PresentMode, PresentStatus, SurfaceHandle,
-    SwapchainDesc, TextureBarrier, TextureState,
+    DeviceDesc, Instance, InstanceDesc, PresentMode, PresentStatus, SurfaceHandle, Swapchain,
+    SwapchainDesc,
 };
 use marlin_time::Instant;
 
@@ -73,7 +74,16 @@ pub fn run(boot: &Boot, title: &str) -> Result<(), RunError> {
     } else {
         PresentMode::Immediate
     });
-    let mut frames = FramesInFlight::new(&device, 2)?;
+    // The passes' GPU times, for the profiler.
+    static TIMELINE: GpuTimeline = GpuTimeline::new();
+    marlin_profile::set_gpu_timings(Some(&TIMELINE));
+    let mut frames = FrameContext::new(
+        &device,
+        &FrameContextDesc {
+            timeline: Some(&TIMELINE),
+            ..FrameContextDesc::default()
+        },
+    )?;
 
     let mut engine = Engine::new(&boot.vfs)?;
     // The forward pass's shaders, cooked from content/engine like any asset.
@@ -86,13 +96,10 @@ pub fn run(boot: &Boot, title: &str) -> Result<(), RunError> {
         &device,
         &RendererDesc {
             color_format: swapchain.format(),
-            frames_in_flight: frames.count(),
-            width: size.width,
-            height: size.height,
             shaders: Some(forward_shaders(shaders)?),
         },
     )?;
-    let mut render = RenderSide::new(renderer, frames.count());
+    let mut render = RenderSide::new(renderer);
     engine.load_level(boot.level);
 
     let mut pending: Option<RenderDelta> = None;
@@ -112,9 +119,10 @@ pub fn run(boot: &Boot, title: &str) -> Result<(), RunError> {
             match event {
                 Event::CloseRequested(_) | Event::Quit => break 'main,
                 Event::Resized { size, .. } => {
+                    // The images go: the graph forgets them first.
+                    frames.wait_idle()?;
+                    forget_images(&mut frames, &swapchain);
                     swapchain.resize(size.width, size.height)?;
-                    // SAFETY: resizing the swapchain waited for the queue to go idle.
-                    unsafe { render.renderer.resize(&device, size.width, size.height)? };
                 }
                 Event::Minimized(_) => minimized = true,
                 Event::Restored(_) => minimized = false,
@@ -151,8 +159,15 @@ pub fn run(boot: &Boot, title: &str) -> Result<(), RunError> {
             if let Some(delta) = pending.take()
                 && !minimized
             {
-                presented = render_frame(&device, &mut render, &mut swapchain, &mut frames, &delta)
-                    .map(Some);
+                presented = render_frame(
+                    &device,
+                    jobs_ref,
+                    &mut render,
+                    &mut swapchain,
+                    &mut frames,
+                    &delta,
+                )
+                .map(Some);
             }
         });
         if presented? == Some(PresentStatus::Occluded) {
@@ -181,36 +196,35 @@ pub fn run(boot: &Boot, title: &str) -> Result<(), RunError> {
         }
     }
     frames.wait_idle()?;
+    forget_images(&mut frames, &swapchain);
+    marlin_profile::set_gpu_timings(None);
     Ok(())
+}
+
+/// Makes the frame context forget the swapchain's images, before they are recreated or dropped.
+fn forget_images(frames: &mut FrameContext, swapchain: &Swapchain) {
+    for i in 0..swapchain.image_count() {
+        frames.forget_texture(swapchain.texture(i));
+    }
 }
 
 fn render_frame(
     device: &marlin_rhi::Device,
+    jobs: &JobSystem,
     render: &mut RenderSide,
-    swapchain: &mut marlin_rhi::Swapchain,
-    frames: &mut FramesInFlight,
+    swapchain: &mut Swapchain,
+    frames: &mut FrameContext,
     delta: &RenderDelta,
 ) -> Result<PresentStatus, RunError> {
     render.apply(device, delta)?;
     let image = swapchain.acquire(None)?;
     let texture = swapchain.texture(image);
-    let slot = frames.index();
-    let list = frames.begin()?;
-    list.texture_barriers(&[TextureBarrier::new(
-        texture,
-        TextureState::PRESENT,
-        TextureState::RENDER_TARGET,
-    )]);
-    // SAFETY: `begin` waited for the slot's previous frame; the list is submitted below, before
-    // the slot comes round again; the renderer outlives the frames (`wait_idle` on exit).
-    unsafe { render.record(device, list, slot, swapchain.view(image))? };
-    list.texture_barriers(&[TextureBarrier::new(
-        texture,
-        TextureState::RENDER_TARGET,
-        TextureState::PRESENT,
-    )]);
-    // SAFETY: the list uses the swapchain image (kept alive by the swapchain, which waits for the
-    // GPU before resizing or dropping) and the renderer's resources (as above).
-    unsafe { frames.submit(device.queue())? };
+    let render = &*render;
+    // The swapchain image is imported like any texture: the graph remembers it was presented.
+    frames.execute_on(device, Some(jobs), |g, _| {
+        let target = g.import_texture("Swapchain", texture);
+        let (target, _) = render.add_passes(g, target);
+        g.present(target);
+    })?;
     Ok(swapchain.present()?)
 }

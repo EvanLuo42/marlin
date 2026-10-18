@@ -7,6 +7,7 @@ publish.workspace = true
 
 [dependencies]
 marlin-anim.workspace = true
+marlin-render-graph.workspace = true
 marlin-asset.workspace = true
 marlin-containers.workspace = true
 marlin-ecs.workspace = true
@@ -20,3 +21,4 @@ workspace = true
 
 [dev-dependencies]
 marlin-gpu-test-support.workspace = true
+marlin-render-graph.workspace = true

@@ -1,19 +1,16 @@
-//! The forward renderer on the shared hardware device, drawing into a small offscreen target that
-//! is read back after each frame. Used by the `gpu` and `golden` binaries.
-
-use core::cell::Cell;
+//! The forward renderer on the shared hardware device, drawing through a frame context into a
+//! small transient target that is read back after each frame. Used by the `gpu` and `golden`
+//! binaries.
 
 use marlin_ecs::World;
-use marlin_gpu_test_support::{Image, hardware_device, read_texture, run, shader};
+use marlin_gpu_test_support::{Image, hardware_device, shader};
 use marlin_math::{Transform, Vec3};
 use marlin_render::{
     Camera, Environment, ForwardShaders, MeshData, MeshHandle, RenderStats, Renderer, RendererDesc,
-    cube,
+    Scene, cube,
 };
-use marlin_rhi::{
-    ClearValue, Device, Format, RenderTargetViewDesc, Texture, TextureBarrier, TextureDesc,
-    TextureState, TextureUsage,
-};
+use marlin_render_graph::{FrameContext, FrameContextDesc, TextureDesc};
+use marlin_rhi::{ClearValue, Device, Format};
 
 pub const SIZE: u32 = 64;
 
@@ -21,9 +18,7 @@ pub struct Harness {
     pub device: &'static Device,
     pub renderer: Renderer,
     pub cube: MeshHandle,
-    target: Texture,
-    /// The state the last frame left the target in.
-    state: Cell<TextureState>,
+    frame: FrameContext,
 }
 
 impl Harness {
@@ -34,9 +29,6 @@ impl Harness {
             device,
             &RendererDesc {
                 color_format: Format::Rgba8Unorm,
-                frames_in_flight: 2,
-                width: SIZE,
-                height: SIZE,
                 shaders: Some(ForwardShaders {
                     vertex: shader("Marlin.Engine.ForwardVs"),
                     pixel: shader("Marlin.Engine.ForwardPs"),
@@ -55,51 +47,34 @@ impl Harness {
                 },
             )
             .unwrap();
-        let target = device
-            .create_texture(&TextureDesc {
-                clear_value: Some(ClearValue::Color(environment.clear_color)),
-                ..TextureDesc::new_2d(
-                    SIZE,
-                    SIZE,
-                    Format::Rgba8Unorm,
-                    TextureUsage::RENDER_TARGET | TextureUsage::COPY_SRC,
-                )
-            })
-            .unwrap();
+        let frame = FrameContext::new(device, &FrameContextDesc::default()).unwrap();
         Self {
             device,
             renderer,
             cube,
-            target,
-            state: Cell::new(TextureState::UNDEFINED),
+            frame,
         }
     }
 
     /// Renders `world` and reads the frame back.
     pub fn render_image(&mut self, world: &World) -> (Image, RenderStats) {
-        let device = self.device;
-        let view = device
-            .create_render_target_view(&self.target, &RenderTargetViewDesc::default())
+        let scene = Scene::extract(world);
+        let renderer = &self.renderer;
+        let (ticket, stats) = self
+            .frame
+            .execute(self.device, |g, _| {
+                let target = g.create_texture(
+                    "Target",
+                    TextureDesc::new_2d(SIZE, SIZE, Format::Rgba8Unorm)
+                        .with_clear(ClearValue::Color(renderer.environment.clear_color)),
+                );
+                let (target, stats) = renderer.add_passes(g, target, &scene);
+                (g.readback_texture(target), stats)
+            })
             .unwrap();
-        let mut stats = None;
-        run(device, |list| {
-            list.texture_barriers(&[TextureBarrier::new(
-                &self.target,
-                self.state.get(),
-                TextureState::RENDER_TARGET,
-            )]);
-            // SAFETY: slot 0's previous work (if any) was waited for at the end of the last call.
-            stats = Some(unsafe { self.renderer.render(device, list, 0, &view, world).unwrap() });
-            list.texture_barriers(&[TextureBarrier::new(
-                &self.target,
-                TextureState::RENDER_TARGET,
-                TextureState::COPY_SRC,
-            )]);
-        });
-        self.state.set(TextureState::COPY_SRC);
-        let image = read_texture(device, &self.target);
-        assert_eq!(device.validation_errors(), 0);
-        (image, stats.unwrap())
+        let pixels = self.frame.wait_readback(ticket).unwrap();
+        assert_eq!(self.device.validation_errors(), 0);
+        (Image::new(SIZE, SIZE, pixels), stats)
     }
 
     /// As [`render_image`](Self::render_image), the pixels as little-endian `u32`s (R lowest).
@@ -114,6 +89,12 @@ impl Harness {
             .map(|&p| u32::from_le_bytes(p))
             .collect();
         (pixels, stats)
+    }
+
+    /// Waits for every frame, so meshes can be released.
+    #[allow(dead_code, reason = "only some binaries release meshes")]
+    pub fn wait_idle(&mut self) {
+        self.frame.wait_idle().unwrap();
     }
 }
 

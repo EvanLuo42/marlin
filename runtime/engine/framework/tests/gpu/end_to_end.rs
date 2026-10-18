@@ -93,16 +93,13 @@ impl Viewer {
             device,
             &RendererDesc {
                 color_format: OFFSCREEN_FORMAT,
-                frames_in_flight: 2,
-                width: WIDTH,
-                height: HEIGHT,
                 shaders: Some(forward_shaders(library).unwrap()),
             },
         )
         .unwrap();
         let offscreen = Offscreen::new(device, WIDTH, HEIGHT).unwrap();
         Self {
-            render: RenderSide::new(renderer, 2),
+            render: RenderSide::new(renderer),
             offscreen,
             device,
         }

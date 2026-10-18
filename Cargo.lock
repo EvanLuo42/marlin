@@ -600,8 +600,10 @@ dependencies = [
  "marlin-io",
  "marlin-jobs",
  "marlin-math",
+ "marlin-profile",
  "marlin-reflect",
  "marlin-render",
+ "marlin-render-graph",
  "marlin-rhi",
  "marlin-rt",
  "marlin-serial",
@@ -844,6 +846,7 @@ dependencies = [
  "marlin-gpu-test-support",
  "marlin-math",
  "marlin-reflect",
+ "marlin-render-graph",
  "marlin-rhi",
  "marlin-serial",
 ]

@@ -5,6 +5,10 @@
 //! one directional light plus ambient. Draws are instanced per mesh; vertices are pulled from
 //! bindless buffers. See `docs/design/0002-shader-interface.md` for the shader side.
 //!
+//! The renderer declares its work into the frame's render graph ([`Renderer::add_passes`]):
+//! the depth buffer is a transient, the frame and instance constants go through the frame's
+//! upload memory, and the caller gives the color target, a swapchain image or an offscreen one.
+//!
 //! [`Transform`]: marlin_math::Transform
 #![cfg_attr(not(test), no_std)]
 

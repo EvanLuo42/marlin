@@ -494,6 +494,13 @@ impl<'a> PassContext<'a, Rhi> {
         self.parts.list().set_index_buffer(buffer, h.offset, format);
     }
 
+    /// Binds a resident index buffer the graph does not track (0007 §1.2): one uploaded with a
+    /// mesh and left in [`marlin_rhi::BufferState::INDEX`]. It outlives the frame's GPU work,
+    /// like an import.
+    pub fn resident_index_buffer(&mut self, buffer: &Buffer, offset: u64, format: IndexFormat) {
+        self.parts.list().set_index_buffer(buffer, offset, format);
+    }
+
     /// `max_count` dispatches from arguments at `args` (declared [`Access::Indirect`]); with
     /// `count`, the first as many as the `u32` there says.
     pub fn dispatch_indirect(

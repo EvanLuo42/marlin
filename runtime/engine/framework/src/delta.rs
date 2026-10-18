@@ -14,7 +14,8 @@ use marlin_asset::Uuid;
 use marlin_containers::{HashMap, HashMapExt};
 use marlin_math::Transform;
 use marlin_render::{Camera, Environment, MeshHandle, RenderStats, Renderer, Scene, SceneInstance};
-use marlin_rhi::{CommandList, Device, RenderTargetView};
+use marlin_render_graph::{FRAMES_IN_FLIGHT, RenderGraph, TextureHandle};
+use marlin_rhi::Device;
 
 use crate::loaders::MeshGeometry;
 
@@ -59,12 +60,12 @@ pub struct RenderSide {
 }
 
 impl RenderSide {
-    pub fn new(renderer: Renderer, frames_in_flight: usize) -> Self {
+    pub fn new(renderer: Renderer) -> Self {
         Self {
             renderer,
             meshes: HashMap::new(),
             retired: Vec::new(),
-            frames_in_flight: frames_in_flight as u64,
+            frames_in_flight: FRAMES_IN_FLIGHT as u64,
             frame: 0,
             scene: Scene::default(),
         }
@@ -97,7 +98,7 @@ impl RenderSide {
             }
         }
         // Frames recorded before a mesh retired have finished once `frames_in_flight` more
-        // frames began (each begin waits for the slot's previous frame).
+        // frames began (each frame waits for its slot's previous frame).
         let (frame, depth) = (self.frame, self.frames_in_flight);
         let renderer = &mut self.renderer;
         self.retired.retain(|&(at, handle)| {
@@ -124,21 +125,12 @@ impl RenderSide {
         Ok(())
     }
 
-    /// Records the last applied delta's scene into `list`.
-    ///
-    /// # Safety
-    /// As [`Renderer::render`].
-    pub unsafe fn record(
-        &mut self,
-        device: &Device,
-        list: &mut CommandList,
-        slot: usize,
-        target: &RenderTargetView,
-    ) -> marlin_rhi::Result<RenderStats> {
-        // SAFETY: forwarded.
-        unsafe {
-            self.renderer
-                .render_scene(device, list, slot, target, &self.scene)
-        }
+    /// Declares the last applied delta's scene into `g`, drawn into `target` ([`Renderer::add_passes`]).
+    pub fn add_passes<'g>(
+        &'g self,
+        g: &mut RenderGraph<'g>,
+        target: TextureHandle<'g>,
+    ) -> (TextureHandle<'g>, RenderStats) {
+        self.renderer.add_passes(g, target, &self.scene)
     }
 }
