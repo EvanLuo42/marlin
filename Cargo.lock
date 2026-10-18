@@ -853,8 +853,10 @@ name = "marlin-render-graph"
 version = "0.1.0"
 dependencies = [
  "marlin-containers",
+ "marlin-gpu-test-support",
  "marlin-hash",
  "marlin-rhi",
+ "marlin-serial",
  "marlin-std",
 ]
 

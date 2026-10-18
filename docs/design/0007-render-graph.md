@@ -524,6 +524,18 @@ R1a 做完时（2026-10-18）定下的细节：
 - buffer 的 barrier 总是整个 buffer（RHI 的 buffer barrier 没有范围）；`buf.range` 只决定视图。
 - Development 校验另外加了：读一个还没被写过的瞬态资源；导入资源的访问超出它创建时的 usage；pass 类型不允许的访问（compute pass 里的 `PixelRead` 等）；同一 pass 里两次读需要不同的 layout。
 
+R1b 做完时（2026-10-18）定下的细节：
+- **入口**：`FrameContext::execute(device, |g, frame| { … })`。闭包对 `'g` 是高阶的，句柄逃不出这一帧。第二个参数 `&'g FrameInfo<'env>` 蕴含 `'env: 'g`（和 `std::thread::scope` 一样），所以闭包可以导入调用方借来的对象（swapchain 图像等）。返回值一般是 readback 票据。swapchain 的 `present` 在 `execute` 返回后由调用方调用。
+- **跨帧状态表**（`StateTable`）：键是对象的 native handle（`Backend::texture_key`），按子资源记录状态。导入时 `initial_state` 为 `None` 就查表，查不到是 `UNDEFINED`；显式给的优先。只有本帧真正用到的导入资源才更新表项；表项 1024 帧没被用到才删除。drop 导入对象前必须 `FrameContext::forget_texture`/`forget_buffer`（新对象可能复用同一个 handle），swapchain resize 前对它的图像也要这样做。
+- **物理资源**跟着 (plan, 帧槽) 走：每个帧槽三个瞬态 heap（Buffers、Textures、Targets），按 plan 的需求增长（多留 25%，按 1 MiB 取整）。heap 增长时，这个帧槽的物理资源集合整体重建；plan 被缓存淘汰时，它在各帧槽的集合进退休队列。稳态下（每个帧槽都跑过一次之后）每帧不创建任何 RHI 对象，GPU 测试检查了这一点（`FrameStats::created`）。
+- **视图**按访问创建：着色器读是只读视图；storage 写在只覆盖一个 mip 时是可写视图；`Uniform` 是 uniform 视图；附件是 RTV/DSV。一层的非数组纹理用 `D2`，其余用 `D2Array`，体纹理用 `D3`；cube 视图以后要用时再加。buffer 视图的种类来自 `BufferDesc::stride`：`Some(n)` 是 structured，`None` 是 raw（`BufferDesc::structured::<T>` 会填好 stride）。导入对象的视图按 (handle, 视图描述) 缓存，`FRAMES_IN_FLIGHT` 帧没被用到就退休。
+- `ctx.srv`/`ctx.uav`/`ctx.cbv` 在本 pass 里找同一资源、同一种访问、范围相同的那次声明；句柄覆盖整个资源（写返回的就是这种句柄）而这种访问只有一次时，就用那一次。找不到就 panic。
+- `ctx.push`、`ctx.upload`、`ctx.upload_slice` 接受 `marlin_serial::cooked::Pod`（没有 padding，可以 `#[derive(Pod)]`）。上传内存每个帧槽一串 4 MiB 的块，帧槽复用时清零重用；上传的视图在这一帧的 fence 之后释放。
+- raster pass 开始时，viewport 和 scissor 已经设成第一个附件的大小。
+- 内置 pass：`g.present(h)` 把纹理交到 `PRESENT`；`g.readback(buf)`、`g.readback_texture(tex)`（一个 mip、一层，行紧密排列）返回 `Readback` 票据，用 `FrameContext::readback`（不等待）或 `wait_readback` 取数据。
+- **退休队列**按 fence 值：对象在提交它最后一次被用到的那一帧之后，fence 到了才 drop。`FrameContext` drop 时等 GPU 空闲。
+- 已知的空缺：新建的 placed 纹理第一次使用时，legacy D3D12 需要 `undefined_from = Common`，这里给的是 plan 末尾的 layout。Vulkan 和 enhanced barrier 都忽略这个字段；桌面上的 D3D12 后端会删掉，所以先不处理。
+
 ## 12. 测试
 
 测试放在各 crate 的 `tests/` 里。

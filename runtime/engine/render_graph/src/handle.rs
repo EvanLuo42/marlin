@@ -39,6 +39,15 @@ impl Range {
         }
     }
 
+    pub const fn to_rhi(self) -> marlin_rhi::SubresourceRange {
+        marlin_rhi::SubresourceRange {
+            base_mip: self.base_mip,
+            mip_count: self.mip_count,
+            base_layer: self.base_layer,
+            layer_count: self.layer_count,
+        }
+    }
+
     /// `count` items starting `offset` into the run `base..base + len` (`len` may be `u32::MAX`).
     fn narrow(base: u32, len: u32, offset: u32, count: u32) -> (u32, u32) {
         assert!(

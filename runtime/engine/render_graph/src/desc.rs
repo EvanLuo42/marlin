@@ -140,16 +140,23 @@ impl Hash for TextureDesc {
 pub struct BufferDesc {
     /// Bytes.
     pub size: u64,
+    /// Shader views see elements of this many bytes (structured views); `None`: 32-bit words
+    /// (raw views). Uniform views ignore it.
+    pub stride: Option<u32>,
 }
 
 impl BufferDesc {
+    /// `size` bytes, viewed as words.
     pub const fn new(size: u64) -> Self {
-        Self { size }
+        Self { size, stride: None }
     }
 
-    /// `count` elements of `T`.
+    /// `count` elements of `T`, viewed as `T`s.
     pub const fn structured<T>(count: u64) -> Self {
-        Self::new(size_of::<T>() as u64 * count)
+        Self {
+            size: size_of::<T>() as u64 * count,
+            stride: Some(size_of::<T>() as u32),
+        }
     }
 
     pub const fn to_rhi(&self, usage: BufferUsage) -> marlin_rhi::BufferDesc {

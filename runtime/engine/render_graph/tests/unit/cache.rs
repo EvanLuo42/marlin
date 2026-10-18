@@ -40,7 +40,7 @@ fn frame<'g>(
         "Out",
         out,
         ImportTexture {
-            initial_state,
+            initial_state: Some(initial_state),
             read_only: false,
         },
     );

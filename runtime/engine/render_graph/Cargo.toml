@@ -9,7 +9,11 @@ publish.workspace = true
 marlin-containers.workspace = true
 marlin-hash.workspace = true
 marlin-rhi.workspace = true
+marlin-serial.workspace = true
 marlin-std.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+marlin-gpu-test-support.workspace = true

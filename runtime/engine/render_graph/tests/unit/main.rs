@@ -9,6 +9,7 @@ mod alias;
 mod barriers;
 mod cache;
 mod cull;
+mod state;
 // Development checks are compiled out without debug assertions.
 #[cfg(debug_assertions)]
 mod validation;

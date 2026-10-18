@@ -63,6 +63,7 @@ impl Backend for Recording {
     type Device = Device;
     type Texture = Texture;
     type Buffer = Buffer;
+    type Parts<'a> = core::convert::Infallible;
 
     fn texture_desc(texture: &Texture) -> &TextureDesc {
         &texture.0
@@ -70,6 +71,15 @@ impl Backend for Recording {
 
     fn buffer_desc(buffer: &Buffer) -> &BufferDesc {
         &buffer.0
+    }
+
+    /// The object's address: keep it in place while a state table knows it.
+    fn texture_key(texture: &Texture) -> u64 {
+        core::ptr::from_ref(texture) as u64
+    }
+
+    fn buffer_key(buffer: &Buffer) -> u64 {
+        core::ptr::from_ref(buffer) as u64
     }
 
     fn texture_requirements(device: &Device, desc: &TextureDesc) -> Result<MemoryRequirements> {

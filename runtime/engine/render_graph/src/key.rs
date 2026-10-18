@@ -44,7 +44,7 @@ pub(crate) fn topology_key<B: Backend>(g: &RenderGraph<'_, B>) -> u64 {
     g.passes.len().hash(&mut h);
     for p in &g.passes {
         p.name.hash(&mut h);
-        (p.kind, p.queue, p.side_effect).hash(&mut h);
+        (p.kind, p.queue, p.side_effect, p.builtin).hash(&mut h);
         let recs = &g.accesses[p.accesses.start as usize..p.accesses.end as usize];
         recs.len().hash(&mut h);
         for r in recs {

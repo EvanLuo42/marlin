@@ -15,45 +15,32 @@ use crate::backend::{Backend, Rhi};
 use crate::context::PassContext;
 use crate::desc::{BufferDesc, TextureDesc};
 use crate::handle::{BufferHandle, Range, TextureHandle};
+use crate::state::StateTable;
 
 pub(crate) type Exec<'g, B> = Box<dyn FnOnce(&mut PassContext<'_, B>) + Send + 'g, &'g Arena>;
 
 /// How an imported texture enters the frame.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct ImportTexture {
-    /// The state the texture is in when the frame starts.
-    pub initial_state: TextureState,
+    /// The state the texture is in when the frame starts. `None`: the state the graph's
+    /// [`StateTable`] recorded at the end of the last frame that used it, or
+    /// [`TextureState::UNDEFINED`] for a texture it has not seen (0007 §2.3).
+    pub initial_state: Option<TextureState>,
     /// Passes may only read it; Development builds panic on a write.
     pub read_only: bool,
 }
 
-impl Default for ImportTexture {
-    fn default() -> Self {
-        Self {
-            initial_state: TextureState::UNDEFINED,
-            read_only: false,
-        }
-    }
-}
-
 /// How an imported buffer enters the frame.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct ImportBuffer {
-    pub initial_state: BufferState,
+    /// As [`ImportTexture::initial_state`]; [`BufferState::NONE`] when unknown.
+    pub initial_state: Option<BufferState>,
     pub read_only: bool,
-}
-
-impl Default for ImportBuffer {
-    fn default() -> Self {
-        Self {
-            initial_state: BufferState::NONE,
-            read_only: false,
-        }
-    }
+    /// The element size shader views of it use, as [`BufferDesc::stride`].
+    pub stride: Option<u32>,
 }
 
 pub(crate) struct Imported<T, S, U> {
-    #[expect(dead_code, reason = "read when the frame context runs plans (0007 §7)")]
     pub object: T,
     pub initial: S,
     pub read_only: bool,
@@ -66,7 +53,8 @@ pub(crate) struct TextureNode<'g, B: Backend> {
     pub desc: TextureDesc,
     /// The newest version; handles of older ones are stale.
     pub version: u32,
-    pub import: Option<Imported<&'g B::Texture, TextureState, TextureUsage>>,
+    /// The initial states are one for every subresource, or one per subresource.
+    pub import: Option<Imported<&'g B::Texture, &'g [TextureState], TextureUsage>>,
 }
 
 pub(crate) struct BufferNode<'g, B: Backend> {
@@ -96,6 +84,8 @@ pub(crate) struct AccessRec {
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ColorTarget {
+    /// The attachment's access in [`RenderGraph::accesses`].
+    pub access: u32,
     pub texture: u32,
     pub mip: u32,
     pub layer: u32,
@@ -105,6 +95,7 @@ pub(crate) struct ColorTarget {
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct DepthTarget {
+    pub access: u32,
     pub texture: u32,
     pub mip: u32,
     pub layer: u32,
@@ -115,8 +106,28 @@ pub(crate) struct DepthTarget {
     pub read_only: bool,
 }
 
+/// A pass the graph records itself.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub(crate) enum Builtin {
+    /// Hands a texture to presentation.
+    Present,
+    /// Copies a buffer range out to CPU-readable memory.
+    ReadbackBuffer(u32),
+    /// Copies one mip and layer of a texture out to CPU-readable memory.
+    ReadbackTexture(u32),
+}
+
+/// What [`RenderGraph::readback`] copies out: available once the GPU finished the frame
+/// (`FrameContext::readback`).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Readback {
+    pub(crate) frame: u64,
+    pub(crate) index: u32,
+}
+
 pub(crate) struct PassNode<'g, B: Backend> {
     pub name: &'g str,
+    pub builtin: Option<Builtin>,
     pub kind: PassKind,
     pub queue: QueueType,
     pub side_effect: bool,
@@ -134,22 +145,41 @@ pub(crate) struct PassNode<'g, B: Backend> {
 /// which changes what a pass reads (0007 §1).
 pub struct RenderGraph<'g, B: Backend = Rhi> {
     pub(crate) arena: &'g Arena,
+    pub(crate) states: Option<&'g StateTable<B>>,
     pub(crate) textures: Vec<TextureNode<'g, B>, &'g Arena>,
     pub(crate) buffers: Vec<BufferNode<'g, B>, &'g Arena>,
     pub(crate) passes: Vec<PassNode<'g, B>, &'g Arena>,
     pub(crate) accesses: Vec<AccessRec, &'g Arena>,
+    /// Readbacks declared so far.
+    pub(crate) readbacks: u32,
 }
 
 impl<'g, B: Backend> RenderGraph<'g, B> {
-    /// An empty graph allocating from `arena`, the frame's arena.
+    /// An empty graph allocating from `arena`, the frame's arena. Imports without an initial
+    /// state start undefined.
     pub fn new(arena: &'g Arena) -> Self {
         Self {
             arena,
+            states: None,
             textures: Vec::new_in(arena),
             buffers: Vec::new_in(arena),
             passes: Vec::new_in(arena),
             accesses: Vec::new_in(arena),
+            readbacks: 0,
         }
+    }
+
+    /// An empty graph whose imports start where `states` saw them last.
+    pub fn with_states(arena: &'g Arena, states: &'g StateTable<B>) -> Self {
+        Self {
+            states: Some(states),
+            ..Self::new(arena)
+        }
+    }
+
+    /// The frame this graph is for: its state table's.
+    pub fn frame(&self) -> u64 {
+        self.states.map_or(0, StateTable::frame)
     }
 
     /// A transient texture: created by the graph, alive from its first use to its last, its
@@ -186,7 +216,9 @@ impl<'g, B: Backend> RenderGraph<'g, B> {
         BufferHandle::new(index, 0)
     }
 
-    /// A texture the caller owns, starting the frame undefined.
+    /// A texture the caller owns, starting where the state table saw it last. Before dropping
+    /// an imported texture, the caller makes the graph forget it
+    /// (`FrameContext::forget_texture`): a new object may reuse its native handle.
     pub fn import_texture(&mut self, name: &str, texture: &'g B::Texture) -> TextureHandle<'g> {
         self.import_texture_with(name, texture, ImportTexture::default())
     }
@@ -198,14 +230,27 @@ impl<'g, B: Backend> RenderGraph<'g, B> {
         import: ImportTexture,
     ) -> TextureHandle<'g> {
         let rhi = B::texture_desc(texture);
+        let desc = TextureDesc::from_rhi(rhi);
+        let initial: &'g [TextureState] = match import.initial_state {
+            Some(state) => self.arena.alloc_slice_copy(&[state]),
+            None => match self
+                .states
+                .and_then(|s| s.texture_states(B::texture_key(texture)))
+            {
+                Some(states) if states.len() == desc.subresources() as usize => {
+                    self.arena.alloc_slice_copy(states)
+                }
+                _ => self.arena.alloc_slice_copy(&[TextureState::UNDEFINED]),
+            },
+        };
         let index = self.textures.len() as u32;
         self.textures.push(TextureNode {
             name: self.arena.alloc_str(name),
-            desc: TextureDesc::from_rhi(rhi),
+            desc,
             version: 0,
             import: Some(Imported {
                 object: texture,
-                initial: import.initial_state,
+                initial,
                 read_only: import.read_only,
                 usage: rhi.usage,
             }),
@@ -213,7 +258,8 @@ impl<'g, B: Backend> RenderGraph<'g, B> {
         TextureHandle::new(index, 0)
     }
 
-    /// A buffer the caller owns, starting the frame with no pending GPU access.
+    /// A buffer the caller owns, starting where the state table saw it last; see
+    /// [`import_texture`](Self::import_texture).
     pub fn import_buffer(&mut self, name: &str, buffer: &'g B::Buffer) -> BufferHandle<'g> {
         self.import_buffer_with(name, buffer, ImportBuffer::default())
     }
@@ -225,19 +271,78 @@ impl<'g, B: Backend> RenderGraph<'g, B> {
         import: ImportBuffer,
     ) -> BufferHandle<'g> {
         let rhi = B::buffer_desc(buffer);
+        let initial = import.initial_state.unwrap_or_else(|| {
+            self.states
+                .and_then(|s| s.buffer_state(B::buffer_key(buffer)))
+                .unwrap_or(BufferState::NONE)
+        });
         let index = self.buffers.len() as u32;
         self.buffers.push(BufferNode {
             name: self.arena.alloc_str(name),
-            desc: BufferDesc::new(rhi.size),
+            desc: BufferDesc {
+                size: rhi.size,
+                stride: import.stride,
+            },
             version: 0,
             import: Some(Imported {
                 object: buffer,
-                initial: import.initial_state,
+                initial,
                 read_only: import.read_only,
                 usage: rhi.usage,
             }),
         });
         BufferHandle::new(index, 0)
+    }
+
+    /// Hands `texture` (a swapchain image, imported) to presentation: it ends the frame in
+    /// [`TextureState::PRESENT`]. The caller presents after the frame is submitted.
+    pub fn present(&mut self, texture: TextureHandle<'g>) {
+        self.add_builtin("Present", Builtin::Present, |b| {
+            b.texture_access(texture, Use::Present, Effect::Read);
+        });
+    }
+
+    /// Copies what `buffer` covers out to memory the CPU reads once the GPU finished the frame.
+    pub fn readback(&mut self, buffer: BufferHandle<'g>) -> Readback {
+        let index = self.readbacks;
+        self.readbacks += 1;
+        self.add_builtin("Readback", Builtin::ReadbackBuffer(index), |b| {
+            b.read_buffer(buffer, Access::CopySrc);
+        });
+        Readback {
+            frame: self.frame(),
+            index,
+        }
+    }
+
+    /// Copies one mip and layer of `texture` out, rows tightly packed.
+    pub fn readback_texture(&mut self, texture: TextureHandle<'g>) -> Readback {
+        let index = self.readbacks;
+        self.readbacks += 1;
+        self.add_builtin("Readback", Builtin::ReadbackTexture(index), |b| {
+            b.single_subresource(texture, "readback");
+            b.read_texture(texture, Access::CopySrc);
+        });
+        Readback {
+            frame: self.frame(),
+            index,
+        }
+    }
+
+    fn add_builtin(
+        &mut self,
+        name: &str,
+        builtin: Builtin,
+        declare: impl FnOnce(&mut PassBuilder<'_, 'g, B>),
+    ) {
+        self.add_pass(name, PassKind::Copy, |b| {
+            b.side_effect();
+            declare(b);
+            ((), |_: &mut PassContext<'_, B>| {})
+        });
+        let pass = self.passes.last_mut().expect("just added");
+        pass.builtin = Some(builtin);
+        pass.exec = None;
     }
 
     /// A pass that draws into attachments (`b.color`, `b.depth`). `setup` runs now: it declares
@@ -291,6 +396,7 @@ impl<'g, B: Backend> RenderGraph<'g, B> {
         let index = self.passes.len();
         self.passes.push(PassNode {
             name: self.arena.alloc_str(name),
+            builtin: None,
             kind,
             queue: QueueType::Graphics,
             side_effect: false,
@@ -419,12 +525,14 @@ impl<'g, B: Backend> PassBuilder<'_, 'g, B> {
             LoadOp::Load => Effect::Modify,
             LoadOp::Clear(_) | LoadOp::DontCare => Effect::Overwrite,
         };
+        let (mip, layer) = self.single_subresource(h, "color attachment");
         let out = self.texture_access(h, Use::Color, effect);
-        let (mip, layer) = self.single_subresource(out, "color attachment");
+        let access = self.graph.accesses.len() as u32 - 1;
         let pass = &mut self.graph.passes[self.pass];
         assert!(
             pass.colors
                 .try_push(ColorTarget {
+                    access,
                     texture: h.index,
                     mip,
                     layer,
@@ -497,6 +605,8 @@ impl<'g, B: Backend> PassBuilder<'_, 'g, B> {
         read_only: bool,
     ) {
         let (mip, layer) = self.single_subresource(h, "depth attachment");
+        // Called right after the attachment's access is declared.
+        let access = self.graph.accesses.len() as u32 - 1;
         let pass = &mut self.graph.passes[self.pass];
         assert!(
             pass.depth.is_none(),
@@ -504,6 +614,7 @@ impl<'g, B: Backend> PassBuilder<'_, 'g, B> {
             pass.name
         );
         pass.depth = Some(DepthTarget {
+            access,
             texture: h.index,
             mip,
             layer,

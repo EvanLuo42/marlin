@@ -26,7 +26,7 @@ fn writing_a_read_only_import_panics() {
         "Source",
         &object,
         ImportTexture {
-            initial_state: TextureState::SHADER_READ,
+            initial_state: Some(TextureState::SHADER_READ),
             read_only: true,
         },
     );

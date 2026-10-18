@@ -51,12 +51,22 @@ impl PlanCache {
         graph: &RenderGraph<'_, B>,
         device: &B::Device,
     ) -> Result<(&CompiledPlan, Lookup)> {
+        let (i, lookup) = self.ensure(graph, device)?;
+        Ok((&self.entries[i].plan, lookup))
+    }
+
+    /// As [`get_or_compile`](Self::get_or_compile), returning where the plan is.
+    pub(crate) fn ensure<B: Backend>(
+        &mut self,
+        graph: &RenderGraph<'_, B>,
+        device: &B::Device,
+    ) -> Result<(usize, Lookup)> {
         self.clock += 1;
         let key = graph.topology_key();
         if let Some(i) = self.entries.iter().position(|e| e.plan.key == key) {
             let entry = &mut self.entries[i];
             entry.last_used = self.clock;
-            return Ok((&entry.plan, Lookup::Hit));
+            return Ok((i, Lookup::Hit));
         }
         let plan = crate::compile::compile(graph, device, key)?;
         let entry = Entry {
@@ -73,7 +83,11 @@ impl PlanCache {
             self.entries[oldest] = entry;
             oldest
         };
-        Ok((&self.entries[i].plan, Lookup::Miss))
+        Ok((i, Lookup::Miss))
+    }
+
+    pub(crate) fn get(&self, i: usize) -> &CompiledPlan {
+        &self.entries[i].plan
     }
 
     /// Plans held.
@@ -83,6 +97,14 @@ impl PlanCache {
 
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+
+    /// The plan for topology `key`, if held.
+    pub fn plan(&self, key: u64) -> Option<&CompiledPlan> {
+        self.entries
+            .iter()
+            .find(|e| e.plan.key == key)
+            .map(|e| &e.plan)
     }
 
     /// Whether a plan for `key` is held.

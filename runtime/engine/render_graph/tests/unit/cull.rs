@@ -96,7 +96,7 @@ fn read_only_imports_are_not_roots() {
         "Source",
         &source,
         ImportTexture {
-            initial_state: TextureState::SHADER_READ,
+            initial_state: Some(TextureState::SHADER_READ),
             read_only: true,
         },
     );

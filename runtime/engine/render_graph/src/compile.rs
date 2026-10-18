@@ -336,13 +336,18 @@ impl<'a, 'g, B: Backend> States<'a, 'g, B> {
     ) -> Self {
         let mut tex = Vec::with_capacity(subs.total as usize);
         for node in &g.textures {
-            let initial = node
-                .import
-                .as_ref()
-                .map_or(TextureState::UNDEFINED, |i| i.initial);
-            let readable = initial.layout != Layout::Undefined && is_read_only(initial.access);
-            for _ in 0..node.desc.subresources() {
-                tex.push(Track::new(initial, readable));
+            let initial: &[TextureState] = match &node.import {
+                None => &[TextureState::UNDEFINED],
+                Some(i) => i.initial,
+            };
+            for sub in 0..node.desc.subresources() as usize {
+                let state = if initial.len() == 1 {
+                    initial[0]
+                } else {
+                    initial[sub]
+                };
+                let readable = state.layout != Layout::Undefined && is_read_only(state.access);
+                tex.push(Track::new(state, readable));
             }
         }
         let buf = g

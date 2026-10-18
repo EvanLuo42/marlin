@@ -130,7 +130,7 @@ fn clearing_a_used_import_waits_for_its_last_use_and_discards() {
         "Out",
         &target,
         ImportTexture {
-            initial_state: TextureState::PIXEL_SHADER_READ,
+            initial_state: Some(TextureState::PIXEL_SHADER_READ),
             read_only: false,
         },
     );
@@ -336,7 +336,7 @@ fn an_import_already_readable_needs_no_barrier() {
         "Source",
         &source,
         ImportTexture {
-            initial_state: TextureState::SHADER_READ,
+            initial_state: Some(TextureState::SHADER_READ),
             read_only: true,
         },
     );
@@ -355,7 +355,7 @@ fn an_import_read_by_a_new_stage_makes_it_visible_there() {
         "Source",
         &source,
         ImportTexture {
-            initial_state: TextureState::PIXEL_SHADER_READ,
+            initial_state: Some(TextureState::PIXEL_SHADER_READ),
             read_only: true,
         },
     );

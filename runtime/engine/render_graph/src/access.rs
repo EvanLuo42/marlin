@@ -53,6 +53,8 @@ pub(crate) enum Use {
     Color,
     DepthWrite,
     DepthRead,
+    /// Handed to presentation.
+    Present,
 }
 
 /// Whether an access reads the previous contents, writes, or both.
@@ -95,6 +97,7 @@ impl Use {
             Self::Color => "color attachment",
             Self::DepthWrite => "depth attachment",
             Self::DepthRead => "read-only depth attachment",
+            Self::Present => "presentation",
         }
     }
 
@@ -125,6 +128,7 @@ impl Use {
             Self::Color => TextureState::RENDER_TARGET,
             Self::DepthWrite => TextureState::DEPTH_WRITE,
             Self::DepthRead => TextureState::DEPTH_READ,
+            Self::Present => TextureState::PRESENT,
         })
     }
 
@@ -155,7 +159,7 @@ impl Use {
                 Access::CopyDst => BufferState::COPY_DST,
                 Access::Clear => BufferState::CLEAR_STORAGE,
             },
-            Self::Color | Self::DepthWrite | Self::DepthRead => return None,
+            Self::Color | Self::DepthWrite | Self::DepthRead | Self::Present => return None,
         })
     }
 
@@ -172,6 +176,7 @@ impl Use {
             },
             Self::Color => TextureUsage::RENDER_TARGET,
             Self::DepthWrite | Self::DepthRead => TextureUsage::DEPTH_STENCIL,
+            Self::Present => TextureUsage::default(),
         }
     }
 
@@ -190,14 +195,16 @@ impl Use {
                 Access::CopySrc => BufferUsage::COPY_SRC,
                 Access::CopyDst => BufferUsage::COPY_DST,
             },
-            Self::Color | Self::DepthWrite | Self::DepthRead => BufferUsage::default(),
+            Self::Color | Self::DepthWrite | Self::DepthRead | Self::Present => {
+                BufferUsage::default()
+            }
         }
     }
 
     /// Whether a pass of `kind` may declare this access.
     pub fn allowed_in(self, kind: PassKind) -> bool {
         match kind {
-            PassKind::Raster => true,
+            PassKind::Raster => !matches!(self, Self::Present),
             PassKind::Compute => match self {
                 Self::Shader(a) => !matches!(
                     a,
@@ -211,6 +218,7 @@ impl Use {
             },
             PassKind::Copy => match self {
                 Self::Shader(a) => a.is_copy() || matches!(a, Access::Clear),
+                Self::Present => true,
                 _ => false,
             },
         }

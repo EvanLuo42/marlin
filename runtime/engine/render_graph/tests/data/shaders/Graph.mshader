@@ -1,0 +1,35 @@
+namespace RenderGraph;
+
+// Shaders the render graph's GPU tests run through passes.
+
+public struct FillTextureArgs
+{
+    /// A writable view of an R32Uint texture, `Size` texels on a side.
+    public StorageTexture2D<uint> Output;
+    public uint Base;
+    public uint Size;
+}
+
+/// Texel (x, y) = `Base + x + Size * y`.
+[Compute(8, 8, 1)]
+public void FillTexture([DispatchThreadId] uint3 id, [Push] in FillTextureArgs a)
+{
+    if (All(id.xy < a.Size))
+        a.Output[(int2)id.xy] = a.Base + id.x + a.Size * id.y;
+}
+
+public struct Values
+{
+    public uint4 Words;
+}
+
+public struct CopyUniformArgs
+{
+    public Uniform<Values> Input;
+    /// A writable raw view.
+    public ByteBuffer Output;
+}
+
+/// Words 0–3 of the output = the uniform's.
+[Compute(1, 1, 1)]
+public void CopyUniform([Push] in CopyUniformArgs a) => a.Output.Store4(0, a.Input.Value.Words);
