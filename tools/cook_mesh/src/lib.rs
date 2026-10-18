@@ -5,6 +5,7 @@
 //! - [`simplify`]: quadric edge-collapse simplification with attribute costs, seams kept and
 //!   borders locked, for LOD chains.
 //! - [`optimize`]: welding, vertex cache order (Forsyth) and vertex fetch order.
+//! - [`cluster`]: clusters of up to 128 triangles and 128 vertices for the cluster DAG.
 //! - [`meshlet`]: meshlets of up to 64 vertices and 124 triangles with bounding spheres and
 //!   normal cones.
 //! - [`tangent`]: tangent frames for meshes imported without them.
@@ -14,6 +15,7 @@
 //! Every algorithm here is our own (0003); the `gltf` crate only parses the file.
 
 mod build;
+pub mod cluster;
 mod cooker;
 pub mod import;
 mod math;

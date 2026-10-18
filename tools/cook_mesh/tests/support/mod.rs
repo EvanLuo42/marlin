@@ -292,3 +292,72 @@ fn base64(data: &[u8]) -> String {
     }
     s
 }
+
+/// A closed, welded, bumpy sphere: an icosahedron subdivided `subdivisions` times (20 · 4ⁿ
+/// triangles), pushed out to radius 1 and displaced by a smooth bump field so simplification has
+/// error to measure. Normals are the sphere's; UVs a planar projection without seams.
+pub fn icosphere(subdivisions: u32) -> Sphere {
+    let t = (1.0 + 5f32.sqrt()) / 2.0;
+    let mut positions: Vec<[f32; 3]> = vec![
+        [-1.0, t, 0.0],
+        [1.0, t, 0.0],
+        [-1.0, -t, 0.0],
+        [1.0, -t, 0.0],
+        [0.0, -1.0, t],
+        [0.0, 1.0, t],
+        [0.0, -1.0, -t],
+        [0.0, 1.0, -t],
+        [t, 0.0, -1.0],
+        [t, 0.0, 1.0],
+        [-t, 0.0, -1.0],
+        [-t, 0.0, 1.0],
+    ];
+    let mut indices: Vec<u32> = vec![
+        0, 11, 5, 0, 5, 1, 0, 1, 7, 0, 7, 10, 0, 10, 11, 1, 5, 9, 5, 11, 4, 11, 10, 2, 10, 7, 6,
+        7, 1, 8, 3, 9, 4, 3, 4, 2, 3, 2, 6, 3, 6, 8, 3, 8, 9, 4, 9, 5, 2, 4, 11, 6, 2, 10, 8, 6,
+        7, 9, 8, 1,
+    ];
+    let unit = |p: [f32; 3]| {
+        let l = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
+        p.map(|c| c / l)
+    };
+    for p in &mut positions {
+        *p = unit(*p);
+    }
+    for _ in 0..subdivisions {
+        let mut midpoints: std::collections::HashMap<(u32, u32), u32> =
+            std::collections::HashMap::new();
+        let mut next = Vec::with_capacity(indices.len() * 4);
+        for tri in indices.chunks(3) {
+            let mut mid = |a: u32, b: u32| {
+                *midpoints.entry((a.min(b), a.max(b))).or_insert_with(|| {
+                    let (pa, pb) = (positions[a as usize], positions[b as usize]);
+                    positions.push(unit(std::array::from_fn(|i| (pa[i] + pb[i]) * 0.5)));
+                    positions.len() as u32 - 1
+                })
+            };
+            let (a, b, c) = (tri[0], tri[1], tri[2]);
+            let (ab, bc, ca) = (mid(a, b), mid(b, c), mid(c, a));
+            next.extend([a, ab, ca, b, bc, ab, c, ca, bc, ab, bc, ca]);
+        }
+        indices = next;
+    }
+    let normals = positions.clone();
+    let uvs = positions
+        .iter()
+        .map(|p| [p[0] * 0.5 + 0.5, p[2] * 0.5 + 0.5])
+        .collect();
+    let positions = positions
+        .iter()
+        .map(|p| {
+            let bump = 1.0 + 0.04 * (5.0 * p[0]).sin() * (7.0 * p[1]).sin() * (3.0 * p[2]).sin();
+            p.map(|c| c * bump)
+        })
+        .collect();
+    Sphere {
+        positions,
+        normals,
+        uvs,
+        indices,
+    }
+}

@@ -4,6 +4,7 @@
 //! name them; their cooked forms are marlin-serial cooked layouts read in place
 //! ([`TextureView`], [`MeshView`]), with GPU data in bulk blobs.
 
+pub mod cluster;
 pub mod mesh;
 pub mod texture;
 
