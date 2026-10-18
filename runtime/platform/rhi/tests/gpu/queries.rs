@@ -65,7 +65,10 @@ fn occlusion_queries_count_samples() {
             list.resolve_queries(&counts, 0, 2, &out, 0);
             list.resolve_queries(&binary, 0, 2, &out, 16);
         });
-        assert_eq!(read_u64s(&out, 4), [16, 0, 1, 0]);
+        let results = read_u64s(&out, 4);
+        assert_eq!(results[..2], [16, 0], "{results:?}");
+        // Binary results are only zero or not (D3D12 writes 1, Vulkan may write the count).
+        assert!(results[2] != 0 && results[3] == 0, "{results:?}");
         assert_eq!(device.validation_errors(), 0);
     }
 }

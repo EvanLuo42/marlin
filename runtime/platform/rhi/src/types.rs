@@ -2088,7 +2088,8 @@ pub enum QueryKind {
     /// [`begin_query`](crate::CommandList::begin_query) and
     /// [`end_query`](crate::CommandList::end_query), on graphics lists.
     Occlusion,
-    /// As [`Occlusion`](Self::Occlusion), but only 0 or 1 (may be cheaper): for predication.
+    /// As [`Occlusion`](Self::Occlusion), but only 0 if no sample passed, otherwise non-zero
+    /// (D3D12 writes 1; may be cheaper): for predication.
     BinaryOcclusion,
     /// [`PipelineStatistics`] counted between `begin_query` and `end_query` on graphics and
     /// compute lists. Requires [`Features::pipeline_statistics`]. For profiling and debugging:
