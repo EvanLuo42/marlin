@@ -1,26 +1,30 @@
 namespace Render;
 
-// Decodes every vertex of one LOD of a resident mesh with the engine's own decode
+// Decodes every vertex of one page of a resident mesh with the engine's own decode
 // (`Marlin.Engine.Scene`), storing position and normal as six floats at `v * 24` of a raw buffer.
+
+using Marlin.Engine.Scene;
 
 public struct DecodeArgs
 {
-    public ReadOnlyBuffer<Marlin.Engine.Scene.MeshEntry> Meshes;
-    public ReadOnlyByteBuffer Geometry;
+    public ReadOnlyBuffer<MeshEntry> Meshes;
     public ByteBuffer Output;
     public uint Mesh;
-    public uint Lod;
+    /// The page's pool slot.
+    public uint Slot;
 }
 
 [Compute(64, 1, 1)]
 public void DecodeVertices([DispatchThreadId] uint3 id, [Push] in DecodeArgs a)
 {
-    Marlin.Engine.Scene.MeshEntry mesh = a.Meshes[a.Mesh];
-    Marlin.Engine.Scene.LodStreams lod = Marlin.Engine.Scene.Lod(a.Geometry, a.Lod);
-    if (id.x >= lod.VertexCount)
+    MeshEntry mesh = a.Meshes[a.Mesh];
+    // The page header's vertex count.
+    uint count = mesh.Pages.Load(a.Slot * 131072 + 4);
+    if (id.x >= count)
         return;
-    float3 p = Marlin.Engine.Scene.DecodePosition(a.Geometry, mesh, lod, id.x);
-    float3 n = Marlin.Engine.Scene.DecodeVertexNormal(a.Geometry, mesh, lod, id.x);
+    Page page = LoadPage(mesh.Pages, a.Slot);
+    float3 p = DecodePosition(mesh.Pages, mesh, page, id.x);
+    float3 n = DecodeVertexNormal(mesh.Pages, mesh, page, id.x);
     a.Output.Store3(id.x * 24, AsUInt(p));
     a.Output.Store3(id.x * 24 + 12, AsUInt(n));
 }

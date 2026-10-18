@@ -8,7 +8,7 @@
 //! | instance data | 8 | mesh row, flags, material row (`u32::MAX`: none), spare, color (float4) |
 //! | instance transforms | 24 | current, then previous: 3 rows of a 3×4 matrix each |
 //! | instance bounds | 4 | world bounding sphere: center, radius |
-//! | meshes | 16 | geometry view, LOD count, flags, strides; position offset (3), resident (0/1); position scale (3), UV sets; local bounding sphere (`Marlin.Engine.Scene.MeshEntry`) |
+//! | meshes | 16 | page pool view, DAG buffer view, flags, strides; position offset (3), resident (0/1); position scale (3), UV sets; local bounding sphere (`Marlin.Engine.Scene.MeshEntry`) |
 //! | lights | 16 | kind, range, cone (2); radiance + spare; position + spare; direction + spare |
 //! | materials | 4 | permutation (`u32::MAX`: removed), row in its parameter table, 2 spare |
 //! | parameters, one table per permutation | the permutation's block | the material struct (0011 §7.5) |
@@ -324,8 +324,8 @@ impl RenderScene {
             if let Some(m) = self.mesh_resident[i] {
                 let (o, s, b) = (m.position_offset, m.position_scale, m.bounds);
                 words = [
-                    m.geometry,
-                    m.lods,
+                    m.pages,
+                    m.dag,
                     m.flags,
                     m.strides,
                     o[0].to_bits(),

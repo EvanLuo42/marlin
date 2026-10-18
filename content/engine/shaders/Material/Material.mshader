@@ -180,11 +180,10 @@ public void ResolvePixel<M>([DispatchThreadId] uint3 id, [Push] in ResolveArgs<M
     InstanceData instance = a.Instances[row];
     InstanceTransforms t = a.Transforms[row];
     MeshEntry mesh = a.Meshes[instance.Mesh];
-    ReadOnlyByteBuffer g = mesh.Geometry;
-    LodStreams l = Lod(g, c.y >> 24);
-    uint at = l.Meshlets + (c.y & 16777215) * 64;
-    uint vertexOffset = g.Load(at + 20);
-    uint corner = l.MeshletTriangles + g.Load(at + 24) + triangle * 3;
+    ReadOnlyByteBuffer pool = mesh.Pages;
+    Page page = LoadPage(pool, AddressSlot(c.y));
+    Cluster record = LoadCluster(pool, page, AddressCluster(c.y));
+    uint3 corners = LoadTriangle(pool, page, record, triangle);
 
     float3[3] world = default;
     float3[3] previous = default;
@@ -192,12 +191,11 @@ public void ResolvePixel<M>([DispatchThreadId] uint3 id, [Push] in ResolveArgs<M
     float4[3] clip = default;
     for (uint k = 0; k < 3; k++)
     {
-        uint local = Marlin.Engine.Visibility.ByteAt(g, corner + k);
-        uint vertex = g.Load(l.MeshletVertices + (vertexOffset + local) * 4);
-        float3 p = DecodePosition(g, mesh, l, vertex);
+        uint vertex = k == 0 ? corners.x : (k == 1 ? corners.y : corners.z);
+        float3 p = DecodePosition(pool, mesh, page, vertex);
         world[k] = Apply(t.Current, float4(p, 1));
         previous[k] = Apply(t.Previous, float4(p, 1));
-        normal[k] = Apply(t.Current, float4(DecodeVertexNormal(g, mesh, l, vertex), 0));
+        normal[k] = Apply(t.Current, float4(DecodeVertexNormal(pool, mesh, page, vertex), 0));
         clip[k] = v.ViewProjection * float4(world[k], 1);
     }
     float2 ndc = Ndc(xy, v);

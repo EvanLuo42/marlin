@@ -70,21 +70,7 @@ impl Harness {
         let device = hardware_device();
         let scatter = ScatterShader::new(device, shader("Marlin.Engine.Scene.Scatter")).unwrap();
         let v = |name: &str| shader(&format!("Marlin.Engine.Visibility.{name}"));
-        let mut vis = Visibility::new(
-            device,
-            &VisibilityShaders {
-                reset: v("Reset"),
-                instance_cull: v("InstanceCull"),
-                instance_args: v("InstanceArgs"),
-                cluster_cull: v("ClusterCull"),
-                finish_args: v("FinishArgs"),
-                mesh: v("VisMesh"),
-                pixel: v("VisPs"),
-                clear: v("VisClear"),
-                depth: v("VisDepth"),
-            },
-        )
-        .unwrap();
+        let mut vis = Visibility::new(device, &VisibilityShaders::from_fn(v)).unwrap();
         vis.lod_error_pixels = 0.0;
         let m = |name: &str| shader(&format!("Marlin.Engine.Material.{name}"));
         let mut materials = Materials::new(
@@ -127,7 +113,7 @@ impl Harness {
         ));
         Self {
             device,
-            meshes: Meshes::new(),
+            meshes: Meshes::new(device, 64).unwrap(),
             scene: RenderScene::new(),
             scatter,
             vis,

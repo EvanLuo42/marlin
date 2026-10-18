@@ -3,7 +3,10 @@
 //! marlin-cook-mesh`, or `cargo bench -p marlin-cook-mesh --bench cluster_dag -- [filter]`.
 
 #[path = "../tests/support/mod.rs"]
-#[allow(unused_imports, reason = "the support module also serves the cook tests")]
+#[allow(
+    unused_imports,
+    reason = "the support module also serves the cook tests"
+)]
 mod support;
 
 use marlin_bench::{Bench, Duration};

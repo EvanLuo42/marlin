@@ -1,18 +1,20 @@
 //! A [`RenderScene`] on the shared hardware device: its GPU Scene, its visibility passes and a
-//! reference rasterizer (`Render.ReferenceVs`/`ReferencePs`: each drawable instance's LOD 0 as an
-//! indexed draw with a depth buffer, unlit) drawn into one small frame and read back. Tests
-//! change the scene the way extract does, with updates on reserved handles. Meshes are cooked
-//! by the real cooker ([`cook`]).
+//! reference rasterizer (`Render.ReferenceVs`/`ReferencePs`: the LOD cut computed on the CPU,
+//! every cluster of it drawn with a vertex shader and a depth buffer, unlit) drawn into one
+//! small frame and read back. Tests change the scene the way extract does, with updates on
+//! reserved handles. Meshes are cooked by the real cooker ([`cook`]).
 
 pub mod cook;
 
 use marlin_containers::HashMap;
 use marlin_gpu_test_support::{Shader, hardware_device, shader};
 use marlin_math::{Mat4, Transform, Vec3};
+use marlin_render::asset::cluster::ClusterRecord;
 use marlin_render::scene::{
     InstanceDesc, InstanceId, InstanceUpdate, MaterialDesc, MaterialId, MaterialUpdate, MeshId,
     MeshUpdate,
 };
+use marlin_render::visibility::counters;
 use marlin_render::{
     Camera, Environment, GpuScene, MeshHandle, Meshes, RenderScene, ScatterShader, SceneUpdates,
     Visibility, VisibilityShaders,
@@ -29,14 +31,19 @@ use cook::Cooked;
 
 pub const SIZE: u32 = 64;
 
+/// Page pool slots the harness has.
+pub const POOL_PAGES: u32 = 256;
+
 const DEPTH_FORMAT: Format = Format::D32Float;
 
 pub struct Harness {
     pub device: &'static Device,
     pub meshes: Meshes,
+    /// The cooked form of every uploaded mesh, for the CPU cut.
+    cooked: HashMap<MeshHandle, Cooked>,
     pub scene: RenderScene,
     scatter: ScatterShader,
-    /// The visibility passes, LOD 0 everywhere unless a test sets its error budget.
+    /// The visibility passes, with a budget of 0 (the finest clusters) unless a test sets one.
     pub vis: Visibility,
     reference: GraphicsPipeline,
     /// The unit cube, in the scene and on the GPU.
@@ -53,22 +60,11 @@ impl Harness {
     /// The passes, a scene lit by `environment` and the unit cube uploaded into it.
     pub fn new(environment: Environment) -> Self {
         let device = hardware_device();
-        let mut meshes = Meshes::new();
+        let mut meshes = Meshes::new(device, POOL_PAGES).unwrap();
         let scatter = ScatterShader::new(device, shader("Marlin.Engine.Scene.Scatter")).unwrap();
-        let v = |name: &str| shader(&format!("Marlin.Engine.Visibility.{name}"));
         let mut vis = Visibility::new(
             device,
-            &VisibilityShaders {
-                reset: v("Reset"),
-                instance_cull: v("InstanceCull"),
-                instance_args: v("InstanceArgs"),
-                cluster_cull: v("ClusterCull"),
-                finish_args: v("FinishArgs"),
-                mesh: v("VisMesh"),
-                pixel: v("VisPs"),
-                clear: v("VisClear"),
-                depth: v("VisDepth"),
-            },
+            &VisibilityShaders::from_fn(|name| shader(&format!("Marlin.Engine.Visibility.{name}"))),
         )
         .unwrap();
         vis.lod_error_pixels = 0.0;
@@ -92,7 +88,15 @@ impl Harness {
             environment: Some(environment),
             ..SceneUpdates::default()
         };
-        let (cube, _) = upload(device, &mut meshes, &scene, &mut updates, &cook::cube());
+        let mut cooked = HashMap::default();
+        let (cube, _) = upload(
+            device,
+            &mut meshes,
+            &mut cooked,
+            &scene,
+            &mut updates,
+            &cook::cube(),
+        );
         let material = scene.ids().materials.reserve();
         updates
             .materials
@@ -100,6 +104,7 @@ impl Harness {
         Self {
             device,
             meshes,
+            cooked,
             scene,
             scatter,
             vis,
@@ -117,6 +122,7 @@ impl Harness {
         upload(
             self.device,
             &mut self.meshes,
+            &mut self.cooked,
             &self.scene,
             &mut self.updates,
             mesh,
@@ -151,6 +157,66 @@ impl Harness {
         ));
     }
 
+    /// The cluster the passes address as `address` (`slot << 12 | cluster`).
+    pub fn cluster(&self, address: u32) -> ClusterRecord {
+        let (slot, index) = (address >> 12, (address & 4095) as usize);
+        for (&mesh, cooked) in &self.cooked {
+            let view = cooked.view();
+            let dag = view.cluster_dag.unwrap();
+            for page in 0..dag.pages.len() {
+                if self.meshes.page_slot(mesh, page) == Some(slot) {
+                    let bytes = &cooked.pages[dag.pages[page].bulk as usize];
+                    return dag.page(page, bytes).unwrap().cluster(index);
+                }
+            }
+        }
+        panic!("no cluster at {address:x}");
+    }
+
+    /// The LOD cut of the scene as it is (after the last frame's updates) on the CPU, by
+    /// `Marlin.Engine.Visibility`'s rule: every drawable instance's clusters whose group's error
+    /// projects over the budget and whose own LOD error does not, as visible-cluster entries
+    /// (row, `slot << 12 | cluster`), before any culling.
+    pub fn cut(&self) -> Vec<[u32; 2]> {
+        let (eye, camera) = self.camera.expect("a camera");
+        let pixels = SIZE as f32 / (2.0 * (camera.fov_y * 0.5).tan());
+        let budget = self.vis.lod_error_pixels;
+        let mut out = Vec::new();
+        for (row, mesh, transform) in self.scene.drawable() {
+            let m = transform.to_matrix();
+            let rows: [[f32; 4]; 3] =
+                core::array::from_fn(|r| core::array::from_fn(|c| m.col(c)[r]));
+            let scale = (0..3)
+                .map(|c| m.col(c).truncate().length())
+                .fold(0.0f32, f32::max);
+            let project = |sphere: [f32; 4], error: f32| {
+                let p = [sphere[0], sphere[1], sphere[2], 1.0];
+                let center: [f32; 3] =
+                    core::array::from_fn(|r| (0..4).map(|k| rows[r][k] * p[k]).sum::<f32>());
+                let d = Vec3::from(center) - eye.translation;
+                let distance = (d.length() - sphere[3] * scale).max(1e-4);
+                error * scale * pixels / distance
+            };
+            let cooked = &self.cooked[&mesh];
+            let view = cooked.view();
+            let dag = view.cluster_dag.unwrap();
+            for (page, p) in dag.pages.iter().enumerate() {
+                let slot = self.meshes.page_slot(mesh, page).unwrap();
+                let pv = dag.page(page, &cooked.pages[p.bulk as usize]).unwrap();
+                for i in 0..pv.header.cluster_count as usize {
+                    let c = pv.cluster(i);
+                    let g = &dag.groups[c.group as usize];
+                    if project(g.sphere, g.error) > budget
+                        && project(c.lod_sphere, c.lod_error) <= budget
+                    {
+                        out.push([row, slot << 12 | i as u32]);
+                    }
+                }
+            }
+        }
+        out
+    }
+
     /// Applies the pending updates, declares the GPU Scene and reads back whatever `read` asks
     /// for of it.
     pub fn frame_with<R>(
@@ -176,6 +242,7 @@ impl Harness {
     pub fn visibility_frame(&mut self) -> VisFrame {
         let updates = core::mem::take(&mut self.updates);
         self.scene.apply(&updates);
+        let cut = self.cut();
         let (meshes, scene, scatter, vis, reference) = (
             &self.meshes,
             &mut self.scene,
@@ -184,11 +251,12 @@ impl Harness {
             &self.reference,
         );
         let camera = self.camera.expect("a camera");
-        let (tickets, capacity) = self
+        let list = cut.clone();
+        let (tickets, capacity, levels) = self
             .frame
             .execute(self.device, |g, _| {
                 let gpu = scene.add_passes(g, scatter);
-                let (color, depth) = reference_pass(g, reference, meshes, scene, gpu, camera);
+                let (color, depth) = reference_pass(g, reference, list, gpu, camera);
                 let out = vis.add_passes(g, meshes, scene, gpu, camera, SIZE, SIZE);
                 (
                     [
@@ -200,14 +268,16 @@ impl Harness {
                         g.readback(out.clusters),
                     ],
                     out.capacity,
+                    out.levels,
                 )
             })
             .unwrap();
-        let [color, depth, visbuffer, vis_depth, counters, clusters] =
+        let [color, depth, visbuffer, vis_depth, counter_words, clusters] =
             tickets.map(|t| self.frame.wait_readback(t).unwrap());
         assert_eq!(self.device.validation_errors(), 0);
         let floats = |b: &[u8]| words(b).into_iter().map(f32::from_bits).collect::<Vec<_>>();
         let clusters = words(&clusters);
+        let c = words(&counter_words);
         VisFrame {
             color: words(&color),
             depth: floats(&depth),
@@ -218,9 +288,17 @@ impl Harness {
                 .map(|b| u64::from_le_bytes(*b))
                 .collect(),
             vis_depth: floats(&vis_depth),
-            counters: words(&counters)[..3].try_into().unwrap(),
+            counters: [
+                c[counters::INSTANCES],
+                c[counters::CLUSTERS_FOUND],
+                c[counters::CLUSTERS_DRAWN],
+            ],
+            nodes: c[counters::NODES],
+            parts: c[counters::PARTS],
             clusters: clusters.as_chunks::<2>().0.to_vec(),
             capacity,
+            levels,
+            cut,
         }
     }
 
@@ -236,35 +314,24 @@ impl Harness {
     }
 }
 
-/// `Render.ReferenceArgs` but its padding: eight 32-bit words.
-type ReferenceArgs = [u32; 8];
+/// `Render.ReferenceArgs`: five 32-bit words.
+type ReferenceArgs = [u32; 5];
+
+/// Most triangles in a cluster: the reference draws this many per cluster, the rest degenerate.
+const CLUSTER_TRIANGLES: u32 = 128;
 
 /// The reference rasterizer's pass: color (RGBA8, cleared to black) and depth (`D32Float`,
-/// reverse-Z), each drawable instance's LOD 0, one instanced draw per mesh.
+/// reverse-Z), every cluster of `list` (row, `slot << 12 | cluster`), one instanced draw.
 fn reference_pass<'g>(
     g: &mut RenderGraph<'g>,
     pipeline: &'g GraphicsPipeline,
-    meshes: &'g Meshes,
-    scene: &RenderScene,
+    list: Vec<[u32; 2]>,
     gpu: GpuScene<'g>,
     (eye, camera): (Transform, Camera),
 ) -> (
     marlin_render_graph::TextureHandle<'g>,
     marlin_render_graph::TextureHandle<'g>,
 ) {
-    let mut by_mesh: HashMap<MeshHandle, Vec<u32>> = HashMap::default();
-    for (row, mesh, _) in scene.drawable() {
-        by_mesh.entry(mesh).or_default().push(row);
-    }
-    let mut list = Vec::new();
-    let mut draws = Vec::new();
-    for (mesh, rows) in by_mesh {
-        let Some(lod) = meshes.lod_indices(mesh, 0) else {
-            continue;
-        };
-        draws.push((lod, list.len() as u32, rows.len() as u32));
-        list.extend(rows);
-    }
     let view_projection = Mat4::perspective_infinite_rh(camera.fov_y, 1.0, camera.near)
         * eye.to_matrix().inverse_affine();
     let frame = view_projection.to_cols_array();
@@ -284,28 +351,21 @@ fn reference_pass<'g>(
         let instances = b.read_buffer(gpu.instance_data, Access::VertexRead);
         let mesh_table = b.read_buffer(gpu.meshes, Access::VertexRead);
         ((color, depth), move |ctx: &mut PassContext<'_>| {
-            if draws.is_empty() {
+            if list.is_empty() {
                 return;
             }
             let frame = ctx.upload(&frame);
-            let list = ctx.upload_slice(&list);
-            let tables = [transforms, instances, mesh_table].map(|h| ctx.srv(h));
+            let clusters = ctx.upload_slice(&list);
+            let args: ReferenceArgs = [
+                frame,
+                clusters,
+                ctx.srv(transforms),
+                ctx.srv(instances),
+                ctx.srv(mesh_table),
+            ];
             ctx.set_pipeline(pipeline);
-            for (lod, first, count) in &draws {
-                ctx.resident_index_buffer(lod.buffer, lod.offset, lod.format);
-                let args: ReferenceArgs = [
-                    frame,
-                    list,
-                    tables[0],
-                    tables[1],
-                    tables[2],
-                    lod.geometry,
-                    0,
-                    *first,
-                ];
-                ctx.push_words(&args);
-                ctx.draw_indexed(lod.count, *count, 0, 0, 0);
-            }
+            ctx.push_words(&args);
+            ctx.draw(CLUSTER_TRIANGLES * 3, list.len() as u32, 0, 0);
         })
     })
 }
@@ -323,6 +383,7 @@ pub fn words(bytes: &[u8]) -> Vec<u32> {
 fn upload(
     device: &Device,
     meshes: &mut Meshes,
+    cooked: &mut HashMap<MeshHandle, Cooked>,
     scene: &RenderScene,
     updates: &mut SceneUpdates,
     mesh: &Cooked,
@@ -330,6 +391,7 @@ fn upload(
     let handle = meshes
         .upload_mesh(device, &mesh.view(), &mesh.pages())
         .unwrap();
+    cooked.insert(handle, mesh.clone());
     let id = scene.ids().meshes.reserve();
     updates.meshes.push(id, MeshUpdate::Add);
     let resident = meshes.resident_mesh(handle).unwrap();
@@ -347,7 +409,14 @@ pub struct VisFrame {
     pub vis_depth: Vec<f32>,
     /// Visible instances, visible clusters found, clusters drawn.
     pub counters: [u32; 3],
-    /// Instance row, meshlet | LOD << 24, for each of the buffer's entries.
+    /// Hierarchy nodes and group parts the traversal appended.
+    pub nodes: u32,
+    pub parts: u32,
+    /// Instance row, `slot << 12 | cluster`, for each of the buffer's entries.
     pub clusters: Vec<[u32; 2]>,
     pub capacity: u32,
+    /// Levels of hierarchy nodes the passes traversed.
+    pub levels: u32,
+    /// The CPU cut the reference drew.
+    pub cut: Vec<[u32; 2]>,
 }

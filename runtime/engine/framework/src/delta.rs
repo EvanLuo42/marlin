@@ -15,8 +15,8 @@ use marlin_material::{DEFAULT_PERMUTATION, Materials};
 use marlin_math::Transform;
 use marlin_render::scene::{MeshId, MeshUpdate};
 use marlin_render::{
-    Camera, Lighting, MeshHandle, Meshes, PostProcess, RenderScene, ScatterShader, SceneIds,
-    SceneUpdates, Visibility,
+    Camera, DEFAULT_POOL_PAGES, Lighting, MeshHandle, Meshes, PostProcess, RenderScene,
+    ScatterShader, SceneIds, SceneUpdates, Visibility,
 };
 use marlin_render_graph::{FRAMES_IN_FLIGHT, RenderGraph, TextureHandle};
 use marlin_rhi::{Device, Format};
@@ -98,7 +98,7 @@ impl RenderSide {
         )?;
         debug_assert_eq!(default, DEFAULT_PERMUTATION);
         Ok(Self {
-            meshes: Meshes::new(),
+            meshes: Meshes::new(device, DEFAULT_POOL_PAGES)?,
             visibility: Visibility::new(device, &visibility_shaders(engine)?)?,
             materials,
             lighting: Lighting::new(device, lighting_shader(engine)?)?,

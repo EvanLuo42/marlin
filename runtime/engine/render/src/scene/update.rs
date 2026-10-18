@@ -151,11 +151,12 @@ impl Bounds {
 /// [`Meshes::resident_mesh`]: crate::Meshes::resident_mesh
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct ResidentMesh {
-    /// The resident mesh: its buffer.
+    /// The resident mesh.
     pub handle: MeshHandle,
-    /// The view of its geometry buffer (`crate::geometry`).
-    pub geometry: u32,
-    pub lods: u32,
+    /// The view of the page pool its pages are in (`crate::geometry`).
+    pub pages: u32,
+    /// The view of its DAG buffer (`crate::geometry`).
+    pub dag: u32,
     /// `MeshFlags`.
     pub flags: u32,
     /// Bytes per vertex: positions | attributes << 8 | skin << 16.

@@ -7,6 +7,7 @@ use marlin_render::asset::Mesh;
 use marlin_render::asset::mesh::{MeshView, basis};
 
 /// A cooked mesh: its payload and bulk blobs.
+#[derive(Clone)]
 pub struct Cooked {
     pub payload: Vec<u8>,
     pub pages: Vec<Vec<u8>>,
@@ -23,8 +24,8 @@ impl Cooked {
     }
 }
 
-/// Cooks a triangle list (counter-clockwise front faces) with `settings`' LODs and precision.
-/// Tangents follow the normals' basis; no UVs, colors or skin; no cluster DAG.
+/// Cooks a triangle list (counter-clockwise front faces) with `settings`' precision.
+/// Tangents follow the normals' basis; no UVs, colors or skin.
 pub fn cook_with(
     positions: &[[f32; 3]],
     normals: &[[f32; 3]],
@@ -52,7 +53,6 @@ pub fn cook_with(
     let built = marlin_cook_mesh::build(
         &geometry,
         &Mesh {
-            cluster_dag: false,
             max_uv_sets: 0,
             vertex_colors: false,
             ..settings

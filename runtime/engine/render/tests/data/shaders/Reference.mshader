@@ -1,8 +1,9 @@
 namespace Render;
 
-// A reference rasterizer for the visibility tests: each drawable instance's LOD 0 drawn with
-// vertex pulling from its resident geometry and the GPU Scene, as an indexed draw with a depth
-// buffer, unlit: every pixel is its instance's color.
+// A reference rasterizer for the visibility tests: the clusters of a LOD cut the test computed
+// on the CPU, drawn with vertex pulling from the page pool and the GPU Scene, a depth buffer and
+// no lighting: every pixel is its instance's color. One instance per cluster, 128 triangles
+// each; a cluster's triangles past its count collapse to a point.
 
 using Marlin.Engine.Scene;
 
@@ -14,14 +15,11 @@ public struct ReferenceFrame
 public struct ReferenceArgs
 {
     public Uniform<ReferenceFrame> Frame;
-    /// GPU Scene instance rows, grouped by mesh: this draw's start at `BaseInstance`.
-    public ReadOnlyBuffer<uint> InstanceList;
+    /// The cut: instance row, `slot << 12 | cluster`.
+    public ReadOnlyBuffer<uint2> Clusters;
     public ReadOnlyBuffer<InstanceTransforms> Transforms;
     public ReadOnlyBuffer<InstanceData> Instances;
     public ReadOnlyBuffer<MeshEntry> Meshes;
-    public ReadOnlyByteBuffer Geometry;
-    public uint Lod;
-    public uint BaseInstance;
 }
 
 public struct ReferenceVertex
@@ -34,11 +32,19 @@ public struct ReferenceVertex
 public ReferenceVertex ReferenceVs(
     [VertexId] uint vertexId, [InstanceId] uint instanceId, [Push] in ReferenceArgs a)
 {
-    uint row = a.InstanceList[a.BaseInstance + instanceId];
+    uint2 entry = a.Clusters[instanceId];
+    uint row = entry.x;
     InstanceData instance = a.Instances[row];
     MeshEntry mesh = a.Meshes[instance.Mesh];
-    LodStreams lod = Lod(a.Geometry, a.Lod);
-    float3 position = DecodePosition(a.Geometry, mesh, lod, vertexId);
+    Page page = LoadPage(mesh.Pages, AddressSlot(entry.y));
+    Cluster c = LoadCluster(mesh.Pages, page, AddressCluster(entry.y));
+    uint triangle = vertexId / 3;
+    if (triangle >= c.TriangleCount)
+        return ReferenceVertex { Pos = float4(0, 0, 0, 1), Color = float4(0, 0, 0, 0) };
+    uint3 corners = LoadTriangle(mesh.Pages, page, c, triangle);
+    uint k = vertexId % 3;
+    uint vertex = k == 0 ? corners.x : (k == 1 ? corners.y : corners.z);
+    float3 position = DecodePosition(mesh.Pages, mesh, page, vertex);
     float4 world = float4(Apply(a.Transforms[row].Current, float4(position, 1)), 1);
     return ReferenceVertex
     {

@@ -1,16 +1,22 @@
 namespace Marlin.Engine.Scene;
 
-// Resident geometry (0009 §3.2, R1's discrete LODs): a cooked mesh's LOD pages on the GPU as
-// they are, decoded where they are read. marlin-render's `geometry` module writes the buffer:
-// one LOD record per LOD, the LODs' section tables, then each LOD's page. Offsets are bytes
-// from the start of the buffer. The streams are `marlin_render::asset::mesh`'s.
+// Resident geometry (0009 §3.2): a cooked mesh's cluster DAG on the GPU, decoded where it is
+// read. marlin-render's `geometry` module lays it out: the pages in slots of the page pool, as
+// cooked (`marlin_render::asset::cluster`'s streams, offsets from the slot's start), and each
+// mesh's resident part in its DAG buffer: four words (the groups', parts' and page table's byte
+// offsets, the node count), the hierarchy nodes from byte 16, the groups, the parts and the page
+// table (a slot per page).
+//
+// A cluster is addressed as `slot << 12 | cluster`: its page's pool slot and its index in the
+// page.
 
 /// A row of the GPU Scene's mesh table.
 public struct MeshEntry
 {
-    /// The geometry buffer.
-    public ReadOnlyByteBuffer Geometry;
-    public uint Lods;
+    /// The page pool the mesh's pages are in.
+    public ReadOnlyByteBuffer Pages;
+    /// The mesh's DAG buffer.
+    public ReadOnlyByteBuffer Dag;
     /// `MeshFlags`: 1 float positions, 2 skin, 4 color.
     public uint Flags;
     /// Bytes per vertex: positions | attributes << 8 | skin << 16.
@@ -25,61 +31,96 @@ public struct MeshEntry
     public float4 Sphere;
 }
 
-/// Where one LOD's streams are in the geometry buffer.
-public struct LodStreams
+/// The slot of an address `slot << 12 | cluster`.
+public uint AddressSlot(uint address) => address >> 12;
+
+/// The cluster index in its page of an address `slot << 12 | cluster`.
+public uint AddressCluster(uint address) => address & 4095;
+
+/// Where a page's streams are in the pool: byte offsets from the pool's start.
+public struct Page
 {
-    public uint VertexCount;
-    public uint TriangleCount;
-    public uint MeshletCount;
-    /// Object-space error, as float bits.
-    public uint Error;
-    /// 2 or 4.
-    public uint IndexSize;
+    public uint ClusterCount;
+    public uint Clusters;
+    public uint UvRanges;
     public uint Positions;
     public uint Attributes;
     public uint Skin;
-    public uint Meshlets;
-    public uint MeshletVertices;
-    public uint MeshletTriangles;
-    public uint Indices;
-    /// The LOD's section table: `LodSection`s, one per mesh section.
+    public uint Triangles;
     public uint Sections;
-    public uint SectionCount;
 }
 
-/// LOD `lod`'s record: 16 words at `lod * 64`.
-public LodStreams Lod(ReadOnlyByteBuffer g, uint lod)
+/// The page in pool slot `slot` (its header: `PageHeader`).
+public Page LoadPage(ReadOnlyByteBuffer pool, uint slot)
 {
-    uint at = lod * 64;
-    uint4 a = g.Load4(at);
-    uint4 b = g.Load4(at + 16);
-    uint4 c = g.Load4(at + 32);
-    uint4 d = g.Load4(at + 48);
-    return LodStreams
+    // 128 KiB slots.
+    uint at = slot * 131072;
+    uint4 counts = pool.Load4(at);
+    uint4 a = pool.Load4(at + 16);
+    uint4 b = pool.Load4(at + 32);
+    uint4 c = pool.Load4(at + 48);
+    uint2 d = pool.Load2(at + 64);
+    return Page
     {
-        VertexCount = a.x,
-        TriangleCount = a.y,
-        MeshletCount = a.z,
-        Error = a.w,
-        IndexSize = b.x,
-        Positions = b.y,
-        Attributes = b.z,
-        Skin = b.w,
-        Meshlets = c.x,
-        MeshletVertices = c.y,
-        MeshletTriangles = c.z,
-        Indices = c.w,
-        Sections = d.x,
-        SectionCount = d.y,
+        ClusterCount = counts.x,
+        Clusters = at + a.x,
+        UvRanges = at + a.z,
+        Positions = at + b.x,
+        Attributes = at + b.z,
+        Skin = at + c.x,
+        Triangles = at + c.z,
+        Sections = at + d.x,
     };
 }
 
-/// Vertex `v`'s object-space position.
-public float3 DecodePosition(ReadOnlyByteBuffer g, in MeshEntry m, in LodStreams l, uint v)
+/// A cluster as a page holds it (`ClusterRecord`).
+public struct Cluster
+{
+    /// Culling sphere: center, radius.
+    public float4 Sphere;
+    /// The sphere and error of the simplification that made the cluster.
+    public float4 LodSphere;
+    public float LodError;
+    /// Normal cone: axis and cutoff, snorm8 each.
+    public uint Cone;
+    /// The group the cluster is in.
+    public uint Group;
+    /// The group it was made from; `0xFFFFFFFF` at level 0.
+    public uint SourceGroup;
+    /// First vertex and triangle in the page's streams.
+    public uint VertexOffset;
+    public uint TriangleOffset;
+    public uint VertexCount;
+    public uint TriangleCount;
+}
+
+/// Cluster `i` of page `p`.
+public Cluster LoadCluster(ReadOnlyByteBuffer pool, in Page p, uint i)
+{
+    uint at = p.Clusters + i * 64;
+    uint4 w = pool.Load4(at + 32);
+    uint4 x = pool.Load4(at + 48);
+    return Cluster
+    {
+        Sphere = AsFloat(pool.Load4(at)),
+        LodSphere = AsFloat(pool.Load4(at + 16)),
+        LodError = AsFloat(w.x),
+        Cone = w.y,
+        Group = w.z,
+        SourceGroup = w.w,
+        VertexOffset = x.x,
+        TriangleOffset = x.y,
+        VertexCount = x.w & 255,
+        TriangleCount = (x.w >> 8) & 255,
+    };
+}
+
+/// Page vertex `v`'s object-space position.
+public float3 DecodePosition(ReadOnlyByteBuffer pool, in MeshEntry m, in Page p, uint v)
 {
     if ((m.Flags & 1) != 0)
-        return AsFloat(g.Load3(l.Positions + v * 12));
-    uint2 w = g.Load2(l.Positions + v * 8);
+        return AsFloat(pool.Load3(p.Positions + v * 12));
+    uint2 w = pool.Load2(p.Positions + v * 8);
     float3 q = float3((float)(w.x & 65535), (float)(w.x >> 16), (float)(w.y & 65535));
     return m.PositionOffset + q * m.PositionScale;
 }
@@ -101,18 +142,72 @@ public float3 DecodeNormal(uint frame)
     return OctDecode(e);
 }
 
-/// Vertex `v`'s object-space normal.
-public float3 DecodeVertexNormal(ReadOnlyByteBuffer g, in MeshEntry m, in LodStreams l, uint v)
+/// Page vertex `v`'s object-space normal.
+public float3 DecodeVertexNormal(ReadOnlyByteBuffer pool, in MeshEntry m, in Page p, uint v)
 {
     uint stride = (m.Strides >> 8) & 255;
-    return DecodeNormal(g.Load(l.Attributes + v * stride));
+    return DecodeNormal(pool.Load(p.Attributes + v * stride));
 }
 
-/// Index `i` of the LOD's triangle list.
-public uint LoadIndex(ReadOnlyByteBuffer g, in LodStreams l, uint i)
+/// Triangle `t` of cluster `c`: its corners as page vertex indices.
+public uint3 LoadTriangle(ReadOnlyByteBuffer pool, in Page p, in Cluster c, uint t)
 {
-    if (l.IndexSize == 4)
-        return g.Load(l.Indices + i * 4);
-    uint w = g.Load(l.Indices + (i >> 1) * 4);
-    return (i & 1) != 0 ? w >> 16 : w & 65535;
+    uint w = pool.Load(p.Triangles + (c.TriangleOffset + t) * 4);
+    return uint3(w & 255, (w >> 8) & 255, (w >> 16) & 255) + c.VertexOffset;
+}
+
+/// A group of the DAG (`ClusterGroup`).
+public struct DagGroup
+{
+    /// Encloses the LOD spheres of its clusters.
+    public float4 Sphere;
+    /// Object-space simplification error; +∞ for a root group.
+    public float Error;
+}
+
+public DagGroup LoadGroup(ReadOnlyByteBuffer dag, uint group)
+{
+    uint at = dag.Load(0) + group * 32;
+    return DagGroup
+    {
+        Sphere = AsFloat(dag.Load4(at)),
+        Error = AsFloat(dag.Load(at + 16)),
+    };
+}
+
+/// A group's clusters in one page (`GroupPart`).
+public struct DagPart
+{
+    public uint Page;
+    public uint FirstCluster;
+    public uint ClusterCount;
+    public uint Group;
+}
+
+public DagPart LoadPart(ReadOnlyByteBuffer dag, uint part)
+{
+    uint4 w = dag.Load4(dag.Load(4) + part * 16);
+    return DagPart { Page = w.x, FirstCluster = w.y, ClusterCount = w.z, Group = w.w };
+}
+
+/// The pool slot of page `page`.
+public uint PageSlot(ReadOnlyByteBuffer dag, uint page) => dag.Load(dag.Load(8) + page * 4);
+
+/// A child of a hierarchy node (`HierarchyChild`).
+public struct HierarchyChild
+{
+    /// Encloses the spheres of every group below.
+    public float4 Sphere;
+    /// The largest group error below.
+    public float MaxError;
+    /// A node, `0x80000000 | part` for a leaf, or `0xFFFFFFFF` for none.
+    public uint Child;
+}
+
+/// Child `i` (of 8) of hierarchy node `node`.
+public HierarchyChild LoadChild(ReadOnlyByteBuffer dag, uint node, uint i)
+{
+    uint at = 16 + node * 192 + i * 24;
+    uint2 w = dag.Load2(at + 16);
+    return HierarchyChild { Sphere = AsFloat(dag.Load4(at)), MaxError = AsFloat(w.x), Child = w.y };
 }

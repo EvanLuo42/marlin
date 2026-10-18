@@ -1,8 +1,8 @@
-//! The visibility pipeline (R1j): instance and cluster culling, the mesh shader's 64-bit
-//! visibility buffer and the depth split out of it, checked against a reference rasterizer
-//! drawing the same scene in the same frame (each instance's LOD 0 as an indexed draw).
+//! The visibility pipeline: instance culling, the DAG traversal and LOD cut, cluster culling,
+//! the mesh shader's 64-bit visibility buffer and the depth split out of it, checked against
+//! the same cut computed on the CPU and drawn in the same frame by a reference rasterizer.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use marlin_math::{Quat, Transform, Vec3};
 use marlin_render::Environment;
@@ -21,14 +21,20 @@ fn rgba8(c: [f32; 4]) -> u32 {
     b[0] | b[1] << 8 | b[2] << 16 | b[3] << 24
 }
 
-/// Checks the frame's visibility buffer against the reference: the same pixels covered, at the
-/// same depth (the two pipelines rasterize the same positions: on the test GPU they agree
-/// exactly), the depth texture split out exactly, and every id naming a drawn cluster and a
-/// triangle of a meshlet.
-fn check_against_reference(f: &VisFrame) {
+/// Checks the frame's visibility buffer against the reference: the clusters drawn are clusters
+/// of the CPU's cut, each once; the same pixels covered, at the same depth (the two pipelines
+/// rasterize the same positions: on the test GPU they agree exactly); the depth texture split
+/// out exactly; every id naming a drawn cluster and one of its triangles.
+fn check_against_reference(h: &Harness, f: &VisFrame) {
     let [_, found, drawn] = f.counters;
     assert_eq!(found, drawn, "the capacity held every cluster");
     assert!(drawn <= f.capacity);
+    let cut: HashSet<[u32; 2]> = f.cut.iter().copied().collect();
+    let mut seen = HashSet::new();
+    for c in &f.clusters[..drawn as usize] {
+        assert!(cut.contains(c), "{c:x?} is not in the cut");
+        assert!(seen.insert(*c), "{c:x?} drawn twice");
+    }
     for p in 0..(SIZE * SIZE) as usize {
         let v = f.visbuffer[p];
         assert_eq!(
@@ -40,8 +46,13 @@ fn check_against_reference(f: &VisFrame) {
         if v == 0 {
             continue;
         }
-        assert!(cluster_of(v) < drawn as usize, "pixel {p}: {v:x}");
-        assert!((v & 127) < 124, "pixel {p}: {v:x}");
+        let cluster = cluster_of(v);
+        assert!(cluster < drawn as usize, "pixel {p}: {v:x}");
+        let record = h.cluster(f.clusters[cluster][1]);
+        assert!(
+            (v & 127) < u64::from(record.triangle_count),
+            "pixel {p}: {v:x}"
+        );
         assert!(
             (f.depth[p] - f.vis_depth[p]).abs() <= 1e-6,
             "pixel {p}: depths"
@@ -62,18 +73,16 @@ fn check_instances(f: &VisFrame, rows: &HashMap<u32, u32>) {
     }
 }
 
-#[test]
-fn the_visibility_buffer_matches_the_reference() {
-    let mut h = Harness::new(Environment::default());
+/// Four instances in view (two overlapping, one scaled unevenly) and two out of it.
+fn scene(h: &mut Harness) -> (Vec<marlin_render::scene::InstanceId>, HashMap<u32, u32>) {
     let (ball, _) = h.upload(&sphere(16, 32));
-    h.camera_at(4.0);
     let colors = [
         [1.0, 0.0, 0.0, 1.0],
         [0.0, 1.0, 0.0, 1.0],
         [0.0, 0.0, 1.0, 1.0],
         [1.0, 1.0, 0.0, 1.0],
     ];
-    let inside = [
+    let inside = vec![
         h.add(
             h.cube,
             Transform {
@@ -120,14 +129,23 @@ fn the_visibility_buffer_matches_the_reference() {
         Transform::from_translation(Vec3::new(40.0, 0.0, 0.0)),
         [1.0; 4],
     );
-    let rows: HashMap<u32, u32> = colors
+    let rows = colors
         .iter()
         .zip(&inside)
         .map(|(c, id)| (rgba8(*c), id.index()))
         .collect();
+    (inside, rows)
+}
+
+#[test]
+fn the_visibility_buffer_matches_the_reference() {
+    let mut h = Harness::new(Environment::default());
+    h.camera_at(4.0);
+    let (inside, rows) = scene(&mut h);
     let f = h.visibility_frame();
     assert_eq!(f.counters[0], 4, "the instances in the frustum");
-    check_against_reference(&f);
+    assert!(f.levels >= 1);
+    check_against_reference(&h, &f);
     check_instances(&f, &rows);
 
     // Moving an instance out of view drops it; the next frame agrees again.
@@ -137,8 +155,21 @@ fn the_visibility_buffer_matches_the_reference() {
     );
     let f = h.visibility_frame();
     assert_eq!(f.counters[0], 3);
-    check_against_reference(&f);
+    check_against_reference(&h, &f);
     check_instances(&f, &rows);
+}
+
+#[test]
+fn coarser_cuts_still_match_the_reference() {
+    let mut h = Harness::new(Environment::default());
+    h.camera_at(4.0);
+    let (_, rows) = scene(&mut h);
+    for budget in [0.5, 1.0, 4.0, 16.0] {
+        h.vis.lod_error_pixels = budget;
+        let f = h.visibility_frame();
+        check_against_reference(&h, &f);
+        check_instances(&f, &rows);
+    }
 }
 
 #[test]
@@ -148,13 +179,13 @@ fn hidden_removed_and_unresident_instances_are_not_drawn() {
     let a = h.add(h.cube, Transform::IDENTITY, [1.0, 0.0, 0.0, 1.0]);
     let f = h.visibility_frame();
     assert_eq!(f.counters[0], 1);
-    check_against_reference(&f);
+    check_against_reference(&h, &f);
 
     h.set(a, InstanceUpdate::Flags(flags::HIDDEN));
     let f = h.visibility_frame();
     assert_eq!(f.counters[0], 0, "hidden");
     assert!(f.visbuffer.iter().all(|&v| v == 0));
-    check_against_reference(&f);
+    check_against_reference(&h, &f);
     h.set(a, InstanceUpdate::Flags(0));
     assert_eq!(h.visibility_frame().counters[0], 1, "shown again");
 
@@ -163,18 +194,14 @@ fn hidden_removed_and_unresident_instances_are_not_drawn() {
     h.updates.meshes.push(pending, MeshUpdate::Add);
     h.set(a, InstanceUpdate::Mesh(pending));
     assert_eq!(h.visibility_frame().counters[0], 0, "not resident");
-    let data = cube();
-    let handle = h
-        .meshes
-        .upload_mesh(h.device, &data.view(), &data.pages())
-        .unwrap();
+    let (_, handle) = h.upload(&cube());
     let resident = h.meshes.resident_mesh(handle).unwrap();
     h.updates
         .meshes
         .push(pending, MeshUpdate::Resident(resident));
     let f = h.visibility_frame();
     assert_eq!(f.counters[0], 1, "resident");
-    check_against_reference(&f);
+    check_against_reference(&h, &f);
 
     // Removed: nothing, and its row comes back for the next instance.
     h.set(a, InstanceUpdate::Remove);
@@ -184,43 +211,35 @@ fn hidden_removed_and_unresident_instances_are_not_drawn() {
     assert_eq!(b.index(), a.index());
     let f = h.visibility_frame();
     assert_eq!(f.counters[0], 1);
-    check_against_reference(&f);
+    check_against_reference(&h, &f);
 }
 
 #[test]
 fn back_facing_clusters_are_culled_without_changing_the_picture() {
     let mut h = Harness::new(Environment::default());
     let s = sphere(32, 64);
-    let meshlets = s.view().lods[0].meshlet_count;
     let (ball, _) = h.upload(&s);
     h.camera_at(2.0);
     h.add(ball, Transform::IDENTITY, [1.0; 4]);
     let f = h.visibility_frame();
     assert_eq!(f.counters[0], 1);
     let drawn = f.counters[2];
+    // A budget of 0 draws the finest level: a curved surface's every simplification has an
+    // error.
+    let finest = f.cut.len() as u32;
+    assert!(f.cut.iter().all(|c| h.cluster(c[1]).level == 0));
     assert!(
-        drawn > 0 && drawn < meshlets * 3 / 4,
-        "{drawn} of {meshlets} meshlets"
+        drawn > 0 && drawn < finest * 3 / 4,
+        "{drawn} of {finest} clusters"
     );
-    // Every drawn cluster is LOD 0 of the ball's row.
-    for c in &f.clusters[..drawn as usize] {
-        assert_eq!(c[1] >> 24, 0);
-        assert!((c[1] & 0xFF_FFFF) < meshlets);
-    }
-    check_against_reference(&f);
+    check_against_reference(&h, &f);
 }
 
 #[test]
-fn instances_draw_the_coarsest_lod_their_error_budget_allows() {
+fn farther_instances_draw_coarser_cuts() {
     let mut h = Harness::new(Environment::default());
-    let budget = 1.0;
-    h.vis.lod_error_pixels = budget;
-    let s = sphere(32, 64);
-    let view = s.view();
-    let errors: Vec<f32> = view.lods.iter().map(|l| l.error).collect();
-    assert!(errors.len() >= 3);
-    let radius = view.header.sphere[3];
-    let (ball, _) = h.upload(&s);
+    h.vis.lod_error_pixels = 1.0;
+    let (ball, _) = h.upload(&sphere(64, 128));
     h.camera_at(0.0);
     let depths = [-1.5f32, -4.0, -12.0, -40.0, -300.0];
     let ids: Vec<_> = depths
@@ -235,25 +254,24 @@ fn instances_draw_the_coarsest_lod_their_error_budget_allows() {
         .collect();
     let f = h.visibility_frame();
     assert_eq!(f.counters[0], ids.len() as u32);
-    let mut lods: HashMap<u32, u32> = HashMap::new();
-    for c in &f.clusters[..f.counters[2] as usize] {
-        let lod = c[1] >> 24;
-        assert_eq!(
-            *lods.entry(c[0]).or_insert(lod),
-            lod,
-            "one LOD per instance"
-        );
+    check_against_reference(&h, &f);
+    // Triangles and the finest level in each instance's cut.
+    let mut triangles: HashMap<u32, u32> = HashMap::new();
+    let mut finest: HashMap<u32, u8> = HashMap::new();
+    for c in &f.cut {
+        let r = h.cluster(c[1]);
+        *triangles.entry(c[0]).or_default() += u32::from(r.triangle_count);
+        let l = finest.entry(c[0]).or_insert(u8::MAX);
+        *l = (*l).min(r.level);
     }
-    // The coarsest LOD whose error, projected at the sphere's near side, is within the budget
-    // (`Marlin.Engine.Visibility.InstanceCull`'s formula, on the CPU).
-    let pixels_per_unit = SIZE as f32 / (2.0 * (core::f32::consts::FRAC_PI_3 * 0.5).tan());
-    for (id, z) in ids.iter().zip(depths) {
-        let distance = (-z - radius).max(1e-4);
-        let limit = budget * distance / pixels_per_unit;
-        let expected = errors.iter().rposition(|&e| e <= limit).unwrap_or(0) as u32;
-        assert_eq!(lods.get(&id.index()), Some(&expected), "at {z}");
-    }
-    assert!(lods.values().any(|&l| l > 0), "{lods:?}");
+    let by_depth: Vec<u32> = ids.iter().map(|id| triangles[&id.index()]).collect();
+    assert!(
+        by_depth.windows(2).all(|w| w[0] >= w[1]),
+        "triangles by distance: {by_depth:?}"
+    );
+    // The farthest draws the roots: about a coarsest cluster per root group.
+    assert!(by_depth[0] > by_depth[4] * 4, "{by_depth:?}");
+    assert!(finest[&ids[4].index()] > 0, "the farthest is coarse");
 }
 
 #[test]
@@ -262,6 +280,7 @@ fn an_empty_view_leaves_the_buffer_clear() {
     h.camera_at(3.0);
     let f = h.visibility_frame();
     assert_eq!(f.counters, [0, 0, 0]);
+    assert_eq!((f.nodes, f.parts), (0, 0));
     assert!(f.visbuffer.iter().all(|&v| v == 0));
     assert!(f.vis_depth.iter().all(|&d| d == 0.0));
 }

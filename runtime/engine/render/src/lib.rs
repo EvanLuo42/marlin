@@ -7,15 +7,17 @@
 //!
 //! A frame (0008 §3), each step declared into the frame's render graph:
 //! - the GPU Scene's scatter ([`RenderScene::add_passes`]);
-//! - the visibility passes ([`Visibility`]): instance and cluster culling on the GPU, meshlets
-//!   drawn by a mesh shader into a 64-bit visibility buffer;
+//! - the visibility passes ([`Visibility`]): instance culling, the cluster DAG's LOD cut and
+//!   cluster culling on the GPU, clusters drawn by a mesh shader into a 64-bit visibility
+//!   buffer;
 //! - the material passes (the `marlin-material` crate): the visibility buffer's pixels binned
 //!   by material and resolved into the material buffer;
 //! - direct lighting ([`Lighting`]) into an HDR scene;
 //! - the post chain ([`PostProcess`]): bloom, a luminance histogram and auto-exposure on the
 //!   compute queue, and a filmic tonemap into the output.
 //!
-//! Meshes stay resident as their cooked LOD pages ([`Meshes`], [`geometry`]). See
+//! Meshes stay resident as their cooked cluster DAG pages in a page pool ([`Meshes`],
+//! [`geometry`]). See
 //! `docs/design/0002-shader-interface.md` for the shader side.
 #![cfg_attr(not(test), no_std)]
 
@@ -30,7 +32,7 @@ pub mod scene;
 pub mod visibility;
 
 pub use lighting::{LIGHTING_PUSH_BYTES, Lighting};
-pub use meshes::{Camera, Environment, LodIndices, MeshHandle, Meshes};
+pub use meshes::{Camera, DEFAULT_POOL_PAGES, Environment, MeshHandle, Meshes};
 pub use post::{HDR_FORMAT, PostOutput, PostProcess, PostSettings, PostShaders};
 pub use scene::{GpuScene, RenderScene, ScatterShader, SceneIds, SceneUpdates};
 pub use visibility::{Visibility, VisibilityOutput, VisibilityShaders};

@@ -160,10 +160,12 @@ pub fn scatter_shader(library: &ShaderLibrary) -> Result<ShaderModule<'_>, Shade
 }
 
 /// The visibility pipeline's entries (`Marlin.Engine.Visibility`).
-pub const VISIBILITY: [&str; 9] = [
+pub const VISIBILITY: [&str; 11] = [
     "Marlin.Engine.Visibility.Reset",
     "Marlin.Engine.Visibility.InstanceCull",
-    "Marlin.Engine.Visibility.InstanceArgs",
+    "Marlin.Engine.Visibility.NodeArgs",
+    "Marlin.Engine.Visibility.NodeCull",
+    "Marlin.Engine.Visibility.PartArgs",
     "Marlin.Engine.Visibility.ClusterCull",
     "Marlin.Engine.Visibility.FinishArgs",
     "Marlin.Engine.Visibility.VisMesh",
@@ -196,13 +198,15 @@ pub fn visibility_shaders(library: &ShaderLibrary) -> Result<VisibilityShaders<'
     Ok(VisibilityShaders {
         reset: get(v[0], Stage::Compute, CULL_PUSH_BYTES)?,
         instance_cull: get(v[1], Stage::Compute, CULL_PUSH_BYTES)?,
-        instance_args: get(v[2], Stage::Compute, CULL_PUSH_BYTES)?,
-        cluster_cull: get(v[3], Stage::Compute, CULL_PUSH_BYTES)?,
-        finish_args: get(v[4], Stage::Compute, CULL_PUSH_BYTES)?,
-        mesh: get(v[5], Stage::Mesh, RASTER_PUSH_BYTES)?,
-        pixel: get(v[6], Stage::Pixel, RASTER_PUSH_BYTES)?,
-        clear: get(v[7], Stage::Compute, TARGET_PUSH_BYTES)?,
-        depth: get(v[8], Stage::Compute, TARGET_PUSH_BYTES)?,
+        node_args: get(v[2], Stage::Compute, CULL_PUSH_BYTES)?,
+        node_cull: get(v[3], Stage::Compute, CULL_PUSH_BYTES)?,
+        part_args: get(v[4], Stage::Compute, CULL_PUSH_BYTES)?,
+        cluster_cull: get(v[5], Stage::Compute, CULL_PUSH_BYTES)?,
+        finish_args: get(v[6], Stage::Compute, CULL_PUSH_BYTES)?,
+        mesh: get(v[7], Stage::Mesh, RASTER_PUSH_BYTES)?,
+        pixel: get(v[8], Stage::Pixel, RASTER_PUSH_BYTES)?,
+        clear: get(v[9], Stage::Compute, TARGET_PUSH_BYTES)?,
+        depth: get(v[10], Stage::Compute, TARGET_PUSH_BYTES)?,
     })
 }
 

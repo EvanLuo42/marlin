@@ -1,24 +1,34 @@
 namespace Marlin.Engine.Visibility;
 
-// The visibility pipeline of one view (0009 §4.1, §4.3), R1's discrete-LOD form:
+// The visibility pipeline of one view (0009 §4.1, §4.3), one pass, hardware raster only:
 //
 // 1. `Reset` zeroes the counters.
-// 2. `InstanceCull`: one thread per instance row; frustum test of its world sphere, then the
-//    LOD whose projected error stays within the budget. Visible instances are appended to
-//    `Visible`; `InstanceArgs` makes their count the next pass's dispatch.
-// 3. `ClusterCull`: one group per visible instance; frustum and normal-cone tests of each of its
-//    LOD's meshlets. Visible clusters are appended to `Clusters` (their index is the cluster id
-//    the visibility buffer stores).
-// 4. `FinishArgs` turns the cluster count into the mesh dispatch.
-// 5. `VisMesh` + `VisPs`: one mesh group per visible cluster; each pixel keeps the nearest
+// 2. `InstanceCull`: one thread per instance row; frustum test of its world sphere. Visible
+//    instances append their hierarchy's root node to `Nodes`.
+// 3. The DAG traversal, one `NodeArgs` + `NodeCull` pair per level of hierarchy nodes:
+//    `NodeArgs` takes the nodes the last level appended as this level's, `NodeCull` tests each
+//    of their children (8 threads a node): frustum, then the largest error below projected
+//    against the budget (within it, nothing below is drawn). Passing children append to
+//    `Nodes`, or to `Parts` for a leaf (a group's clusters in one page).
+// 4. `PartArgs` + `ClusterCull`: one group per part. A part whose group's projected error is
+//    within the budget draws nothing (the group is good enough, so a coarser one is drawn);
+//    otherwise each of its clusters whose own LOD error projects within the budget is drawn
+//    once it passes the frustum and normal-cone tests: it is appended to `Clusters`, whose index
+//    is the cluster id the visibility buffer stores.
+// 5. `FinishArgs` turns the cluster count into the mesh dispatch.
+// 6. `VisMesh` + `VisPs`: one mesh group per visible cluster; each pixel keeps the nearest
 //    `depth << 32 | cluster << 7 | triangle` with a 64-bit atomic max (no attachments).
-// 6. `VisDepth` splits the depth out into an `R32Float` texture.
+// 7. `VisDepth` splits the depth out into an `R32Float` texture.
 //
-// `Counters` words (atomics): 0 the visible instances, 1 the visible clusters appended (may
-// pass the capacity), 2 the clusters drawn. `Args` (indirect arguments, a pass never both counts
-// into and dispatches from one buffer) holds two records of the RHI's indirect dispatches: a
-// constant (push word 31, unused here), then x, y, z. Words 0–3 are the cluster cull's, 4–7
-// the mesh dispatch.
+// The cut is the DAG's (0009 §3): the errors and spheres grow from children to parents and every
+// test projects them with `ProjectedError`, so the cut is watertight.
+//
+// `Counters` words (atomics): 0 the visible instances, 1 the nodes appended, 2 the parts
+// appended, 3 the visible clusters appended (each may pass its capacity), 4 the clusters drawn;
+// 5 where the next level's nodes start, 6 and 7 the current level's range. `Args` (indirect
+// arguments, a pass never both counts into and dispatches from one buffer) holds three records
+// of the RHI's indirect dispatches: a constant (push word 31, unused here), then x, y, z. Words
+// 0–3 are the node level's, 4–7 the cluster cull's, 8–11 the mesh dispatch.
 
 using Marlin.Engine.Scene;
 
@@ -32,12 +42,14 @@ public struct View
     public float4[5] Planes;
     /// xyz: the eye; w: pixels per world unit at distance 1.
     public float4 Eye;
-    /// The screen-space error, in pixels, a LOD may have.
+    /// The screen-space error, in pixels, the cut may have.
     public float LodErrorPixels;
     public uint InstanceRows;
-    /// Entries `Clusters` holds.
+    /// Entries `Nodes`, `Parts` and `Clusters` hold.
+    public uint NodeCapacity;
+    public uint PartCapacity;
     public uint ClusterCapacity;
-    public uint Spare;
+    public uint[3] Spare;
 }
 
 public struct CullArgs
@@ -48,32 +60,40 @@ public struct CullArgs
     /// World bounding spheres: center, radius.
     public ReadOnlyBuffer<float4> Bounds;
     public ReadOnlyBuffer<MeshEntry> Meshes;
-    /// Visible instances: row, LOD, meshlet count, spare.
-    public Buffer<uint4> Visible;
+    /// Hierarchy nodes to test: instance row, node.
+    public Buffer<uint2> Nodes;
+    /// Group parts to test: instance row, part.
+    public Buffer<uint2> Parts;
     public Buffer<uint> Counters;
     public Buffer<uint> Args;
-    /// Visible clusters: instance row, meshlet | LOD << 24.
+    /// Visible clusters: instance row, `slot << 12 | cluster`.
     public Buffer<uint2> Clusters;
 }
 
-/// Mesh groups per row of the mesh dispatch (the smallest maximum every device allows).
-const uint MeshGroupsPerRow = 65535;
+/// Groups per row of a dispatch (the smallest maximum every device allows); more go to rows.
+const uint GroupsPerRow = 65535;
+
+/// A hierarchy child that is a leaf: the rest is a part.
+const uint LeafBit = 2147483648;
+const uint NoChild = 4294967295;
+
+/// A dispatch's linear group index.
+uint GroupIndex(uint3 group) => group.x + group.y * GroupsPerRow;
+
+/// An indirect dispatch record of `groups` groups at word `at` of the arguments.
+void WriteDispatch(in CullArgs a, uint at, uint groups)
+{
+    a.Args[at] = 0;
+    a.Args[at + 1] = Min(groups, GroupsPerRow);
+    a.Args[at + 2] = (groups + GroupsPerRow - 1) / GroupsPerRow;
+    a.Args[at + 3] = 1;
+}
 
 [Compute(1, 1, 1)]
 public void Reset([Push] in CullArgs a)
 {
-    a.Counters[0] = 0;
-    a.Counters[1] = 0;
-    a.Counters[2] = 0;
-}
-
-[Compute(1, 1, 1)]
-public void InstanceArgs([Push] in CullArgs a)
-{
-    a.Args[0] = 0;
-    a.Args[1] = a.Counters[0];
-    a.Args[2] = 1;
-    a.Args[3] = 1;
+    for (uint i = 0; i < 8; i++)
+        a.Counters[i] = 0;
 }
 
 bool InFrustum(in View v, float3 center, float radius)
@@ -107,6 +127,16 @@ bool UniformScale(in Rows3x4 m)
     return hi <= lo * 1.0001;
 }
 
+/// Object-space `error` measured over object-space `sphere`, in pixels: projected at the
+/// sphere's near side. Larger spheres and errors project larger, so testing parents and
+/// children against one budget gives a consistent cut.
+float ProjectedError(in View v, in Rows3x4 t, float scale, float4 sphere, float error)
+{
+    float3 center = Apply(t, float4(sphere.xyz, 1));
+    float distance = Max(Length(center - v.Eye.xyz) - sphere.w * scale, 0.0001);
+    return error * scale * v.Eye.w / distance;
+}
+
 [Compute(64, 1, 1)]
 public void InstanceCull([DispatchThreadId] uint3 id, [Push] in CullArgs a)
 {
@@ -124,19 +154,63 @@ public void InstanceCull([DispatchThreadId] uint3 id, [Push] in CullArgs a)
     float4 sphere = a.Bounds[row];
     if (!InFrustum(v, sphere.xyz, sphere.w))
         return;
-    // The coarsest LOD whose error, projected at the sphere's near side, is within budget.
-    float scale = MaxScale(a.Transforms[row].Current);
-    float distance = Max(Length(sphere.xyz - v.Eye.xyz) - sphere.w, 0.0001);
-    float limit = v.LodErrorPixels * distance / (v.Eye.w * scale);
-    uint lod = 0;
-    for (uint l = 0; l < mesh.Lods; l++)
+    a.Counters.AtomicAdd(0, 1);
+    uint slot = a.Counters.AtomicAdd(1, 1);
+    if (slot < v.NodeCapacity)
+        a.Nodes[slot] = uint2(row, 0);
+}
+
+/// The nodes appended since the last level become this level's.
+[Compute(1, 1, 1)]
+public void NodeArgs([Push] in CullArgs a)
+{
+    uint start = a.Counters[5];
+    uint end = Min(a.Counters[1], a.View.Value.NodeCapacity);
+    a.Counters[6] = start;
+    a.Counters[7] = end;
+    a.Counters[5] = end;
+    WriteDispatch(a, 0, (end - start + 7) / 8);
+}
+
+[Compute(64, 1, 1)]
+public void NodeCull([GroupId] uint3 group, [GroupThreadId] uint3 thread, [Push] in CullArgs a)
+{
+    View v = a.View.Value;
+    uint item = a.Counters[6] + GroupIndex(group) * 8 + thread.x / 8;
+    if (item >= a.Counters[7])
+        return;
+    uint2 node = a.Nodes[item];
+    uint row = node.x;
+    MeshEntry mesh = a.Meshes[a.Instances[row].Mesh];
+    HierarchyChild child = LoadChild(mesh.Dag, node.y, thread.x & 7);
+    if (child.Child == NoChild)
+        return;
+    Rows3x4 t = a.Transforms[row].Current;
+    float scale = MaxScale(t);
+    if (!InFrustum(v, Apply(t, float4(child.Sphere.xyz, 1)), child.Sphere.w * scale))
+        return;
+    // Every group below is good enough: nothing below is drawn. The margin keeps a group whose
+    // error projects right at the budget here, so `ClusterCull` decides it.
+    if (ProjectedError(v, t, scale, child.Sphere, child.MaxError) <= v.LodErrorPixels * 0.99)
+        return;
+    if ((child.Child & LeafBit) != 0)
     {
-        if (AsFloat(Lod(mesh.Geometry, l).Error) <= limit)
-            lod = l;
+        uint slot = a.Counters.AtomicAdd(2, 1);
+        if (slot < v.PartCapacity)
+            a.Parts[slot] = uint2(row, child.Child & (LeafBit - 1));
     }
-    uint meshlets = Lod(mesh.Geometry, lod).MeshletCount;
-    uint slot = a.Counters.AtomicAdd(0, 1);
-    a.Visible[slot] = uint4(row, lod, meshlets, 0);
+    else
+    {
+        uint slot = a.Counters.AtomicAdd(1, 1);
+        if (slot < v.NodeCapacity)
+            a.Nodes[slot] = uint2(row, child.Child);
+    }
+}
+
+[Compute(1, 1, 1)]
+public void PartArgs([Push] in CullArgs a)
+{
+    WriteDispatch(a, 4, Min(a.Counters[2], a.View.Value.PartCapacity));
 }
 
 /// A snorm8 in bits `shift` to `shift + 7` of `w`.
@@ -148,51 +222,58 @@ float Snorm8(uint w, uint shift)
     return Max((float)b / 127, -1);
 }
 
-[Compute(64, 1, 1)]
+[Compute(32, 1, 1)]
 public void ClusterCull([GroupId] uint3 group, [GroupThreadId] uint3 thread, [Push] in CullArgs a)
 {
     View v = a.View.Value;
-    uint4 visible = a.Visible[group.x];
-    uint row = visible.x;
-    uint lod = visible.y;
-    Rows3x4 t = a.Transforms[row].Current;
+    uint index = GroupIndex(group);
+    if (index >= Min(a.Counters[2], v.PartCapacity))
+        return;
+    uint2 item = a.Parts[index];
+    uint row = item.x;
     MeshEntry mesh = a.Meshes[a.Instances[row].Mesh];
-    LodStreams l = Lod(mesh.Geometry, lod);
+    DagPart part = LoadPart(mesh.Dag, item.y);
+    Rows3x4 t = a.Transforms[row].Current;
     float scale = MaxScale(t);
+    // The group is good enough: a coarser one draws this part of the surface.
+    DagGroup g = LoadGroup(mesh.Dag, part.Group);
+    if (ProjectedError(v, t, scale, g.Sphere, g.Error) <= v.LodErrorPixels)
+        return;
+    uint slot = PageSlot(mesh.Dag, part.Page);
+    Page page = LoadPage(mesh.Pages, slot);
     bool cones = UniformScale(t);
-    for (uint i = thread.x; i < visible.z; i += 64)
+    for (uint i = thread.x; i < part.ClusterCount; i += 32)
     {
-        uint at = l.Meshlets + i * 64;
-        float4 bounds = AsFloat(mesh.Geometry.Load4(at));
-        float3 center = Apply(t, float4(bounds.xyz, 1));
-        float radius = bounds.w * scale;
+        uint cluster = part.FirstCluster + i;
+        Cluster c = LoadCluster(mesh.Pages, page, cluster);
+        // Not good enough itself: finer clusters draw it.
+        if (ProjectedError(v, t, scale, c.LodSphere, c.LodError) > v.LodErrorPixels)
+            continue;
+        float3 center = Apply(t, float4(c.Sphere.xyz, 1));
+        float radius = c.Sphere.w * scale;
         if (!InFrustum(v, center, radius))
             continue;
-        uint cone = mesh.Geometry.Load(at + 16);
-        float cutoff = Snorm8(cone, 24);
+        float cutoff = Snorm8(c.Cone, 24);
         // A cutoff of 1 (127) is a degenerate cone: never culled.
         if (cones && cutoff < 1)
         {
-            float3 axis = Normalize(Apply(t, float4(Snorm8(cone, 0), Snorm8(cone, 8), Snorm8(cone, 16), 0)));
+            float3 axis = Normalize(Apply(t, float4(Snorm8(c.Cone, 0), Snorm8(c.Cone, 8), Snorm8(c.Cone, 16), 0)));
             float3 d = center - v.Eye.xyz;
             if (Dot(d, axis) >= cutoff * Length(d) + radius)
                 continue;
         }
-        uint slot = a.Counters.AtomicAdd(1, 1);
-        if (slot < v.ClusterCapacity)
-            a.Clusters[slot] = uint2(row, i | (lod << 24));
+        uint at = a.Counters.AtomicAdd(3, 1);
+        if (at < v.ClusterCapacity)
+            a.Clusters[at] = uint2(row, (slot << 12) | cluster);
     }
 }
 
 [Compute(1, 1, 1)]
 public void FinishArgs([Push] in CullArgs a)
 {
-    uint count = Min(a.Counters[1], a.View.Value.ClusterCapacity);
-    a.Counters[2] = count;
-    a.Args[4] = 0;
-    a.Args[5] = Min(count, MeshGroupsPerRow);
-    a.Args[6] = (count + MeshGroupsPerRow - 1) / MeshGroupsPerRow;
-    a.Args[7] = 1;
+    uint count = Min(a.Counters[3], a.View.Value.ClusterCapacity);
+    a.Counters[4] = count;
+    WriteDispatch(a, 8, count);
 }
 
 public struct RasterArgs
@@ -217,47 +298,36 @@ public struct VisPrimitive
     [PrimitiveId] public uint Id;
 }
 
-/// Byte `at` of a byte buffer.
-public uint ByteAt(ReadOnlyByteBuffer b, uint at) => (b.Load((at >> 2) << 2) >> ((at & 3) * 8)) & 255;
-
-[Mesh(128, 1, 1, MaxVertices = 64, MaxPrimitives = 124, Topology = MeshTopology.Triangle)]
+[Mesh(128, 1, 1, MaxVertices = 128, MaxPrimitives = 128, Topology = MeshTopology.Triangle)]
 public void VisMesh(
     [GroupId] uint3 group,
     [GroupThreadId] uint3 thread,
     [Push] in RasterArgs a,
     MeshOutput<VisVertex, VisPrimitive> o)
 {
-    uint cluster = group.x + group.y * MeshGroupsPerRow;
-    if (cluster >= a.Counters[2])
+    uint cluster = GroupIndex(group);
+    if (cluster >= a.Counters[4])
     {
         o.SetCounts(0, 0);
         return;
     }
-    uint2 c = a.Clusters[cluster];
-    uint row = c.x;
-    uint lod = c.y >> 24;
+    uint2 entry = a.Clusters[cluster];
+    uint row = entry.x;
     MeshEntry mesh = a.Meshes[a.Instances[row].Mesh];
-    ReadOnlyByteBuffer g = mesh.Geometry;
-    LodStreams l = Lod(g, lod);
-    uint at = l.Meshlets + (c.y & 16777215) * 64;
-    uint vertexOffset = g.Load(at + 20);
-    uint triangleOffset = g.Load(at + 24);
-    uint counts = g.Load(at + 28);
-    uint vertices = counts & 255;
-    uint triangles = (counts >> 8) & 255;
-    o.SetCounts(vertices, triangles);
+    ReadOnlyByteBuffer pool = mesh.Pages;
+    Page page = LoadPage(pool, AddressSlot(entry.y));
+    Cluster c = LoadCluster(pool, page, AddressCluster(entry.y));
+    o.SetCounts(c.VertexCount, c.TriangleCount);
     uint i = thread.x;
-    if (i < vertices)
+    if (i < c.VertexCount)
     {
-        uint v = g.Load(l.MeshletVertices + (vertexOffset + i) * 4);
-        float3 p = DecodePosition(g, mesh, l, v);
+        float3 p = DecodePosition(pool, mesh, page, c.VertexOffset + i);
         float4 world = float4(Apply(a.Transforms[row].Current, float4(p, 1)), 1);
         o.Vertices[i] = VisVertex { Pos = a.View.Value.ViewProjection * world };
     }
-    if (i < triangles)
+    if (i < c.TriangleCount)
     {
-        uint t = l.MeshletTriangles + triangleOffset + i * 3;
-        o.Triangles[i] = uint3(ByteAt(g, t), ByteAt(g, t + 1), ByteAt(g, t + 2));
+        o.Triangles[i] = LoadTriangle(pool, page, c, i) - c.VertexOffset;
         o.Primitives[i] = VisPrimitive { Id = (cluster << 7) | i };
     }
 }
