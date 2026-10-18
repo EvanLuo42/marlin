@@ -34,7 +34,7 @@
 |---|---|---|
 | rustc | query 驱动的前端；单态化时收集实例；与后端无关的 codegen trait；span、errors、session 等基础设施拆成独立的 crate | 体量（宏展开、借用检查这些我们都不需要） |
 | rust-analyzer | 无损 CST 加上能容错的 parser；同一份前端同时服务 IDE 和编译 | — |
-| 参考实现 | 在 IR 上做自动微分；capability 推断；带 merge 标注的结构化 CFG；按 target 参数化的 legalize | 预处理器；泛型直接留在 IR 上（让 pass 变复杂）；以文本 emitter 为主的后端 |
+| slang | 在 IR 上做自动微分；capability 推断；带 merge 标注的结构化 CFG；按 target 参数化的 legalize | 预处理器；泛型直接留在 IR 上（让 pass 变复杂）；以文本 emitter 为主的后端 |
 | DXC | LLVM 风格的 pass 流水线；DXIL 的容器和验证哈希 | SPIR-V 是另一条从 AST 出发的路，两条路的功能长期对不齐 |
 
 原则：
