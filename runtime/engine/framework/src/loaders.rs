@@ -90,7 +90,7 @@ impl InPlace<Mesh> {
         MeshView::new(self.payload(), &self.bulk_sizes()).expect("checked at load")
     }
 
-    /// The bulk blobs, indexed as `MeshLod::bulk` counts them.
+    /// The bulk blobs, indexed as `ClusterPage::bulk` and `RtLod::bulk` count them.
     pub fn pages(&self) -> Vec<&[u8]> {
         (0..self.bulk_count()).map(|i| self.bulk(i)).collect()
     }

@@ -43,7 +43,7 @@ fn gpu_decode(h: &mut Harness, cooked: &Cooked) -> Vec<Decoded> {
     let pipeline = decode_pipeline(h);
     let (mesh, handle) = h.upload(cooked);
     let view = cooked.view();
-    let dag = view.cluster_dag.unwrap();
+    let dag = view.cluster_dag;
     let pages: Vec<(u32, u32)> = (0..dag.pages.len())
         .map(|p| {
             let bytes = &cooked.pages[dag.pages[p].bulk as usize];
@@ -108,7 +108,7 @@ fn the_gpu_decodes_every_page_as_the_cpu_does() {
             },
         );
         let view = cooked.view();
-        let dag = view.cluster_dag.unwrap();
+        let dag = view.cluster_dag;
         assert!(dag.header.level_count > 1, "a DAG");
         let gpu = gpu_decode(&mut h, &cooked);
         let (offset, scale) = (view.header.position_offset, view.header.position_scale);
@@ -152,7 +152,7 @@ fn released_meshes_give_their_pool_slots_back() {
     let free = h.meshes.free_pages();
     assert_eq!(free, POOL_PAGES as usize - 1, "the cube's one page");
     let ball = sphere(64, 128);
-    let pages = ball.view().cluster_dag.unwrap().pages.len();
+    let pages = ball.view().cluster_dag.pages.len();
     assert!(pages > 1, "{pages} pages");
     let (_, handle) = h.upload(&ball);
     assert_eq!(h.meshes.free_pages(), free - pages);
@@ -180,7 +180,7 @@ fn released_meshes_give_their_pool_slots_back() {
 fn a_mesh_that_does_not_fit_in_the_pool_is_refused() {
     let mut h = Harness::new(Environment::default());
     let ball = sphere(64, 128);
-    let pages = ball.view().cluster_dag.unwrap().pages.len();
+    let pages = ball.view().cluster_dag.pages.len();
     let mut uploaded = 0;
     loop {
         match h.meshes.upload_mesh(h.device, &ball.view(), &ball.pages()) {

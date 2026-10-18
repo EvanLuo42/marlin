@@ -107,9 +107,8 @@ impl Meshes {
 
     /// Uploads a cooked mesh's cluster DAG, blocking until the GPU has copied it: every page
     /// into a free slot of the pool, the resident part into a buffer of its own. `pages` are
-    /// the mesh's bulk blobs; each DAG page is checked first. A mesh cooked without the DAG or
-    /// with a malformed page is `InvalidInput`; one whose pages do not fit in the pool's free
-    /// slots is `OutOfMemory`.
+    /// the mesh's bulk blobs; each DAG page is checked first. A malformed page is
+    /// `InvalidInput`; a mesh whose pages do not fit in the pool's free slots is `OutOfMemory`.
     pub fn upload_mesh(
         &mut self,
         device: &Device,

@@ -5,5 +5,4 @@ Mesh
     !Uuid = "01992d00-0000-7000-8000-000000000101"
     !Name = "Cube"
     Source = `source:meshes/cube.glb`
-    Lods = { Count = 1 }
 }

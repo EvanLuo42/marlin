@@ -162,7 +162,7 @@ impl Harness {
         let (slot, index) = (address >> 12, (address & 4095) as usize);
         for (&mesh, cooked) in &self.cooked {
             let view = cooked.view();
-            let dag = view.cluster_dag.unwrap();
+            let dag = view.cluster_dag;
             for page in 0..dag.pages.len() {
                 if self.meshes.page_slot(mesh, page) == Some(slot) {
                     let bytes = &cooked.pages[dag.pages[page].bulk as usize];
@@ -199,7 +199,7 @@ impl Harness {
             };
             let cooked = &self.cooked[&mesh];
             let view = cooked.view();
-            let dag = view.cluster_dag.unwrap();
+            let dag = view.cluster_dag;
             for (page, p) in dag.pages.iter().enumerate() {
                 let slot = self.meshes.page_slot(mesh, page).unwrap();
                 let pv = dag.page(page, &cooked.pages[p.bulk as usize]).unwrap();

@@ -150,12 +150,12 @@ pub struct PageHeader {
 /// group it was made from ([`source_group`]) is not resident. Errors and spheres are monotonic
 /// from children to parents, so any such cut is watertight.
 ///
-/// Culling: the bounding sphere and the normal cone, as [`Meshlet`]'s.
+/// Culling: the bounding sphere and the normal cone: with `d = center - camera`, the cluster is
+/// back-facing when `dot(d, axis) >= cutoff * length(d) + radius`.
 ///
 /// [`lod_error`]: ClusterRecord::lod_error
 /// [`lod_sphere`]: ClusterRecord::lod_sphere
 /// [`source_group`]: ClusterRecord::source_group
-/// [`Meshlet`]: super::mesh::Meshlet
 #[derive(Pod, Clone, Copy, PartialEq, Debug, Default)]
 #[repr(C)]
 pub struct ClusterRecord {
@@ -271,6 +271,17 @@ pub struct PageLayout {
     pub attribute_stride: u32,
     pub skin_stride: u32,
     pub mesh_sections: u32,
+    /// Joints skin indices may name.
+    pub joints: u32,
+}
+
+/// Whether every weighted joint of a skin stream (12 bytes a vertex) is below `joints`.
+fn skin_ok(skin: &[u8], joints: u32) -> bool {
+    skin.as_chunks::<12>().0.iter().all(|v| {
+        (0..4).all(|i| {
+            u32::from(u16::from_le_bytes([v[i * 2], v[i * 2 + 1]])) < joints || v[8 + i] == 0
+        })
+    })
 }
 
 /// A checked page.
@@ -309,7 +320,12 @@ impl<'a> PageView<'a> {
             && fits(&h.skin, v * layout.skin_stride as u64)
             && fits(&h.triangles, h.triangle_count as u64 * 4)
             && fits(&h.sections, h.section_count as u64 * 2);
-        if !ok {
+        if !ok
+            || !skin_ok(
+                &bytes[h.skin.offset as usize..][..h.skin.size as usize],
+                layout.joints,
+            )
+        {
             return Err(bad);
         }
         let view = Self {
@@ -620,18 +636,22 @@ impl<'a> ClusterDagView<'a> {
         }
     }
 
-    /// Checks the RT LOD's blob: every index below its vertex count.
+    /// Checks the RT LOD's blob: every index below its vertex count, every weighted joint a
+    /// joint of the mesh.
     pub fn check_rt(&self, blob: &[u8]) -> Result<(), MeshError> {
-        let r = &self.header.rt.indices;
-        let indices = blob
-            .get(r.offset as usize..r.offset as usize + r.size as usize)
-            .ok_or(MeshError::Malformed)?;
+        let range = |r: &PageRange| {
+            blob.get(r.offset as usize..r.offset as usize + r.size as usize)
+                .ok_or(MeshError::Malformed)
+        };
+        let indices = range(&self.header.rt.indices)?;
+        let skin = range(&self.header.rt.skin)?;
         let count = self.header.rt.vertex_count;
         if indices
             .as_chunks::<4>()
             .0
             .iter()
             .any(|i| u32::from_le_bytes(*i) >= count)
+            || !skin_ok(skin, self.layout.joints)
         {
             return Err(MeshError::Malformed);
         }

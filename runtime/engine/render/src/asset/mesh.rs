@@ -1,22 +1,15 @@
 //! Meshes: the source settings authored in `.masset` text and their cooked form.
 //!
-//! A cooked mesh is a [`CookedMesh`] payload (a marlin-serial cooked layout) plus one bulk blob
-//! per LOD, the LOD's streaming page. A page holds, each 16-byte aligned:
+//! A cooked mesh is a [`CookedMesh`] payload (a marlin-serial cooked layout) holding its
+//! [`ClusterDag`]'s resident part, plus bulk blobs: the DAG's pages, the unit of streaming,
+//! then one blob for its RT LOD (see [`super::cluster`] for both). Vertex streams share these
+//! encodings:
 //!
-//! | stream              | per element                                                   |
-//! |---------------------|---------------------------------------------------------------|
-//! | positions           | 3×u16 quantized over the mesh bounds plus u16 padding, or 3×f32 |
-//! | attributes          | normal and tangent in 32 bits ([`encode_tangent_frame`]), then 2×f16 per UV set, then RGBA8 color if present |
-//! | skin                | 4×u16 joint indices, 4×unorm8 weights summing to 255           |
-//! | meshlets            | [`Meshlet`]                                                    |
-//! | meshlet vertices    | u32 index into the LOD's vertex streams                        |
-//! | meshlet triangles   | 3×u8 indices into the meshlet's vertices                       |
-//! | indices             | the LOD's triangle list (u16 or u32), for BLAS builds and paths without mesh shaders |
-//!
-//! With [`Mesh::cluster_dag`] (the default), the payload also holds a [`ClusterDag`]: its pages
-//! are the bulk blobs after the LOD pages, followed by one blob for its RT LOD (see
-//! [`super::cluster`]). The LOD chain stays until the visibility buffer replaces the forward
-//! renderer.
+//! - **positions**: 3×u16 quantized over the mesh bounds plus u16 padding
+//!   ([`quantize_position`]), or 3×f32 with [`MeshFlags::POSITION_FLOAT`];
+//! - **attributes**: normal and tangent in 32 bits ([`encode_tangent_frame`]), then the UV sets
+//!   (unorm16 over a cluster's range in pages, 2×f16 in the RT LOD), then RGBA8 color if present;
+//! - **skin**: 4×u16 joint indices, 4×unorm8 weights summing to 255.
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -30,28 +23,6 @@ use marlin_serial::cooked::{CookedView, LayoutError, Pod, RelSlice};
 
 use super::cluster::{ClusterDag, ClusterDagView, PageLayout};
 
-/// How the LOD chain is generated.
-#[derive(Clone, Copy, PartialEq, Debug, Reflect)]
-#[reflect(default)]
-pub struct LodSettings {
-    /// LODs including LOD 0.
-    pub count: u32,
-    /// Triangle count of each LOD relative to the one before.
-    pub reduction: f32,
-    /// Stop when a LOD's error would exceed this fraction of the mesh's bounding radius.
-    pub max_error: f32,
-}
-
-impl Default for LodSettings {
-    fn default() -> Self {
-        Self {
-            count: 4,
-            reduction: 0.5,
-            max_error: 0.05,
-        }
-    }
-}
-
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default, Reflect)]
 pub enum PositionPrecision {
     /// 16 bits per axis over the bounds: sub-millimeter for objects up to tens of meters.
@@ -61,7 +32,8 @@ pub enum PositionPrecision {
     Float,
 }
 
-/// A mesh asset: geometry imported from glTF.
+/// A mesh asset: geometry imported from glTF, cooked into a cluster DAG (0009 §3): continuous
+/// LOD for the visibility buffer, streamed by page.
 ///
 /// ```text
 /// Mesh
@@ -69,7 +41,6 @@ pub enum PositionPrecision {
 ///     !Uuid = "…"
 ///     !Name = "Rock01"
 ///     Source = `source:env/rock01.glb`
-///     Lods = { Count = 5 }
 /// }
 /// ```
 #[derive(Clone, PartialEq, Debug, Reflect)]
@@ -83,7 +54,6 @@ pub struct Mesh {
     /// its node transforms (skinned meshes are taken as they are bound).
     pub mesh: String,
     pub scale: f32,
-    pub lods: LodSettings,
     /// The skeleton a skinned mesh's joint indices refer to.
     pub skeleton: Link<Skeleton>,
     /// UV sets kept, from TEXCOORD_0.
@@ -91,14 +61,8 @@ pub struct Mesh {
     /// Keep COLOR_0 when present.
     pub vertex_colors: bool,
     pub precision: PositionPrecision,
-    /// The LOD ray tracing builds its BLAS from. `None`: one coarser than the LOD whose error
-    /// reaches a pixel at the typical viewing distance, picked by the cooker. With the cluster
-    /// DAG, ray tracing uses the DAG's RT LOD instead.
-    pub rt_lod: Option<u32>,
-    /// Build the cluster DAG (0009 §3): continuous LOD for the visibility buffer, streamed by
-    /// page.
-    pub cluster_dag: bool,
-    /// The share of the source triangles the DAG's RT LOD keeps.
+    /// The share of the source triangles the DAG's RT LOD keeps (ray tracing builds its BLAS
+    /// from it).
     pub rt_fraction: f32,
 }
 
@@ -109,13 +73,10 @@ impl Default for Mesh {
             extra_sources: Vec::new(),
             mesh: String::new(),
             scale: 1.0,
-            lods: LodSettings::default(),
             skeleton: Link::NONE,
             max_uv_sets: 2,
             vertex_colors: true,
             precision: PositionPrecision::Quantized,
-            rt_lod: None,
-            cluster_dag: true,
             rt_fraction: 0.25,
         }
     }
@@ -131,14 +92,8 @@ impl MeshFlags {
     pub const COLOR: u32 = 4;
 }
 
-/// Most vertices a meshlet references.
-pub const MESHLET_MAX_VERTICES: u32 = 64;
-/// Most triangles in a meshlet (124 keeps the triangle data of a meshlet in 372 bytes, and
-/// leaves mesh shader output room on every vendor).
-pub const MESHLET_MAX_TRIANGLES: u32 = 124;
-
 /// The payload root of a cooked mesh.
-#[derive(Clone, Copy, Debug)]
+#[derive(Pod, Clone, Copy, Debug)]
 #[repr(C)]
 pub struct CookedMesh {
     pub bounds_min: [f32; 3],
@@ -155,19 +110,12 @@ pub struct CookedMesh {
     pub attribute_stride: u32,
     /// 12 with [`MeshFlags::SKIN`], else 0.
     pub skin_stride: u32,
-    pub rt_lod: u32,
     /// Material slots, in glTF material order of first use.
     pub sections: RelSlice<MeshSection>,
-    /// Finest first.
-    pub lods: RelSlice<MeshLod>,
     /// The skin's joints, which skin indices refer to (empty without [`MeshFlags::SKIN`]).
     pub joints: RelSlice<MeshJoint>,
-    /// The cluster DAG: one entry, or none when the mesh was cooked without it.
-    pub cluster_dag: RelSlice<ClusterDag>,
+    pub cluster_dag: ClusterDag,
 }
-
-// SAFETY: 22 4-byte scalars and four RelSlices: 120 bytes, align 4, no padding.
-unsafe impl Pod for CookedMesh {}
 
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
@@ -191,7 +139,7 @@ pub struct MeshJoint {
 // SAFETY: a RelSlice and 16 f32: 72 bytes, align 4, no padding.
 unsafe impl Pod for MeshJoint {}
 
-/// A byte range in a LOD page.
+/// A byte range in a bulk blob.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 #[repr(C)]
 pub struct PageRange {
@@ -201,77 +149,6 @@ pub struct PageRange {
 
 // SAFETY: two u32, no padding.
 unsafe impl Pod for PageRange {}
-
-#[derive(Clone, Copy, Debug)]
-#[repr(C)]
-pub struct MeshLod {
-    /// Index of the page among the object's bulk blobs.
-    pub bulk: u32,
-    pub vertex_count: u32,
-    pub triangle_count: u32,
-    pub meshlet_count: u32,
-    /// Object-space simplification error (a distance). LOD 0's is 0.
-    pub error: f32,
-    /// Bytes per index: 2 or 4.
-    pub index_size: u32,
-    pub positions: PageRange,
-    pub attributes: PageRange,
-    pub skin: PageRange,
-    pub meshlets: PageRange,
-    pub meshlet_vertices: PageRange,
-    pub meshlet_triangles: PageRange,
-    pub indices: PageRange,
-    /// One per mesh section: its meshlets and indices in this LOD.
-    pub sections: RelSlice<LodSection>,
-}
-
-// SAFETY: six 4-byte scalars, seven PageRanges and a RelSlice: 88 bytes, no padding.
-unsafe impl Pod for MeshLod {}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-#[repr(C)]
-pub struct LodSection {
-    pub first_meshlet: u32,
-    pub meshlet_count: u32,
-    pub first_index: u32,
-    pub index_count: u32,
-}
-
-// SAFETY: four u32, no padding.
-unsafe impl Pod for LodSection {}
-
-/// A cluster of up to [`MESHLET_MAX_TRIANGLES`] triangles over up to [`MESHLET_MAX_VERTICES`]
-/// vertices, as the culling and mesh shaders read it.
-///
-/// The cone test (back-facing clusters): with `d = center - camera`, the meshlet is culled when
-/// `dot(d, axis) >= cutoff * length(d) + radius`, with `axis` and `cutoff` the snorm8 `cone`.
-#[derive(Clone, Copy, PartialEq, Debug, Default)]
-#[repr(C)]
-pub struct Meshlet {
-    pub center: [f32; 3],
-    pub radius: f32,
-    /// Cone axis xyz and cutoff, snorm8. A cutoff of 127 means the cone is degenerate (never
-    /// culled).
-    pub cone: [i8; 4],
-    /// First entry in the page's meshlet vertices.
-    pub vertex_offset: u32,
-    /// Byte offset of the first triangle in the page's meshlet triangles.
-    pub triangle_offset: u32,
-    pub vertex_count: u8,
-    pub triangle_count: u8,
-    pub section: u16,
-    /// DAG fields. With discrete LODs: `group` is the meshlet's LOD, `lod_error` the
-    /// LOD's error, `parent_error` +∞ and `error_sphere` the mesh's bounding sphere.
-    pub group: u32,
-    pub lod_error: f32,
-    pub parent_error: f32,
-    pub error_sphere: [f32; 4],
-    pub lod: u32,
-}
-
-// SAFETY: 16 + 4 + 4 + 4 + (1 + 1 + 2) + 4 + 4 + 4 + 16 + 4 = 64 bytes, align 4, every field
-// at its natural alignment, no padding; any bits are valid.
-unsafe impl Pod for Meshlet {}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MeshError {
@@ -292,22 +169,19 @@ pub struct MeshView<'a> {
     view: CookedView<'a>,
     pub header: &'a CookedMesh,
     pub sections: &'a [MeshSection],
-    pub lods: &'a [MeshLod],
     pub joints: &'a [MeshJoint],
-    /// The cluster DAG, checked but for its pages ([`ClusterDagView::page`]).
-    pub cluster_dag: Option<ClusterDagView<'a>>,
+    /// The cluster DAG, checked but for its pages ([`ClusterDagView::page`]) and its RT LOD's
+    /// blob ([`ClusterDagView::check_rt`]).
+    pub cluster_dag: ClusterDagView<'a>,
 }
 
 impl<'a> MeshView<'a> {
-    /// Reads `payload` and checks every LOD's streams against its page size in `bulk_sizes`
-    /// (indexed by [`MeshLod::bulk`]). Page contents are checked by [`check_page`] once loaded.
-    ///
-    /// [`check_page`]: MeshView::check_page
+    /// Reads `payload` and checks the DAG's resident part against itself and the bulk blobs'
+    /// sizes `bulk_sizes`. Pages are checked by [`ClusterDagView::page`] once loaded.
     pub fn new(payload: &'a [u8], bulk_sizes: &[u64]) -> Result<Self, MeshError> {
         let view = CookedView::new(payload);
         let header: &CookedMesh = view.root()?;
         let sections = view.slice(&header.sections)?;
-        let lods = view.slice(&header.lods)?;
         let joints = view.slice(&header.joints)?;
         let float = header.flags & MeshFlags::POSITION_FLOAT != 0;
         let skin = header.flags & MeshFlags::SKIN != 0;
@@ -315,13 +189,7 @@ impl<'a> MeshView<'a> {
         let stride_ok = header.position_stride == if float { 12 } else { 8 }
             && header.attribute_stride == 4 + 4 * header.uv_sets + if color { 4 } else { 0 }
             && header.skin_stride == if skin { 12 } else { 0 };
-        if !stride_ok
-            || lods.is_empty()
-            || sections.is_empty()
-            || header.rt_lod as usize >= lods.len()
-            || header.uv_sets > 4
-            || skin == joints.is_empty()
-        {
+        if !stride_ok || sections.is_empty() || header.uv_sets > 4 || skin == joints.is_empty() {
             return Err(MeshError::Malformed);
         }
         for j in joints {
@@ -330,66 +198,23 @@ impl<'a> MeshView<'a> {
         for s in sections {
             view.str(&s.name)?;
         }
-        for lod in lods {
-            let size = *bulk_sizes
-                .get(lod.bulk as usize)
-                .ok_or(MeshError::Malformed)?;
-            let fits = |r: &PageRange, len: u64| {
-                r.size as u64 == len
-                    && r.offset as u64 + r.size as u64 <= size
-                    && r.offset % 16 == 0
-            };
-            let v = lod.vertex_count as u64;
-            let ok = fits(&lod.positions, v * header.position_stride as u64)
-                && fits(&lod.attributes, v * header.attribute_stride as u64)
-                && fits(&lod.skin, v * header.skin_stride as u64)
-                && fits(&lod.meshlets, lod.meshlet_count as u64 * 64)
-                && fits(&lod.meshlet_vertices, lod.meshlet_vertices.size as u64)
-                && lod.meshlet_vertices.size % 4 == 0
-                && fits(&lod.meshlet_triangles, lod.meshlet_triangles.size as u64)
-                && (lod.index_size == 2 || lod.index_size == 4)
-                && fits(
-                    &lod.indices,
-                    lod.triangle_count as u64 * 3 * lod.index_size as u64,
-                );
-            let lod_sections = view.slice(&lod.sections)?;
-            if !ok || lod_sections.len() != sections.len() {
-                return Err(MeshError::Malformed);
-            }
-            let mut meshlets = 0u64;
-            let mut indices = 0u64;
-            for s in lod_sections {
-                if s.first_meshlet as u64 != meshlets || s.first_index as u64 != indices {
-                    return Err(MeshError::Malformed);
-                }
-                meshlets += s.meshlet_count as u64;
-                indices += s.index_count as u64;
-            }
-            if meshlets != lod.meshlet_count as u64 || indices != lod.triangle_count as u64 * 3 {
-                return Err(MeshError::Malformed);
-            }
-        }
-        let cluster_dag = match view.slice(&header.cluster_dag)? {
-            [] => None,
-            [dag] => Some(ClusterDagView::new(
-                &view,
-                dag,
-                PageLayout {
-                    uv_sets: header.uv_sets,
-                    position_stride: header.position_stride,
-                    attribute_stride: header.attribute_stride,
-                    skin_stride: header.skin_stride,
-                    mesh_sections: sections.len() as u32,
-                },
-                bulk_sizes,
-            )?),
-            _ => return Err(MeshError::Malformed),
-        };
+        let cluster_dag = ClusterDagView::new(
+            &view,
+            &header.cluster_dag,
+            PageLayout {
+                uv_sets: header.uv_sets,
+                position_stride: header.position_stride,
+                attribute_stride: header.attribute_stride,
+                skin_stride: header.skin_stride,
+                mesh_sections: sections.len() as u32,
+                joints: joints.len() as u32,
+            },
+            bulk_sizes,
+        )?;
         Ok(Self {
             view,
             header,
             sections,
-            lods,
             joints,
             cluster_dag,
         })
@@ -400,69 +225,6 @@ impl<'a> MeshView<'a> {
         self.view
             .str(&self.sections[section].name)
             .unwrap_or_default()
-    }
-
-    pub fn lod_sections(&self, lod: usize) -> &'a [LodSection] {
-        // Checked in `new`.
-        self.view
-            .slice(&self.lods[lod].sections)
-            .unwrap_or_default()
-    }
-
-    /// Checks a loaded page: every meshlet's vertices and triangles in range, every index below
-    /// the vertex count. The GPU reads pages unchecked, so a page is checked once on load.
-    pub fn check_page(&self, lod: usize, page: &[u8]) -> Result<(), MeshError> {
-        let lod = &self.lods[lod];
-        let range =
-            |r: &PageRange| page.get(r.offset as usize..r.offset as usize + r.size as usize);
-        let (Some(meshlets), Some(vertices), Some(triangles), Some(indices), Some(skin)) = (
-            range(&lod.meshlets),
-            range(&lod.meshlet_vertices),
-            range(&lod.meshlet_triangles),
-            range(&lod.indices),
-            range(&lod.skin),
-        ) else {
-            return Err(MeshError::Malformed);
-        };
-        let word = |b: &[u8], i: usize| u32::from_le_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]]);
-        for m in meshlets.as_chunks::<64>().0 {
-            let vertex_offset = word(m, 20) as usize;
-            let triangle_offset = word(m, 24) as usize;
-            let (vertex_count, triangle_count) = (m[28] as usize, m[29] as usize);
-            if vertex_count as u32 > MESHLET_MAX_VERTICES
-                || triangle_count as u32 > MESHLET_MAX_TRIANGLES
-                || (vertex_offset + vertex_count) * 4 > vertices.len()
-                || triangle_offset + triangle_count * 3 > triangles.len()
-                || triangles[triangle_offset..][..triangle_count * 3]
-                    .iter()
-                    .any(|&t| t as usize >= vertex_count)
-                || (0..vertex_count)
-                    .any(|i| word(vertices, (vertex_offset + i) * 4) >= lod.vertex_count)
-            {
-                return Err(MeshError::Malformed);
-            }
-        }
-        let bad_index = if lod.index_size == 2 {
-            indices
-                .as_chunks::<2>()
-                .0
-                .iter()
-                .any(|i| u16::from_le_bytes([i[0], i[1]]) as u32 >= lod.vertex_count)
-        } else {
-            indices
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .any(|i| word(i, 0) >= lod.vertex_count)
-        };
-        let joints = self.joints.len() as u16;
-        let bad_joint = skin.as_chunks::<12>().0.iter().any(|v| {
-            (0..4).any(|i| u16::from_le_bytes([v[i * 2], v[i * 2 + 1]]) >= joints && v[8 + i] != 0)
-        });
-        if bad_index || bad_joint {
-            return Err(MeshError::Malformed);
-        }
-        Ok(())
     }
 }
 
@@ -606,13 +368,6 @@ pub fn read_attributes(
     }
 }
 
-/// A vertex position and normal, decoded ([`MeshView::decode_lod`]).
-#[derive(Clone, Copy, PartialEq, Debug, Default)]
-pub struct DecodedVertex {
-    pub position: [f32; 3],
-    pub normal: [f32; 3],
-}
-
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct VertexAttributes {
     pub normal: [f32; 3],
@@ -620,55 +375,4 @@ pub struct VertexAttributes {
     pub bitangent_sign: f32,
     pub uvs: [[f32; 2]; 4],
     pub color: Option<[u8; 4]>,
-}
-
-impl MeshView<'_> {
-    /// LOD `lod`'s vertices (positions and normals) and 32-bit indices: a CPU decode of its page
-    /// (checked first), the reference the GPU's decode is tested against and what CPU-side tools
-    /// read.
-    pub fn decode_lod(
-        &self,
-        lod: usize,
-        page: &[u8],
-    ) -> Result<(Vec<DecodedVertex>, Vec<u32>), MeshError> {
-        self.check_page(lod, page)?;
-        let h = self.header;
-        let l = &self.lods[lod];
-        let slice = |r: &PageRange| &page[r.offset as usize..][..r.size as usize];
-        let (positions, attributes, indices) =
-            (slice(&l.positions), slice(&l.attributes), slice(&l.indices));
-        let float = h.flags & MeshFlags::POSITION_FLOAT != 0;
-        let f32_at =
-            |b: &[u8], at: usize| f32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]]);
-        let vertices = (0..l.vertex_count as usize)
-            .map(|v| {
-                let position = if float {
-                    core::array::from_fn(|i| f32_at(positions, v * 12 + i * 4))
-                } else {
-                    let q = core::array::from_fn(|i| {
-                        u16::from_le_bytes([positions[v * 8 + i * 2], positions[v * 8 + i * 2 + 1]])
-                    });
-                    dequantize_position(q, h.position_offset, h.position_scale)
-                };
-                let normal = read_attributes(attributes, h.attribute_stride as usize, v, 0).normal;
-                DecodedVertex { position, normal }
-            })
-            .collect();
-        let indices = if l.index_size == 2 {
-            indices
-                .as_chunks::<2>()
-                .0
-                .iter()
-                .map(|i| u32::from(u16::from_le_bytes([i[0], i[1]])))
-                .collect()
-        } else {
-            indices
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .map(|i| u32::from_le_bytes([i[0], i[1], i[2], i[3]]))
-                .collect()
-        };
-        Ok((vertices, indices))
-    }
 }

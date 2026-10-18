@@ -65,13 +65,12 @@ fn depth(nodes: &[HierarchyNode], node: usize) -> u32 {
 }
 
 /// Checks `mesh`'s DAG pages (`pages` are the mesh's bulk blobs, indexed by `ClusterPage::bulk`):
-/// the GPU reads them unchecked. Meshes cooked without the DAG are `Malformed`: the renderer
-/// draws nothing else.
+/// the GPU reads them unchecked.
 pub(crate) fn build<'a>(
     mesh: &MeshView<'a>,
     pages: &[&'a [u8]],
 ) -> Result<(ClusterDagView<'a>, Built<'a>), MeshError> {
-    let dag = mesh.cluster_dag.ok_or(MeshError::Malformed)?;
+    let dag = mesh.cluster_dag;
     let mut checked = Vec::with_capacity(dag.pages.len());
     for (i, p) in dag.pages.iter().enumerate() {
         let bytes = *pages.get(p.bulk as usize).ok_or(MeshError::Malformed)?;

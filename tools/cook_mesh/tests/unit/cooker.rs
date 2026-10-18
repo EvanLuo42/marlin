@@ -10,7 +10,8 @@ use marlin_cook_mesh::{AnimationCooker, MeshCooker, SkeletonCooker};
 use marlin_math::scalar::abs_diff_eq;
 use marlin_reflect::type_info;
 use marlin_render::asset::Mesh;
-use marlin_render::asset::mesh::{MeshFlags, MeshView, dequantize_position, read_attributes};
+use marlin_render::asset::cluster::read_cluster_attributes;
+use marlin_render::asset::mesh::{MeshFlags, MeshView};
 use marlin_serial::cooked::CookedBuffer;
 
 use crate::support::{Container, Gltf, Project, sphere, uuid};
@@ -81,7 +82,6 @@ fn check_mesh(unit: &CookedBuffer) {
         (mesh.section_name(0), mesh.section_name(1)),
         ("Top", "Bottom")
     );
-    assert!(mesh.lods.len() >= 3, "{} LODs", mesh.lods.len());
     let h = mesh.header;
     // The node transform is applied: centered at x = 10.
     assert!(
@@ -89,68 +89,45 @@ fn check_mesh(unit: &CookedBuffer) {
         "{:?}",
         h.sphere
     );
-    let mut previous = u32::MAX;
-    let mut previous_error = -1.0;
-    for (i, lod) in mesh.lods.iter().enumerate() {
-        mesh.check_page(i, pages[i]).unwrap();
-        assert!(lod.triangle_count < previous, "LOD {i} has fewer triangles");
-        assert!(lod.error >= previous_error, "and no less error");
-        previous = lod.triangle_count;
-        previous_error = lod.error;
-        // Decoded vertices lie on the sphere, normals pointing out.
-        let page = pages[i];
-        let positions = &page[lod.positions.offset as usize..][..lod.positions.size as usize];
-        let attributes = &page[lod.attributes.offset as usize..][..lod.attributes.size as usize];
-        for v in 0..lod.vertex_count as usize {
-            let q = std::array::from_fn(|k| {
-                u16::from_le_bytes([positions[v * 8 + k * 2], positions[v * 8 + k * 2 + 1]])
-            });
-            let p = dequantize_position(q, h.position_offset, h.position_scale);
-            let d = [p[0] - 10.0, p[1], p[2]];
-            let r = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
-            assert!(abs_diff_eq(r, 1.0, 1e-3), "vertex at radius {r}");
-            let a = read_attributes(
-                attributes,
-                h.attribute_stride as usize,
-                v,
-                h.uv_sets as usize,
-            );
-            let dot = (0..3).map(|k| a.normal[k] * d[k] / r).sum::<f32>();
-            assert!(dot > 0.99, "normal off by {dot}");
-            let ortho = (0..3).map(|k| a.normal[k] * a.tangent[k]).sum::<f32>();
-            assert!(
-                abs_diff_eq(ortho, 0.0, 0.01),
-                "tangent orthogonal to the normal"
-            );
-        }
-        let lod_sections = mesh.lod_sections(i);
-        assert!(lod_sections.iter().all(|s| s.meshlet_count > 0));
-    }
     assert_eq!(h.flags & MeshFlags::SKIN, 0);
     assert!(mesh.joints.is_empty());
 
-    // The cluster DAG: its pages after the LOD pages, then the RT LOD.
-    let dag = mesh.cluster_dag.expect("the cluster DAG");
+    // The cluster DAG: its pages, then the RT LOD.
+    let dag = mesh.cluster_dag;
     assert!(dag.header.level_count >= 2);
-    assert_eq!(dag.pages[0].bulk as usize, mesh.lods.len());
-    assert_eq!(
-        dag.header.rt.bulk as usize,
-        mesh.lods.len() + dag.pages.len()
-    );
+    assert_eq!(dag.pages[0].bulk, 0);
+    assert_eq!(dag.header.rt.bulk as usize, dag.pages.len());
+    assert_eq!(pages.len(), dag.pages.len() + 1);
     let mut clusters = 0;
     let mut sections_seen = [false; 2];
     for (i, record) in dag.pages.iter().enumerate() {
         let page = dag.page(i, pages[record.bulk as usize]).unwrap();
         for c in 0..page.header.cluster_count as usize {
             let r = page.cluster(c);
+            let ranges = page.uv_ranges(c);
             for v in 0..r.vertex_count as usize {
-                let p = page.position(
-                    r.vertex_offset as usize + v,
-                    h.position_offset,
-                    h.position_scale,
+                let v = r.vertex_offset as usize + v;
+                let p = page.position(v, h.position_offset, h.position_scale);
+                let d = [p[0] - 10.0, p[1], p[2]];
+                let radius = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+                assert!(
+                    abs_diff_eq(radius, 1.0, 1e-3),
+                    "cluster vertex at radius {radius}"
                 );
-                let r = ((p[0] - 10.0).powi(2) + p[1] * p[1] + p[2] * p[2]).sqrt();
-                assert!(abs_diff_eq(r, 1.0, 1e-3), "cluster vertex at radius {r}");
+                // Normals point out, tangents are orthogonal to them.
+                let a = read_cluster_attributes(
+                    page.attributes(),
+                    h.attribute_stride as usize,
+                    v,
+                    &ranges[..h.uv_sets as usize],
+                );
+                let dot = (0..3).map(|k| a.normal[k] * d[k] / radius).sum::<f32>();
+                assert!(dot > 0.99, "normal off by {dot}");
+                let ortho = (0..3).map(|k| a.normal[k] * a.tangent[k]).sum::<f32>();
+                assert!(
+                    abs_diff_eq(ortho, 0.0, 0.01),
+                    "tangent orthogonal to the normal"
+                );
             }
             for s in 0..r.section_count as usize {
                 sections_seen[page.section(r.section_offset as usize + s) as usize] = true;
@@ -184,14 +161,11 @@ fn check_mesh(unit: &CookedBuffer) {
 }
 
 #[test]
-fn a_glb_cooks_to_meshlets_and_lods() {
+fn a_glb_cooks_to_a_cluster_dag() {
     let p = Project::new("glb");
     let (glb, _) = sphere_gltf().finish(Container::Glb);
     p.write("ball.glb", &glb);
-    p.write(
-        "ball.masset",
-        mesh_object("ball.glb", "Lods = { Count = 4 }").as_bytes(),
-    );
+    p.write("ball.masset", mesh_object("ball.glb", "").as_bytes());
     let units = p.cook(&cookers()).unwrap();
     check_mesh(&units[0].bytes);
 }
@@ -325,12 +299,14 @@ fn skins_skeletons_and_clips() {
     let mesh = MeshView::new(payload, &sizes).unwrap();
     assert_ne!(mesh.header.flags & MeshFlags::SKIN, 0);
     assert_eq!(mesh.joints.len(), 2);
-    mesh.check_page(0, pages[0]).unwrap();
-    let lod = &mesh.lods[0];
-    let skin = &pages[0][lod.skin.offset as usize..][..lod.skin.size as usize];
-    for v in skin.as_chunks::<12>().0 {
-        assert_eq!(v[8..12].iter().map(|&w| w as u32).sum::<u32>(), 255);
+    let dag = mesh.cluster_dag;
+    for (i, record) in dag.pages.iter().enumerate() {
+        let page = dag.page(i, pages[record.bulk as usize]).unwrap();
+        for v in page.skin().as_chunks::<12>().0 {
+            assert_eq!(v[8..12].iter().map(|&w| w as u32).sum::<u32>(), 255);
+        }
     }
+    dag.check_rt(pages[dag.header.rt.bulk as usize]).unwrap();
 
     // The skeleton: parents first, the armature's offset in the root's rest pose.
     let o = view.object(find(SKELETON)).unwrap();

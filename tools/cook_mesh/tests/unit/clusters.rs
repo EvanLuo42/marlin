@@ -538,6 +538,8 @@ fn pages_hold_every_cluster_within_limits() {
         attribute_stride: quantize::attribute_stride(&v) as u32,
         skin_stride: 12,
         mesh_sections: sections.iter().copied().max().unwrap() as u32 + 1,
+        // The test skin names joints 0 to 6.
+        joints: 7,
     };
     assert!(packed.pages.len() >= 4, "{} pages", packed.pages.len());
     assert!(packed.root_page_count >= 1 && packed.root_page_count < packed.pages.len() as u32);
@@ -763,6 +765,7 @@ fn damaged_pages_are_refused() {
         attribute_stride: 8,
         skin_stride: 0,
         mesh_sections: 1,
+        joints: 0,
     };
     let page = &packed.pages[0];
     let view = PageView::new(page, layout).unwrap();
@@ -806,6 +809,49 @@ fn damaged_pages_are_refused() {
             bad[at] = (rng.f32() * 256.0) as u8;
         }
         let _ = PageView::new(&bad, layout);
+    }
+}
+
+#[test]
+fn pages_weighting_a_joint_the_mesh_lacks_are_refused() {
+    let s = icosphere(3);
+    let sections = vec![0u16; s.indices.len() / 3];
+    let dag = dag_of(&s, &sections);
+    let tangents: Vec<[f32; 4]> = vec![[1.0, 0.0, 0.0, 1.0]; s.positions.len()];
+    let uvs = vec![s.uvs.clone()];
+    // Joints 0 to 2 weighted; joint 9 named with no weight, which is no reference.
+    let skin: Vec<([u16; 4], [u8; 4])> = (0..s.positions.len())
+        .map(|i| ([(i % 3) as u16, 9, 0, 0], [255, 0, 0, 0]))
+        .collect();
+    let v = quantize::Vertices {
+        positions: &s.positions,
+        normals: &s.normals,
+        tangents: &tangents,
+        uvs: &uvs,
+        colors: None,
+        skin: Some(&skin),
+    };
+    let packed = page::pack(&dag, &v, quantize::Positions::Float);
+    let layout = PageLayout {
+        uv_sets: 1,
+        position_stride: 12,
+        attribute_stride: 8,
+        skin_stride: 12,
+        mesh_sections: 1,
+        joints: 3,
+    };
+    for page in &packed.pages {
+        PageView::new(page, layout).unwrap();
+        assert!(
+            PageView::new(
+                page,
+                PageLayout {
+                    joints: 2,
+                    ..layout
+                }
+            )
+            .is_err()
+        );
     }
 }
 
