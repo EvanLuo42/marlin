@@ -3,7 +3,7 @@ format 1 = "bad \"index\"\n"
 struct @Light { Color: f32x3, Intensity: f32, Albedo: res<Texture2D<f32x4>> }
 struct @"Game.Grid<4>" { Cells: [f32; 8], Inner: @Light }
 global @lights : ptr<push, res<Buffer<@Light>>>
-global @raw : ptr<push, res<ReadOnlyByteBuffer>>
+global @raw : ptr<push, res<ByteBuffer>>
 global @params : ptr<push, res<Uniform<@Light>>>
 global @tile : ptr<groupshared, [f32x4; 64]>
 global @gi : ptr<input, i32> builtin(GroupIndex)

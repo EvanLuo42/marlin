@@ -1,0 +1,127 @@
+// Modules that parse but break a rule, one case per `// ====` section.
+
+// ==== types, constants and globals
+struct @HoldsPointer { P: ptr<function, f32> }
+struct @Self { Inner: [@Self; 2] }
+global @wrong_builtin : ptr<input, f32> builtin(DispatchThreadId)
+global @init : ptr<groupshared, f32> = zero
+global @no_init : ptr<constant, f32>
+global @target : ptr<input, f32x4> target(0)
+global @in_function : ptr<function, f32>
+
+// ==== operand types
+func @Ops(%a: i32, %b: f32, %c: i1, %v: f32x4, %m: f32x4x4) {
+block0:
+    %0 = fadd %a, %a
+    %1 = add %c, %c
+    %2 = sext %b : i64
+    %3 = trunc %a : i64
+    %4 = select %a, %b, %b
+    %5 = extract %v, 4
+    %6 = shuffle %v, %v, [8]
+    %7 = matmul %m, (construct f32x2(%b, %b))
+    %8 = sqrt %a
+    %9 = cross %v, %v
+    %10 = construct f32x4(%b, %b)
+    %11 = icmp slt %c, %c
+    %12 = add precise %a, %a
+    debug.print 3, (%a)
+    return
+}
+
+// ==== memory
+global @tile : ptr<groupshared, [f32; 4]>
+global @out : ptr<output, f32x4> target(0)
+
+func @Memory(%h: handle<ReadOnlyBuffer<f32>>, %i: f32) {
+block0:
+    %p = buffer.elem %h, i32 0
+    store %p, f32 1.0
+    %q = buffer.elem %h, %i
+    %arr = var function : [f32; 4]
+    %e = access %arr, [4]
+    %o = load @out
+    %t = access @tile, [0]
+    %old = atomic.smin %t, f32 1.0 scope(group) order(relaxed)
+    %l = atomic.load %t scope(lane) order(release)
+    barrier exec(device) mem(group) spaces(output)
+    br block1
+block1:
+    %late = var function : f32
+    return
+}
+
+// ==== jumps and dominance
+func @Flow(%c: i1, %n: i32) -> i32 {
+block0:
+    cond_br %c, block1, block2 merge block3
+block1:
+    %x = add %n, i32 1
+    br block3
+block2:
+    br block3
+block3:
+    cond_br %c, block4, block1 merge block5
+block4:
+    br block5
+block5:
+    return %x
+}
+
+func @Args(%n: i32) -> i32 {
+block0:
+    br block1(%n, %n)
+block1(%a: i32):
+    return %n, %a
+}
+
+func @NoTerminator() {
+block0:
+    %x = add i32 1, i32 1
+}
+
+// ==== loops
+func @Loops(%c: i1) {
+block0:
+    loop header block1 continue block3 merge block4
+block1:
+    cond_br %c, block2, block4 merge block2
+block2:
+    br block1
+block3:
+    br block1
+block4:
+    return
+}
+
+// ==== recursion
+func @Ping(%n: i32) -> i32 {
+block0:
+    %r = call @Pong(%n)
+    return %r
+}
+
+func @Pong(%n: i32) -> i32 {
+block0:
+    %r = call @Ping(%n)
+    return %r
+}
+
+// ==== entry points
+global @tid : ptr<input, i32x3> builtin(DispatchThreadId)
+global @shared : ptr<groupshared, f32>
+
+func @Helper() {
+block0:
+    discard
+    return
+}
+
+entry vertex @Vs uses(@shared) {
+block0:
+    %t = load @tid
+    store @shared, f32 1.0
+    call @Helper()
+    barrier exec(group) mem(group) spaces(groupshared)
+    return
+}

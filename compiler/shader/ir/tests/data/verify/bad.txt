@@ -1,0 +1,49 @@
+== types, constants and globals
+struct `Self` contains itself
+struct `HoldsPointer`: a struct holds data: no pointers, handles or ray queries
+global `@wrong_builtin`: `builtin(DispatchThreadId)` must be `i32x3`, not `f32`
+global `@init`: only `constant` variables have initial values
+global `@no_init`: constant data needs `= ...`
+global `@target`: a render target is an `output`
+global `@in_function`: a module-level variable is not in the `function` space
+== operand types
+@Ops: `%0 = fadd %a, %a`: `fadd` does not take `i32`
+@Ops: `%1 = add %c, %c`: `add` does not take `i1`
+@Ops: `%2 = sext %b : i64`: `sext` does not convert `f32` to `i64`
+@Ops: `%3 = trunc %a : i64`: `trunc` does not convert `i32` to `i64`
+@Ops: `%4 = select %a, %b, %b`: the condition is `i1`, or an `i1` vector as wide as the choices
+@Ops: `%5 = extract %v, 4`: index 4 is out of range
+@Ops: `%6 = shuffle %v, %v, [8]`: a lane is out of range
+@Ops: `%8 = matmul %m, %7`: the shapes do not multiply
+@Ops: `%9 = sqrt %a`: `sqrt` does not take these operand types
+@Ops: `%10 = cross %v, %v`: `cross` does not take these operand types
+@Ops: `%11 = construct f32x4(%b, %b)`: the parts do not make this type
+@Ops: `%12 = icmp slt %c, %c`: compares two integers of one type
+@Ops: `%13 = add precise %a, %a`: `precise` is for floating-point operations
+@Ops: `debug.print 3, (%a)`: no format 3
+== memory
+@Memory: `store %p, f32 1.0`: `buffer` memory here is read-only
+@Memory: `%q = buffer.elem %h, %i`: the index is an integer scalar
+@Memory: `%e = access %arr, [4]`: index 4 is out of range
+@Memory: `%o = load @out`: `output` memory is write-only
+@Memory: `%old = atomic.smin %t, f32 1.0 scope(group) order(relaxed)`: `atomic.smin` does not take `f32`
+@Memory: `%l = atomic.load %t scope(lane) order(release)`: an atomic's scope is wave, group or device
+@Memory: `barrier exec(device) mem(group) spaces(output)`: an execution barrier is for a wave or a group
+@Memory: `%late = var function : f32`: variables are made in the entry block
+== jumps and dominance
+@Flow: `return %x`: `%x` is used where its definition does not dominate
+@Flow: block2 jumps into the middle of the selection at block0 (to block4)
+@Flow: block2 leaves the selection at block2 for block4, which is not its merge, a break or a continue
+@Args: `br block1(%n, %n)`: block1 takes (i32), not (i32, i32)
+@Args: `return %n, %a`: returns other types than the function's
+@NoTerminator: block0 does not end in a terminator
+== loops
+@Loops: block2 jumps back to block1 from outside the continue block
+== recursion
+runtime recursion: @Ping -> @Pong -> @Ping (recursion must unroll at compile time)
+== entry points
+@Vs: it uses `@tid`, which `uses` does not list
+@Vs: `builtin(DispatchThreadId)` is not an input of a vertex entry point
+@Vs: `@shared` is groupshared, which a vertex entry point has none of
+@Vs: `@Vs` has a group barrier, reached from a vertex entry point
+@Vs: `@Helper` uses a pixel-only operation, reached from a vertex entry point

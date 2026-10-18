@@ -106,6 +106,8 @@ block3(%x: f32, %y: f32):
 
 源语言没有 `goto`，所以降低出来的控制流从一开始就满足这些条件。所有 pass 都必须保持这些不变量（0005 §4.1）。
 
+verifier 怎么划分 region（第 6b 步定）：在 CFG 上再加上每个 header 到它的 merge 块的边（loop 再加 header 到 continue 块的边），region 就是 header 支配、merge 块不支配的那些块，并且限制在外层 region 之内；在 loop 里面的 region 到 loop 的 continue 块为止（除非这个 region 本身就在 continue 块那一部分里）。这和 SPIR-V 对 construct 的定义一致。跳出 region 只能去它的 merge 块、最内层 loop 的 merge 或 continue 块（`break`、`continue`），或者外层 switch 的 merge 块。
+
 ### 5.2 `discard`
 
 - `discard` 是普通指令，不是终结指令，语义是 **demote-to-helper**：这个 lane 变成 helper lane，仍然参与导数计算，但之后的写出和副作用都被丢弃。
@@ -121,7 +123,7 @@ block3(%x: f32, %y: f32):
   - wave op；
   - barrier；
   - `mesh.set_counts` 和 `mesh.dispatch`。
-- 对 convergent 的 op，pass 只能在**控制依赖相同**的位置之间移动它，不能把它移进或移出发散的条件。verifier 会检查这一点；能不能移动由 uniformity 分析判断（0005 §4.3）。
+- 对 convergent 的 op，pass 只能在**控制依赖相同**的位置之间移动它，不能把它移进或移出发散的条件。verifier 会检查这一点；能不能移动由 uniformity 分析判断（0005 §4.3）。这项检查要等 uniformity 分析（0005 §11 第 8 步）才加进 verifier。
 - 不用显式的 convergence token。
 
 ## 6. 内存与逻辑指针

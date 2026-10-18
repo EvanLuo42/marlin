@@ -1,17 +1,18 @@
 //! `marlin_shaderc_ir::parse_module`: the shader IR's text format on any text.
 //!
 //! Input: the text as UTF-8. Parsing must not panic, and a module it accepts must print to
-//! text that parses back to the same printed form. The replay test is `fuzz_finds_stay_fixed`
+//! text that parses back to the same printed form, and the verifier must not panic on it. The replay test is `fuzz_finds_stay_fixed`
 //! in compiler/shader/ir/tests/unit/robustness.rs.
 #![no_main]
 
-use marlin_shaderc_ir::{parse_module, print_module};
+use marlin_shaderc_ir::{parse_module, print_module, verify_module};
 
 fn run(data: &[u8]) {
     let Ok(text) = std::str::from_utf8(data) else {
         return;
     };
     if let Ok(module) = parse_module(text) {
+        let _ = verify_module(&module);
         let printed = print_module(&module);
         let again = parse_module(&printed).expect("printed IR parses");
         assert_eq!(print_module(&again), printed);

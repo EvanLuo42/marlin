@@ -69,19 +69,8 @@ pub fn print_module(m: &Module) -> String {
 
 pub fn print_function(m: &Module, id: FuncId) -> String {
     let f = &m.funcs[id];
-    let order = block_order(f);
-    let block_names: HashMap<Block, String> = order
-        .iter()
-        .enumerate()
-        .map(|(i, b)| (*b, format!("block{i}")))
-        .collect();
-    let names = value_names(f, &order);
-    let p = Printer {
-        m,
-        f,
-        names: &names,
-        blocks: &block_names,
-    };
+    let p = FuncText::new(m, id);
+    let (order, names, block_names) = (&p.order, &p.names, &p.blocks);
     let mut out = String::new();
     match m.entry_of(id) {
         Some(entry) => {
@@ -349,15 +338,37 @@ pub fn const_lit(m: &Module, c: Const) -> String {
     }
 }
 
-struct Printer<'a> {
+/// One function as the text format names it: its block order, block names and value names, for
+/// printing it whole or a piece of it (the verifier quotes instructions).
+pub struct FuncText<'a> {
     m: &'a Module,
     f: &'a Function,
-    names: &'a HashMap<Value, String>,
-    blocks: &'a HashMap<Block, String>,
+    pub order: Vec<Block>,
+    pub names: HashMap<Value, String>,
+    pub blocks: HashMap<Block, String>,
 }
 
-impl Printer<'_> {
-    fn value(&self, v: Value) -> String {
+impl<'a> FuncText<'a> {
+    pub fn new(m: &'a Module, id: FuncId) -> Self {
+        let f = &m.funcs[id];
+        let order = block_order(f);
+        let blocks = order
+            .iter()
+            .enumerate()
+            .map(|(i, b)| (*b, format!("block{i}")))
+            .collect();
+        let names = value_names(f, &order);
+        FuncText {
+            m,
+            f,
+            order,
+            names,
+            blocks,
+        }
+    }
+
+    /// An operand as it prints.
+    pub fn value(&self, v: Value) -> String {
         match self.f.values[v].def {
             ValueDef::Const(c) => format!(
                 "{} {}",
@@ -385,7 +396,7 @@ impl Printer<'_> {
         }
     }
 
-    fn block(&self, b: Block) -> &str {
+    pub fn block(&self, b: Block) -> &str {
         self.blocks.get(&b).map_or("block?", |s| s.as_str())
     }
 
@@ -415,7 +426,8 @@ impl Printer<'_> {
         }
     }
 
-    fn inst(&self, inst: Inst) -> String {
+    /// One instruction as it prints.
+    pub fn inst(&self, inst: Inst) -> String {
         let data = &self.f.insts[inst];
         let ops = self.f.operands(inst);
         let mut out = String::new();

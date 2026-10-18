@@ -119,3 +119,9 @@ fn use_lists_follow_edits() {
         "{printed}"
     );
 }
+
+#[test]
+fn built_functions_verify() {
+    let errors = marlin_shaderc_ir::verify_module(&sum_module());
+    assert!(errors.is_empty(), "{errors:?}");
+}

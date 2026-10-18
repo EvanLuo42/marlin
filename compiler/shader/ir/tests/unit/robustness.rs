@@ -2,7 +2,7 @@
 //! the same way: seeded mutations of the fixtures, checked under the binary's memory cap.
 
 use marlin_math::Rng;
-use marlin_shaderc_ir::{parse_module, print_module};
+use marlin_shaderc_ir::{parse_module, print_module, verify_module};
 use marlin_test_support::{data_path, regress, scale, seed};
 
 /// Characters the format gives meaning to, for insertions.
@@ -13,6 +13,7 @@ const NOISE: &[char] = &[
 fn check(text: &str, seed: u64) {
     let result = std::panic::catch_unwind(|| {
         if let Ok(module) = parse_module(text) {
+            let _ = verify_module(&module);
             let printed = print_module(&module);
             let again = parse_module(&printed)
                 .unwrap_or_else(|e| panic!("printed text does not parse: {e}\n{printed}"));
