@@ -1046,12 +1046,34 @@ pub(crate) fn create_texture(device: &Device, desc: &TextureDesc) -> Result<Text
 
 /// A committed texture in its own (dedicated) allocation, of the same memory type for the same
 /// `desc` every time. `image_next` is chained last onto the `VkImageCreateInfo` and
-/// `memory_next` onto the allocation (the sharing area's external memory structures), or null.
+/// `memory_next` onto the allocation (the sharing area's export structures), or null.
 pub(crate) fn create_texture_with(
     device: &Device,
     desc: &TextureDesc,
     image_next: *const c_void,
     memory_next: *const c_void,
+) -> Result<Texture> {
+    committed_texture(device, desc, image_next, memory_next, true)
+}
+
+/// As [`create_texture_with`], over imported memory (`memory_next` holds the import
+/// structure): the texture is taken to be in GENERAL already, since a move from UNDEFINED
+/// could discard the exporter's contents.
+pub(crate) fn import_texture_with(
+    device: &Device,
+    desc: &TextureDesc,
+    image_next: *const c_void,
+    memory_next: *const c_void,
+) -> Result<Texture> {
+    committed_texture(device, desc, image_next, memory_next, false)
+}
+
+fn committed_texture(
+    device: &Device,
+    desc: &TextureDesc,
+    image_next: *const c_void,
+    memory_next: *const c_void,
+    initial_layout: bool,
 ) -> Result<Texture> {
     let s = &device.shared;
     s.lost.check()?;
@@ -1076,7 +1098,7 @@ pub(crate) fn create_texture_with(
         destroy_image(s, raw);
         return Err(e);
     }
-    Texture::created(s, raw, desc, Some(Arc::new(memory)), None, true)
+    Texture::created(s, raw, desc, Some(Arc::new(memory)), None, initial_layout)
 }
 
 pub(crate) fn texture_requirements(device: &Device, desc: &TextureDesc) -> MemoryRequirements {
