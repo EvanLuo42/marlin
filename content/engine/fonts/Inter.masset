@@ -1,0 +1,10 @@
+!Version 1
+
+// Inter 4.1 Regular (rsms/inter, SIL Open Font License 1.1: Inter-OFL.txt), the engine's UI
+// font. The engine finds it by name.
+Font
+{
+    !Uuid = "019a3f10-7c21-7a40-9b6e-41c0f2d3e5a7"
+    !Name = "Marlin.Engine.Fonts.Inter"
+    Source = `source:fonts/Inter-Regular.ttf`
+}

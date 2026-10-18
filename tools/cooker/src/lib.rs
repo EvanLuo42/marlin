@@ -8,11 +8,13 @@ use std::path::Path;
 use marlin_anim::asset::{AnimationClip, Skeleton};
 use marlin_cook_audio as _;
 use marlin_cook_core::{Cookers, Ddc, LayeredDdc, LocalDdc};
+use marlin_cook_font::FontCooker;
 use marlin_cook_level as _;
 use marlin_cook_mesh::{AnimationCooker, MeshCooker, SkeletonCooker};
 use marlin_cook_shader::{ShaderCooker, ShaderPackageCooker};
 use marlin_cook_text::{StringTable, StringTableCooker};
 use marlin_cook_texture::TextureCooker;
+use marlin_font::Font;
 use marlin_framework::Level;
 use marlin_render::asset::{Mesh, Texture};
 use marlin_shader::asset::{Shader, ShaderPackage};
@@ -27,6 +29,8 @@ pub fn engine_cookers() -> Cookers {
         .and_then(|()| cookers.register::<Skeleton>(SkeletonCooker))
         .and_then(|()| cookers.register::<AnimationClip>(AnimationCooker))
         .and_then(|()| cookers.register::<StringTable>(StringTableCooker))
+        // The engine finds its UI font by name.
+        .and_then(|()| cookers.register_named::<Font>(FontCooker))
         .and_then(|()| cookers.register_named::<ShaderPackage>(ShaderPackageCooker::new()))
         // Permutations are found by name too (the default material's resolve).
         .and_then(|()| cookers.register_named::<Shader>(ShaderCooker::new()))

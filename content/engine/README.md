@@ -14,3 +14,7 @@ next to its `bin/`. Tools write nothing in it: each project keeps its index of i
   `Marlin.…` belong to this mount only.
 
 Game content links into it with qualified paths: `</Engine/shaders/package:Marlin.Engine #…>`.
+- `fonts/`: the engine's fonts as `Font` assets, cooked from TrueType files into
+  `marlin_font`'s cooked form. `Inter.masset` (`Marlin.Engine.Fonts.Inter`, Inter 4.1 Regular
+  under the SIL Open Font License, `Inter-OFL.txt`) is the UI font; the engine finds it by name.
+  Font files are in Git LFS.

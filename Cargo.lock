@@ -378,6 +378,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "marlin-cook-font"
+version = "0.1.0"
+dependencies = [
+ "marlin-asset",
+ "marlin-asset-db",
+ "marlin-cook-core",
+ "marlin-font",
+ "marlin-reflect",
+ "marlin-serial",
+ "marlin-test-support",
+]
+
+[[package]]
 name = "marlin-cook-level"
 version = "0.1.0"
 
@@ -471,11 +484,13 @@ dependencies = [
  "marlin-compress",
  "marlin-cook-audio",
  "marlin-cook-core",
+ "marlin-cook-font",
  "marlin-cook-level",
  "marlin-cook-mesh",
  "marlin-cook-shader",
  "marlin-cook-text",
  "marlin-cook-texture",
+ "marlin-font",
  "marlin-framework",
  "marlin-masset",
  "marlin-render",
@@ -578,6 +593,14 @@ dependencies = [
 [[package]]
 name = "marlin-font"
 version = "0.1.0"
+dependencies = [
+ "marlin-asset",
+ "marlin-containers",
+ "marlin-hash",
+ "marlin-math",
+ "marlin-reflect",
+ "marlin-serial",
+]
 
 [[package]]
 name = "marlin-framework"
