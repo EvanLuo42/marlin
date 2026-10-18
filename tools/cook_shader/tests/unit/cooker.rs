@@ -174,11 +174,13 @@ fn only_the_listed_sources_are_in_the_package() {
     assert!(errors[0].contains("Gone.mshader"), "{}", errors[0]);
 }
 
-#[test]
-fn packages_with_dependencies_do_not_cook_yet() {
-    let p = Project::new("dependencies");
-    lib(&p);
-    p.write("game/Game.mshader", "namespace Game;\n");
+const GAME: &str = "namespace Game;\n\
+    [Compute(64, 1, 1)] public void Fill([DispatchThreadId] uint3 id, [Push] in Lib.ClearArgs a)\n\
+    { a.Out[id.x] = a.Value + 1; }\n";
+
+/// `Game` (`game/`, object 2), using `Lib`.
+fn game(p: &Project) {
+    p.write("game/Game.mshader", GAME);
     p.write(
         "game/package.masset",
         format!(
@@ -188,9 +190,160 @@ fn packages_with_dependencies_do_not_cook_yet() {
             uuid(1)
         ),
     );
+}
+
+#[test]
+fn a_package_compiles_against_its_dependencies() {
+    let p = Project::new("dependencies");
+    lib(&p);
+    game(&p);
+    let units = p.cook(&cookers()).unwrap();
+    let game = units.iter().find(|u| u.path == "game/package").unwrap();
+    assert!(game.warnings.is_empty(), "{:?}", game.warnings);
+    let lib = library(&game.bytes, 2);
+    assert_eq!(lib.package, "Game");
+    // Its own entry points only: Lib's are in Lib's library.
+    let names: Vec<&str> = lib.entries.iter().map(|e| e.name.as_str()).collect();
+    assert_eq!(names, ["Game.Fill"]);
+    let fill = lib.entry("Game.Fill").unwrap();
+    assert_eq!(fill.code[..4], SPIRV_MAGIC);
+    let packages: Vec<(&str, &str)> = fill
+        .reflection
+        .sources
+        .iter()
+        .filter(|s| s.package != "Marlin")
+        .map(|s| (s.package.as_str(), s.path.as_str()))
+        .collect();
+    assert_eq!(
+        packages,
+        [
+            ("Lib", "shaders/Args.mshader"),
+            ("Lib", "shaders/Lib.mshader"),
+            ("Game", "game/Game.mshader")
+        ]
+    );
+    // Built from Lib, not loaded with it.
+    let view = UnitView::new(&game.bytes).unwrap();
+    assert_eq!(view.import_count(), 0);
+}
+
+#[test]
+fn dependencies_are_transitive_and_in_the_key() {
+    let p = Project::new("transitive");
+    lib(&p);
+    game(&p);
+    p.write(
+        "top/Top.mshader",
+        "namespace Top;\n[Pixel] public float4 Shade() { return float4(0, 1, 0, 1); }\n",
+    );
+    p.write(
+        "top/package.masset",
+        format!(
+            "!Version 1\nShaderPackage {{ !Uuid = \"{}\" !Name = \"Top\" \
+             Sources = [`source:top/Top.mshader`] Dependencies = [<game/package:Game #{}>] }}\n",
+            uuid(3),
+            uuid(2)
+        ),
+    );
+    let cookers = cookers();
+    let key = |p: &Project, path: &str| {
+        let db = p.db();
+        let file = db.file(path).unwrap();
+        unit_key(&db, &cookers, file, Platform::host(), Profile::Development).unwrap()
+    };
+    let units = p.cook(&cookers).unwrap();
+    let top = units.iter().find(|u| u.path == "top/package").unwrap();
+    let shade = library(&top.bytes, 3);
+    let packages: Vec<&str> = shade.entries[0]
+        .reflection
+        .sources
+        .iter()
+        .map(|s| s.package.as_str())
+        .filter(|&p| p != "Marlin")
+        .collect();
+    assert_eq!(packages, ["Lib", "Lib", "Game", "Top"], "Lib through Game");
+
+    let (top, game) = (
+        key(&p, "top/package.masset"),
+        key(&p, "game/package.masset"),
+    );
+    p.write("shaders/Args.mshader", format!("{ARGS}// edited\n"));
+    assert_ne!(key(&p, "game/package.masset"), game);
+    assert_ne!(key(&p, "top/package.masset"), top, "through Game");
+}
+
+#[test]
+fn packages_that_depend_on_each_other_are_errors() {
+    // In one file: the cooker finds the cycle.
+    let p = Project::new("package-cycle");
+    p.write("a/A.mshader", "namespace A;\n");
+    p.write("a/B.mshader", "namespace B;\n");
+    p.write(
+        "a/package.masset",
+        format!(
+            "!Version 1\n\
+             ShaderPackage {{ !Uuid = \"{}\" !Name = \"A\" Sources = [`source:a/A.mshader`] \
+             Dependencies = [<:B #{}>] }}\n\
+             ShaderPackage {{ !Uuid = \"{}\" !Name = \"B\" Sources = [`source:a/B.mshader`] \
+             Dependencies = [<:A #{}>] }}\n",
+            uuid(1),
+            uuid(2),
+            uuid(2),
+            uuid(1)
+        ),
+    );
     let errors = p.cook(&cookers()).unwrap_err();
     assert_eq!(errors.len(), 1, "{errors:?}");
-    assert!(errors[0].contains("build dependencies"), "{}", errors[0]);
+    assert!(
+        errors[0].contains("depend on each other: A → B → A"),
+        "{}",
+        errors[0]
+    );
+
+    // Across units: the key finds it.
+    let p = Project::new("unit-cycle");
+    lib(&p);
+    game(&p);
+    p.write(
+        "shaders/package.masset",
+        format!(
+            "!Version 1\nShaderPackage {{ !Uuid = \"{}\" !Name = \"Lib\" \
+             Sources = [`source:shaders/Lib.mshader`, `source:shaders/Args.mshader`] \
+             Dependencies = [<game/package:Game #{}>] }}\n",
+            uuid(1),
+            uuid(2)
+        ),
+    );
+    let errors = p.cook(&cookers()).unwrap_err();
+    assert_eq!(errors.len(), 2, "{errors:?}");
+    assert!(
+        errors.iter().all(|e| e.contains("form a cycle")),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn a_missing_dependency_is_an_error() {
+    let p = Project::new("not-a-package");
+    lib(&p);
+    game(&p);
+    // Game depends on an object nothing defines.
+    p.write(
+        "game/package.masset",
+        format!(
+            "!Version 1\nShaderPackage {{ !Uuid = \"{}\" !Name = \"Game\" \
+             Sources = [`source:game/Game.mshader`] Dependencies = [<shaders/package:Lib #{}>] }}\n",
+            uuid(2),
+            uuid(9)
+        ),
+    );
+    let errors = p.cook(&cookers()).unwrap_err();
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(
+        errors[0].contains("no indexed file defines"),
+        "{}",
+        errors[0]
+    );
 }
 
 #[test]

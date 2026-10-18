@@ -2,14 +2,15 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
+use std::sync::Mutex;
 
 use marlin_asset::Uuid;
 use marlin_asset::cooked::{platform_id, unit_id, write};
-use marlin_asset_db::{AssetDb, FileId, MASSET_EXT};
+use marlin_asset_db::{AssetDb, FileId, MASSET_EXT, ObjectId};
 use marlin_hash::xxh3_128;
 use marlin_masset::{DocumentLinks, Severity, parse};
 
-use crate::cooker::{CookContext, Cookers, SourceObject};
+use crate::cooker::{BuildInputs, CookContext, Cookers, SourceObject};
 use crate::ddc::Ddc;
 use crate::manifest::{Manifest, ManifestUnit};
 use crate::platform::{Platform, Profile};
@@ -107,13 +108,193 @@ fn unit_of(db: &AssetDb, uuid: Uuid) -> Option<u64> {
     Some(unit_id(&db.asset_path(db.object_info(object).file)))
 }
 
+/// The objects `object` is built from (0003 §4.1): the targets of its links whose type its
+/// cooker declares as build dependencies, transitively, without `object` itself.
+fn build_closure(db: &AssetDb, cookers: &Cookers, object: ObjectId) -> Vec<ObjectId> {
+    let mut seen = HashSet::from([object]);
+    let mut queue = vec![object];
+    let mut out = Vec::new();
+    while let Some(o) = queue.pop() {
+        for target in build_dependencies(db, cookers, o) {
+            if seen.insert(target) {
+                out.push(target);
+                queue.push(target);
+            }
+        }
+    }
+    out
+}
+
+/// The direct build dependencies of `object` (see [`build_closure`]).
+fn build_dependencies<'a>(
+    db: &'a AssetDb,
+    cookers: &'a Cookers,
+    object: ObjectId,
+) -> impl Iterator<Item = ObjectId> + 'a {
+    let from = db.object_info(object).type_name;
+    db.links(object).filter_map(move |link| {
+        let target = db.link_target(object, link)?;
+        cookers
+            .is_build_dependency(from, db.object_info(target).type_name)
+            .then_some(target)
+    })
+}
+
+/// Why a key could not be computed: an ordinary unit error, or a cycle of build dependencies
+/// (reported once, by the unit the cook asked for, rather than wrapped by every unit on it).
+enum KeyError {
+    Unit(CookError),
+    Cycle(Vec<FileId>),
+}
+
+/// Computes cook keys, each unit's once: a build dependency's key is part of every key of the
+/// units built from it, so a cook that asks for many keys shares them.
+struct Keys<'a> {
+    db: &'a AssetDb,
+    cookers: &'a Cookers,
+    platform: &'a Platform,
+    profile: Profile,
+    done: Mutex<HashMap<FileId, u128>>,
+}
+
+impl<'a> Keys<'a> {
+    fn new(
+        db: &'a AssetDb,
+        cookers: &'a Cookers,
+        platform: &'a Platform,
+        profile: Profile,
+    ) -> Self {
+        Self {
+            db,
+            cookers,
+            platform,
+            profile,
+            done: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn key(&self, file: FileId) -> Result<u128, CookError> {
+        self.key_on(file, &mut Vec::new()).map_err(|e| match e {
+            KeyError::Unit(e) => e,
+            KeyError::Cycle(files) => CookError::Unit {
+                path: self.db.file_info(file).path,
+                message: format!(
+                    "its build dependencies form a cycle: {}",
+                    files
+                        .iter()
+                        .map(|&f| self.db.file_info(f).path)
+                        .collect::<Vec<_>>()
+                        .join(" → ")
+                ),
+            },
+        })
+    }
+
+    /// `file`'s key, with `stack` the units whose keys wait for it.
+    fn key_on(&self, file: FileId, stack: &mut Vec<FileId>) -> Result<u128, KeyError> {
+        if let Some(&key) = self.lock().get(&file) {
+            return Ok(key);
+        }
+        if let Some(at) = stack.iter().position(|&f| f == file) {
+            let mut cycle = stack[at..].to_vec();
+            cycle.push(file);
+            return Err(KeyError::Cycle(cycle));
+        }
+        stack.push(file);
+        let key = self.compute(file, stack);
+        stack.pop();
+        let key = key?;
+        self.lock().insert(file, key);
+        Ok(key)
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<FileId, u128>> {
+        // The map only caches finished keys: a panic elsewhere leaves it valid.
+        self.done.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn compute(&self, file: FileId, stack: &mut Vec<FileId>) -> Result<u128, KeyError> {
+        let (db, cookers) = (self.db, self.cookers);
+        let info = db.file_info(file);
+        let asset_path = db.asset_path(file);
+        let fail = |message: String| {
+            KeyError::Unit(CookError::Unit {
+                path: info.path.clone(),
+                message,
+            })
+        };
+        if let Some(error) = info.parse_error {
+            return Err(fail(format!("does not parse: {error}")));
+        }
+        let mut key = KeyWriter(Vec::with_capacity(256));
+        key.bytes(b"marlin-cook");
+        key.u64(u64::from(COOK_FORMAT));
+        key.bytes(self.platform.name.as_bytes());
+        // What cookers read from the description; package codecs are not unit inputs.
+        for family in self.platform.texture_compression {
+            key.bytes(family.name().as_bytes());
+        }
+        key.bytes(self.platform.texture_layout.name().as_bytes());
+        key.u64(unit_id(&asset_path));
+        key.u128(info.hash);
+        for object in db.objects_in(file) {
+            let o = db.object_info(object);
+            let registered = cookers
+                .get(o.type_name)
+                .ok_or_else(|| fail(format!("{}: no cooker for type `{}`", o.name, o.type_name)))?;
+            key.bytes(o.type_name.as_bytes());
+            key.u64(registered.fingerprint);
+            key.u128(registered.cooker.key(self.platform, self.profile));
+            for source in db.source_links(object) {
+                key.bytes(source.path.as_bytes());
+                match db.file(source.path) {
+                    Some(f) => key.u128(db.file_info(f).hash),
+                    None => {
+                        return Err(fail(format!(
+                            "{}: source file `{}` does not exist",
+                            o.name, source.path
+                        )));
+                    }
+                }
+            }
+            for link in db.links(object) {
+                let Some(target) = db.link_target(object, link) else {
+                    continue;
+                };
+                let t = db.object_info(target);
+                key.u128(t.uuid.as_u128());
+                if cookers.is_build_dependency(o.type_name, t.type_name) {
+                    // Built from: all of the target's unit's inputs. One in this unit is in
+                    // this key already.
+                    key.bytes(b"build");
+                    if t.file != file {
+                        let dependency = self.key_on(t.file, stack).map_err(|e| match e {
+                            KeyError::Unit(e) => {
+                                fail(format!("{}: its build dependency {e}", o.name))
+                            }
+                            cycle => cycle,
+                        })?;
+                        key.u128(dependency);
+                    }
+                } else {
+                    key.u64(unit_id(&db.asset_path(t.file)));
+                }
+            }
+        }
+        Ok(xxh3_128(&key.0))
+    }
+}
+
 /// The cook key of `file`: a hash over every input of its cooked unit.
 ///
 /// Inputs: the format version; the platform's name and the texture description cookers read;
 /// the unit id; the source text; per object its type, the type's fingerprint (structure and
-/// cooker version) and its cooker's own key for the platform and profile; every source file it links to, by content; and the unit of every object it
-/// links to (which the import table records). A link's target content is not an input: links
-/// are resolved at load time.
+/// cooker version) and its cooker's own key for the platform and profile; every source file it
+/// links to, by content; the unit of every object it references (which the import table
+/// records); and the key of every unit holding a build dependency (0003 §4.1), which covers
+/// that unit's inputs and, recursively, its own build dependencies. A runtime reference's
+/// target content is not an input: links are resolved at load time. Build dependencies that
+/// form a cycle between units are an error.
 pub fn unit_key(
     db: &AssetDb,
     cookers: &Cookers,
@@ -121,55 +302,7 @@ pub fn unit_key(
     platform: &Platform,
     profile: Profile,
 ) -> Result<u128, CookError> {
-    let info = db.file_info(file);
-    let asset_path = db.asset_path(file);
-    let fail = |message: String| CookError::Unit {
-        path: info.path.clone(),
-        message,
-    };
-    if let Some(error) = info.parse_error {
-        return Err(fail(format!("does not parse: {error}")));
-    }
-    let mut key = KeyWriter(Vec::with_capacity(256));
-    key.bytes(b"marlin-cook");
-    key.u64(u64::from(COOK_FORMAT));
-    key.bytes(platform.name.as_bytes());
-    // What cookers read from the description; package codecs are not unit inputs.
-    for family in platform.texture_compression {
-        key.bytes(family.name().as_bytes());
-    }
-    key.bytes(platform.texture_layout.name().as_bytes());
-    key.u64(unit_id(&asset_path));
-    key.u128(info.hash);
-    for object in db.objects_in(file) {
-        let o = db.object_info(object);
-        let registered = cookers
-            .get(o.type_name)
-            .ok_or_else(|| fail(format!("{}: no cooker for type `{}`", o.name, o.type_name)))?;
-        key.bytes(o.type_name.as_bytes());
-        key.u64(registered.fingerprint);
-        key.u128(registered.cooker.key(platform, profile));
-        for source in db.source_links(object) {
-            key.bytes(source.path.as_bytes());
-            match db.file(source.path) {
-                Some(f) => key.u128(db.file_info(f).hash),
-                None => {
-                    return Err(fail(format!(
-                        "{}: source file `{}` does not exist",
-                        o.name, source.path
-                    )));
-                }
-            }
-        }
-        for link in db.links(object) {
-            if let Some(target) = db.link_target(object, link) {
-                let target_uuid = db.object_info(target).uuid;
-                key.u128(target_uuid.as_u128());
-                key.u64(unit_of(db, target_uuid).unwrap_or(0));
-            }
-        }
-    }
-    Ok(xxh3_128(&key.0))
+    Keys::new(db, cookers, platform, profile).key(file)
 }
 
 struct CookedObject {
@@ -262,8 +395,20 @@ pub fn cook_unit(
                 .iter()
                 .map(|d| format!("{}: {}", object.name, d.display(&text))),
         );
+        let indexed = db.object(object.uuid);
+        // Built from, not loaded with: not imports.
+        let built_from: HashSet<Uuid> = indexed
+            .map(|o| {
+                build_dependencies(db, cookers, o)
+                    .map(|t| db.object_info(t).uuid)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let closure = indexed
+            .map(|o| build_closure(db, cookers, o))
+            .unwrap_or_default();
         for link in &read.links {
-            if local.contains(&link.target) {
+            if local.contains(&link.target) || built_from.contains(&link.target) {
                 continue;
             }
             let target = unit_of(db, link.target).ok_or_else(|| {
@@ -274,20 +419,30 @@ pub fn cook_unit(
             })?;
             imports.insert(link.target, target);
         }
-        // With the hashes `unit_key` used: `read_source` checks the bytes it reads against them.
-        let sources: HashMap<String, u128> = db
-            .object(object.uuid)
-            .map(|o| {
-                db.source_links(o)
-                    .filter_map(|s| Some((s.path.to_owned(), db.file_info(db.file(s.path)?).hash)))
-                    .collect()
-            })
-            .unwrap_or_default();
+        // The object's and its build dependencies', with the hashes the keys used:
+        // `read_source` checks the bytes it reads against them.
+        let sources: HashMap<String, u128> = indexed
+            .into_iter()
+            .chain(closure.iter().copied())
+            .flat_map(|o| db.source_links(o))
+            .filter_map(|s| Some((s.path.to_owned(), db.file_info(db.file(s.path)?).hash)))
+            .collect();
         let mut ctx = CookContext {
             platform,
             profile,
             root: db.root(),
             sources: &sources,
+            build: BuildInputs {
+                db,
+                cookers,
+                // With the object itself, which a cycle in this unit leads back to.
+                allowed: indexed
+                    .into_iter()
+                    .chain(closure.iter().copied())
+                    .map(|o| db.object_info(o).uuid)
+                    .collect(),
+                read: HashMap::new(),
+            },
             bulk: Vec::new(),
             warnings: Vec::new(),
         };
@@ -341,14 +496,14 @@ pub fn cook(
     }
     .clamp(1, units.len().max(1));
     let chunk = units.len().div_ceil(threads).max(1);
-    let (platform, profile) = (options.platform, options.profile);
+    let keys = &Keys::new(db, cookers, options.platform, options.profile);
     let results: Vec<Result<UnitOutcome, CookError>> = std::thread::scope(|s| {
         let handles: Vec<_> = units
             .chunks(chunk)
             .map(|part| {
                 s.spawn(move || {
                     part.iter()
-                        .map(|&file| cook_one(db, cookers, ddc, platform, profile, file))
+                        .map(|&file| cook_one(keys, ddc, file))
                         .collect::<Vec<_>>()
                 })
             })
@@ -369,16 +524,10 @@ pub fn cook(
     report
 }
 
-fn cook_one(
-    db: &AssetDb,
-    cookers: &Cookers,
-    ddc: &dyn Ddc,
-    platform: &Platform,
-    profile: Profile,
-    file: FileId,
-) -> Result<UnitOutcome, CookError> {
+fn cook_one(keys: &Keys<'_>, ddc: &dyn Ddc, file: FileId) -> Result<UnitOutcome, CookError> {
+    let (db, cookers, platform, profile) = (keys.db, keys.cookers, keys.platform, keys.profile);
     let path = db.asset_path(file);
-    let key = unit_key(db, cookers, file, platform, profile)?;
+    let key = keys.key(file)?;
     let unit = unit_id(&path);
     if ddc.contains(key) {
         return Ok(UnitOutcome {

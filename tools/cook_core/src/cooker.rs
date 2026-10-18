@@ -2,12 +2,14 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use marlin_asset::Uuid;
 use marlin_asset::cooked::{BulkKind, Encoding};
+use marlin_asset_db::AssetDb;
 use marlin_hash::{xxh3_64, xxh3_128};
-use marlin_masset::{Schema, SchemaError};
+use marlin_masset::{DocumentLinks, Schema, SchemaError, Severity, parse};
 use marlin_reflect::{Reflect, TypeId, TypeInfo, TypeKind, Value, type_info};
 
 use crate::platform::{Platform, Profile};
@@ -18,6 +20,15 @@ pub struct SourceObject<'a> {
     pub name: &'a str,
     pub type_name: &'a str,
     pub value: &'a Value,
+}
+
+/// An object another one builds from (a build dependency, 0003 §4.1), read from its source
+/// file: what [`CookContext::dependency`] gives.
+pub struct Dependency {
+    pub uuid: Uuid,
+    pub name: String,
+    pub type_name: String,
+    pub value: Value,
 }
 
 /// What a cooker produced for one object.
@@ -33,11 +44,82 @@ pub struct CookContext<'a> {
     pub(crate) platform: &'a Platform,
     pub(crate) profile: Profile,
     pub(crate) root: &'a Path,
-    /// Source files the object links to (the only files it may read), each with the content
-    /// hash the cook key was computed from.
+    /// Source files the object or one of its build dependencies links to (the only files it
+    /// may read), each with the content hash the cook key was computed from.
     pub(crate) sources: &'a HashMap<String, u128>,
+    pub(crate) build: BuildInputs<'a>,
     pub(crate) bulk: Vec<(BulkKind, Vec<u8>)>,
     pub(crate) warnings: Vec<String>,
+}
+
+/// The objects a cook may read besides its own: its build dependencies, transitively.
+pub(crate) struct BuildInputs<'a> {
+    pub(crate) db: &'a AssetDb,
+    pub(crate) cookers: &'a Cookers,
+    pub(crate) allowed: HashSet<Uuid>,
+    pub(crate) read: HashMap<Uuid, Rc<Dependency>>,
+}
+
+impl BuildInputs<'_> {
+    fn read(&mut self, uuid: Uuid) -> Result<Rc<Dependency>, String> {
+        if let Some(d) = self.read.get(&uuid) {
+            return Ok(d.clone());
+        }
+        let db = self.db;
+        let object = db
+            .object(uuid)
+            .ok_or_else(|| format!("links to {uuid}, which no indexed file defines"))?;
+        if !self.allowed.contains(&uuid) {
+            return Err(format!(
+                "{uuid} is not a build dependency of this object (the cooker's \
+                 `build_dependency_types` decide which links are)"
+            ));
+        }
+        let file = db.object_info(object).file;
+        let info = db.file_info(file);
+        let text = std::fs::read_to_string(db.root().join(&info.path))
+            .map_err(|e| format!("reading `{}`: {e}", info.path))?;
+        // As for the unit's own text: the bytes must be the ones its key hashed.
+        if xxh3_128(text.as_bytes()) != info.hash {
+            return Err(format!(
+                "`{}` changed since it was indexed; update the index first",
+                info.path
+            ));
+        }
+        let doc = parse(&text).map_err(|e| format!("{}: {e}", info.path))?;
+        let source = doc
+            .objects
+            .iter()
+            .find(|o| o.uuid == uuid)
+            .ok_or_else(|| format!("`{}` no longer defines {uuid}", info.path))?;
+        let fail = |message: String| format!("{}: {}: {message}", info.path, source.name);
+        let asset_path = db.asset_path(file);
+        let links = DocumentLinks {
+            document: &doc,
+            path: &asset_path,
+            fallback: db,
+        };
+        let read = self
+            .cookers
+            .schema()
+            .read_object(source, &links)
+            .map_err(|d| fail(d.display(&text)))?;
+        if let Some(error) = read
+            .diagnostics
+            .iter()
+            .find(|d| d.severity == Severity::Error)
+        {
+            return Err(fail(error.display(&text)));
+        }
+        let dependency = Rc::new(Dependency {
+            uuid,
+            name: source.name.clone(),
+            type_name: source.type_name.clone(),
+            value: read.value,
+        });
+        self.read.insert(uuid, dependency.clone());
+        Ok(dependency)
+    }
 }
 
 impl<'a> CookContext<'a> {
@@ -51,9 +133,21 @@ impl<'a> CookContext<'a> {
         self.profile
     }
 
-    /// The contents of a source file the object links to (`` `source:path` ``). Files reached
-    /// any other way would be invisible to dependency tracking and the cook key ("string
-    /// magic"), so they are refused.
+    /// A build dependency of the object (0003 §4.1): an object it links to whose type is one
+    /// of the cooker's [`build_dependency_types`], or a build dependency of one of those, read
+    /// from its source. Its unit's cook key is part of this unit's, so whatever the cooker
+    /// reads of it, and of the source files it links to ([`read_source`]), is tracked. Other
+    /// objects are refused: a link to them is a runtime reference.
+    ///
+    /// [`build_dependency_types`]: Cooker::build_dependency_types
+    /// [`read_source`]: CookContext::read_source
+    pub fn dependency(&mut self, uuid: Uuid) -> Result<Rc<Dependency>, String> {
+        self.build.read(uuid)
+    }
+
+    /// The contents of a source file the object or one of its build dependencies links to
+    /// (`` `source:path` ``). Files reached any other way would be invisible to dependency
+    /// tracking and the cook key ("string magic"), so they are refused.
     ///
     /// The bytes must be the ones the cook key hashed: a file saved after it was indexed would
     /// otherwise be cooked into a result stored under the stale key, so that is refused too.
@@ -102,6 +196,15 @@ pub trait Cooker: Send + Sync {
         0
     }
 
+    /// The types (by text name, `ShaderPackage`) whose objects this type's objects are built
+    /// from (0003 §4.1). A link to one is a **build dependency**: [`CookContext::dependency`]
+    /// may read it, its unit's cook key is part of this unit's, and it is not an import (the
+    /// runtime does not load it with the unit). Links to other types are runtime references.
+    /// Decided by type, so keys come from the index alone, without parsing.
+    fn build_dependency_types(&self) -> &[&str] {
+        &[]
+    }
+
     fn cook(&self, object: &SourceObject<'_>, ctx: &mut CookContext<'_>) -> Result<Cooked, String>;
 }
 
@@ -136,6 +239,8 @@ pub(crate) struct Registered {
     pub(crate) fingerprint: u64,
     /// Objects of the type are found by `!Name` (the build's name table, 0003 §4.4).
     pub(crate) named: bool,
+    /// Linked types that are build dependencies (see [`Cooker::build_dependency_types`]).
+    pub(crate) build_types: Vec<String>,
 }
 
 /// The source types a cook understands and the cooker of each.
@@ -239,12 +344,18 @@ impl Cookers {
         self.schema.register_info(info, 0)?;
         let name = Schema::text_name(info).to_owned();
         let fingerprint = fingerprint(info) ^ u64::from(cooker.version()).rotate_left(32);
+        let build_types = cooker
+            .build_dependency_types()
+            .iter()
+            .map(|t| (*t).to_owned())
+            .collect();
         self.by_type.insert(
             name,
             Registered {
                 cooker,
                 fingerprint,
                 named,
+                build_types,
             },
         );
         Ok(())
@@ -262,6 +373,13 @@ impl Cookers {
 
     pub(crate) fn get(&self, type_name: &str) -> Option<&Registered> {
         self.by_type.get(type_name)
+    }
+
+    /// Whether a link from an object of type `from` to one of type `to` is a build dependency.
+    pub fn is_build_dependency(&self, from: &str, to: &str) -> bool {
+        self.by_type
+            .get(from)
+            .is_some_and(|r| r.build_types.iter().any(|t| t == to))
     }
 
     /// Whether objects of `type_name` are found by name (see [`Cookers::register_named`]).

@@ -61,7 +61,19 @@ fn run(s: &Session<'_>, cx: &Cx<'_>, req: &EntryRequest<'_>) -> Result<Outcome, 
         )));
     };
     let package = cx.input::<FilePackage>(&entry.file)?;
-    let closure = s.closure(package.0 as usize);
+    let mut closure = s.closure(package.0 as usize);
+    // Type arguments and static parameters may come from packages the entry's own does not see
+    // (a game's material type instantiating an engine entry point): what they see is part of
+    // the compile too.
+    let args = req.consts.iter().map(|(path, _)| *path);
+    for path in req.type_args.iter().copied().chain(args) {
+        if let Some(item) = find_item(s, cx, path)? {
+            let p = cx.input::<FilePackage>(&item.file)?;
+            closure.extend(s.closure(p.0 as usize));
+        }
+    }
+    closure.sort_unstable();
+    closure.dedup();
     let files: Vec<FileId> = closure
         .iter()
         .flat_map(|&p| s.packages[p].files.iter().copied())

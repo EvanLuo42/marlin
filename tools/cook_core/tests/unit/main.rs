@@ -5,6 +5,7 @@
 #[path = "../support/mod.rs"]
 mod support;
 
+mod build;
 mod cook;
 mod ddc;
 mod package;

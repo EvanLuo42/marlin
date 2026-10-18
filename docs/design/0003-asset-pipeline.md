@@ -25,7 +25,7 @@
 | 压缩 | 每个 chunk 可选 codec；zstd、LZ4、GDeflate **全部自研**，先把 API 定死并实现功能，之后再优化；主机硬件解压走 ext |
 | 包与挂载 | 分层挂载并按优先级覆盖（base < patch < DLC < dev）；包布局对平台的二进制差分补丁友好 |
 | 主循环 | 模拟与渲染重叠：渲染数据抽取成快照，两侧都以 job 图运行 |
-| Shader | `ShaderPackage`（`!Name` 即包名）cook 成整包的库，含全部 public 入口；运行时按包名查名字表，再按入口全名取；引擎 shader 在 `content/engine`，独立的引擎包（§4.4，2026-10-18） |
+| Shader | `ShaderPackage`（`!Name` 即包名）cook 成整包的库，含全部 public 入口；运行时按包名查名字表，再按入口全名取；引擎 shader 在 `content/engine`，独立的引擎包；包依赖和 `Shader` 变体都是构建依赖（§4.1、§4.4，2026-10-18） |
 | 世界数据 | 用同一种文本格式：entity 是对象，component 是嵌套块，prefab、关卡、流式 cell 都通过链接组织 |
 | 第三方 | 核心算法自研：压缩、BCn 编码、网格优化、meshlet；外部格式的解析用成熟 crate（png/jpeg/exr/glTF） |
 | 首批导入格式 | glTF 2.0，PNG/TGA/JPEG，EXR/HDR |
@@ -141,6 +141,24 @@ Texture
   - **构建依赖**：会影响 cook 结果。
   - 由 cooker 插件声明属于哪一种。
 - **cook 键** = H(各类型 cooker 的版本号, 目标平台, 平台 cook 设置, 单元源文本哈希, 文件链接内容哈希, 各构建依赖的 cook 键)，128 位。同样的输入必须产出逐字节相同的结果，测试里会校验确定性。
+- **构建依赖的做法**（2026-10-18，前三项由用户在多选题里选定，都是推荐项；用户又说其余各项都按 3A 引擎的思路定）：
+  - **按目标类型声明**：`Cooker::build_dependency_types() -> &[&str]` 列出类型的文本名。本类型对象链接到这些类型的对象时，这条链接就是构建依赖，否则是运行时引用。
+    - 只看索引就能判断，所以算键不用解析文本。cookd 每 250 ms 重算一次键，这一点很重要。
+    - 没有选按对象由 cooker 判断（`build_dependencies(obj)`，算键要解析每个单元），也没有选按字段标注（要改索引格式）。
+  - **cooker 读源对象，键里放依赖单元的键**：
+    - `CookContext::dependency(uuid)` 从源文件解析出依赖对象的 reflect 值（`Dependency { uuid, name, type_name, value }`），同一次 cook 里有缓存。
+    - `read_source` 能读依赖对象声明的 `source:` 文件。
+    - 能读的是传递闭包：依赖的依赖也可以读，因为它们的键已经递归地包含在内。闭包外的对象一律拒绝。
+    - 依赖不必先 cook，单元照旧以任意顺序并行 cook。
+    - 没有选读 cooked 结果：那样要按拓扑序 cook，shader 包的库里还得为下游带上源码。
+  - **键**：
+    - 构建依赖在别的单元里时，键里放目标 UUID 和那个单元的 cook 键，它递归地覆盖了那个单元的全部输入；在同一个单元里时，本单元的键已经包含它。
+    - 运行时引用照旧放目标 UUID 和所在单元。没有构建依赖的单元，键与以前逐字节相同，所以 `COOK_FORMAT` 不变。
+    - 一次 `cook` 里各单元的键只算一次，多个线程共用（`Keys`），所以共同的依赖不会重复计算。
+    - 单元之间的构建依赖成环时报错（"its build dependencies form a cycle: a → b → a"），环上和指向环的单元都失败。
+    - 依赖算不出键时，依赖它的单元也失败，错误里带上依赖的错误。
+    - cookd 拿键判断变化，所以依赖变了，依赖它的单元也会推送失效。
+  - **构建依赖不进 import 表**：运行时不随单元加载它。加载一个 `Shader` 变体不会带上整个包的库，加载 Game 包也不会带上 Lib 包。
 
 ### 4.2 cook 插件
 
@@ -156,8 +174,12 @@ pub trait Cooker {
 - `cook_texture`：解码源文件、生成 mip、编码 BC1/3/4/5/6H/7，主机上还要做 swizzle（`platforms/<p>/cook/`）。
 - `cook_mesh`：处理 glTF，包括顶点缓存优化、overdraw 优化、LOD、meshlet，以及骨骼、蒙皮与动画。
 - 没有专用 cooker 的类型走通用 cooker，把 reflect 值写成 cooked 二进制。
-- 实际的 trait（`marlin_cook_core::Cooker`）只有 `version`、`key(platform, profile) -> u128`（cooker 自己的额外输入，例如编译器指纹）和 `cook`；`build_dependencies` 还没做。
-- `cook_shader`：把 shader 包编译成库，见 §4.4。
+- 实际的 trait（`marlin_cook_core::Cooker`）有四个方法：
+  - `version`；
+  - `key(platform, profile) -> u128`：cooker 自己的额外输入，例如编译器指纹；
+  - `build_dependency_types`：见 §4.1；
+  - `cook`。
+- `cook_shader`：把 shader 包编译成库，把 `Shader` 变体编译成单入口的库，见 §4.4。
 
 ### 4.3 cooked 单元格式
 
@@ -204,7 +226,26 @@ bulk        GPU 数据（顶点、纹理 mip），对齐到 4 KiB，直接上传
   - `content/engine/` 是独立的资产根，单独 cook 和打包，`samples/basic/boot.toml` 用新 cvar `content.engine` 先挂上它，游戏包挂在它上面。
   - cookd 只服务游戏内容，引擎包总是从包里来。
   - 用户对这一项没有偏好，按推荐做。
-- **这一步的范围**：只实现 `ShaderPackage` 到库。`Dependencies` 非空时报错（"需要构建依赖"），`Shader` 入口对象也还没实现，两者都要等 cook_core 有了构建依赖。
+- **包依赖**（2026-10-18）：
+  - `ShaderPackage.Dependencies` 和 `Shader.Package` 都是构建依赖（§4.1），两个 cooker 的 `build_dependency_types` 都是 `ShaderPackage`。
+  - cooker 经 `CookContext::dependency` 沿 `Dependencies` 递归读出整个闭包，按依赖在前的顺序加进 session，每个包都依赖核心库和它直接列出的包。
+  - 包的库里只有它自己的入口，依赖包的入口在依赖包自己的库里。
+  - 以下情况报错：
+    - 同一单元里的包互相依赖（"the packages depend on each other: A → B → A"）；跨单元的环由键发现（§4.1）。
+    - 闭包里有两个包同名。
+    - 依赖链接为空，或者指向的不是 `ShaderPackage`。
+- **`Shader` 变体**（2026-10-18，用户选定）：
+  - 写法：
+    - `Shader { Package = <链接>, Entry = "全名", TypeArgs = ["类型全名"], Consts = [("静态参数全名", UInt(3))] }`。
+    - `Consts` 是元组列表，值就是反射里的 `ConstValue` 枚举（`Bool`、`Int`、`UInt`、`Float`、`List`、`Struct`）。类型不对由编译器报 E1503。
+  - **`Package` 是编译上下文**：
+    - session 里是这个包和它的依赖闭包。
+    - `Entry` 和 `TypeArgs` 都写全名，可以在闭包里任何一个包中，例如 Package = Game，Entry = `Marlin.Material.ResolvePixel`，TypeArgs = [`Game.Rock`]。
+    - 编译器把类型实参和静态参数所在包的闭包并进这次编译（诊断和反射的 `sources` 都算上它们，`marlin-shaderc` 的 `compile`），所以引擎入口用 Game 的类型实例化时，Game 的文件也是输入。
+  - **cook 成单入口的 `ShaderLibrary`**：`Package` 是上下文包的名字，`Entries` 只有一项，名字是 `Entry`。运行时只有一种类型，查找和校验用同一套代码。
+  - `Shader` 用 `register` 登记，不进名字表：材质靠链接找到它。
+  - 键与包的 cooker 相同：target、profile 和编译器指纹，再加上包闭包里各单元的键。
+- **还没做**：同一个包的大量变体各建一个 session，前端分析不共享（见待做）。
 
 ## 5. 缓存
 
@@ -430,12 +471,26 @@ bulk        GPU 数据（顶点、纹理 mip），对齐到 4 KiB，直接上传
     - cookd 推送名字表，改名后跟着更新；
     - framework 单元测试：按名字加载，以及缺包、缺入口、stage 或 push 不对时的报错；
     - 端到端 GPU 测试改用 cooked 的引擎包，golden 不变。
+- **构建依赖、包依赖与 `Shader` 变体完成**（§4.1、§4.4，2026-10-18）：
+  - cook_core：
+    - `Cooker::build_dependency_types`、`Cookers::is_build_dependency`；
+    - `CookContext::dependency` 与 `Dependency`；`read_source` 放开到依赖闭包声明的文件；
+    - 键递归包含依赖单元的键，一次 cook 共用（`Keys`），单元间成环报错；
+    - 构建依赖不进 import 表。
+  - `marlin_shader::asset::Shader`（源类型）；`tools/cook_shader` 的 `ShaderCooker`，`engine_cookers` 已登记。`ShaderPackageCooker` 支持 `Dependencies`。
+  - `marlin-shaderc`：一次编译的包集合并上类型实参和静态参数所在包的闭包。之前用 Game 的类型实例化 Kit 的入口时，Game 的文件不进诊断，也不进 `used_sources`。
+  - 测试：
+    - cook_core：读传递依赖及其源文件、只能读构建依赖、依赖变化改变下游的键而运行时引用不改变、全量 cook 的键与逐个算的相同、单元间的环、坏依赖使下游失败、悬空链接；
+    - cook_shader：包按依赖编译（库里只有自己的入口，不 import 依赖）、传递依赖进键、同单元和跨单元的环、缺失的依赖；`Shader` 的单入口库（类型实参、静态参数、不 import 包）、Package 作为上下文、键跟随包闭包和 profile、错误（缺 Package、缺 Entry、不存在的入口、参数类型不对）；
+    - shaderc：类型实参所在的包进入编译（`used_sources`、反射和诊断）。
 - **待做**：
   - Linux 和 macOS 的变更源（fanotify、FSEvents）。
   - 共享缓存中的 extract；store 的 LRU 与容量上限；store 的鉴权与 TLS（目前只适合可信局域网）。
   - shader：
     - 按入口、按实际用到的源文件缓存（0005 §8 的 manifest 模式，cooker 需要能访问 DDC）；现在改一个文件，整个包都重编；
-    - 构建依赖，之后才能做 `Dependencies` 和 `Shader` 入口对象（材质变体）；
+    - 变体共享前端：同一个包闭包的大量 `Shader` 变体现在各建一个 session，各做一遍前端分析。3A 规模（成千上万个材质变体）要在 cooker 里按闭包的键缓存长期存活的 session，cookd 也保留它（0005 §5 的 Session 本来就是为长期存活设计的）；
+    - 材质：材质类型以 `Shader` 为构建依赖，或者由材质 cooker 直接生成变体；
+    - `marlin-cook validate` 在索引上就报告构建依赖的环（现在 cook 时才报）；
     - 一个平台多档 target（按设备能力选库）；
     - 库热重载后重建 pipeline；
     - PSO 缓存与预编译；

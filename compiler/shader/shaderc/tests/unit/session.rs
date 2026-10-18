@@ -549,3 +549,58 @@ fn stage_io_takes_locations_in_declaration_order() {
         ]
     );
 }
+
+#[test]
+fn type_arguments_bring_their_packages_into_the_compile() {
+    let (sources, targets) = (Memory::new(), default_targets());
+    sources.set(
+        "Kit",
+        "Kit.mshader",
+        "namespace Kit;\n\
+         public interface IOp { static abstract uint Apply(uint x); }\n\
+         public struct Args { public Buffer<uint> Out; }\n\
+         [Compute(8, 1, 1)]\n\
+         public void Map<T>([DispatchThreadId] uint3 id, [Push] in Args a) where T : IOp\n\
+         { a.Out[id.x] = T.Apply(id.x); }\n",
+    );
+    let tripler = "namespace Mod;\n\
+         public struct Tripler : Kit.IOp { public static uint Apply(uint x) => x * 3; }\n";
+    sources.set("Mod", "Mod.mshader", tripler);
+    let mut s = Session::new(SessionDesc {
+        sources: &sources,
+        targets: &targets,
+    });
+    for (name, dependencies) in [("Kit", &["Marlin"][..]), ("Mod", &["Marlin", "Kit"][..])] {
+        s.add_package(&PackageDesc { name, dependencies }).unwrap();
+    }
+    let request = EntryRequest {
+        type_args: &["Mod.Tripler"],
+        ..request("Kit.Map", &[])
+    };
+    let out = s
+        .compile(&request)
+        .unwrap_or_else(|e| panic!("{}", errors(&s, &e)));
+    // Kit does not depend on Mod, but the type argument's package is an input.
+    let packages: Vec<&str> = out
+        .used_sources
+        .iter()
+        .map(|p| p.package())
+        .filter(|&p| p != "Marlin")
+        .collect();
+    assert_eq!(packages, ["Kit", "Mod"]);
+    assert!(
+        out.reflection.sources.iter().any(|s| s.package == "Mod"),
+        "the reflection lists it"
+    );
+
+    // And its front-end errors are the compile's.
+    sources.set(
+        "Mod",
+        "Mod.mshader",
+        &format!("{tripler}public struct Bad {{ Nope X; }}\n"),
+    );
+    s.invalidate(&SourcePath::new("Mod", "Mod.mshader"))
+        .unwrap();
+    let e = s.compile(&request).unwrap_err();
+    assert!(errors(&s, &e).contains("Nope"), "{}", errors(&s, &e));
+}

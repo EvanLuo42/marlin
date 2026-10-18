@@ -10,12 +10,12 @@ use marlin_cook_audio as _;
 use marlin_cook_core::{Cookers, Ddc, LayeredDdc, LocalDdc};
 use marlin_cook_level as _;
 use marlin_cook_mesh::{AnimationCooker, MeshCooker, SkeletonCooker};
-use marlin_cook_shader::ShaderPackageCooker;
+use marlin_cook_shader::{ShaderCooker, ShaderPackageCooker};
 use marlin_cook_text::{StringTable, StringTableCooker};
 use marlin_cook_texture::TextureCooker;
 use marlin_framework::Level;
 use marlin_render::asset::{Mesh, Texture};
-use marlin_shader::asset::ShaderPackage;
+use marlin_shader::asset::{Shader, ShaderPackage};
 use marlin_store::RemoteDdc;
 
 /// Every asset type the engine knows, with its cooker.
@@ -28,6 +28,7 @@ pub fn engine_cookers() -> Cookers {
         .and_then(|()| cookers.register::<AnimationClip>(AnimationCooker))
         .and_then(|()| cookers.register::<StringTable>(StringTableCooker))
         .and_then(|()| cookers.register_named::<ShaderPackage>(ShaderPackageCooker::new()))
+        .and_then(|()| cookers.register::<Shader>(ShaderCooker::new()))
         .and_then(|()| cookers.register_generic::<Level>());
     if let Err(e) = registered {
         // Two engine types with one text name: a programming error, caught by any run.
