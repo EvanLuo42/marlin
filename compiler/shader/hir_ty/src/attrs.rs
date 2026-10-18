@@ -1,8 +1,8 @@
 //! Attributes the compiler gives meaning to: `[Flags]` (0004 §3.5), stages (§11.1), system
-//! values and interpolation modes (§11.2), `[Push]` (§11.3), `[GroupShared]` (§12.1) and
-//! `[Requires]` (§12.3). Like `[Builtin]`, they are structs of the core library's `Marlin`
-//! namespace and are recognized by declaration, not by spelling: a user's own
-//! `FlagsAttribute` is an ordinary attribute.
+//! values and interpolation modes (§11.2), `[Push]` (§11.3), `[GroupShared]` (§12.1),
+//! `[Requires]` (§12.3), `[Uniform]` (§10.3) and `[Export]` (§13.4). Like `[Builtin]`, they are
+//! structs of the core library's `Marlin` namespace and are recognized by declaration, not by
+//! spelling: a user's own `FlagsAttribute` is an ordinary attribute.
 
 use std::sync::Arc;
 
@@ -52,6 +52,9 @@ pub enum KnownAttr {
     Requires,
     /// `[Uniform]` on a local: its values are the same in every lane (0004 §10.3).
     Uniform,
+    /// `[Export]` on a local `const` of an entry point: its value goes into the reflection
+    /// (0004 §13.4).
+    Export,
 }
 
 impl KnownAttr {
@@ -69,6 +72,7 @@ impl KnownAttr {
             "GroupShared" => KnownAttr::GroupShared,
             "Requires" => KnownAttr::Requires,
             "Uniform" => KnownAttr::Uniform,
+            "Export" => KnownAttr::Export,
             "Flat" | "NoPerspective" | "Centroid" | "Sample" => KnownAttr::Interpolation,
             _ => KnownAttr::SystemValue(match name {
                 "DispatchThreadId" => DispatchThreadId,

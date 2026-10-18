@@ -11,7 +11,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use marlin_front_hir_def::store::{BindingId, BindingKind, Expr, LambdaBody, RefKind, Stmt};
+use marlin_front_hir_def::store::{
+    BindingId, BindingKind, Expr, ExprId, LambdaBody, RefKind, Stmt,
+};
 use marlin_front_hir_def::{Body, BodyOwner, BodyPart, BodyQuery, ItemKind, ItemTreeQuery};
 use marlin_shaderc_hir_ty::{
     InferLoc, InferQuery, InferenceResult, ItemTypesQuery, Subst, Ty, self_ty,
@@ -165,6 +167,13 @@ fn inner_signature(l: &mut Lowering<'_, '_>, instance: &Instance, inner: &Inner)
                 "a method group has no function of its own",
             ));
         }
+        Inner::Const(b) => (
+            Vec::new(),
+            Some(concrete(
+                l,
+                &infer.binding_types.get(*b).cloned().unwrap_or(Ty::Error),
+            )),
+        ),
     };
     let mut sig = Signature {
         this: None,
@@ -207,7 +216,11 @@ fn declare_signature(l: &mut Lowering<'_, '_>, instance: &Instance) -> R<FuncId>
     let sig = signature(l, instance)?;
     let mut params = Vec::new();
     // A lambda or local function takes its environment first.
-    if instance.inner.is_some() {
+    if instance
+        .inner
+        .as_ref()
+        .is_some_and(|i| !matches!(i, Inner::Const(_)))
+    {
         params.push(l.env_type(instance)?);
     }
     if let Some(this) = &sig.this {
@@ -470,6 +483,10 @@ impl FnCx<'_, '_, '_> {
 
     /// A lambda or local function: its environment, then its parameters.
     fn lower_inner(&mut self, sig: &Signature, inner: &Inner) -> R<()> {
+        if let Inner::Const(b) = inner {
+            let init = local_initializer(&self.body, *b);
+            return self.lower_root(init.map(LambdaBody::Expr));
+        }
         let params: Vec<Value> = self.f.params().to_vec();
         let env = params[0];
         self.f.set_name(env, Some("env"));
@@ -513,7 +530,7 @@ impl FnCx<'_, '_, '_> {
                 ),
                 _ => (Vec::new(), None),
             },
-            Inner::Method { .. } => (Vec::new(), None),
+            Inner::Method { .. } | Inner::Const(_) => (Vec::new(), None),
         };
         for (i, (b, _)) in bindings.into_iter().enumerate() {
             let Some(&v) = params.get(1 + i) else {
@@ -822,4 +839,15 @@ impl FnCx<'_, '_, '_> {
         let c = self.l.val_const(&val, result)?;
         Ok(Some(self.f.const_value(c, result)))
     }
+}
+
+/// The initializer of the local `b`.
+pub(crate) fn local_initializer(body: &Body, b: BindingId) -> Option<ExprId> {
+    body.store.stmts.iter().find_map(|(_, s)| match s {
+        Stmt::Local { declarators, .. } => declarators
+            .iter()
+            .find(|(d, _)| *d == b)
+            .and_then(|(_, init)| *init),
+        _ => None,
+    })
 }

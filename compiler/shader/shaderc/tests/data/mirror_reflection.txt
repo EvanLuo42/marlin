@@ -1,0 +1,118 @@
+ShaderReflection {
+    entry: EntryInfo {
+        name: "Game.Mirror",
+        stage: Compute,
+        group_size: [
+            64,
+            1,
+            1,
+        ],
+    },
+    push: Some(
+        StructLayout {
+            name: "Game.Args",
+            size: 20,
+            fields: [
+                FieldLayout {
+                    name: "Out",
+                    ty: "Buffer<uint>",
+                    offset: 0,
+                    size: 4,
+                    attributes: [],
+                },
+                FieldLayout {
+                    name: "Scale",
+                    ty: "uint",
+                    offset: 4,
+                    size: 4,
+                    attributes: [
+                        Attribute {
+                            name: "Range",
+                            args: [
+                                "0",
+                                "2",
+                            ],
+                        },
+                    ],
+                },
+                FieldLayout {
+                    name: "Bias",
+                    ty: "float3",
+                    offset: 8,
+                    size: 12,
+                    attributes: [],
+                },
+            ],
+        },
+    ),
+    static_params: [
+        NamedValue {
+            name: "Game.Rock.Factor",
+            ty: "uint",
+            value: UInt(
+                3,
+            ),
+        },
+        NamedValue {
+            name: "Game.Rock.UseMoss",
+            ty: "bool",
+            value: Bool(
+                false,
+            ),
+        },
+    ],
+    exports: [
+        NamedValue {
+            name: "Shape",
+            ty: "Topology",
+            value: Struct(
+                [
+                    FieldValue {
+                        name: "Count",
+                        value: UInt(
+                            6,
+                        ),
+                    },
+                    FieldValue {
+                        name: "Features",
+                        value: UInt(
+                            3,
+                        ),
+                    },
+                ],
+            ),
+        },
+        NamedValue {
+            name: "Offset",
+            ty: "int",
+            value: Int(
+                -4,
+            ),
+        },
+    ],
+    capabilities: [],
+    target_constants: [],
+    sources: [
+        SourceHash {
+            package: "Marlin",
+            path: "Core.mshader",
+            hash: 0,
+        },
+        SourceHash {
+            package: "Game",
+            path: "Main.mshader",
+            hash: 0,
+        },
+        SourceHash {
+            package: "Game",
+            path: "Wide.mshader",
+            hash: 0,
+        },
+    ],
+    stats: Stats {
+        instructions: 0,
+        groupshared_bytes: 256,
+        code_bytes: 0,
+    },
+    extensions: [],
+}

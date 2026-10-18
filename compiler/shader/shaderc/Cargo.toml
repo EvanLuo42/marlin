@@ -1,0 +1,31 @@
+[package]
+name = "marlin-shaderc"
+description = "Marlin shader compiler: the facade. A long-lived incremental Session that compiles one entry point per request for a named target, with its reflection and diagnostics."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+marlin-front-hir-def.workspace = true
+marlin-hash.workspace = true
+marlin-lang-diag.workspace = true
+marlin-lang-query.workspace = true
+marlin-lang-span.workspace = true
+marlin-shader.workspace = true
+marlin-shaderc-backend-spirv.workspace = true
+marlin-shaderc-hir-ty.workspace = true
+marlin-shaderc-ir.workspace = true
+marlin-shaderc-lower.workspace = true
+marlin-shaderc-opt.workspace = true
+marlin-shaderc-reflect.workspace = true
+marlin-shaderc-target.workspace = true
+
+[build-dependencies]
+marlin-hash.workspace = true
+
+[dev-dependencies]
+marlin-shader.workspace = true
+marlin-test-support.workspace = true
+
+[lints]
+workspace = true

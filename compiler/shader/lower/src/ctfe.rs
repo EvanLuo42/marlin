@@ -2,18 +2,23 @@
 //! field default is lowered into a scratch module and run in the IR interpreter. Enum members
 //! without an initializer count up from the previous one (from 0). Values are kept apart from
 //! any module (as interpreter values with their front-end type) and made into constants of the
-//! module that uses them.
+//! module that uses them. A local `const` is evaluated the same way, as a function of its
+//! body (with the body's generic arguments) that only computes the initializer.
 
 use std::collections::HashMap;
 
-use marlin_front_hir_def::{ItemId, ItemKind, ItemTreeQuery, body_owners, item_path};
-use marlin_shaderc_hir_ty::{ItemTypesQuery, Ty};
+use marlin_front_hir_def::store::BindingId;
+use marlin_front_hir_def::{
+    BodyOwner, BodyQuery, ItemId, ItemKind, ItemTreeQuery, body_owners, item_path,
+};
+use marlin_shaderc_hir_ty::{InferQuery, ItemTypesQuery, Subst, Ty};
 use marlin_shaderc_ir::{
     Const, ConstValue as IrConst, Interpreter, Type, TypeData, Val, verify_module,
 };
 
+use crate::closures::Inner;
 use crate::types::Num;
-use crate::{LowerError, Lowering, R};
+use crate::{Instance, LowerError, Lowering, R};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ConstValue {
@@ -93,6 +98,9 @@ impl Lowering<'_, '_> {
             names: HashMap::new(),
             consts: self.consts.clone(),
             evaluating: self.evaluating.iter().copied().chain([item]).collect(),
+            local_consts: self.local_consts.clone(),
+            exports: Vec::new(),
+            evaluating_locals: self.evaluating_locals.clone(),
             envs: HashMap::new(),
             statics: self.statics.clone(),
             shared: HashMap::new(),
@@ -256,5 +264,85 @@ impl Lowering<'_, '_> {
                 Val::Agg(items.iter().map(|&i| self.const_val(i)).collect::<R<_>>()?)
             }
         })
+    }
+}
+
+impl Lowering<'_, '_> {
+    /// The compile-time value of the local `const` `b` of `owner`'s body, with the generic
+    /// arguments `subst`: its initializer lowered into a module of its own and run.
+    pub(crate) fn local_const(
+        &mut self,
+        owner: BodyOwner,
+        subst: &Subst,
+        b: BindingId,
+    ) -> R<ConstValue> {
+        let key = (owner, subst.clone(), b);
+        if let Some(v) = self.local_consts.get(&key) {
+            return Ok(v.clone());
+        }
+        let body = self.cx.get::<BodyQuery>(&owner)?;
+        let name = body.store.bindings[b].name.to_string();
+        if self.evaluating_locals.contains(&key) {
+            return Err(LowerError::new(
+                "E1306",
+                format!("the value of `{name}` depends on itself"),
+            ));
+        }
+        let infer = self.cx.get::<InferQuery>(&owner)?;
+        let ty = self
+            .resolve_assoc(&subst.ty(&infer.binding_types.get(b).cloned().unwrap_or(Ty::Error)));
+        let mut scratch = Lowering {
+            cx: self.cx,
+            builtins: self.builtins.clone(),
+            module: marlin_shaderc_ir::Module::new(),
+            types: HashMap::new(),
+            structs: HashMap::new(),
+            funcs: HashMap::new(),
+            queue: Vec::new(),
+            names: HashMap::new(),
+            consts: self.consts.clone(),
+            evaluating: self.evaluating.clone(),
+            local_consts: self.local_consts.clone(),
+            exports: Vec::new(),
+            evaluating_locals: self
+                .evaluating_locals
+                .iter()
+                .cloned()
+                .chain([key.clone()])
+                .collect(),
+            envs: HashMap::new(),
+            statics: self.statics.clone(),
+            shared: HashMap::new(),
+            ctfe: true,
+            locs: HashMap::new(),
+        };
+        let f = scratch.instance(Instance {
+            owner,
+            subst: subst.clone(),
+            closures: Vec::new(),
+            inner: Some(Inner::Const(b)),
+        })?;
+        scratch.run()?;
+        if let Some(e) = verify_module(&scratch.module).first() {
+            return Err(LowerError::new(
+                "E1304",
+                format!("evaluating `{name}` lowered to bad IR: {e}"),
+            ));
+        }
+        let mut results = Interpreter::new(&scratch.module)
+            .call(f, &[])
+            .map_err(|e| LowerError::new("E1306", format!("evaluating `{name}`: {e}")))?;
+        for (k, v) in scratch.consts {
+            self.consts.entry(k).or_insert(v);
+        }
+        for (k, v) in scratch.local_consts {
+            self.local_consts.entry(k).or_insert(v);
+        }
+        let val = results
+            .pop()
+            .ok_or_else(|| LowerError::new("E1306", "an initializer without a value"))?;
+        let v = ConstValue { val, ty };
+        self.local_consts.insert(key, v.clone());
+        Ok(v)
     }
 }

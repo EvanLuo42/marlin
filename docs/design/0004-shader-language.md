@@ -854,6 +854,8 @@ public void ResolvePixel<M>(...) where M : IMaterial
 - 用 `const` 修饰的函数可以在编译期求值。它只能调用其他 `const` 函数，不能访问资源、groupshared、系统值和 `Debug.*`。C# 没有这个特性，它借自 C++ 的 constexpr。
 - `const` 字段和局部 `const` 的初始化表达式可以调用 `const` 函数。
 - 标了 `[Export]` 的 `const`，求出的值会写进反射（0005 §6.2），用来导出 Substrate 拓扑这类"库自己定义的编译期信息"。
+- `[Export]` 只能标在入口函数体里的局部 `const` 上。反射里的名字就是局部常量的名字，一个入口里不能重名；标在别处是错误。库要导出信息，就让入口模板调用 `const` 函数（2026-10-17 定）。
+- 局部 `const` 的值在编译期求出，用到它的地方都是常量。
 
 ## 14. Attribute 与反射
 

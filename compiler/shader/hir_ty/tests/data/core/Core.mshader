@@ -85,6 +85,7 @@ public struct VertexAttribute : IAttribute { }
 public struct PixelAttribute : IAttribute { }
 public struct PushAttribute : IAttribute { }
 public struct GroupSharedAttribute : IAttribute { }
+public struct ExportAttribute : IAttribute { }
 public struct DispatchThreadIdAttribute : IAttribute { }
 public struct GroupIndexAttribute : IAttribute { }
 public struct VertexIdAttribute : IAttribute { }

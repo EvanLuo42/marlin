@@ -1,4 +1,4 @@
-//! Read-only values (0004 §5) and exhaustive `switch` (§9.1).
+//! Read-only values (0004 §5), exhaustive `switch` (§9.1) and where `[Export]` goes (§13.4).
 //!
 //! A value is read-only when it is an `in` parameter, a constant, a `foreach` variable, a
 //! `readonly` field or anything inside one, or `this` in a `readonly` member or a member of a
@@ -8,12 +8,15 @@
 
 use std::collections::HashSet;
 
-use marlin_front_hir_def::store::{BindingId, BindingKind, Expr, ExprId, RefKind, Stmt, UnaryOp};
-use marlin_front_hir_def::{ItemId, ItemKind, ItemTreeQuery};
+use marlin_front_hir_def::store::{
+    BindingId, BindingKind, Expr, ExprId, LambdaBody, Node, RefKind, Stmt, UnaryOp,
+};
+use marlin_front_hir_def::{BodyPart, ItemId, ItemKind, ItemTreeQuery};
 use marlin_lang_query::Cancelled;
 
 use super::types::type_problems;
 use super::{Checker, Coverage};
+use crate::attrs::{ItemAttributesQuery, KnownAttr, body_attributes};
 use crate::infer::{Callee, InferLoc, Root, Step, ValuePath};
 use crate::item::ItemTypesQuery;
 use crate::ty::Ty;
@@ -131,6 +134,88 @@ impl<'c, 'a, 'b> Rules<'c, 'a, 'b> {
                     .map(|(p, _)| *p)
                     .collect();
                 self.exhaustive(*scrutinee, &unguarded, false)?;
+            }
+        }
+        self.exports()?;
+        Ok(())
+    }
+
+    // ---- exports ----
+
+    /// `[Export]` only on `const` locals of an entry point's own body, with distinct names
+    /// (0004 §13.4).
+    fn exports(&mut self) -> Result<(), Cancelled> {
+        let body = self.checker.body.clone();
+        let cx = self.checker.cx;
+        let owner = self.checker.owner;
+        let is_entry = owner.part == BodyPart::Main
+            && cx
+                .get::<ItemAttributesQuery>(&owner.item)?
+                .item
+                .iter()
+                .any(|a| matches!(a.known, Some(KnownAttr::Stage(_))));
+        // The statements of the body itself, outside its lambdas and local functions.
+        let mut own = HashSet::new();
+        let mut stack: Vec<Node> = body
+            .root
+            .map(|r| match r {
+                LambdaBody::Expr(e) => Node::Expr(e),
+                LambdaBody::Block(s) => Node::Stmt(s),
+            })
+            .into_iter()
+            .collect();
+        while let Some(n) = stack.pop() {
+            match n {
+                Node::Expr(e) if matches!(body.store.exprs[e], Expr::Lambda { .. }) => continue,
+                Node::Stmt(s) => {
+                    if matches!(body.store.stmts[s], Stmt::LocalFunction(_)) {
+                        continue;
+                    }
+                    own.insert(s);
+                }
+                _ => {}
+            }
+            stack.extend(body.store.children(n));
+        }
+        let mut names = HashSet::new();
+        for (s, stmt) in body.store.stmts.iter() {
+            let Stmt::Local {
+                attributes,
+                is_const,
+                declarators,
+                ..
+            } = stmt
+            else {
+                continue;
+            };
+            if attributes.is_empty()
+                || !body_attributes(cx, owner.item, attributes)?.contains(&KnownAttr::Export)
+            {
+                continue;
+            }
+            if !is_const {
+                self.checker.report(
+                    InferLoc::Stmt(s),
+                    "E1134",
+                    "`[Export]` goes on a `const` local",
+                );
+            } else if !is_entry || !own.contains(&s) {
+                self.checker.report(
+                    InferLoc::Stmt(s),
+                    "E1134",
+                    "`[Export]` constants are declared in an entry point's own body",
+                );
+            } else {
+                for (b, _) in declarators {
+                    let name = body.store.bindings[*b].name.clone();
+                    if !names.insert(name.clone()) {
+                        self.checker.report(
+                            InferLoc::Binding(*b),
+                            "E1135",
+                            format!("two `[Export]` constants are named `{name}`"),
+                        );
+                    }
+                }
             }
         }
         Ok(())

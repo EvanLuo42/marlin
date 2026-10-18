@@ -891,6 +891,31 @@ version = "0.1.0"
 [[package]]
 name = "marlin-shader"
 version = "0.1.0"
+dependencies = [
+ "marlin-reflect",
+ "marlin-serial",
+ "marlin-test-support",
+]
+
+[[package]]
+name = "marlin-shaderc"
+version = "0.1.0"
+dependencies = [
+ "marlin-front-hir-def",
+ "marlin-hash",
+ "marlin-lang-diag",
+ "marlin-lang-query",
+ "marlin-lang-span",
+ "marlin-shader",
+ "marlin-shaderc-backend-spirv",
+ "marlin-shaderc-hir-ty",
+ "marlin-shaderc-ir",
+ "marlin-shaderc-lower",
+ "marlin-shaderc-opt",
+ "marlin-shaderc-reflect",
+ "marlin-shaderc-target",
+ "marlin-test-support",
+]
 
 [[package]]
 name = "marlin-shaderc-backend-spirv"
@@ -951,6 +976,15 @@ dependencies = [
  "marlin-math",
  "marlin-shaderc-ir",
  "marlin-shaderc-testgen",
+ "marlin-test-support",
+]
+
+[[package]]
+name = "marlin-shaderc-reflect"
+version = "0.1.0"
+dependencies = [
+ "marlin-shader",
+ "marlin-shaderc-ir",
  "marlin-test-support",
 ]
 

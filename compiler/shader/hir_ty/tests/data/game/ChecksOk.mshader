@@ -95,3 +95,10 @@ int ReadonlyUse(in Counter c, in Frozen f)
     copy.Bump();
     return c.Peek() + (int)f.Get() + c.Count;
 }
+
+[Compute(1, 1, 1)]
+void Exported()
+{
+    [Export] const int Count = 2, Features = 3;
+    [Export] const uint Twice = (uint)Count * 2u;
+}

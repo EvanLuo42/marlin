@@ -1,0 +1,9 @@
+namespace Game;
+
+// `double` needs `Float64`, which the Vulkan target's baseline does not have.
+[Compute(1, 1, 1)]
+public void Wide([Push] in Args a)
+{
+    double x = 1.5;
+    a.Out[0] = (uint)x;
+}

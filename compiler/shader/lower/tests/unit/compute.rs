@@ -123,6 +123,12 @@ fn bad_requests_are_errors() {
             "compile-time evaluation calls only `const` functions; `Game.NotConst` is not one",
         ),
         (
+            "Game.ReadsRuntimeValue",
+            &[][..],
+            &[][..],
+            "a `const` initializer reads `x`, which is not a constant",
+        ),
+        (
             "Game.NotAnEntry",
             &[],
             &[],
@@ -186,5 +192,43 @@ fn compute_entries_go_through_the_whole_pipeline() {
     golden::assert_text(
         &data_path(env!("CARGO_MANIFEST_DIR"), "compute/optimized.ir"),
         &text,
+    );
+}
+
+#[test]
+fn local_constants_and_exports_are_evaluated() {
+    let w = compute();
+    let mut res = args(1, 1);
+    w.dispatch(
+        "Game.Exporting",
+        &["Game.Doubler"],
+        &[],
+        [1, 1, 1],
+        &mut res,
+    );
+    // Next = (Triangle(3) + 1) * 2 = 14, Doubler.Apply(1) = 2, Helper() = Triangle(2) = 3.
+    assert_eq!(u32s(&res.buffers[0]), vec![19]);
+
+    let (exports, statics) = w.evaluated("Game.Exporting", &["Game.Squarer"]);
+    assert_eq!(
+        exports,
+        vec![
+            ("Shape".into(), Val::Agg(vec![Val::u32(6), Val::u32(6)])),
+            ("Negative".into(), Val::u32(-2i32 as u32)),
+            ("Next".into(), Val::u32(14)),
+        ]
+    );
+    assert!(statics.is_empty(), "{statics:?}");
+
+    let (exports, statics) = w.evaluated("Game.Statics", &[]);
+    assert!(exports.is_empty());
+    assert_eq!(
+        statics,
+        vec![
+            ("Game.Rock.Factor".into(), Val::u32(3)),
+            ("Game.Rock.Size".into(), Val::u32(4)),
+            ("Game.Rock.Twice".into(), Val::u32(6)),
+            ("Game.Rock.UseMoss".into(), Val::Bits(0)),
+        ]
     );
 }

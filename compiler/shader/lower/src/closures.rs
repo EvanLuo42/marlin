@@ -30,6 +30,9 @@ pub(crate) enum Inner {
         item: ItemId,
         subst: Subst,
     },
+    /// The initializer of a local `const`, evaluated at compile time: a function of no
+    /// parameters (no environment either) that gives its value.
+    Const(BindingId),
 }
 
 /// One captured value.
@@ -69,6 +72,10 @@ impl Lowering<'_, '_> {
                 }
             }
             Inner::Method { item, .. } => item_path(self.cx, *item)?.to_string(),
+            Inner::Const(b) => {
+                let body = self.cx.get::<BodyQuery>(&instance.owner)?;
+                format!("const {}", body.store.bindings[*b].name)
+            }
         })
     }
 
@@ -76,6 +83,7 @@ impl Lowering<'_, '_> {
     pub(crate) fn captures(&self, instance: &Instance) -> R<Vec<Capture>> {
         let root = match &instance.inner {
             None => return Ok(Vec::new()),
+            Some(Inner::Const(_)) => return Ok(Vec::new()),
             Some(Inner::Lambda(e)) => Node::Expr(*e),
             Some(Inner::LocalFn { stmt, .. }) => Node::Stmt(*stmt),
             Some(Inner::Method { item, .. }) => {

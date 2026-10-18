@@ -65,7 +65,7 @@ compiler/shader/          （包名 marlin-shaderc-*）
   target        target 描述（capability、布局规则、资源模型、支持的操作）
   backend_dxil  DXIL：LLVM 3.7 bitcode 写出器、DXIL 元数据、容器和验证哈希
   backend_spirv SPIR-V 写出器
-  reflect       从 IR 构造反射；反射的数据类型在 runtime 里（运行时读它，运行时不能依赖 compiler/，2026-10-17 定）
+  reflect       从 IR 构造反射；反射的数据类型在 runtime 的 `marlin-shader`（`runtime/engine/shader` 的 `reflect` 模块）里（运行时读它，运行时不能依赖 compiler/，2026-10-17 定）
   shaderc       facade marlin-shaderc：Session、target 注册表、EntryRequest
   testgen       只给测试用：随机生成的结构化 IR 程序，以及包住它的 compute 入口（pass 和后端的差分测试共用）
 platforms/<p>/shader/  主机平台的后端（在 cook 平台 cfg 下通过 #[path] 引入）
@@ -267,12 +267,12 @@ DXC **故意关掉**了以下几项：
 
 ```rust
 let mut s = Session::new(SessionDesc { sources: &provider, targets: &registry });
-s.add_package("shaders/substrate")?;
+s.add_package(&PackageDesc { name: "Marlin.Substrate", dependencies: &["Marlin"] })?;
 
 let out = s.compile(&EntryRequest {
     entry: "Marlin.Material.Entries.ResolvePixel",
     type_args: &["Game.Rock"],
-    consts: &[("Game.Rock.UseMoss", Const::Bool(true))],
+    consts: &[("Game.Rock.UseMoss", ConstValue::Bool(true))],
     target: "d3d12-sm6.6",
     profile: Profile::Development,
 })?;
@@ -281,13 +281,16 @@ let out = s.compile(&EntryRequest {
 s.invalidate(&path);   // 源文件变了，相关的 query 会重算
 ```
 
+- 包由宿主描述：名字和直接依赖。宿主自己解析 `ShaderPackage` 清单（0004 §7.2），文件由 `SourceProvider::list` 按包名列出；编译器不读清单（0015 §3.1，2026-10-17 定）。
 - `Session` 的生命周期很长：
   - cookd 进程里一直保持一个，热重载时只重算受影响的 query；
   - build.rs 创建一个，一次编完所有入口；
   - 以后的语言服务器也用同一套前端。
 - 一个请求对应一个入口、一组类型实参和常量、一个 target 和一个 profile，产出**一个单入口 blob**。这和 0002 的"每个 stage 一个 module"一致，也是 cook 键和 DDC 最细的粒度。
 - 可以把多个请求作为一批提交。
-- target 用名字从注册表里查，比如 `"d3d12-sm6.6"`、`"vulkan-1.3"`、`"metal-3"`。名字写在 cook 平台的设置里。
+- target 用名字从注册表里查，比如 `"d3d12-sm6.6"`、`"vulkan-1.4"`、`"metal-3"`。名字写在 cook 平台的设置里。
+- 静态参数的值用反射的 `ConstValue`（`marlin_shader::reflect`），请求和反射里的写法一样。
+- 一个请求的流程（第 9c 步）：入口能看到的所有包的前端诊断（有错误就停）→ 降低 → 入口需要的 capability 和 target 对比 → 优化 → 后端写出 → 后端的验证器 → 反射。Session 自己的错误码是 E15xx：E1501 没有这个 target，E1502 路径不指向任何声明，E1503 不是静态参数或者值的类型不对，E1504 target 缺入口需要的 capability，E1505 后端写不出这个入口，E1506 编译器 bug（模块验证不过、验证器拒绝后端写出的代码）。
 
 ### 5.2 源码输入
 
@@ -338,7 +341,7 @@ pub trait SourceProvider: Send + Sync {
 
 ### 6.1 内容与格式
 
-- 反射是普通的 Rust 数据类型，放在 `reflect` crate 里。运行时也能依赖这个 crate，它的类型都注册到 marlin-reflect。
+- 反射是普通的 Rust 数据类型，放在运行时的 `marlin-shader`（`reflect` 模块）里，由编译器的 `reflect` crate 构造；类型都注册到 marlin-reflect。
 - cook 时按 0003 的通用格式写进 cooked 单元。调试时可以直接导出成 `.masset` 文本。
 - 每个产物的反射包括：
   - 入口：stage、线程组大小、mesh 的容量和拓扑；
@@ -350,6 +353,8 @@ pub trait SourceProvider: Send + Sync {
   - `[Export]` 常量的值（§6.2）；
   - 用到的源文件和它们的内容哈希。
 - 后端专用的信息（比如主机平台的资源表）放在扩展字段里，由后端 crate 定义。
+- 第 9c 步先做 compute 需要的部分：入口、push 布局、静态参数、用到的 capability、`[Export]` 常量、用到的源文件和哈希、统计。材质参数块和可选方法跟着图形 stage 在第 10 步做。`Target.*` 常量还不存在，引用列表等它有了再填（2026-10-17 定）。
+- 第一版"用到的源文件"是入口所在包及其依赖的传递闭包里的所有文件。名字解析读了包里每个文件的 item tree，所以这个集合不会漏，只是偏大。
 
 ### 6.2 编译期求值与导出
 
@@ -380,6 +385,7 @@ public const ClosureInfo Flatten<M>() where M : IMaterial { ... }
   - target 描述的版本；
   - 主机平台官方工具链的版本（如果这个后端要调用它）。
 - 改了编译器代码，缓存就自动失效，不会因为忘了加版本号而读到过期的缓存。
+- 编译器源码的哈希由 `marlin-shaderc` 的 build.rs 算：`compiler/` 下每个 crate 的 `Cargo.toml` 和 `src/` 里的文件，按相对路径排序，换行统一成 `\n`，取 xxh3-128。测试和测试数据不算在内（第 9c 步）。
 - 每个产物还带上它用到的源文件的内容哈希，cook 键（0003 §4.1）把这些都算进去。
 - **跨进程缓存**用的是 manifest 模式（ccache 和 Bazel 也是这么做的）：
   - 不编译，就不知道一个入口用到了哪些文件。所以 DDC 里额外存一份"请求 → 上次用到的源文件及其内容哈希"。

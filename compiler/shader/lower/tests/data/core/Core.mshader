@@ -76,4 +76,5 @@ public struct Barrier
 }
 
 public struct UniformAttribute : IAttribute { }
+public struct ExportAttribute : IAttribute { }
 [Intrinsic("assume.nonuniform")] public T NonUniform<T>(T x);

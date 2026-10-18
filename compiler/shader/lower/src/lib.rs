@@ -40,8 +40,13 @@
 //! Step 8c: instructions carry the source location of what they were lowered from, for checks
 //! after inlining; `[Uniform]` locals assert what is written to them (`assume.uniform`).
 //!
+//! Step 9c: local `const`s are evaluated at compile time like `const` fields (their uses are
+//! constants; an initializer that reads a runtime value is E1306); an entry's `[Export]`
+//! constants ([`Lowering::exports`]) and the static parameters used
+//! ([`Lowering::static_params`]) are kept for the reflection.
+//!
 //! Not lowered yet: vertex, pixel, mesh and amplification entries and their stage I/O (step
-//! 10); `[Export]` and local `const` evaluation (step 9, with reflection); auto-properties.
+//! 10); auto-properties.
 
 mod closures;
 mod ctfe;
@@ -61,6 +66,7 @@ mod types;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use marlin_front_hir_def::store::BindingId;
 use marlin_front_hir_def::{
     BodyOwner, BodyPart, FilePackage, ItemId, ItemKind, ItemTreeQuery, item_path,
 };
@@ -71,6 +77,16 @@ use marlin_shaderc_ir::{FuncId, GlobalId, Module, StructId, Type};
 pub use error::LowerError;
 
 pub(crate) type R<T> = Result<T, LowerError>;
+
+/// A value computed at compile time: an `[Export]` constant (`item` is its entry point,
+/// `name` the local's name) or a static parameter (`item` is the field, `name` its path).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Evaluated {
+    pub item: ItemId,
+    pub name: String,
+    pub value: marlin_shaderc_ir::Val,
+    pub ty: Ty,
+}
 
 /// A function body with concrete arguments for every generic parameter in scope, and the
 /// lambdas its `Func`/`Action` parameters are bound to (0004 §9.2: one instance per lambda).
@@ -101,6 +117,12 @@ pub struct Lowering<'a, 'b> {
     pub(crate) consts: HashMap<ItemId, ctfe::ConstValue>,
     /// Constants being evaluated, to report cycles.
     pub(crate) evaluating: Vec<ItemId>,
+    /// The values of local `const`s, by the body (with its generic arguments) and binding.
+    pub(crate) local_consts: HashMap<(BodyOwner, Subst, BindingId), ctfe::ConstValue>,
+    /// `[Export]` constants of entry points lowered, in order: entry item, name, value.
+    pub(crate) exports: Vec<(ItemId, String, ctfe::ConstValue)>,
+    /// Local `const`s being evaluated, to report cycles.
+    pub(crate) evaluating_locals: Vec<(BodyOwner, Subst, BindingId)>,
     /// The environment struct of each lambda and local function instance.
     pub(crate) envs: HashMap<Instance, Type>,
     /// Static parameters set by the request (0004 §13.3).
@@ -127,6 +149,9 @@ impl<'a, 'b> Lowering<'a, 'b> {
             names: HashMap::new(),
             consts: HashMap::new(),
             evaluating: Vec::new(),
+            local_consts: HashMap::new(),
+            exports: Vec::new(),
+            evaluating_locals: Vec::new(),
             envs: HashMap::new(),
             statics: HashSet::new(),
             shared: HashMap::new(),
@@ -160,6 +185,52 @@ impl<'a, 'b> Lowering<'a, 'b> {
             func::lower_body(self, &instance, id)?;
         }
         Ok(())
+    }
+
+    /// The `[Export]` constants of the entry points lowered so far, in source order (0004
+    /// §13.4).
+    pub fn exports(&self) -> Vec<Evaluated> {
+        self.exports
+            .iter()
+            .map(|(entry, name, v)| Evaluated {
+                item: *entry,
+                name: name.clone(),
+                value: v.val.clone(),
+                ty: v.ty.clone(),
+            })
+            .collect()
+    }
+
+    /// The static parameters (`const` fields of structs, 0004 §13.3) whose values the code
+    /// lowered so far used, set by the request or not, by path.
+    pub fn static_params(&self) -> R<Vec<Evaluated>> {
+        let mut out = Vec::new();
+        for (&item, v) in &self.consts {
+            let tree = self.cx.get::<ItemTreeQuery>(&item.file)?;
+            let data = &tree.items[item.local];
+            let in_struct = data
+                .parent
+                .is_some_and(|p| tree.items[p].kind == ItemKind::Struct);
+            if data.kind == ItemKind::Field && data.is_const && in_struct {
+                out.push(Evaluated {
+                    item,
+                    name: item_path(self.cx, item)?.to_string(),
+                    value: v.val.clone(),
+                    ty: v.ty.clone(),
+                });
+            }
+        }
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(out)
+    }
+
+    /// The front-end type an IR struct was made from, and its field declarations in IR field
+    /// order.
+    pub fn struct_source(&self, s: StructId) -> Option<(Ty, Vec<ItemId>)> {
+        self.structs
+            .iter()
+            .find(|(_, (id, _))| *id == s)
+            .map(|(ty, (_, fields))| (ty.clone(), fields.clone()))
     }
 
     /// Lowers what is left and gives the module.

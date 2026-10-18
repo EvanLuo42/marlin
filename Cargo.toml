@@ -79,8 +79,11 @@ marlin-front-syntax = { path = "compiler/front/syntax" }
 marlin-front-hir-def = { path = "compiler/front/hir_def" }
 marlin-shaderc-syntax = { path = "compiler/shader/syntax" }
 marlin-shaderc-hir-ty = { path = "compiler/shader/hir_ty" }
+marlin-shaderc-lower = { path = "compiler/shader/lower" }
+marlin-shaderc-backend-spirv = { path = "compiler/shader/backend_spirv" }
 marlin-shaderc-ir = { path = "compiler/shader/ir" }
 marlin-shaderc-opt = { path = "compiler/shader/opt" }
+marlin-shaderc-reflect = { path = "compiler/shader/reflect" }
 marlin-shaderc-target = { path = "compiler/shader/target" }
 marlin-shaderc-testgen = { path = "compiler/shader/testgen" }
 # --- editor ---

@@ -93,3 +93,33 @@ error[E1126]: not every path of this function returns a value
    |
 91 |     return Apply(x => { if (x > 0) return x; });
    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E1134]: `[Export]` goes on a `const` local in an entry point's body, not on a declaration
+  --> game/Checks.mshader:95:1
+   |
+95 | [Export] public const int ExportedField = 1;
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E1135]: two `[Export]` constants are named `Size`
+   --> game/Checks.mshader:101:26
+    |
+101 |     { [Export] const int Size = 3; }
+    |                          ^^^^
+
+error[E1134]: `[Export]` goes on a `const` local
+   --> game/Checks.mshader:102:5
+    |
+102 |     [Export] int notConst = 1;
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E1134]: `[Export]` constants are declared in an entry point's own body
+   --> game/Checks.mshader:103:19
+    |
+103 |     int Inner() { [Export] const int InLocal = 1; return InLocal; }
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E1134]: `[Export]` constants are declared in an entry point's own body
+   --> game/Checks.mshader:108:5
+    |
+108 |     [Export] const int Here = 1;
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^

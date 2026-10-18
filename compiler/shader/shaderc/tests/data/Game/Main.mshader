@@ -1,0 +1,38 @@
+namespace Game;
+
+public struct RangeAttribute : IAttribute
+{
+    public RangeAttribute(uint min, uint max) { }
+}
+
+public struct Args
+{
+    public Buffer<uint> Out;
+    [Range(0, 2)] public uint Scale;
+    public float3 Bias;
+}
+
+public struct Rock
+{
+    public const uint Factor = 3;
+    public const bool UseMoss = false;
+}
+
+public struct Topology { public uint Count; public uint Features; }
+
+public const Topology Flatten(uint layers) =>
+    Topology { Count = layers * 2, Features = layers };
+
+[GroupShared] uint[64] Tile;
+
+[Compute(64, 1, 1)]
+public void Mirror([DispatchThreadId] uint3 id, [GroupIndex] uint gi, [Push] in Args a)
+{
+    [Export] const Topology Shape = Flatten(3);
+    [Export] const int Offset = -4;
+    Tile[gi] = id.x * a.Scale * Rock.Factor;
+    Barrier.Group();
+    uint v = Tile[63 - gi] + Shape.Count;
+    if (Rock.UseMoss) v += 100;
+    a.Out[id.x] = v;
+}

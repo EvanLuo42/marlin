@@ -150,6 +150,8 @@
   bases [IAttribute]
 == Marlin.GroupSharedAttribute
   bases [IAttribute]
+== Marlin.ExportAttribute
+  bases [IAttribute]
 == Marlin.DispatchThreadIdAttribute
   bases [IAttribute]
 == Marlin.GroupIndexAttribute

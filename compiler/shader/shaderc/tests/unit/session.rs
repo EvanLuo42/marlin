@@ -1,0 +1,327 @@
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
+
+use marlin_shader::reflect::Stage;
+use marlin_shaderc::{
+    CompileError, ConstValue, EntryRequest, FieldValue, PackageDesc, Profile, Session, SessionDesc,
+    SourceError, SourcePath, SourceProvider, default_targets,
+};
+use marlin_test_support::{data_path, golden};
+
+/// Packages held in memory, read from `tests/data/<package>/`; tests change them in place.
+struct Memory {
+    files: Mutex<BTreeMap<SourcePath, Arc<str>>>,
+}
+
+impl Memory {
+    fn new() -> Memory {
+        let mut files = BTreeMap::new();
+        for package in ["Marlin", "Game"] {
+            let dir = data_path(env!("CARGO_MANIFEST_DIR"), package);
+            let mut names: Vec<String> = std::fs::read_dir(dir)
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            names.sort();
+            for name in names {
+                let text = std::fs::read_to_string(data_path(
+                    env!("CARGO_MANIFEST_DIR"),
+                    &format!("{package}/{name}"),
+                ))
+                .unwrap()
+                .replace("\r\n", "\n");
+                files.insert(SourcePath::new(package, name.as_str()), text.into());
+            }
+        }
+        Memory {
+            files: Mutex::new(files),
+        }
+    }
+
+    fn set(&self, package: &str, path: &str, text: &str) {
+        self.files
+            .lock()
+            .unwrap()
+            .insert(SourcePath::new(package, path), text.into());
+    }
+}
+
+impl SourceProvider for Memory {
+    fn list(&self, package: &str) -> Result<Vec<SourcePath>, SourceError> {
+        Ok(self
+            .files
+            .lock()
+            .unwrap()
+            .keys()
+            .filter(|p| p.package() == package)
+            .cloned()
+            .collect())
+    }
+
+    fn read(&self, path: &SourcePath) -> Result<Arc<str>, SourceError> {
+        self.files
+            .lock()
+            .unwrap()
+            .get(path)
+            .cloned()
+            .ok_or_else(|| SourceError {
+                message: format!("no file {path}"),
+            })
+    }
+}
+
+fn session<'a>(sources: &'a Memory, targets: &'a marlin_shaderc::Registry) -> Session<'a> {
+    let mut s = Session::new(SessionDesc { sources, targets });
+    s.add_package(&PackageDesc {
+        name: "Marlin",
+        dependencies: &[],
+    })
+    .unwrap();
+    s.add_package(&PackageDesc {
+        name: "Game",
+        dependencies: &["Marlin"],
+    })
+    .unwrap();
+    s
+}
+
+fn request<'a>(entry: &'a str, consts: &'a [(&'a str, ConstValue)]) -> EntryRequest<'a> {
+    EntryRequest {
+        entry,
+        type_args: &[],
+        consts,
+        target: "vulkan-1.4",
+        profile: Profile::Development,
+    }
+}
+
+fn errors(s: &Session<'_>, e: &CompileError) -> String {
+    s.render(&e.diagnostics)
+}
+
+#[test]
+fn an_entry_compiles_to_spirv_with_its_reflection() {
+    let (sources, targets) = (Memory::new(), default_targets());
+    let s = session(&sources, &targets);
+    let out = s
+        .compile(&request("Game.Mirror", &[]))
+        .unwrap_or_else(|e| panic!("{}", errors(&s, &e)));
+    assert_eq!(
+        &out.code.bytes[..4],
+        &0x0723_0203u32.to_le_bytes(),
+        "SPIR-V"
+    );
+    assert!(out.diagnostics.is_empty());
+
+    let r = &out.reflection;
+    assert_eq!(r.entry.name, "Game.Mirror");
+    assert_eq!(r.entry.stage, Stage::Compute);
+    assert_eq!(r.entry.group_size, [64, 1, 1]);
+    assert_eq!(r.stats.groupshared_bytes, 256);
+    assert_eq!(r.stats.code_bytes as usize, out.code.bytes.len());
+    assert!(r.stats.instructions > 0);
+    assert_eq!(
+        out.used_sources,
+        [
+            SourcePath::new("Marlin", "Core.mshader"),
+            SourcePath::new("Game", "Main.mshader"),
+            SourcePath::new("Game", "Wide.mshader"),
+        ]
+    );
+    // The whole reflection, but for what changes with the stand-in core library's text.
+    let mut shown = r.clone();
+    for source in &mut shown.sources {
+        source.hash = 0;
+    }
+    shown.stats.instructions = 0;
+    shown.stats.code_bytes = 0;
+    golden::assert_text(
+        &data_path(env!("CARGO_MANIFEST_DIR"), "mirror_reflection.txt"),
+        &format!("{shown:#?}\n"),
+    );
+}
+
+#[test]
+fn static_parameters_come_from_the_request() {
+    let (sources, targets) = (Memory::new(), default_targets());
+    let s = session(&sources, &targets);
+    let consts = [
+        ("Game.Rock.Factor", ConstValue::UInt(5)),
+        ("Game.Rock.UseMoss", ConstValue::Bool(true)),
+    ];
+    let out = s.compile(&request("Game.Mirror", &consts)).unwrap();
+    let statics: Vec<_> = out
+        .reflection
+        .static_params
+        .iter()
+        .map(|p| (p.name.as_str(), p.ty.as_str(), p.value.clone()))
+        .collect();
+    assert_eq!(
+        statics,
+        [
+            ("Game.Rock.Factor", "uint", ConstValue::UInt(5)),
+            ("Game.Rock.UseMoss", "bool", ConstValue::Bool(true)),
+        ]
+    );
+    let exports = &out.reflection.exports;
+    assert_eq!(exports[0].name, "Shape");
+    assert_eq!(exports[0].ty, "Topology", "as the source writes it");
+    assert_eq!(
+        exports[0].value,
+        ConstValue::Struct(vec![
+            FieldValue {
+                name: "Count".into(),
+                value: ConstValue::UInt(6),
+            },
+            FieldValue {
+                name: "Features".into(),
+                value: ConstValue::UInt(3),
+            },
+        ])
+    );
+    assert_eq!(exports[1].value, ConstValue::Int(-4));
+    // Another value is another permutation: other code.
+    let plain = s.compile(&request("Game.Mirror", &[])).unwrap();
+    assert_ne!(plain.code, out.code);
+}
+
+#[test]
+fn bad_requests_are_diagnostics() {
+    let (sources, targets) = (Memory::new(), default_targets());
+    let s = session(&sources, &targets);
+    let wrong_type = [("Game.Rock.Factor", ConstValue::Bool(true))];
+    let out_of_range = [("Game.Rock.Factor", ConstValue::UInt(1 << 40))];
+    let not_static = [("Game.Mirror", ConstValue::UInt(1))];
+    let mut other_target = request("Game.Mirror", &[]);
+    other_target.target = "metal-3";
+    let cases = [
+        ("an unknown target", other_target),
+        ("an unknown entry", request("Game.Nothing", &[])),
+        ("not an entry", request("Game.Flatten", &[])),
+        (
+            "a value of the wrong type",
+            request("Game.Mirror", &wrong_type),
+        ),
+        (
+            "a value out of range",
+            request("Game.Mirror", &out_of_range),
+        ),
+        (
+            "not a static parameter",
+            request("Game.Mirror", &not_static),
+        ),
+        ("a capability the target lacks", request("Game.Wide", &[])),
+    ];
+    let mut text = String::new();
+    for (what, req) in cases {
+        let e = s.compile(&req).expect_err(what);
+        text += &format!("== {what}\n{}\n", errors(&s, &e));
+    }
+    golden::assert_text(
+        &data_path(env!("CARGO_MANIFEST_DIR"), "bad_requests.txt"),
+        &text,
+    );
+}
+
+#[test]
+fn edits_are_seen_after_invalidate() {
+    let (sources, targets) = (Memory::new(), default_targets());
+    let mut s = session(&sources, &targets);
+    let before = s.compile(&request("Game.Mirror", &[])).unwrap();
+
+    // A type error in a file of the package stops every entry that sees it.
+    sources.set(
+        "Game",
+        "Broken.mshader",
+        "namespace Game;\npublic uint Bad() => true;\n",
+    );
+    s.invalidate(&SourcePath::new("Game", "Broken.mshader"))
+        .unwrap();
+    let e = s.compile(&request("Game.Mirror", &[])).unwrap_err();
+    let shown = errors(&s, &e);
+    assert!(shown.contains("Game/Broken.mshader:2"), "{shown}");
+
+    // Fixed: the same code as before, and the new file is a source of it.
+    sources.set(
+        "Game",
+        "Broken.mshader",
+        "namespace Game;\npublic uint Bad() => 1;\n",
+    );
+    s.invalidate(&SourcePath::new("Game", "Broken.mshader"))
+        .unwrap();
+    let after = s.compile(&request("Game.Mirror", &[])).unwrap();
+    assert_eq!(after.code, before.code);
+    assert!(
+        after
+            .used_sources
+            .contains(&SourcePath::new("Game", "Broken.mshader"))
+    );
+
+    // A change to the entry's own file changes the code.
+    let main = sources
+        .read(&SourcePath::new("Game", "Main.mshader"))
+        .unwrap()
+        .replace("Shape.Count;", "Shape.Count + 1;");
+    sources.set("Game", "Main.mshader", &main);
+    s.invalidate(&SourcePath::new("Game", "Main.mshader"))
+        .unwrap();
+    let edited = s.compile(&request("Game.Mirror", &[])).unwrap();
+    assert_ne!(edited.code, before.code);
+}
+
+#[test]
+fn packages_come_after_their_dependencies() {
+    let (sources, targets) = (Memory::new(), default_targets());
+    let mut s = Session::new(SessionDesc {
+        sources: &sources,
+        targets: &targets,
+    });
+    let e = s
+        .add_package(&PackageDesc {
+            name: "Game",
+            dependencies: &["Marlin"],
+        })
+        .unwrap_err();
+    assert!(e.message.contains("add it first"), "{e}");
+    s.add_package(&PackageDesc {
+        name: "Marlin",
+        dependencies: &[],
+    })
+    .unwrap();
+    let again = s
+        .add_package(&PackageDesc {
+            name: "Marlin",
+            dependencies: &[],
+        })
+        .unwrap_err();
+    assert!(again.message.contains("already"), "{again}");
+}
+
+#[test]
+fn the_fingerprint_names_the_compiler_and_the_target() {
+    let (sources, targets) = (Memory::new(), default_targets());
+    let s = session(&sources, &targets);
+    let f = s.fingerprint("vulkan-1.4").unwrap();
+    assert_eq!(
+        session(&sources, &targets).fingerprint("vulkan-1.4"),
+        Some(f)
+    );
+    assert_eq!(s.fingerprint("metal-3"), None);
+}
+
+#[test]
+fn sessions_are_shared_across_threads() {
+    fn sync<T: Sync>(_: &T) {}
+    let (sources, targets) = (Memory::new(), default_targets());
+    let s = session(&sources, &targets);
+    sync(&s);
+    let one = s.compile(&request("Game.Mirror", &[])).unwrap().code;
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..4)
+            .map(|_| scope.spawn(|| s.compile(&request("Game.Mirror", &[])).unwrap().code))
+            .collect();
+        for h in handles {
+            assert_eq!(h.join().unwrap(), one);
+        }
+    });
+}

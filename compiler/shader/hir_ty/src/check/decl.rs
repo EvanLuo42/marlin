@@ -4,7 +4,8 @@
 //! - structs and extension blocks implement every required member of their interfaces (§8);
 //! - entry points: one stage, its arguments, system values by stage and direction, their
 //!   types, at most one `[Push]` of at most 128 bytes (§11);
-//! - a `[Requires]` contract covers what the function needs (§12.3).
+//! - a `[Requires]` contract covers what the function needs (§12.3);
+//! - no `[Export]` on declarations: it goes on an entry's local constants (§13.4, E1134).
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -155,6 +156,14 @@ impl Decl<'_, '_> {
         let sig = cx.get::<ItemSignature>(&self.item)?;
         let types = cx.get::<ItemTypesQuery>(&self.item)?;
         let attrs = cx.get::<ItemAttributesQuery>(&self.item)?;
+        if attrs.has(KnownAttr::Export) {
+            self.report(
+                TyLoc::Item,
+                "E1134",
+                "`[Export]` goes on a `const` local in an entry point's body, not on a declaration"
+                    .into(),
+            );
+        }
 
         // Types as written.
         for (param, ty) in sig.params.iter().zip(&types.params) {

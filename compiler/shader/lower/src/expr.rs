@@ -2,7 +2,8 @@
 //! constructors, indexing. C#'s order of evaluation: left to right, receiver before arguments.
 
 use marlin_front_hir_def::store::{
-    Arg, BinaryOp, Expr, ExprId, FieldInit, InterpolationPart, Literal, RefKind, UnaryOp,
+    Arg, BinaryOp, BindingId, BindingKind, Expr, ExprId, FieldInit, InterpolationPart, Literal,
+    RefKind, UnaryOp,
 };
 use marlin_front_hir_def::{BodyOwner, BodyPart, ItemKind, ItemSignature, ItemTreeQuery};
 use marlin_shaderc_hir_ty::{
@@ -14,6 +15,7 @@ use marlin_shaderc_ir::{
     UnaryOp as IrUn, Value, ValueDef,
 };
 
+use crate::closures::Inner;
 use crate::dispatch::Resolved;
 use crate::func::{FnCx, Local, Pass, Term, signature};
 use crate::types::{Num, Shape};
@@ -314,6 +316,20 @@ impl FnCx<'_, '_, '_> {
                 };
                 let t = self.l.ty(&ty)?;
                 (self.int_const(t, v as i64), ty)
+            }
+            Root::Local(b) if self.is_const_local(*b) => {
+                let v = self
+                    .const_local(*b)
+                    .map_err(|err| err.located(self.owner(), Self::loc(e)))?;
+                (v, self.binding_ty(*b))
+            }
+            Root::Local(b) if matches!(self.instance.inner, Some(Inner::Const(_))) => {
+                let name = &self.body.store.bindings[*b].name;
+                return Err(self.error(
+                    "E1306",
+                    format!("a `const` initializer reads `{name}`, which is not a constant"),
+                    Self::loc(e),
+                ));
             }
             Root::Local(b) => {
                 let ty = self.binding_ty(*b);
@@ -1570,4 +1586,24 @@ pub(crate) enum Receiver {
 enum WriteBack {
     Expr(ExprId),
     Path(ValuePath),
+}
+
+impl FnCx<'_, '_, '_> {
+    /// `b` is a local `const`.
+    pub(crate) fn is_const_local(&self, b: BindingId) -> bool {
+        matches!(
+            self.body.store.bindings[b].kind,
+            BindingKind::Local { is_const: true }
+        )
+    }
+
+    /// The value of the local `const` `b`, as a constant of this function.
+    pub(crate) fn const_local(&mut self, b: BindingId) -> R<Value> {
+        let owner = self.owner();
+        let subst = self.subst().clone();
+        let v = self.l.local_const(owner, &subst, b)?;
+        let t = self.l.ty(&v.ty)?;
+        let c = self.l.val_const(&v.val, t)?;
+        Ok(self.f.const_value(c, self.l.module.consts[c].ty))
+    }
 }

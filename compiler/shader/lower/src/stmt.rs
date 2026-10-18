@@ -6,7 +6,7 @@
 //! jump or `return` is dead and not lowered.
 
 use marlin_front_hir_def::store::{Expr, ExprId, Stmt, StmtId};
-use marlin_shaderc_hir_ty::{InferLoc, Ty};
+use marlin_shaderc_hir_ty::{InferLoc, KnownAttr, Ty};
 use marlin_shaderc_ir::{AccessStep, BinaryOp as IrBin, Block, IntCmp, Op, TypeData};
 
 use crate::func::{FnCx, Jumps, Term};
@@ -40,20 +40,40 @@ impl FnCx<'_, '_, '_> {
             Stmt::Local {
                 attributes,
                 declarators,
+                is_const,
                 ..
             } => {
-                if !attributes.is_empty()
-                    && marlin_shaderc_hir_ty::body_attributes(
+                let known = if attributes.is_empty() {
+                    Vec::new()
+                } else {
+                    marlin_shaderc_hir_ty::body_attributes(
                         self.l.cx,
                         self.owner().item,
                         &attributes,
                     )?
-                    .contains(&marlin_shaderc_hir_ty::KnownAttr::Uniform)
-                {
+                };
+                if known.contains(&KnownAttr::Uniform) {
                     self.uniform_locals.extend(declarators.iter().map(|d| d.0));
                 }
+                // An entry point's `[Export]` constants go into the reflection (0004 §13.4).
+                let export = is_const
+                    && known.contains(&KnownAttr::Export)
+                    && !self.l.ctfe
+                    && self.instance.inner.is_none();
                 for (b, init) in declarators {
-                    if let Some(init) = init {
+                    if is_const {
+                        // Its value is known now; uses read the constant (`const_local`).
+                        let v = self
+                            .const_local(b)
+                            .map_err(|e| e.located(self.owner(), loc.clone()))?;
+                        self.write_local(b, v)?;
+                        if export {
+                            let subst = self.subst().clone();
+                            let value = self.l.local_const(self.owner(), &subst, b)?;
+                            let name = self.body.store.bindings[b].name.to_string();
+                            self.l.exports.push((self.owner().item, name, value));
+                        }
+                    } else if let Some(init) = init {
                         let v = self.value(init)?;
                         self.write_local(b, v)?;
                     }

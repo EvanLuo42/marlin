@@ -14,6 +14,9 @@ use marlin_shaderc_ir::{Interpreter, Module, Output, Resources, Val, print_modul
 use marlin_shaderc_lower::Lowering;
 use marlin_test_support::data_path;
 
+/// Compile-time values by name.
+pub type Named = Vec<(String, Val)>;
+
 pub struct World {
     pub db: Db,
     /// `(name, text)` per file, indexed by `FileId`.
@@ -131,6 +134,25 @@ impl World {
             print_module(&module)
         );
         module
+    }
+
+    /// The `[Export]` constants and the static parameters used of the entry point at `path`,
+    /// as `(name, value)`.
+    pub fn evaluated(&self, path: &str, type_args: &[&str]) -> (Named, Named) {
+        let snapshot = self.db.snapshot();
+        let mut l = Lowering::new(&snapshot, self.game).unwrap();
+        let args: Vec<GenericArgTy> = type_args
+            .iter()
+            .map(|t| GenericArgTy::Type(Ty::adt(self.item(t))))
+            .collect();
+        let lowered = l.entry(self.item(path), &args).and_then(|_| l.run());
+        if let Err(e) = lowered {
+            panic!("{path}: {}", self.render_error(&snapshot, &e));
+        }
+        let pairs = |v: Vec<marlin_shaderc_lower::Evaluated>| -> Vec<(String, Val)> {
+            v.into_iter().map(|e| (e.name, e.value)).collect()
+        };
+        (pairs(l.exports()), pairs(l.static_params().unwrap()))
     }
 
     /// Lowers the entry point at `path` with type arguments (paths of types) and static

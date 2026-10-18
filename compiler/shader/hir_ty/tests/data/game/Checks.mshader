@@ -90,3 +90,21 @@ float Lambda()
 {
     return Apply(x => { if (x > 0) return x; });
 }
+
+// `[Export]` only on `const` locals of an entry point's own body, named apart.
+[Export] public const int ExportedField = 1;
+
+[Compute(1, 1, 1)]
+void Exports()
+{
+    { [Export] const int Size = 4; }
+    { [Export] const int Size = 3; }
+    [Export] int notConst = 1;
+    int Inner() { [Export] const int InLocal = 1; return InLocal; }
+}
+
+int NotAnEntry()
+{
+    [Export] const int Here = 1;
+    return Here;
+}

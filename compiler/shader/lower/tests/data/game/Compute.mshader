@@ -113,3 +113,34 @@ public void UsesBadTable([Push] in Args a)
 }
 
 public void NotAnEntry() { }
+
+// Local constants are evaluated at compile time; an entry's `[Export]` ones go into the
+// reflection.
+public struct Topology { public uint Count; public uint Features; }
+
+public const Topology Flatten(uint layers) =>
+    Topology { Count = Triangle(layers), Features = layers * 2 };
+
+public uint Helper()
+{
+    const uint Inner = Triangle(2);
+    return Inner;
+}
+
+[Compute(1, 1, 1)]
+public void Exporting<T>([Push] in Args a) where T : IOp
+{
+    [Export] const Topology Shape = Flatten(3);
+    [Export] const int Negative = -2;
+    const uint Base = Shape.Count + 1;
+    [Export] const uint Next = Base * 2;
+    a.Out[0] = Next + T.Apply(1) + Helper() + (uint)(Negative + 2);
+}
+
+[Compute(1, 1, 1)]
+public void ReadsRuntimeValue([DispatchThreadId] uint3 id, [Push] in Args a)
+{
+    uint x = id.x;
+    const uint Bad = x + 1;
+    a.Out[0] = Bad;
+}
