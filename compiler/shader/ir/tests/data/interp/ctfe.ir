@@ -1,0 +1,108 @@
+// Functions the interpreter test calls one lane at a time.
+
+func @Int(%a: i32, %b: i32) -> (i32, i32, i32, i32, i32, i32, i32) {
+block0:
+    %sum = add %a, %b
+    %div = sdiv %a, %b
+    %rem = srem %a, %b
+    %udiv = udiv %a, %b
+    %shl = shl %a, %b
+    %ashr = ashr %a, %b
+    %hi = mulhi.u %a, %b
+    return %sum, %div, %rem, %udiv, %shl, %ashr, %hi
+}
+
+func @Convert(%x: f32) -> (i32, i32, i16, i64, f16) {
+block0:
+    %s = fptosi %x : i32
+    %u = fptoui %x : i32
+    %h = fptosi %x : i16
+    %w = sext %s : i64
+    %f = fptrunc %x : f16
+    return %s, %u, %h, %w, %f
+}
+
+func @Half(%a: f16, %b: f16) -> (f16, f16) {
+block0:
+    %s = fadd %a, %b
+    %p = fmul %a, %b
+    return %s, %p
+}
+
+// sum of i for i in 0..n, skipping multiples of 3, stopping past 50
+func @Loop(%n: i32) -> i32 {
+block0:
+    loop header block1(i32 0, i32 0) continue block5 merge block6
+block1(%i: i32, %acc: i32):
+    %done = icmp sge %i, %n
+    cond_br %done, block6(%acc), block2 merge block2
+block2:
+    %r = srem %i, i32 3
+    %skip = icmp eq %r, i32 0
+    cond_br %skip, block5(%acc), block3 merge block3
+block3:
+    %next = add %acc, %i
+    %big = icmp sgt %next, i32 50
+    cond_br %big, block6(%next), block4 merge block4
+block4:
+    br block5(%next)
+block5(%acc2: i32):
+    %i2 = add %i, i32 1
+    br block1(%i2, %acc2)
+block6(%out: i32):
+    return %out
+}
+
+func @Pick(%k: i32) -> i32 {
+block0:
+    switch %k [0: block1, 1: block2, -1: block3] default block4 merge block5
+block1:
+    br block5(i32 10)
+block2:
+    br block5(i32 20)
+block3:
+    br block5(i32 30)
+block4:
+    br block5(i32 99)
+block5(%r: i32):
+    %twice = call @Double(%r)
+    return %twice
+}
+
+func @Double(%x: i32) -> i32 {
+block0:
+    %y = add %x, %x
+    return %y
+}
+
+func @Vectors(%v: f32x3, %m: f32x3x3) -> (f32, f32x3, f32x3, f32) {
+block0:
+    %d = dot %v, %v
+    %c = cross %v, (shuffle %v, %v, [1, 2, 0])
+    %mv = matmul %m, %v
+    %l = length %v
+    return %d, %c, %mv, %l
+}
+
+func @Memory(%i: i32) -> (f32, f32) {
+block0:
+    %a = var function : [f32; 4]
+    store %a, [f32; 4] (1.0, 2.0, 3.0, 4.0)
+    %p = access %a, [%i]
+    %x = load %p
+    store %p, f32 10.0
+    %q = access %a, [i32 2]
+    %y = load %q
+    return %x, %y
+}
+
+func @Spin() {
+block0:
+    loop header block1 continue block2 merge block3
+block1:
+    br block2
+block2:
+    br block1
+block3:
+    return
+}

@@ -15,6 +15,11 @@
 //! (bindings, stages, `uses`), the call graph (no runtime recursion), and each function: blocks
 //! and terminators, use lists, operand and result types, jump arguments, dominance, where
 //! pointers and handles may go, and structured control flow.
+//!
+//! Step 6c: the [`Interpreter`] runs functions (compile-time evaluation) and compute dispatches
+//! (differential testing), with the whole thread group in lockstep over structured control
+//! flow, waves, groupshared memory, barriers and atomics, buffers in scalar layout, and the
+//! deterministic [`math`] functions.
 
 macro_rules! words {
     ($(#[$meta:meta])* $name:ident { $($variant:ident = $word:literal),* $(,)? }) => {
@@ -43,6 +48,8 @@ macro_rules! words {
 mod builder;
 mod func;
 mod infer;
+mod interp;
+pub mod math;
 mod module;
 pub mod num;
 mod op;
@@ -56,6 +63,7 @@ pub use func::{
     Block, BlockData, FuncId, Function, Inst, InstData, InstIter, Use, Value, ValueData, ValueDef,
 };
 pub use infer::{Existing, Types, result_types, result_types_in, step_type, step_type_in};
+pub use interp::{ExecError, Interpreter, Options, Output, Print, Ptr, Resources, Root, Val};
 pub use module::{
     Binding, Builtin, Const, ConstData, ConstValue, Entry, GlobalData, GlobalId, Interp, Module,
     Stage, StructData,

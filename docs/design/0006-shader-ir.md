@@ -31,7 +31,7 @@
 | 表示 | 每个函数一个 arena，用 u32 下标引用；块内的指令是双向链表；每个值有 use 列表；类型和常量在 module 级 intern | 12 |
 | 文本格式 | 能打印也能解析，可以往返；不做二进制序列化 | 13 |
 | 文本里的名字 | 值带源码名作提示（`%acc`，重名时 `%acc.1`，没有名字时 `%5`）；函数、全局变量和 struct 用全名，不是标识符时加引号（`@"Game.Grid<4>"`）；名字不影响语义 | 13 |
-| 解释器 | 一个 group 的 lane 按 wave 锁步执行，按结构化控制流维护活动掩码（maximal reconvergence）；group 里的各个 wave 轮流执行到 barrier。数学函数是自己实现的，在所有宿主上逐位一致 | 11 |
+| 解释器 | 一个 group 的所有 lane 按结构化控制流一起锁步执行，维护活动掩码，lane 在 merge 块汇合（maximal reconvergence）；wave 操作按 wave 分组计算。数学函数是自己实现的，在所有宿主上逐位一致 | 11 |
 | 跨进程缓存 | 只缓存最终的 blob，用 manifest 模式核对依赖（0005 §8） | — |
 
 ## 1. target 约束
@@ -348,8 +348,10 @@ mesh.dispatch %x, %y, %z          // amplification；payload 是 @payload 变量
 - 依赖泛型参数的 const 表达式在 MIR 里保持符号形式，到单态化时再求值。
 - `const` 函数不能访问资源、groupshared、入口 I/O 和 `debug.*`，由 verifier 检查。
 - 解释器的执行模型（2026-10-17 定）：
-  - 一个 group 的 lane 按 wave 分组，wave 内锁步执行，按结构化控制流维护活动掩码，lane 在 merge 块汇合（§5.3）；wave 大小是参数，测试覆盖多种大小；
-  - group 里的各个 wave 轮流执行，遇到 `barrier` 时切换，所有 wave 都到了才继续；
+  - 一个 group 的所有 lane 按结构化控制流一起锁步执行，维护活动掩码：分支两边的 lane 先后各跑一遍（条件为真的一边先跑），在 merge 块汇合；只要还有 lane 留在循环里，循环就继续（§5.3）；
+  - wave 操作按 wave 分组（相邻的 `wave_size` 个 lane），只算这个 wave 里活动的 lane；wave 大小是参数，测试覆盖多种大小；
+  - 这样 barrier 总是由整个 group 同时到达，不需要挂起和切换 wave（第 6c 步定：这同样是 GPU 允许的一种执行顺序，同样确定）；barrier 处如果有 lane 不活动就报错；
+  - 同一条指令里各 lane 按序号从小到大执行，所以原子操作和有竞争的写每次结果都一样；越界的访问读到 0、写被丢掉，并且计数；
   - 数学函数（`sin`、`exp2`、`log2`……）在 ir crate 里用软件实现，所有宿主上逐位一致，所以在不同机器上 cook 出的 blob 相同；精度按 GPU 的容差，不保证正确舍入。f16 也用软件实现；
   - 资源由调用方提供：buffer 是字节数组，push 和入口 I/O 是变量的初始值；纹理采样、ray query 和 mesh 第一版不支持（第 10 步再加）；
   - 整数除以 0 在解释器和常量折叠里都得 0（§10 允许 target 定义，两者一致才能做差分测试）。

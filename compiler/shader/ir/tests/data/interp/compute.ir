@@ -1,0 +1,58 @@
+// A compute entry point using groupshared memory, a barrier, waves, atomics and divergence.
+struct @Args { Out: res<Buffer<i32>>, Waves: res<Buffer<i32>>, Total: res<Buffer<i32>>, Iters: res<Buffer<i32>> }
+
+global @args : ptr<push, @Args>
+global @gi   : ptr<input, i32> builtin(GroupIndex)
+global @tid  : ptr<input, i32x3> builtin(DispatchThreadId)
+global @tile : ptr<groupshared, [i32; 64]>
+
+entry compute(64, 1, 1) @Game.Work uses(@args, @gi, @tid, @tile) {
+block0:
+    %i = load @gi
+    %x = extract (load @tid), 0
+    store (access @tile, [%i]), %x
+    barrier exec(group) mem(group) spaces(groupshared)
+    // Each lane reads its mirror image in the tile.
+    %j = sub i32 63, %i
+    %mirror = load (access @tile, [%j])
+    %out = desc.get (load (access @args, .Out))
+    store (buffer.elem %out, %x), %mirror
+    // One sum per wave, written by its first lane; one total over everything.
+    %sum = wave.reduce add %x
+    %first = wave.is_first
+    %count = wave.lane_count
+    cond_br %first, block1, block2 merge block2
+block1:
+    %w = sdiv %x, %count
+    %waves = desc.get (load (access @args, .Waves))
+    store (buffer.elem %waves, %w), %sum
+    br block2
+block2:
+    %total = desc.get (load (access @args, .Total))
+    %old = atomic.add (buffer.elem %total, i32 0), %x scope(device) order(relaxed)
+    // Lane i loops i % 4 times; after the loop the whole wave counts the iterations.
+    %n = and %i, i32 3
+    loop header block3(i32 0) continue block5 merge block6
+block3(%k: i32):
+    %done = icmp sge %k, %n
+    cond_br %done, block6(%k), block4 merge block4
+block4:
+    br block5
+block5:
+    %k2 = add %k, i32 1
+    br block3(%k2)
+block6(%iters: i32):
+    %all = wave.reduce add %iters
+    %even = and %i, i32 1
+    %is_even = icmp eq %even, i32 0
+    cond_br %is_even, block7, block8 merge block8
+block7:
+    // Only the even lanes are active here.
+    %evens = wave.reduce add %iters
+    %pick = select %first, %evens, %all
+    %it = desc.get (load (access @args, .Iters))
+    store (buffer.elem %it, %x), %pick
+    br block8
+block8:
+    return
+}

@@ -908,9 +908,7 @@ impl Parser {
         let start = self.pos;
         let mut first = true;
         while *self.peek() != Tok::Punct('}') && *self.peek() != Tok::Eof {
-            let at_label = matches!(self.peek(), Tok::Ident(_))
-                && matches!(self.peek_at(1), Tok::Punct(':') | Tok::Punct('('))
-                && self.statement_start();
+            let at_label = self.at_label();
             if at_label {
                 let Tok::Ident(name) = self.bump() else {
                     unreachable!()
@@ -942,9 +940,7 @@ impl Parser {
             if *self.peek() == Tok::Eof {
                 return self.error("unterminated function body");
             }
-            let at_label = matches!(self.peek(), Tok::Ident(_))
-                && matches!(self.peek_at(1), Tok::Punct(':') | Tok::Punct('('))
-                && self.statement_start();
+            let at_label = self.at_label();
             if at_label {
                 self.label(&mut b)?;
             } else {
@@ -956,6 +952,42 @@ impl Parser {
         }
         self.bump();
         Ok(())
+    }
+
+    /// Whether a block label starts here: at the start of a line, `name:` or `name(...):`
+    /// (an instruction such as `store (...), %v` has no `:` after its parenthesis).
+    fn at_label(&self) -> bool {
+        if !matches!(self.peek(), Tok::Ident(_)) || !self.statement_start() {
+            return false;
+        }
+        match self.peek_at(1) {
+            Tok::Punct(':') => true,
+            Tok::Punct('(') => {
+                // The matching `)` on this line, then `:`.
+                let line = self.token().line;
+                let mut depth = 0;
+                for (i, t) in self.tokens[self.pos + 1..].iter().enumerate() {
+                    if t.line != line {
+                        return false;
+                    }
+                    match t.tok {
+                        Tok::Punct('(') => depth += 1,
+                        Tok::Punct(')') => {
+                            depth -= 1;
+                            if depth == 0 {
+                                return matches!(
+                                    self.tokens.get(self.pos + 2 + i).map(|t| &t.tok),
+                                    Some(Tok::Punct(':'))
+                                );
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                false
+            }
+            _ => false,
+        }
     }
 
     /// Whether the current token starts a line (labels and instructions start lines).

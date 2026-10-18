@@ -1,6 +1,7 @@
 //! marlin-shaderc-ir's tests (quick tier, docs/design/0014-testing.md §5): the text format
 //! round-trips (fixtures and golden files), the builder and function editing, the verifier (a
-//! golden file of broken modules), and the parser and verifier on
+//! golden file of broken modules), the interpreter (semantics, a dispatch, math against the
+//! host), and the parser, verifier and interpreter on
 //! broken input (`MARLIN_TEST_SEED` / `MARLIN_TEST_SCALE`, 1 GiB memory cap).
 //! Platform-independent.
 //! Run alone with `cargo test -p marlin-shaderc-ir --test unit`; `MARLIN_BLESS=1` rewrites the
@@ -12,6 +13,7 @@ use marlin_test_support::MemCap;
 static HEAP: MemCap<std::alloc::System> = MemCap::new(std::alloc::System, 1 << 30);
 
 mod builder;
+mod interp;
 mod numbers;
 mod robustness;
 mod text;
