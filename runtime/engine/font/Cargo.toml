@@ -8,12 +8,15 @@ publish.workspace = true
 [dependencies]
 marlin-asset.workspace = true
 marlin-containers.workspace = true
-marlin-hash.workspace = true
+marlin-jobs.workspace = true
+marlin-math.workspace = true
 marlin-reflect.workspace = true
 marlin-serial.workspace = true
+marlin-sync.workspace = true
 
 [dev-dependencies]
-marlin-math.workspace = true
+marlin-cook-font.workspace = true
+marlin-jobs.workspace = true
 
 [lints]
 workspace = true

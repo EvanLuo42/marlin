@@ -596,10 +596,12 @@ version = "0.1.0"
 dependencies = [
  "marlin-asset",
  "marlin-containers",
- "marlin-hash",
+ "marlin-cook-font",
+ "marlin-jobs",
  "marlin-math",
  "marlin-reflect",
  "marlin-serial",
+ "marlin-sync",
 ]
 
 [[package]]
