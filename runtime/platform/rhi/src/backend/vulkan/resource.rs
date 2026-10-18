@@ -29,7 +29,7 @@ pub(crate) struct BufferInner {
     mapped: Option<NonNull<u8>>,
     /// Committed memory, or the heap a placed buffer lives in; `None` for sparse and wrapped
     /// buffers.
-    _memory: Option<Arc<Memory>>,
+    memory: Option<Arc<Memory>>,
     /// Destroy `raw` on drop (false for buffers wrapped from native ones).
     owned: bool,
 }
@@ -66,6 +66,11 @@ impl Buffer {
         self.0.mapped
     }
 
+    /// The memory it is bound to: its own for committed buffers, the heap's for placed ones.
+    pub(crate) fn memory(&self) -> Option<&Memory> {
+        self.0.memory.as_deref()
+    }
+
     pub(crate) fn shared(&self) -> &Shared {
         &self.0.shared
     }
@@ -89,7 +94,7 @@ impl Buffer {
             raw,
             address,
             mapped,
-            _memory: memory,
+            memory,
             owned,
         }))
     }
