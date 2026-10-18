@@ -1,0 +1,227 @@
+// One of every operation of step 6a.
+format 0 = "acc = {} at {}"
+format 1 = "bad \"index\"\n"
+
+struct @Light { Color: f32x3, Intensity: f32, Albedo: res<Texture2D<f32x4>> }
+struct @"Game.Grid<4>" { Cells: [f32; 8], Inner: @Light }
+
+global @lights : ptr<push, res<Buffer<@Light>>>
+global @raw    : ptr<push, res<ByteBuffer>>
+global @params : ptr<push, res<Uniform<@Light>>>
+global @tile   : ptr<groupshared, [f32x4; 64]>
+global @gi     : ptr<input, i32> builtin(GroupIndex)
+global @uv     : ptr<input, f32x2> location(0) interp(no_perspective)
+global @color  : ptr<output, f32x4> target(0)
+global @table  : ptr<constant, [f32; 4]> = (0.5, 1.0, -2.25, 1e-7)
+global @grid   : ptr<constant, @"Game.Grid<4>"> = ((1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0), zero)
+
+func @Game.Arith(%a: i32, %b: i32, %x: f32, %y: f32) -> (i32, f32) {
+block0:
+    %0 = add %a, %b
+    %1 = sub %0, i32 -1
+    %2 = mul %1, %b
+    %3 = sdiv %2, %b
+    %4 = udiv %3, i32 0x7FFFFFFF
+    %5 = srem %4, %a
+    %6 = urem %5, %a
+    %7 = and %6, %a
+    %8 = or %7, %a
+    %9 = xor %8, %a
+    %10 = shl %9, i32 3
+    %11 = lshr %10, i32 1
+    %12 = ashr %11, i32 1
+    %13 = mulhi.s %12, %a
+    %14 = mulhi.u %13, %a
+    %15 = neg %14
+    %16 = not %15
+    %f0 = fadd %x, %y
+    %f1 = fsub precise %f0, f32 1.5
+    %f2 = fmul %f1, %y
+    %f3 = fdiv %f2, %y
+    %f4 = frem %f3, %y
+    %f5 = fneg %f4
+    %c0 = icmp slt %16, %a
+    %c1 = icmp uge %16, %a
+    %c2 = fcmp olt %f5, %x
+    %c3 = fcmp une %f5, f32 0x7FC00000
+    %s = select %c0, %a, %b
+    %w = sext %s : i64
+    %n = trunc %w : i16
+    %z = zext %n : i32
+    %h = fptrunc %f5 : f16
+    %e = fpext %h : f64
+    %i = fptosi %e : i32
+    %u = fptoui %x : i32
+    %g = sitofp %i : f32
+    %v = uitofp %u : f32
+    %bits = bitcast %v : i32
+    return %z, %g
+}
+
+func @Game.Math(%x: f32, %v: f32x3, %n: i32) -> f32 {
+block0:
+    %0 = fma %x, %x, %x
+    %1 = sqrt %0
+    %2 = rsqrt %1
+    %3 = rcp %2
+    %4 = exp2 %3
+    %5 = log2 %4
+    %6 = sin %5
+    %7 = cos %6
+    %8 = abs %7
+    %9 = fmin %8, %x
+    %10 = fmax %9, %x
+    %11 = floor %10
+    %12 = ceil %11
+    %13 = ftrunc %12
+    %14 = round_even %12
+    %15 = fract %14
+    %16 = sign %15
+    %17 = dot %v, %v
+    %18 = cross %v, %v
+    %19 = length %18
+    %20 = normalize %18
+    %21 = distance %20, %v
+    %22 = reflect %v, %20
+    %23 = refract %v, %20, %x
+    %24 = smoothstep %x, %19, %21
+    %25 = step %x, %24
+    %26 = faceforward %v, %22, %23
+    %27 = pow %25, %x
+    %28 = atan2 %27, %x
+    %29 = isnan %v
+    %30 = isinf %x
+    %31 = popcount %n
+    %32 = firstbit_hi.s %31
+    %33 = firstbit_hi.u %32
+    %34 = firstbit_lo %33
+    %35 = bitreverse %34
+    %36 = bitfield_extract.s %35, i32 1, i32 4
+    %37 = bitfield_extract.u %36, i32 1, i32 4
+    %38 = bitfield_insert %37, %n, i32 2, i32 3
+    %39 = smin %38, %n
+    %40 = umax %39, %n
+    %41 = tan %28
+    %42 = tanh %41
+    return %42
+}
+
+func @Game.Shapes(%v: f32x4, %m: f32x4x4, %k: i32, %l: @Light, %a: [f32; 8]) -> f32 {
+block0:
+    %s = splat f32 2.0 : f32x4
+    %0 = extract %v, 3
+    %1 = insert %v, 0, %0
+    %2 = shuffle %1, %s, [0, 5, 2]
+    %3 = extract.dyn %v, %k
+    %4 = insert.dyn %v, %k, %3
+    %5 = matmul %m, %4
+    %6 = matmul %m, %m
+    %7 = transpose %6
+    %8 = mat.column %7, 1
+    %9 = mat.row %7, 2
+    %10 = mat.extract %7, 1, 2
+    %11 = construct f32x2(%10, %0)
+    %12 = extract.field %l, .Intensity
+    %13 = insert.field %l, .Color, (shuffle %v, %v, [0, 1, 2])
+    %14 = extract.elem %a, 7
+    %15 = insert.elem %a, 0, %14
+    %16 = construct @Light(%2, %12, (extract.field %l, .Albedo))
+    %17 = construct [f32; 2](%14, %12)
+    return %10
+}
+
+func @Game.Memory(%h: handle<Buffer<@Light>>, %i: i32) {
+block0:
+    %p = var function : f32x4
+    store %p, f32x4 (1.0, 2.0, 3.0, 4.0)
+    %q = access %p, [%i]
+    %x = load %q aligned(4)
+    %e = buffer.elem %h, %i
+    %c = access %e, .Color, [2]
+    store %c, %x
+    %raw = desc.get (load @raw)
+    %b = buffer.byte %raw, i32 16
+    %r = load %b
+    %u = uniform.ptr (desc.get (load @params) nonuniform)
+    %t = load (access %u, .Intensity)
+    %len = buffer.length %h
+    %t2 = access @tile, [%i]
+    %old = atomic.add (access %e, .Intensity), f32 1.0 scope(device) order(relaxed)
+    %swap = atomic.cmpxchg %b, i32 0, i32 1 scope(group) order(acq_rel)
+    %ld = atomic.load %b scope(device) order(acquire)
+    atomic.store %b, %ld scope(device) order(release)
+    barrier exec(group) mem(group) spaces(groupshared)
+    barrier exec(none) mem(device) spaces(buffer, groupshared)
+    %k = load (access @grid, .Cells, [3])
+    return
+}
+
+entry pixel @Game.Ps uses(@uv, @color) {
+block0:
+    %uv = load @uv
+    %dx = deriv.ddx coarse %uv
+    %dy = deriv.ddy fine %uv
+    %helper = is_helper
+    discard
+    store @color, f32x4 zero
+    return
+}
+
+entry compute(64, 1, 1) @Game.Waves uses(@gi) {
+block0:
+    %i = load @gi
+    %f = sitofp %i : f32
+    %c = icmp eq %i, i32 0
+    %0 = wave.reduce fadd %f
+    %1 = wave.reduce smax %i cluster(4)
+    %2 = wave.scan add exclusive %i
+    %3 = wave.ballot %c
+    %4 = wave.broadcast %f, i32 0
+    %5 = wave.shuffle %f, %i
+    %6 = wave.quad swap_x %f
+    %7 = wave.quad read_lane %f, i32 2
+    %8 = wave.vote all %c
+    %9 = wave.match %i
+    %10 = wave.lane_index
+    %11 = wave.lane_count
+    %12 = wave.is_first
+    debug.print 0, (%f, %i)
+    debug.assert %c, 1, ()
+    return
+}
+
+func @Game.Flow(%n: i32, %b: i1) -> i32 {
+block0:
+    cond_br %b, block1, block2(i32 7) merge block3
+block1:
+    br block3(%n)
+block2(%seven: i32):
+    br block3(%seven)
+block3(%x: i32):
+    switch %x [0: block4, -1: block5(%x)] default block6 merge block7
+block4:
+    br block7(i32 0)
+block5(%y: i32):
+    br block7(%y)
+block6:
+    unreachable
+block7(%r: i32):
+    loop header block8(i32 0) continue block10 merge block11
+block8(%i: i32):
+    %done = icmp sge %i, %r
+    cond_br %done, block11(%i), block9 merge block9
+block9:
+    br block10
+block10:
+    %next = add %i, i32 1
+    br block8(%next)
+block11(%out: i32):
+    %res = call @Game.Twice(%out)
+    return %res
+}
+
+func @Game.Twice(%x: i32) -> i32 {
+block0:
+    %y = add %x, %x
+    return %y
+}

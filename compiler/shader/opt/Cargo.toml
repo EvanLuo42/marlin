@@ -1,0 +1,16 @@
+[package]
+name = "marlin-shaderc-opt"
+description = "Marlin shader compiler: the pass manager and the optimization passes over the IR."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+marlin-shaderc-ir.workspace = true
+
+[dev-dependencies]
+marlin-math.workspace = true
+marlin-test-support.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,135 @@
+use marlin_shaderc_ir::{Interpreter, Module, Val, parse_module, print_module, verify_module};
+use marlin_shaderc_opt::{Dce, Options, PassManager, Profile, Sccp, SimplifyCfg, pipeline};
+use marlin_test_support::{data_path, golden};
+
+fn fixture(name: &str) -> Module {
+    let path = data_path(env!("CARGO_MANIFEST_DIR"), &format!("passes/{name}.ir"));
+    let text = std::fs::read_to_string(path).unwrap().replace("\r\n", "\n");
+    let m = parse_module(&text).unwrap_or_else(|e| panic!("{name}: {e}"));
+    let errors = verify_module(&m);
+    assert!(errors.is_empty(), "{name}: {errors:#?}");
+    m
+}
+
+/// Every function of `before` and `after` returns the same for a few `int` arguments.
+fn same_results(name: &str, before: &Module, after: &Module) {
+    for (id, f) in before.funcs.iter() {
+        for x in [-5, -1, 0, 1, 2, 3, 10, 100] {
+            let args = vec![Val::i32(x); f.params().len()];
+            let want = Interpreter::new(before).call(id, &args).unwrap();
+            let got = Interpreter::new(after).call(id, &args).unwrap();
+            assert_eq!(got, want, "{name}: @{} with {x}", f.name);
+        }
+    }
+}
+
+/// Runs `pm` on fixture `name` and compares the result with `name.out.ir`.
+fn check(name: &str, pm: &PassManager) {
+    let before = fixture(name);
+    let mut after = before.clone();
+    pm.run(&mut after).unwrap_or_else(|e| panic!("{name}: {e}"));
+    let text = print_module(&after);
+    golden::assert_text(
+        &data_path(env!("CARGO_MANIFEST_DIR"), &format!("passes/{name}.out.ir")),
+        &text,
+    );
+    // What the pass makes reads back as it prints.
+    assert_eq!(print_module(&parse_module(&text).unwrap()), text, "{name}");
+    same_results(name, &before, &after);
+}
+
+fn alone(pass: impl marlin_shaderc_opt::Pass + 'static) -> PassManager {
+    let mut pm = PassManager::new(true);
+    pm.add(pass);
+    pm
+}
+
+#[test]
+fn simplify_cfg_keeps_regions_that_are_broken_out_of() {
+    check("simplify_cfg", &alone(SimplifyCfg));
+}
+
+#[test]
+fn dce_removes_what_nothing_live_reads() {
+    check("dce", &alone(Dce));
+}
+
+#[test]
+fn sccp_finds_constants_through_loops_and_branches() {
+    check("sccp", &alone(Sccp));
+    let options = Options {
+        profile: Profile::Shipping,
+        verify_each: false,
+    };
+    // With the rest of the pipeline, `one_way` is a `return`; the loop, which may run any
+    // number of times, stays (deleting loops is pass 3.3), but returns a constant.
+    let mut m = fixture("sccp");
+    pipeline(&options).run(&mut m).unwrap();
+    let text = print_module(&m);
+    assert!(
+        text.contains(
+            "block0:
+    return i32 8
+"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "    return i32 1
+"
+        ),
+        "{text}"
+    );
+}
+
+/// What `fuzz/fuzz_targets/shaderc_opt_pipeline.rs` checks.
+fn pipeline_on_text(text: &str) {
+    let Ok(module) = parse_module(text) else {
+        return;
+    };
+    if !verify_module(&module).is_empty() {
+        return;
+    }
+    let options = Options {
+        profile: Profile::Development,
+        verify_each: true,
+    };
+    let mut opt = module.clone();
+    pipeline(&options)
+        .run(&mut opt)
+        .unwrap_or_else(|e| panic!("{e}"));
+    for (id, f) in module.funcs.iter() {
+        if module.entry_of(id).is_some() {
+            continue;
+        }
+        let Some(args) = f
+            .params()
+            .iter()
+            .map(|&p| Val::zero(&module, f.ty(p)).ok())
+            .collect::<Option<Vec<_>>>()
+        else {
+            continue;
+        };
+        let mut a = Interpreter::new(&module);
+        a.options.step_limit = 20_000;
+        let mut b = Interpreter::new(&opt);
+        b.options.step_limit = 20_000;
+        if let (Ok(x), Ok(y)) = (a.call(id, &args), b.call(id, &args)) {
+            assert_eq!(x, y, "@{}", f.name);
+        }
+    }
+}
+
+#[test]
+fn fuzz_finds_stay_fixed() {
+    marlin_test_support::regress::for_each(
+        env!("CARGO_MANIFEST_DIR"),
+        "shaderc_opt_pipeline",
+        |bytes| {
+            if let Ok(text) = std::str::from_utf8(bytes) {
+                pipeline_on_text(text);
+            }
+        },
+    );
+}

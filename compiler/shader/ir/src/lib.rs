@@ -1,5 +1,5 @@
 //! The Marlin shader IR (`docs/design/0006-shader-ir.md`, step 6 of `0005-shader-compiler.md`
-//! §11): one instruction set for generic MIR and the monomorphized backend IR.
+//! §11): one instruction set from lowering to the backends.
 //!
 //! Step 6a:
 //! - [`Module`]: interned types ([`TypeData`]) and constants, structs, module-level variables
@@ -20,6 +20,10 @@
 //! (differential testing), with the whole thread group in lockstep over structured control
 //! flow, waves, groupshared memory, barriers and atomics, buffers in scalar layout, and the
 //! deterministic [`math`] functions.
+//!
+//! Step 8a, for the passes: [`mod@cfg`] (jumps, dominators and structured regions, shared with the
+//! verifier); removing instructions, parameters and blocks' contents; [`constant_value`] and
+//! [`value_constant`] between constants and interpreter values.
 
 macro_rules! words {
     ($(#[$meta:meta])* $name:ident { $($variant:ident = $word:literal),* $(,)? }) => {
@@ -46,6 +50,7 @@ macro_rules! words {
 }
 
 mod builder;
+pub mod cfg;
 mod func;
 mod infer;
 mod interp;
@@ -64,7 +69,8 @@ pub use func::{
 };
 pub use infer::{Existing, Types, result_types, result_types_in, step_type, step_type_in};
 pub use interp::{
-    ExecError, Interpreter, Options, Output, Print, Ptr, Resources, Root, Val, evaluate_op,
+    ExecError, Interpreter, Options, Output, Print, Ptr, Resources, Root, Val, constant_value,
+    evaluate_op, value_constant,
 };
 pub use module::{
     Binding, Builtin, Const, ConstData, ConstValue, Entry, GlobalData, GlobalId, Interp, Module,

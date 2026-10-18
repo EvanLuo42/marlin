@@ -1,5 +1,5 @@
 //! Building functions: a cursor at the end of a block, instructions whose result types are
-//! inferred (0006 §2: MIR lowering, monomorphization and passes all use it).
+//! inferred (lowering and the passes use it).
 
 use crate::func::{Block, FuncId, Function, Inst, Value};
 use crate::infer::result_types;

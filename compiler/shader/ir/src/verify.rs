@@ -23,6 +23,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
+use crate::cfg::{RegionKind as Kind, Structure, dominates, dominators};
 use crate::func::{Block, FuncId, Function, Inst, Value, ValueDef};
 use crate::infer::{Existing, result_types_in};
 use crate::module::{Binding, Builtin, Const, ConstValue, Module, Stage};
@@ -716,106 +717,6 @@ fn builtin_allowed(b: Builtin, stage: Stage, space: Space) -> bool {
 
 // ---- one function ----
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Kind {
-    Selection,
-    Switch,
-    Loop,
-}
-
-/// A structured region (0006 §5.1), by block positions in the layout.
-struct Region {
-    kind: Kind,
-    header: usize,
-    merge: usize,
-    /// Loops: the continue block, and the block whose `loop` instruction names the region.
-    cont: Option<usize>,
-    owner: usize,
-    blocks: Vec<bool>,
-}
-
-/// Dominators of a graph over `0..n` from `entry`: `idom[b]` (the entry is its own), `None`
-/// for blocks the entry does not reach.
-fn dominators(n: usize, entry: usize, succs: &[Vec<usize>]) -> Vec<Option<usize>> {
-    // Reverse postorder.
-    let mut order = Vec::new();
-    let mut seen = vec![false; n];
-    let mut stack = vec![(entry, 0usize)];
-    seen[entry] = true;
-    while let Some((b, i)) = stack.pop() {
-        if let Some(&s) = succs[b].get(i) {
-            stack.push((b, i + 1));
-            if !seen[s] {
-                seen[s] = true;
-                stack.push((s, 0));
-            }
-        } else {
-            order.push(b);
-        }
-    }
-    order.reverse();
-    let mut rpo = vec![usize::MAX; n];
-    for (i, &b) in order.iter().enumerate() {
-        rpo[b] = i;
-    }
-    let mut preds = vec![Vec::new(); n];
-    for &b in &order {
-        for &s in &succs[b] {
-            preds[s].push(b);
-        }
-    }
-    // Cooper, Harvey and Kennedy's iteration.
-    let mut idom: Vec<Option<usize>> = vec![None; n];
-    idom[entry] = Some(entry);
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for &b in order.iter().skip(1) {
-            let mut new: Option<usize> = None;
-            for &p in &preds[b] {
-                if idom[p].is_none() {
-                    continue;
-                }
-                new = Some(match new {
-                    None => p,
-                    Some(mut a) => {
-                        let mut c = p;
-                        while a != c {
-                            while rpo[a] > rpo[c] {
-                                a = idom[a].unwrap_or(entry);
-                            }
-                            while rpo[c] > rpo[a] {
-                                c = idom[c].unwrap_or(entry);
-                            }
-                        }
-                        a
-                    }
-                });
-            }
-            if new.is_some() && idom[b] != new {
-                idom[b] = new;
-                changed = true;
-            }
-        }
-    }
-    idom
-}
-
-fn dominates(idom: &[Option<usize>], a: usize, mut b: usize) -> bool {
-    if idom[b].is_none() {
-        return false;
-    }
-    loop {
-        if a == b {
-            return true;
-        }
-        match idom[b] {
-            Some(p) if p != b => b = p,
-            _ => return false,
-        }
-    }
-}
-
 struct FunctionVerifier<'v, 'a> {
     v: &'v mut Verifier<'a>,
     m: &'a Module,
@@ -1000,8 +901,10 @@ impl<'v, 'a> FunctionVerifier<'v, 'a> {
                         && f.insts[inst].results.get(i as usize) == Some(&v)
                         || f.uses(v).is_empty()
                 }
+                // A removed parameter or result stays in the arena, unused.
                 ValueDef::Param(b, i) => {
                     f.blocks.get(b).and_then(|b| b.params.get(i as usize)) == Some(&v)
+                        || f.uses(v).is_empty()
                 }
                 ValueDef::Const(c) => self.v.v_const(c).is_some_and(|d| d.ty == data.ty),
                 ValueDef::Global(g) => self.m.globals.get(g).is_some_and(|g| g.ty == data.ty),
@@ -1789,73 +1692,28 @@ impl<'v, 'a> FunctionVerifier<'v, 'a> {
         let f = self.f;
         let n = f.layout.len();
         let real = self.real_succs();
-        // Regions, and the structural edges they add.
-        let mut regions = Vec::new();
-        let mut structural = real.clone();
-        for (bi, &b) in f.layout.iter().enumerate() {
+        // Malformed headers (left out of the regions).
+        for &b in &f.layout {
             let Some(t) = f.terminator(b) else { continue };
             match &f.insts[t].op {
-                Op::CondBr { merge, .. } | Op::Switch { merge, .. } => {
-                    let kind = if matches!(f.insts[t].op, Op::Switch { .. }) {
-                        Kind::Switch
-                    } else {
-                        Kind::Selection
-                    };
-                    let m = self.index[merge];
-                    if m == bi {
-                        self.error_at(t, "a region's merge block is not its header");
-                        continue;
-                    }
-                    structural[bi].push(m);
-                    regions.push(Region {
-                        kind,
-                        header: bi,
-                        merge: m,
-                        cont: None,
-                        owner: bi,
-                        blocks: Vec::new(),
-                    });
+                Op::CondBr { merge, .. } | Op::Switch { merge, .. } if *merge == b => {
+                    self.error_at(t, "a region's merge block is not its header");
                 }
                 Op::Loop {
                     header,
                     continuing,
                     merge,
-                } => {
-                    let (h, c, m) = (
-                        self.index[header],
-                        self.index[continuing],
-                        self.index[merge],
-                    );
-                    if m == h || c == m {
-                        self.error_at(t, "a loop's header, continue and merge blocks differ (the continue block may be the header)");
-                        continue;
-                    }
-                    structural[h].push(m);
-                    structural[h].push(c);
-                    regions.push(Region {
-                        kind: Kind::Loop,
-                        header: h,
-                        merge: m,
-                        cont: Some(c),
-                        owner: bi,
-                        blocks: Vec::new(),
-                    });
+                } if merge == header || continuing == merge => {
+                    self.error_at(t, "a loop's header, continue and merge blocks differ (the continue block may be the header)");
                 }
                 _ => {}
             }
         }
+        let cfg = crate::cfg::Cfg::new(f);
+        let Structure { regions, sdom, .. } = Structure::new(f, &cfg);
         if regions.is_empty() {
             return;
         }
-        let sdom = dominators(n, 0, &structural);
-        let depth = |mut b: usize| {
-            let mut d = 0;
-            while let Some(p) = sdom[b].filter(|&p| p != b) {
-                b = p;
-                d += 1;
-            }
-            d
-        };
 
         // A block is the merge of one region, the continue block of one loop, not both.
         let mut merges = vec![0u32; n];
@@ -1882,37 +1740,6 @@ impl<'v, 'a> FunctionVerifier<'v, 'a> {
                     self.block_name(f.layout[r.header])
                 ));
             }
-        }
-
-        // Region blocks, outermost first; a loop before a selection with the same header.
-        // A region inside a loop also stops at the loop's continue block (unless it is in the
-        // continue block's part of the loop), as SPIR-V's constructs do.
-        regions.sort_by_key(|r| (depth(r.header), r.kind != Kind::Loop));
-        let mut innermost_loop: Vec<Option<usize>> = Vec::with_capacity(regions.len());
-        for i in 0..regions.len() {
-            let (header, merge) = (regions[i].header, regions[i].merge);
-            let parent = (0..i)
-                .filter(|&j| regions[j].blocks[header])
-                .min_by_key(|&j| regions[j].blocks.iter().filter(|x| **x).count());
-            let around = parent.and_then(|p| innermost_loop[p]);
-            let stop = around
-                .and_then(|l| regions[l].cont)
-                .filter(|&c| !dominates(&sdom, c, header));
-            let blocks: Vec<bool> = (0..n)
-                .map(|b| {
-                    sdom[b].is_some()
-                        && dominates(&sdom, header, b)
-                        && !dominates(&sdom, merge, b)
-                        && parent.is_none_or(|p| regions[p].blocks[b])
-                        && stop.is_none_or(|c| !dominates(&sdom, c, b))
-                })
-                .collect();
-            regions[i].blocks = blocks;
-            innermost_loop.push(if regions[i].kind == Kind::Loop {
-                Some(i)
-            } else {
-                around
-            });
         }
 
         let mut preds = vec![Vec::new(); n];

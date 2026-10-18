@@ -1,0 +1,87 @@
+// A switch on a constant whose case breaks out of it from inside an `if`: the switch stays,
+// without cases.
+func @switch_kept(%a: i32) -> i32 {
+block0:
+    switch i32 1 [0: block1, 1: block2] default block5(%a) merge block5
+block1:
+    br block5(i32 10)
+block2:
+    %c = icmp slt %a, i32 0
+    cond_br %c, block3, block4 merge block4
+block3:
+    br block5(i32 20)
+block4:
+    br block5(%a)
+block5(%r: i32):
+    return %r
+}
+
+// The same without the break: the switch becomes a `br` and the blocks join up.
+func @switch_gone(%a: i32) -> i32 {
+block0:
+    switch i32 1 [0: block1, 1: block2] default block3(%a) merge block3
+block1:
+    br block3(i32 10)
+block2:
+    %b = add %a, i32 1
+    br block3(%b)
+block3(%r: i32):
+    return %r
+}
+
+// A loop that never goes round: it becomes straight-line code.
+func @loop_once(%a: i32) -> i32 {
+block0:
+    loop header block1(%a) continue block2 merge block3
+block1(%x: i32):
+    %y = add %x, i32 1
+    br block3(%y)
+block2:
+    br block1(i32 0)
+block3(%r: i32):
+    return %r
+}
+
+// A loop left by a break from inside an `if`: it stays, with an empty continue block.
+func @loop_kept(%a: i32) -> i32 {
+block0:
+    loop header block1(%a) continue block4 merge block5
+block1(%x: i32):
+    %c = icmp slt %x, i32 0
+    cond_br %c, block2, block3 merge block3
+block2:
+    br block5(i32 -1)
+block3:
+    br block5(%x)
+block4:
+    br block1(%x)
+block5(%r: i32):
+    return %r
+}
+
+// Both arms return: the merge block stays, as `unreachable`.
+func @both_return(%a: i32) -> i32 {
+block0:
+    %c = icmp slt %a, i32 0
+    cond_br %c, block1, block2 merge block3
+block1:
+    return i32 1
+block2:
+    return i32 2
+block3(%z: i32):
+    %w = add %z, i32 1
+    return %w
+}
+
+// Arms that only jump on are jumped over (one of them: a `cond_br` jumps to a block once).
+func @empty_arms(%a: i32) -> i32 {
+block0:
+    %c = icmp slt %a, i32 0
+    cond_br %c, block1, block2 merge block3
+block1:
+    br block3(i32 1)
+block2:
+    br block3(%a)
+block3(%r: i32):
+    return %r
+}

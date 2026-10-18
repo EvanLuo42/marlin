@@ -21,6 +21,7 @@ marlin-hash = { path = "../runtime/core/hash" }
 marlin-reflect = { path = "../runtime/core/reflect" }
 marlin-serial = { path = "../runtime/core/serial" }
 marlin-shaderc-ir = { path = "../compiler/shader/ir" }
+marlin-shaderc-opt = { path = "../compiler/shader/opt" }
 marlin-text = { path = "../runtime/core/text" }
 
 [profile.release]
@@ -40,6 +41,13 @@ bench = false
 [[bin]]
 name = "shaderc_ir_parse"
 path = "fuzz_targets/shaderc_ir_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "shaderc_opt_pipeline"
+path = "fuzz_targets/shaderc_opt_pipeline.rs"
 test = false
 doc = false
 bench = false

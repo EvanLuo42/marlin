@@ -337,11 +337,59 @@ impl Function {
             "removing an instruction whose results are used"
         );
         self.detach(inst);
+        self.drop_operands(inst);
+    }
+
+    fn drop_operands(&mut self, inst: Inst) {
         let operands = std::mem::take(&mut self.insts[inst].operands);
         for (i, v) in operands.into_iter().enumerate() {
             self.values[v]
                 .uses
                 .retain(|u| !(u.inst == inst && u.index == i as u32));
+        }
+    }
+
+    /// Deletes several instructions at once: their results may be used only by each other.
+    pub fn remove_insts(&mut self, insts: &[Inst]) {
+        for &inst in insts {
+            self.detach(inst);
+            self.drop_operands(inst);
+        }
+        debug_assert!(
+            insts.iter().all(|&i| self.insts[i]
+                .results
+                .iter()
+                .all(|&r| self.values[r].uses.is_empty())),
+            "removing instructions whose results are used elsewhere"
+        );
+    }
+
+    /// Deletes every instruction of `block`.
+    pub fn clear_block(&mut self, block: Block) {
+        let insts: Vec<Inst> = self.insts(block).collect();
+        self.remove_insts(&insts);
+    }
+
+    /// Replaces `inst` (which has no results) by a new instruction in its place.
+    pub fn replace_inst(&mut self, inst: Inst, op: Op, operands: Vec<Value>) -> Inst {
+        debug_assert!(
+            self.insts[inst].results.is_empty(),
+            "replacing an instruction with results"
+        );
+        let new = self.create_inst(op, operands, &[]);
+        self.insts[new].loc = self.insts[inst].loc;
+        self.insert_before(inst, new);
+        self.remove_inst(inst);
+        new
+    }
+
+    /// Removes parameter `index` of `block`, which must be unused; later parameters move down.
+    /// Jumps to the block must stop passing it.
+    pub fn remove_param(&mut self, block: Block, index: usize) {
+        let v = self.blocks[block].params.remove(index);
+        debug_assert!(self.values[v].uses.is_empty(), "removing a used parameter");
+        for (i, &p) in self.blocks[block].params.iter().enumerate().skip(index) {
+            self.values[p].def = ValueDef::Param(block, i as u32);
         }
     }
 }

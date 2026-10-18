@@ -24,7 +24,7 @@ pub(crate) mod memory;
 use std::fmt;
 
 use crate::func::FuncId;
-use crate::module::{GlobalId, Module};
+use crate::module::{Const, ConstValue, GlobalId, Module};
 use crate::num::f16_to_f32;
 use crate::ty::{Scalar, Type, TypeData};
 
@@ -257,4 +257,52 @@ pub fn evaluate_op(
     result: Option<Type>,
 ) -> Result<Val, ExecError> {
     eval::eval(m, op, args, arg_types, result)
+}
+
+/// The value of a module constant.
+pub fn constant_value(m: &Module, c: Const) -> Result<Val, ExecError> {
+    memory::constant(m, c)
+}
+
+/// The constant of type `t` that holds `v` (the inverse of [`constant_value`]); `None` for
+/// pointers, handles and values that do not fit `t`.
+pub fn value_constant(m: &mut Module, v: &Val, t: Type) -> Option<Const> {
+    let data = m.data(t).clone();
+    let value = match (&data, v) {
+        (TypeData::Scalar(s), Val::Bits(b)) => {
+            let b = b & eval::mask(*s);
+            if s.is_float() {
+                ConstValue::Float(b)
+            } else {
+                ConstValue::Int(b)
+            }
+        }
+        (TypeData::Res(_), Val::Bits(b)) => ConstValue::Int(b & 0xFFFF_FFFF),
+        (_, Val::Agg(parts)) => {
+            let types: Vec<Type> = match &data {
+                TypeData::Vector(s, n) => vec![m.scalar(*s); *n as usize],
+                TypeData::Matrix {
+                    element,
+                    rows,
+                    cols,
+                } => {
+                    let col = m.vector(*element, *rows);
+                    vec![col; *cols as usize]
+                }
+                TypeData::Array(e, n) => vec![*e; *n as usize],
+                TypeData::Struct(id) => m.structs[*id].fields.iter().map(|f| f.1).collect(),
+                _ => return None,
+            };
+            if types.len() != parts.len() {
+                return None;
+            }
+            let mut items = Vec::with_capacity(parts.len());
+            for (p, pt) in parts.iter().zip(types) {
+                items.push(value_constant(m, p, pt)?);
+            }
+            ConstValue::Composite(items)
+        }
+        _ => return None,
+    };
+    Some(m.constant(t, value))
 }

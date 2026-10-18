@@ -1,0 +1,220 @@
+//! The pass manager and the optimization passes (`docs/design/0005-shader-compiler.md` §4, step
+//! 8 of §11).
+//!
+//! Every pass keeps the IR's structured control flow (0006 §5.1): regions stay single-entry,
+//! single-exit, and properly nested, so the verifier accepts the module after every pass. In
+//! Development compilers the [`PassManager`] checks that after each pass that changed
+//! something (0005 §4.6).
+//!
+//! Step 8a:
+//! - [`PassManager`]: passes over a module, or over one function at a time
+//!   ([`FunctionPass`]), with the control-flow analyses of each function cached until a pass
+//!   changes its control flow ([`Analyses`]).
+//! - [`SimplifyCfg`] (0005 §4.4 pass 2.12): constant branches folded, unreachable blocks
+//!   removed (an unreachable merge or continue block stays, as `unreachable`), switches and
+//!   loops that no longer branch or loop turned into jumps when nothing breaks out of them,
+//!   straight-line blocks merged, empty blocks jumped over.
+//! - [`Dce`] (2.10 without control dependence): instructions without side effects, and block
+//!   parameters, that nothing live reads.
+//! - [`Sccp`] (2.1): sparse conditional constant propagation; values and branches it proves
+//!   constant become constants, for [`SimplifyCfg`] to fold.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use marlin_shaderc_ir::cfg::{Cfg, Structure};
+use marlin_shaderc_ir::{FuncId, Function, Module, VerifyError, verify_module};
+
+mod dce;
+mod edit;
+mod sccp;
+mod simplify_cfg;
+
+pub use dce::Dce;
+pub use sccp::Sccp;
+pub use simplify_cfg::SimplifyCfg;
+
+/// The two builds (0005 §5.4): both fully optimized; they differ in `Debug.*` and debug
+/// information.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Profile {
+    Development,
+    Shipping,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Options {
+    pub profile: Profile,
+    /// Verify the module after every pass that changed it (Development compilers), not only
+    /// at the end.
+    pub verify_each: bool,
+}
+
+/// What a pass did to a function.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Changed {
+    No,
+    /// Instructions and values, not the blocks or jumps: control-flow analyses still hold.
+    Values,
+    /// The control flow.
+    Cfg,
+}
+
+/// A function's control-flow analyses.
+#[derive(Clone, Debug)]
+pub struct FlowInfo {
+    pub cfg: Cfg,
+    pub structure: Structure,
+}
+
+impl FlowInfo {
+    pub fn new(f: &Function) -> FlowInfo {
+        let cfg = Cfg::new(f);
+        let structure = Structure::new(f, &cfg);
+        FlowInfo { cfg, structure }
+    }
+}
+
+/// Analysis results, per function, kept until a pass changes what they describe.
+#[derive(Default)]
+pub struct Analyses {
+    flow: HashMap<FuncId, Arc<FlowInfo>>,
+}
+
+impl Analyses {
+    pub fn flow(&mut self, id: FuncId, f: &Function) -> Arc<FlowInfo> {
+        self.flow
+            .entry(id)
+            .or_insert_with(|| Arc::new(FlowInfo::new(f)))
+            .clone()
+    }
+
+    fn invalidate(&mut self, id: FuncId, changed: Changed) {
+        if changed == Changed::Cfg {
+            self.flow.remove(&id);
+        }
+    }
+}
+
+/// A pass over a whole module.
+pub trait Pass {
+    fn name(&self) -> &'static str;
+    /// Whether it changed anything.
+    fn run(&self, m: &mut Module, analyses: &mut Analyses) -> bool;
+}
+
+/// A pass over one function at a time. While it runs, the function is taken out of the module:
+/// the pass may add types and constants but must not look at other functions.
+pub trait FunctionPass {
+    fn name(&self) -> &'static str;
+    fn run_function(
+        &self,
+        m: &mut Module,
+        id: FuncId,
+        f: &mut Function,
+        analyses: &mut Analyses,
+    ) -> Changed;
+}
+
+impl<P: FunctionPass> Pass for P {
+    fn name(&self) -> &'static str {
+        FunctionPass::name(self)
+    }
+
+    fn run(&self, m: &mut Module, analyses: &mut Analyses) -> bool {
+        let ids: Vec<FuncId> = m.funcs.iter().map(|(id, _)| id).collect();
+        let mut any = false;
+        for id in ids {
+            let mut f = std::mem::replace(&mut m.funcs[id], Function::new("", Vec::new()));
+            let changed = self.run_function(m, id, &mut f, analyses);
+            m.funcs[id] = f;
+            analyses.invalidate(id, changed);
+            any |= changed != Changed::No;
+        }
+        any
+    }
+}
+
+/// The module did not verify after a pass.
+#[derive(Clone, Debug)]
+pub struct PassError {
+    pub pass: &'static str,
+    pub errors: Vec<VerifyError>,
+}
+
+impl std::fmt::Display for PassError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "the module does not verify after `{}`", self.pass)?;
+        for e in &self.errors {
+            write!(f, "\n  {e}")?;
+        }
+        Ok(())
+    }
+}
+
+/// Which passes ran, and whether each changed the module.
+#[derive(Clone, Debug, Default)]
+pub struct Report {
+    pub ran: Vec<(&'static str, bool)>,
+}
+
+pub struct PassManager {
+    passes: Vec<Box<dyn Pass>>,
+    verify_each: bool,
+}
+
+impl PassManager {
+    pub fn new(verify_each: bool) -> PassManager {
+        PassManager {
+            passes: Vec::new(),
+            verify_each,
+        }
+    }
+
+    pub fn add(&mut self, pass: impl Pass + 'static) -> &mut Self {
+        self.passes.push(Box::new(pass));
+        self
+    }
+
+    pub fn names(&self) -> Vec<&'static str> {
+        self.passes.iter().map(|p| p.name()).collect()
+    }
+
+    /// Runs the passes in order; the module verifies at the end (and after each pass that
+    /// changed it, with `verify_each`).
+    pub fn run(&self, m: &mut Module) -> Result<Report, PassError> {
+        let mut analyses = Analyses::default();
+        let mut report = Report::default();
+        for pass in &self.passes {
+            let changed = pass.run(m, &mut analyses);
+            report.ran.push((pass.name(), changed));
+            if changed && self.verify_each {
+                check(m, pass.name())?;
+            }
+        }
+        if !self.verify_each {
+            check(m, "the pipeline")?;
+        }
+        Ok(report)
+    }
+}
+
+fn check(m: &Module, pass: &'static str) -> Result<(), PassError> {
+    let errors = verify_module(m);
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(PassError { pass, errors })
+    }
+}
+
+/// The pipeline for `options` (0005 §4.4; the passes there so far).
+pub fn pipeline(options: &Options) -> PassManager {
+    let mut pm = PassManager::new(options.verify_each);
+    pm.add(SimplifyCfg)
+        .add(Sccp)
+        .add(SimplifyCfg)
+        .add(Dce)
+        .add(SimplifyCfg);
+    pm
+}

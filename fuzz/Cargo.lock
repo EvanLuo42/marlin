@@ -152,6 +152,7 @@ dependencies = [
  "marlin-reflect",
  "marlin-serial",
  "marlin-shaderc-ir",
+ "marlin-shaderc-opt",
  "marlin-text",
 ]
 
@@ -294,6 +295,13 @@ name = "marlin-shaderc-ir"
 version = "0.1.0"
 dependencies = [
  "marlin-lang-arena",
+]
+
+[[package]]
+name = "marlin-shaderc-opt"
+version = "0.1.0"
+dependencies = [
+ "marlin-shaderc-ir",
 ]
 
 [[package]]

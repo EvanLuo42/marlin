@@ -122,7 +122,7 @@ verifier 怎么划分 region（第 6b 步定）：在 CFG 上再加上每个 hea
   - wave op；
   - barrier；
   - `mesh.set_counts` 和 `mesh.dispatch`。
-- 对 convergent 的 op，pass 只能在**控制依赖相同**的位置之间移动它，不能把它移进或移出发散的条件。verifier 会检查这一点；能不能移动由 uniformity 分析判断（0005 §4.3）。这项检查要等 uniformity 分析（0005 §11 第 8 步）才加进 verifier。
+- 对 convergent 的 op，pass 只能在**控制依赖相同**的位置之间移动它，不能把它移进或移出发散的条件。verifier 会检查这一点；能不能移动由 uniformity 分析判断（0005 §4.3）。这项检查要等 uniformity 分析（0005 §11 第 8c 步）才加进 verifier。
 - 不用显式的 convergence token。
 
 ## 6. 内存与逻辑指针

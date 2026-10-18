@@ -1,0 +1,17 @@
+// A loop counter that only feeds itself goes, with its parameters; so does an unused product.
+func @dead_counter(%a: i32) -> i32 {
+block0:
+    %unused = mul %a, %a
+    loop header block1(%a, i32 0) continue block3 merge block4
+block1(%x: i32, %k: i32):
+    %done = icmp sge %x, i32 10
+    cond_br %done, block4, block2 merge block2
+block2:
+    %x2 = add %x, i32 1
+    br block3
+block3:
+    %k2 = add %k, i32 1
+    br block1(%x2, %k2)
+block4:
+    return %x
+}

@@ -35,6 +35,7 @@ fn main() {
     asset(&mut out);
     front_syntax(&mut out, repo);
     shaderc_ir(&mut out, repo);
+    shaderc_opt(&mut out, repo);
 }
 
 struct Corpus {
@@ -507,5 +508,22 @@ fn shaderc_ir(out: &mut Corpus, repo: &Path) {
     for path in sources {
         let stem = path.file_stem().unwrap().to_string_lossy().into_owned();
         out.put("shaderc_ir_parse", &stem, &fs::read(&path).unwrap());
+    }
+}
+
+fn shaderc_opt(out: &mut Corpus, repo: &Path) {
+    let mut sources: Vec<PathBuf> = Vec::new();
+    for dir in ["compiler/shader/ir/tests/data/text", "compiler/shader/opt/tests/data/passes"] {
+        sources.extend(
+            fs::read_dir(repo.join(dir))
+                .unwrap()
+                .map(|e| e.unwrap().path())
+                .filter(|p| p.extension().is_some_and(|e| e == "ir")),
+        );
+    }
+    sources.sort();
+    for path in sources {
+        let stem = path.file_stem().unwrap().to_string_lossy().into_owned();
+        out.put("shaderc_opt_pipeline", &stem, &fs::read(&path).unwrap());
     }
 }

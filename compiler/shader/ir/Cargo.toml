@@ -1,6 +1,6 @@
 [package]
 name = "marlin-shaderc-ir"
-description = "Marlin shader compiler: the IR shared by MIR and the backends, its builder, text format, verifier and interpreter."
+description = "Marlin shader compiler: the IR from lowering to the backends, its builder, text format, verifier, control-flow analyses and interpreter."
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
