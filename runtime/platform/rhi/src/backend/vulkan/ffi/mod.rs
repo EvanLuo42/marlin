@@ -206,12 +206,29 @@ fn_table! {
         vkGetImageSparseMemoryRequirements2: PFN_vkGetImageSparseMemoryRequirements2,
         vkQueueBindSparse: PFN_vkQueueBindSparse,
         // --- pipeline and draw ---
+        vkCreateGraphicsPipelines: PFN_vkCreateGraphicsPipelines,
+        vkCmdBeginRendering: PFN_vkCmdBeginRendering,
+        vkCmdEndRendering: PFN_vkCmdEndRendering,
+        vkCmdSetViewportWithCount: PFN_vkCmdSetViewportWithCount,
+        vkCmdSetScissorWithCount: PFN_vkCmdSetScissorWithCount,
+        vkCmdSetStencilReference: PFN_vkCmdSetStencilReference,
+        vkCmdSetBlendConstants: PFN_vkCmdSetBlendConstants,
+        vkCmdSetDepthBounds: PFN_vkCmdSetDepthBounds,
+        vkCmdBindIndexBuffer2: PFN_vkCmdBindIndexBuffer2,
+        vkCmdDraw: PFN_vkCmdDraw,
+        vkCmdDrawIndexed: PFN_vkCmdDrawIndexed,
+        vkCmdDrawMeshTasksEXT: PFN_vkCmdDrawMeshTasksEXT,
+        vkCreateIndirectCommandsLayoutEXT: PFN_vkCreateIndirectCommandsLayoutEXT,
+        vkDestroyIndirectCommandsLayoutEXT: PFN_vkDestroyIndirectCommandsLayoutEXT,
+        vkGetGeneratedCommandsMemoryRequirementsEXT: PFN_vkGetGeneratedCommandsMemoryRequirementsEXT,
+        vkCmdExecuteGeneratedCommandsEXT: PFN_vkCmdExecuteGeneratedCommandsEXT,
     }
     optional {
         vkGetDeviceFaultInfoEXT: PFN_vkGetDeviceFaultInfoEXT,
         vkSetDeviceMemoryPriorityEXT: PFN_vkSetDeviceMemoryPriorityEXT,
         // --- resource ---
         // --- pipeline and draw ---
+        vkCmdSetFragmentShadingRateKHR: PFN_vkCmdSetFragmentShadingRateKHR,
         // --- query, ray tracing, diagnostics ---
         // --- swapchain and sharing ---
     }

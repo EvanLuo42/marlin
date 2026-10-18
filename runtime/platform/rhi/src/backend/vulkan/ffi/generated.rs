@@ -3416,6 +3416,703 @@ impl Default for VkTimelineSemaphoreSubmitInfo {
     }
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkGraphicsPipelineCreateInfo {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub flags: VkPipelineCreateFlags,
+    pub stageCount: u32,
+    pub pStages: *const VkPipelineShaderStageCreateInfo,
+    pub pVertexInputState: *const VkPipelineVertexInputStateCreateInfo,
+    pub pInputAssemblyState: *const VkPipelineInputAssemblyStateCreateInfo,
+    pub pTessellationState: *const VkPipelineTessellationStateCreateInfo,
+    pub pViewportState: *const VkPipelineViewportStateCreateInfo,
+    pub pRasterizationState: *const VkPipelineRasterizationStateCreateInfo,
+    pub pMultisampleState: *const VkPipelineMultisampleStateCreateInfo,
+    pub pDepthStencilState: *const VkPipelineDepthStencilStateCreateInfo,
+    pub pColorBlendState: *const VkPipelineColorBlendStateCreateInfo,
+    pub pDynamicState: *const VkPipelineDynamicStateCreateInfo,
+    pub layout: VkPipelineLayout,
+    pub renderPass: VkRenderPass,
+    pub subpass: u32,
+    pub basePipelineHandle: VkPipeline,
+    pub basePipelineIndex: i32,
+}
+
+impl Default for VkGraphicsPipelineCreateInfo {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 28; // VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkPipelineRenderingCreateInfo {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub viewMask: u32,
+    pub colorAttachmentCount: u32,
+    pub pColorAttachmentFormats: *const VkFormat,
+    pub depthAttachmentFormat: VkFormat,
+    pub stencilAttachmentFormat: VkFormat,
+}
+
+impl Default for VkPipelineRenderingCreateInfo {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000044002; // VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkPipelineVertexInputStateCreateInfo {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub flags: VkPipelineVertexInputStateCreateFlags,
+    pub vertexBindingDescriptionCount: u32,
+    pub pVertexBindingDescriptions: *const VkVertexInputBindingDescription,
+    pub vertexAttributeDescriptionCount: u32,
+    pub pVertexAttributeDescriptions: *const VkVertexInputAttributeDescription,
+}
+
+impl Default for VkPipelineVertexInputStateCreateInfo {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 19; // VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkVertexInputBindingDescription {
+    pub binding: u32,
+    pub stride: u32,
+    pub inputRate: VkVertexInputRate,
+}
+
+impl Default for VkVertexInputBindingDescription {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        unsafe { core::mem::zeroed() }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkVertexInputAttributeDescription {
+    pub location: u32,
+    pub binding: u32,
+    pub format: VkFormat,
+    pub offset: u32,
+}
+
+impl Default for VkVertexInputAttributeDescription {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        unsafe { core::mem::zeroed() }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkPipelineInputAssemblyStateCreateInfo {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub flags: VkPipelineInputAssemblyStateCreateFlags,
+    pub topology: VkPrimitiveTopology,
+    pub primitiveRestartEnable: VkBool32,
+}
+
+impl Default for VkPipelineInputAssemblyStateCreateInfo {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 20; // VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkPipelineTessellationStateCreateInfo {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub flags: VkPipelineTessellationStateCreateFlags,
+    pub patchControlPoints: u32,
+}
+
+impl Default for VkPipelineTessellationStateCreateInfo {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 21; // VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkPipelineViewportStateCreateInfo {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub flags: VkPipelineViewportStateCreateFlags,
+    pub viewportCount: u32,
+    pub pViewports: *const VkViewport,
+    pub scissorCount: u32,
+    pub pScissors: *const VkRect2D,
+}
+
+impl Default for VkPipelineViewportStateCreateInfo {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 22; // VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkViewport {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub minDepth: f32,
+    pub maxDepth: f32,
+}
+
+impl Default for VkViewport {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        unsafe { core::mem::zeroed() }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkRect2D {
+    pub offset: VkOffset2D,
+    pub extent: VkExtent2D,
+}
+
+impl Default for VkRect2D {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        unsafe { core::mem::zeroed() }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkPipelineRasterizationStateCreateInfo {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub flags: VkPipelineRasterizationStateCreateFlags,
+    pub depthClampEnable: VkBool32,
+    pub rasterizerDiscardEnable: VkBool32,
+    pub polygonMode: VkPolygonMode,
+    pub cullMode: VkCullModeFlags,
+    pub frontFace: VkFrontFace,
+    pub depthBiasEnable: VkBool32,
+    pub depthBiasConstantFactor: f32,
+    pub depthBiasClamp: f32,
+    pub depthBiasSlopeFactor: f32,
+    pub lineWidth: f32,
+}
+
+impl Default for VkPipelineRasterizationStateCreateInfo {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 23; // VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkPipelineRasterizationConservativeStateCreateInfoEXT {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub flags: VkPipelineRasterizationConservativeStateCreateFlagsEXT,
+    pub conservativeRasterizationMode: VkConservativeRasterizationModeEXT,
+    pub extraPrimitiveOverestimationSize: f32,
+}
+
+impl Default for VkPipelineRasterizationConservativeStateCreateInfoEXT {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000101001; // VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_CONSERVATIVE_STATE_CREATE_INFO_EXT
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkPipelineMultisampleStateCreateInfo {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub flags: VkPipelineMultisampleStateCreateFlags,
+    pub rasterizationSamples: VkSampleCountFlagBits,
+    pub sampleShadingEnable: VkBool32,
+    pub minSampleShading: f32,
+    pub pSampleMask: *const VkSampleMask,
+    pub alphaToCoverageEnable: VkBool32,
+    pub alphaToOneEnable: VkBool32,
+}
+
+impl Default for VkPipelineMultisampleStateCreateInfo {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 24; // VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkPipelineDepthStencilStateCreateInfo {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub flags: VkPipelineDepthStencilStateCreateFlags,
+    pub depthTestEnable: VkBool32,
+    pub depthWriteEnable: VkBool32,
+    pub depthCompareOp: VkCompareOp,
+    pub depthBoundsTestEnable: VkBool32,
+    pub stencilTestEnable: VkBool32,
+    pub front: VkStencilOpState,
+    pub back: VkStencilOpState,
+    pub minDepthBounds: f32,
+    pub maxDepthBounds: f32,
+}
+
+impl Default for VkPipelineDepthStencilStateCreateInfo {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 25; // VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkStencilOpState {
+    pub failOp: VkStencilOp,
+    pub passOp: VkStencilOp,
+    pub depthFailOp: VkStencilOp,
+    pub compareOp: VkCompareOp,
+    pub compareMask: u32,
+    pub writeMask: u32,
+    pub reference: u32,
+}
+
+impl Default for VkStencilOpState {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        unsafe { core::mem::zeroed() }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkPipelineColorBlendStateCreateInfo {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub flags: VkPipelineColorBlendStateCreateFlags,
+    pub logicOpEnable: VkBool32,
+    pub logicOp: VkLogicOp,
+    pub attachmentCount: u32,
+    pub pAttachments: *const VkPipelineColorBlendAttachmentState,
+    pub blendConstants: [f32; 4],
+}
+
+impl Default for VkPipelineColorBlendStateCreateInfo {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 26; // VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkPipelineColorBlendAttachmentState {
+    pub blendEnable: VkBool32,
+    pub srcColorBlendFactor: VkBlendFactor,
+    pub dstColorBlendFactor: VkBlendFactor,
+    pub colorBlendOp: VkBlendOp,
+    pub srcAlphaBlendFactor: VkBlendFactor,
+    pub dstAlphaBlendFactor: VkBlendFactor,
+    pub alphaBlendOp: VkBlendOp,
+    pub colorWriteMask: VkColorComponentFlags,
+}
+
+impl Default for VkPipelineColorBlendAttachmentState {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        unsafe { core::mem::zeroed() }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkPipelineDynamicStateCreateInfo {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub flags: VkPipelineDynamicStateCreateFlags,
+    pub dynamicStateCount: u32,
+    pub pDynamicStates: *const VkDynamicState,
+}
+
+impl Default for VkPipelineDynamicStateCreateInfo {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 27; // VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkRenderingInfo {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub flags: VkRenderingFlags,
+    pub renderArea: VkRect2D,
+    pub layerCount: u32,
+    pub viewMask: u32,
+    pub colorAttachmentCount: u32,
+    pub pColorAttachments: *const VkRenderingAttachmentInfo,
+    pub pDepthAttachment: *const VkRenderingAttachmentInfo,
+    pub pStencilAttachment: *const VkRenderingAttachmentInfo,
+}
+
+impl Default for VkRenderingInfo {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000044000; // VK_STRUCTURE_TYPE_RENDERING_INFO
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkRenderingAttachmentInfo {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub imageView: VkImageView,
+    pub imageLayout: VkImageLayout,
+    pub resolveMode: VkResolveModeFlagBits,
+    pub resolveImageView: VkImageView,
+    pub resolveImageLayout: VkImageLayout,
+    pub loadOp: VkAttachmentLoadOp,
+    pub storeOp: VkAttachmentStoreOp,
+    pub clearValue: VkClearValue,
+}
+
+impl Default for VkRenderingAttachmentInfo {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000044001; // VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkRenderingFragmentShadingRateAttachmentInfoKHR {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub imageView: VkImageView,
+    pub imageLayout: VkImageLayout,
+    pub shadingRateAttachmentTexelSize: VkExtent2D,
+}
+
+impl Default for VkRenderingFragmentShadingRateAttachmentInfoKHR {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000044006; // VK_STRUCTURE_TYPE_RENDERING_FRAGMENT_SHADING_RATE_ATTACHMENT_INFO_KHR
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) union VkClearValue {
+    pub color: VkClearColorValue,
+    pub depthStencil: VkClearDepthStencilValue,
+}
+
+impl Default for VkClearValue {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        unsafe { core::mem::zeroed() }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) union VkClearColorValue {
+    pub float32: [f32; 4],
+    pub int32: [i32; 4],
+    pub uint32: [u32; 4],
+}
+
+impl Default for VkClearColorValue {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        unsafe { core::mem::zeroed() }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkClearDepthStencilValue {
+    pub depth: f32,
+    pub stencil: u32,
+}
+
+impl Default for VkClearDepthStencilValue {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        unsafe { core::mem::zeroed() }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkPhysicalDeviceDeviceGeneratedCommandsPropertiesEXT {
+    pub sType: VkStructureType,
+    pub pNext: *mut c_void,
+    pub maxIndirectPipelineCount: u32,
+    pub maxIndirectShaderObjectCount: u32,
+    pub maxIndirectSequenceCount: u32,
+    pub maxIndirectCommandsTokenCount: u32,
+    pub maxIndirectCommandsTokenOffset: u32,
+    pub maxIndirectCommandsIndirectStride: u32,
+    pub supportedIndirectCommandsInputModes: VkIndirectCommandsInputModeFlagsEXT,
+    pub supportedIndirectCommandsShaderStages: VkShaderStageFlags,
+    pub supportedIndirectCommandsShaderStagesPipelineBinding: VkShaderStageFlags,
+    pub supportedIndirectCommandsShaderStagesShaderBinding: VkShaderStageFlags,
+    pub deviceGeneratedCommandsTransformFeedback: VkBool32,
+    pub deviceGeneratedCommandsMultiDrawIndirectCount: VkBool32,
+}
+
+impl Default for VkPhysicalDeviceDeviceGeneratedCommandsPropertiesEXT {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000572001; // VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_GENERATED_COMMANDS_PROPERTIES_EXT
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkIndirectCommandsLayoutCreateInfoEXT {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub flags: VkIndirectCommandsLayoutUsageFlagsEXT,
+    pub shaderStages: VkShaderStageFlags,
+    pub indirectStride: u32,
+    pub pipelineLayout: VkPipelineLayout,
+    pub tokenCount: u32,
+    pub pTokens: *const VkIndirectCommandsLayoutTokenEXT,
+}
+
+impl Default for VkIndirectCommandsLayoutCreateInfoEXT {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000572006; // VK_STRUCTURE_TYPE_INDIRECT_COMMANDS_LAYOUT_CREATE_INFO_EXT
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkIndirectCommandsLayoutTokenEXT {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub r#type: VkIndirectCommandsTokenTypeEXT,
+    pub data: VkIndirectCommandsTokenDataEXT,
+    pub offset: u32,
+}
+
+impl Default for VkIndirectCommandsLayoutTokenEXT {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000572007; // VK_STRUCTURE_TYPE_INDIRECT_COMMANDS_LAYOUT_TOKEN_EXT
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) union VkIndirectCommandsTokenDataEXT {
+    pub pPushConstant: *const VkIndirectCommandsPushConstantTokenEXT,
+    pub pVertexBuffer: *const VkIndirectCommandsVertexBufferTokenEXT,
+    pub pIndexBuffer: *const VkIndirectCommandsIndexBufferTokenEXT,
+    pub pExecutionSet: *const VkIndirectCommandsExecutionSetTokenEXT,
+}
+
+impl Default for VkIndirectCommandsTokenDataEXT {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        unsafe { core::mem::zeroed() }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkIndirectCommandsPushConstantTokenEXT {
+    pub updateRange: VkPushConstantRange,
+}
+
+impl Default for VkIndirectCommandsPushConstantTokenEXT {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        unsafe { core::mem::zeroed() }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkIndirectCommandsVertexBufferTokenEXT {
+    pub vertexBindingUnit: u32,
+}
+
+impl Default for VkIndirectCommandsVertexBufferTokenEXT {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        unsafe { core::mem::zeroed() }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkIndirectCommandsIndexBufferTokenEXT {
+    pub mode: VkIndirectCommandsInputModeFlagBitsEXT,
+}
+
+impl Default for VkIndirectCommandsIndexBufferTokenEXT {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        unsafe { core::mem::zeroed() }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkIndirectCommandsExecutionSetTokenEXT {
+    pub r#type: VkIndirectExecutionSetInfoTypeEXT,
+    pub shaderStages: VkShaderStageFlags,
+}
+
+impl Default for VkIndirectCommandsExecutionSetTokenEXT {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        unsafe { core::mem::zeroed() }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkPushConstantRange {
+    pub stageFlags: VkShaderStageFlags,
+    pub offset: u32,
+    pub size: u32,
+}
+
+impl Default for VkPushConstantRange {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        unsafe { core::mem::zeroed() }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkGeneratedCommandsInfoEXT {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub shaderStages: VkShaderStageFlags,
+    pub indirectExecutionSet: VkIndirectExecutionSetEXT,
+    pub indirectCommandsLayout: VkIndirectCommandsLayoutEXT,
+    pub indirectAddress: VkDeviceAddress,
+    pub indirectAddressSize: VkDeviceSize,
+    pub preprocessAddress: VkDeviceAddress,
+    pub preprocessSize: VkDeviceSize,
+    pub maxSequenceCount: u32,
+    pub sequenceCountAddress: VkDeviceAddress,
+    pub maxDrawCount: u32,
+}
+
+impl Default for VkGeneratedCommandsInfoEXT {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000572004; // VK_STRUCTURE_TYPE_GENERATED_COMMANDS_INFO_EXT
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkGeneratedCommandsPipelineInfoEXT {
+    pub sType: VkStructureType,
+    pub pNext: *mut c_void,
+    pub pipeline: VkPipeline,
+}
+
+impl Default for VkGeneratedCommandsPipelineInfoEXT {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000572013; // VK_STRUCTURE_TYPE_GENERATED_COMMANDS_PIPELINE_INFO_EXT
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkGeneratedCommandsMemoryRequirementsInfoEXT {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub indirectExecutionSet: VkIndirectExecutionSetEXT,
+    pub indirectCommandsLayout: VkIndirectCommandsLayoutEXT,
+    pub maxSequenceCount: u32,
+    pub maxDrawCount: u32,
+}
+
+impl Default for VkGeneratedCommandsMemoryRequirementsInfoEXT {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000572002; // VK_STRUCTURE_TYPE_GENERATED_COMMANDS_MEMORY_REQUIREMENTS_INFO_EXT
+        s
+    }
+}
+
 // --- Function pointer types ---
 
 pub(crate) type PFN_vkGetInstanceProcAddr = unsafe extern "system" fn(instance: VkInstance, pName: *const c_char) -> PFN_vkVoidFunction;
@@ -3506,6 +4203,23 @@ pub(crate) type PFN_vkCmdResolveImage2 = unsafe extern "system" fn(commandBuffer
 pub(crate) type PFN_vkCmdClearColorImage = unsafe extern "system" fn(commandBuffer: VkCommandBuffer, image: VkImage, imageLayout: VkImageLayout, pColor: *const VkClearColorValue, rangeCount: u32, pRanges: *const VkImageSubresourceRange);
 pub(crate) type PFN_vkGetImageSparseMemoryRequirements2 = unsafe extern "system" fn(device: VkDevice, pInfo: *const VkImageSparseMemoryRequirementsInfo2, pSparseMemoryRequirementCount: *mut u32, pSparseMemoryRequirements: *mut VkSparseImageMemoryRequirements2);
 pub(crate) type PFN_vkQueueBindSparse = unsafe extern "system" fn(queue: VkQueue, bindInfoCount: u32, pBindInfo: *const VkBindSparseInfo, fence: VkFence) -> VkResult;
+pub(crate) type PFN_vkCreateGraphicsPipelines = unsafe extern "system" fn(device: VkDevice, pipelineCache: VkPipelineCache, createInfoCount: u32, pCreateInfos: *const VkGraphicsPipelineCreateInfo, pAllocator: *const VkAllocationCallbacks, pPipelines: *mut VkPipeline) -> VkResult;
+pub(crate) type PFN_vkCmdBeginRendering = unsafe extern "system" fn(commandBuffer: VkCommandBuffer, pRenderingInfo: *const VkRenderingInfo);
+pub(crate) type PFN_vkCmdEndRendering = unsafe extern "system" fn(commandBuffer: VkCommandBuffer);
+pub(crate) type PFN_vkCmdSetViewportWithCount = unsafe extern "system" fn(commandBuffer: VkCommandBuffer, viewportCount: u32, pViewports: *const VkViewport);
+pub(crate) type PFN_vkCmdSetScissorWithCount = unsafe extern "system" fn(commandBuffer: VkCommandBuffer, scissorCount: u32, pScissors: *const VkRect2D);
+pub(crate) type PFN_vkCmdSetStencilReference = unsafe extern "system" fn(commandBuffer: VkCommandBuffer, faceMask: VkStencilFaceFlags, reference: u32);
+pub(crate) type PFN_vkCmdSetBlendConstants = unsafe extern "system" fn(commandBuffer: VkCommandBuffer, blendConstants: *const f32);
+pub(crate) type PFN_vkCmdSetDepthBounds = unsafe extern "system" fn(commandBuffer: VkCommandBuffer, minDepthBounds: f32, maxDepthBounds: f32);
+pub(crate) type PFN_vkCmdSetFragmentShadingRateKHR = unsafe extern "system" fn(commandBuffer: VkCommandBuffer, pFragmentSize: *const VkExtent2D, combinerOps: *const VkFragmentShadingRateCombinerOpKHR);
+pub(crate) type PFN_vkCmdBindIndexBuffer2 = unsafe extern "system" fn(commandBuffer: VkCommandBuffer, buffer: VkBuffer, offset: VkDeviceSize, size: VkDeviceSize, indexType: VkIndexType);
+pub(crate) type PFN_vkCmdDraw = unsafe extern "system" fn(commandBuffer: VkCommandBuffer, vertexCount: u32, instanceCount: u32, firstVertex: u32, firstInstance: u32);
+pub(crate) type PFN_vkCmdDrawIndexed = unsafe extern "system" fn(commandBuffer: VkCommandBuffer, indexCount: u32, instanceCount: u32, firstIndex: u32, vertexOffset: i32, firstInstance: u32);
+pub(crate) type PFN_vkCmdDrawMeshTasksEXT = unsafe extern "system" fn(commandBuffer: VkCommandBuffer, groupCountX: u32, groupCountY: u32, groupCountZ: u32);
+pub(crate) type PFN_vkCreateIndirectCommandsLayoutEXT = unsafe extern "system" fn(device: VkDevice, pCreateInfo: *const VkIndirectCommandsLayoutCreateInfoEXT, pAllocator: *const VkAllocationCallbacks, pIndirectCommandsLayout: *mut VkIndirectCommandsLayoutEXT) -> VkResult;
+pub(crate) type PFN_vkDestroyIndirectCommandsLayoutEXT = unsafe extern "system" fn(device: VkDevice, indirectCommandsLayout: VkIndirectCommandsLayoutEXT, pAllocator: *const VkAllocationCallbacks);
+pub(crate) type PFN_vkGetGeneratedCommandsMemoryRequirementsEXT = unsafe extern "system" fn(device: VkDevice, pInfo: *const VkGeneratedCommandsMemoryRequirementsInfoEXT, pMemoryRequirements: *mut VkMemoryRequirements2);
+pub(crate) type PFN_vkCmdExecuteGeneratedCommandsEXT = unsafe extern "system" fn(commandBuffer: VkCommandBuffer, isPreprocessed: VkBool32, pGeneratedCommandsInfo: *const VkGeneratedCommandsInfoEXT);
 
 // --- Constants ---
 
@@ -3957,17 +4671,153 @@ pub(crate) const VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO: VkStructureTy
 pub(crate) const VK_SPARSE_IMAGE_FORMAT_SINGLE_MIPTAIL_BIT: VkSparseImageFormatFlags = 0x00000001;
 pub(crate) const VK_SPARSE_IMAGE_FORMAT_NONSTANDARD_BLOCK_SIZE_BIT: VkSparseImageFormatFlags = 0x00000004;
 pub(crate) const VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT: VkCommandPoolCreateFlags = 0x00000002;
+pub(crate) const VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO: VkStructureType = 28;
+pub(crate) const VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO: VkStructureType = 1000044002;
+pub(crate) const VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO: VkStructureType = 19;
+pub(crate) const VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO: VkStructureType = 20;
+pub(crate) const VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO: VkStructureType = 21;
+pub(crate) const VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO: VkStructureType = 22;
+pub(crate) const VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO: VkStructureType = 23;
+pub(crate) const VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_CONSERVATIVE_STATE_CREATE_INFO_EXT: VkStructureType = 1000101001;
+pub(crate) const VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO: VkStructureType = 24;
+pub(crate) const VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO: VkStructureType = 25;
+pub(crate) const VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO: VkStructureType = 26;
+pub(crate) const VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO: VkStructureType = 27;
+pub(crate) const VK_STRUCTURE_TYPE_RENDERING_INFO: VkStructureType = 1000044000;
+pub(crate) const VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO: VkStructureType = 1000044001;
+pub(crate) const VK_STRUCTURE_TYPE_RENDERING_FRAGMENT_SHADING_RATE_ATTACHMENT_INFO_KHR: VkStructureType = 1000044006;
+pub(crate) const VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_GENERATED_COMMANDS_PROPERTIES_EXT: VkStructureType = 1000572001;
+pub(crate) const VK_STRUCTURE_TYPE_INDIRECT_COMMANDS_LAYOUT_CREATE_INFO_EXT: VkStructureType = 1000572006;
+pub(crate) const VK_STRUCTURE_TYPE_INDIRECT_COMMANDS_LAYOUT_TOKEN_EXT: VkStructureType = 1000572007;
+pub(crate) const VK_STRUCTURE_TYPE_GENERATED_COMMANDS_INFO_EXT: VkStructureType = 1000572004;
+pub(crate) const VK_STRUCTURE_TYPE_GENERATED_COMMANDS_PIPELINE_INFO_EXT: VkStructureType = 1000572013;
+pub(crate) const VK_STRUCTURE_TYPE_GENERATED_COMMANDS_MEMORY_REQUIREMENTS_INFO_EXT: VkStructureType = 1000572002;
+pub(crate) const VK_PRIMITIVE_TOPOLOGY_POINT_LIST: VkPrimitiveTopology = 0;
+pub(crate) const VK_PRIMITIVE_TOPOLOGY_LINE_LIST: VkPrimitiveTopology = 1;
+pub(crate) const VK_PRIMITIVE_TOPOLOGY_LINE_STRIP: VkPrimitiveTopology = 2;
+pub(crate) const VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST: VkPrimitiveTopology = 3;
+pub(crate) const VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP: VkPrimitiveTopology = 4;
+pub(crate) const VK_POLYGON_MODE_FILL: VkPolygonMode = 0;
+pub(crate) const VK_POLYGON_MODE_LINE: VkPolygonMode = 1;
+pub(crate) const VK_CULL_MODE_NONE: VkCullModeFlags = 0;
+pub(crate) const VK_CULL_MODE_FRONT_BIT: VkCullModeFlags = 0x00000001;
+pub(crate) const VK_CULL_MODE_BACK_BIT: VkCullModeFlags = 0x00000002;
+pub(crate) const VK_FRONT_FACE_COUNTER_CLOCKWISE: VkFrontFace = 0;
+pub(crate) const VK_FRONT_FACE_CLOCKWISE: VkFrontFace = 1;
+pub(crate) const VK_CONSERVATIVE_RASTERIZATION_MODE_OVERESTIMATE_EXT: VkConservativeRasterizationModeEXT = 1;
+pub(crate) const VK_COMPARE_OP_NEVER: VkCompareOp = 0;
+pub(crate) const VK_COMPARE_OP_LESS: VkCompareOp = 1;
+pub(crate) const VK_COMPARE_OP_EQUAL: VkCompareOp = 2;
+pub(crate) const VK_COMPARE_OP_LESS_OR_EQUAL: VkCompareOp = 3;
+pub(crate) const VK_COMPARE_OP_GREATER: VkCompareOp = 4;
+pub(crate) const VK_COMPARE_OP_NOT_EQUAL: VkCompareOp = 5;
+pub(crate) const VK_COMPARE_OP_GREATER_OR_EQUAL: VkCompareOp = 6;
+pub(crate) const VK_COMPARE_OP_ALWAYS: VkCompareOp = 7;
+pub(crate) const VK_STENCIL_OP_KEEP: VkStencilOp = 0;
+pub(crate) const VK_STENCIL_OP_ZERO: VkStencilOp = 1;
+pub(crate) const VK_STENCIL_OP_REPLACE: VkStencilOp = 2;
+pub(crate) const VK_STENCIL_OP_INCREMENT_AND_CLAMP: VkStencilOp = 3;
+pub(crate) const VK_STENCIL_OP_DECREMENT_AND_CLAMP: VkStencilOp = 4;
+pub(crate) const VK_STENCIL_OP_INVERT: VkStencilOp = 5;
+pub(crate) const VK_STENCIL_OP_INCREMENT_AND_WRAP: VkStencilOp = 6;
+pub(crate) const VK_STENCIL_OP_DECREMENT_AND_WRAP: VkStencilOp = 7;
+pub(crate) const VK_BLEND_FACTOR_ZERO: VkBlendFactor = 0;
+pub(crate) const VK_BLEND_FACTOR_ONE: VkBlendFactor = 1;
+pub(crate) const VK_BLEND_FACTOR_SRC_COLOR: VkBlendFactor = 2;
+pub(crate) const VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR: VkBlendFactor = 3;
+pub(crate) const VK_BLEND_FACTOR_DST_COLOR: VkBlendFactor = 4;
+pub(crate) const VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR: VkBlendFactor = 5;
+pub(crate) const VK_BLEND_FACTOR_SRC_ALPHA: VkBlendFactor = 6;
+pub(crate) const VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA: VkBlendFactor = 7;
+pub(crate) const VK_BLEND_FACTOR_DST_ALPHA: VkBlendFactor = 8;
+pub(crate) const VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA: VkBlendFactor = 9;
+pub(crate) const VK_BLEND_FACTOR_CONSTANT_COLOR: VkBlendFactor = 10;
+pub(crate) const VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_COLOR: VkBlendFactor = 11;
+pub(crate) const VK_BLEND_FACTOR_CONSTANT_ALPHA: VkBlendFactor = 12;
+pub(crate) const VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_ALPHA: VkBlendFactor = 13;
+pub(crate) const VK_BLEND_FACTOR_SRC_ALPHA_SATURATE: VkBlendFactor = 14;
+pub(crate) const VK_BLEND_FACTOR_SRC1_COLOR: VkBlendFactor = 15;
+pub(crate) const VK_BLEND_FACTOR_ONE_MINUS_SRC1_COLOR: VkBlendFactor = 16;
+pub(crate) const VK_BLEND_FACTOR_SRC1_ALPHA: VkBlendFactor = 17;
+pub(crate) const VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA: VkBlendFactor = 18;
+pub(crate) const VK_BLEND_OP_ADD: VkBlendOp = 0;
+pub(crate) const VK_BLEND_OP_SUBTRACT: VkBlendOp = 1;
+pub(crate) const VK_BLEND_OP_REVERSE_SUBTRACT: VkBlendOp = 2;
+pub(crate) const VK_BLEND_OP_MIN: VkBlendOp = 3;
+pub(crate) const VK_BLEND_OP_MAX: VkBlendOp = 4;
+pub(crate) const VK_COLOR_COMPONENT_R_BIT: VkColorComponentFlags = 0x00000001;
+pub(crate) const VK_COLOR_COMPONENT_G_BIT: VkColorComponentFlags = 0x00000002;
+pub(crate) const VK_COLOR_COMPONENT_B_BIT: VkColorComponentFlags = 0x00000004;
+pub(crate) const VK_COLOR_COMPONENT_A_BIT: VkColorComponentFlags = 0x00000008;
+pub(crate) const VK_DYNAMIC_STATE_VIEWPORT_WITH_COUNT: VkDynamicState = 1000267003;
+pub(crate) const VK_DYNAMIC_STATE_SCISSOR_WITH_COUNT: VkDynamicState = 1000267004;
+pub(crate) const VK_PIPELINE_CREATE_2_RENDERING_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR: VkPipelineCreateFlags2 = 0x00200000;
+pub(crate) const VK_DYNAMIC_STATE_BLEND_CONSTANTS: VkDynamicState = 4;
+pub(crate) const VK_DYNAMIC_STATE_DEPTH_BOUNDS: VkDynamicState = 5;
+pub(crate) const VK_DYNAMIC_STATE_STENCIL_REFERENCE: VkDynamicState = 8;
+pub(crate) const VK_DYNAMIC_STATE_FRAGMENT_SHADING_RATE_KHR: VkDynamicState = 1000226000;
+pub(crate) const VK_ATTACHMENT_LOAD_OP_LOAD: VkAttachmentLoadOp = 0;
+pub(crate) const VK_ATTACHMENT_LOAD_OP_CLEAR: VkAttachmentLoadOp = 1;
+pub(crate) const VK_ATTACHMENT_LOAD_OP_DONT_CARE: VkAttachmentLoadOp = 2;
+pub(crate) const VK_ATTACHMENT_STORE_OP_STORE: VkAttachmentStoreOp = 0;
+pub(crate) const VK_ATTACHMENT_STORE_OP_DONT_CARE: VkAttachmentStoreOp = 1;
+pub(crate) const VK_ATTACHMENT_STORE_OP_NONE: VkAttachmentStoreOp = 1000301000;
+pub(crate) const VK_INDEX_TYPE_UINT16: VkIndexType = 0;
+pub(crate) const VK_INDEX_TYPE_UINT32: VkIndexType = 1;
+pub(crate) const VK_SAMPLE_COUNT_1_BIT: VkSampleCountFlags = 0x00000001;
+pub(crate) const VK_STENCIL_FACE_FRONT_AND_BACK: VkStencilFaceFlags = 0x00000003;
+pub(crate) const VK_FRAGMENT_SHADING_RATE_COMBINER_OP_KEEP_KHR: VkFragmentShadingRateCombinerOpKHR = 0;
+pub(crate) const VK_FRAGMENT_SHADING_RATE_COMBINER_OP_REPLACE_KHR: VkFragmentShadingRateCombinerOpKHR = 1;
+pub(crate) const VK_FRAGMENT_SHADING_RATE_COMBINER_OP_MIN_KHR: VkFragmentShadingRateCombinerOpKHR = 2;
+pub(crate) const VK_FRAGMENT_SHADING_RATE_COMBINER_OP_MAX_KHR: VkFragmentShadingRateCombinerOpKHR = 3;
+pub(crate) const VK_FRAGMENT_SHADING_RATE_COMBINER_OP_MUL_KHR: VkFragmentShadingRateCombinerOpKHR = 4;
+pub(crate) const VK_INDIRECT_COMMANDS_TOKEN_TYPE_PUSH_DATA_EXT: VkIndirectCommandsTokenTypeEXT = 1000135000;
+pub(crate) const VK_INDIRECT_COMMANDS_TOKEN_TYPE_DRAW_EXT: VkIndirectCommandsTokenTypeEXT = 6;
+pub(crate) const VK_INDIRECT_COMMANDS_TOKEN_TYPE_DRAW_INDEXED_EXT: VkIndirectCommandsTokenTypeEXT = 5;
+pub(crate) const VK_INDIRECT_COMMANDS_TOKEN_TYPE_DISPATCH_EXT: VkIndirectCommandsTokenTypeEXT = 9;
+pub(crate) const VK_INDIRECT_COMMANDS_TOKEN_TYPE_DRAW_MESH_TASKS_EXT: VkIndirectCommandsTokenTypeEXT = 1000328000;
+pub(crate) const VK_IMAGE_USAGE_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR: VkImageUsageFlags = 0x00000100;
+pub(crate) const VK_FORMAT_UNDEFINED: VkFormat = 0;
+pub(crate) const VK_FORMAT_R8_UINT: VkFormat = 13;
+pub(crate) const VK_FORMAT_R8_SINT: VkFormat = 14;
+pub(crate) const VK_FORMAT_R8G8_UINT: VkFormat = 20;
+pub(crate) const VK_FORMAT_R8G8_SINT: VkFormat = 21;
+pub(crate) const VK_FORMAT_R8G8B8A8_UINT: VkFormat = 41;
+pub(crate) const VK_FORMAT_R8G8B8A8_SINT: VkFormat = 42;
+pub(crate) const VK_FORMAT_B8G8R8A8_UINT: VkFormat = 48;
+pub(crate) const VK_FORMAT_B8G8R8A8_SINT: VkFormat = 49;
+pub(crate) const VK_FORMAT_R16_UINT: VkFormat = 74;
+pub(crate) const VK_FORMAT_R16_SINT: VkFormat = 75;
+pub(crate) const VK_FORMAT_R16G16_UINT: VkFormat = 81;
+pub(crate) const VK_FORMAT_R16G16_SINT: VkFormat = 82;
+pub(crate) const VK_FORMAT_R16G16B16A16_UINT: VkFormat = 95;
+pub(crate) const VK_FORMAT_R16G16B16A16_SINT: VkFormat = 96;
+pub(crate) const VK_FORMAT_R32_UINT: VkFormat = 98;
+pub(crate) const VK_FORMAT_R32_SINT: VkFormat = 99;
+pub(crate) const VK_FORMAT_R32G32_UINT: VkFormat = 101;
+pub(crate) const VK_FORMAT_R32G32_SINT: VkFormat = 102;
+pub(crate) const VK_FORMAT_R32G32B32A32_UINT: VkFormat = 107;
+pub(crate) const VK_FORMAT_R32G32B32A32_SINT: VkFormat = 108;
+pub(crate) const VK_FORMAT_A2B10G10R10_UINT_PACK32: VkFormat = 68;
+pub(crate) const VK_FORMAT_A2B10G10R10_SINT_PACK32: VkFormat = 69;
+pub(crate) const VK_FORMAT_A2R10G10B10_UINT_PACK32: VkFormat = 62;
+pub(crate) const VK_FORMAT_A2R10G10B10_SINT_PACK32: VkFormat = 63;
 
 // --- Referenced types ---
 
 pub(crate) type VkAccelerationStructureKHR = u64;
 pub(crate) type VkAccessFlags2 = u64;
+pub(crate) type VkAttachmentLoadOp = i32;
+pub(crate) type VkAttachmentStoreOp = i32;
+pub(crate) type VkBlendFactor = i32;
+pub(crate) type VkBlendOp = i32;
 pub(crate) type VkBool32 = u32;
 pub(crate) type VkBorderColor = i32;
 pub(crate) type VkBuffer = u64;
 pub(crate) type VkBufferCreateFlags = u32;
 pub(crate) type VkBufferUsageFlags = u32;
 pub(crate) type VkBufferUsageFlags2 = u64;
+pub(crate) type VkColorComponentFlags = u32;
 pub(crate) type VkCommandBuffer = *mut c_void;
 pub(crate) type VkCommandBufferLevel = i32;
 pub(crate) type VkCommandBufferUsageFlags = u32;
@@ -3976,6 +4826,8 @@ pub(crate) type VkCommandPoolCreateFlags = u32;
 pub(crate) type VkCommandPoolResetFlags = u32;
 pub(crate) type VkCompareOp = i32;
 pub(crate) type VkComponentSwizzle = i32;
+pub(crate) type VkConservativeRasterizationModeEXT = i32;
+pub(crate) type VkCullModeFlags = u32;
 pub(crate) type VkDebugUtilsMessageSeverityFlagsEXT = u32;
 pub(crate) type VkDebugUtilsMessageTypeFlagsEXT = u32;
 pub(crate) type VkDebugUtilsMessengerCallbackDataFlagsEXT = u32;
@@ -3993,6 +4845,7 @@ pub(crate) type VkDeviceMemory = u64;
 pub(crate) type VkDeviceQueueCreateFlags = u32;
 pub(crate) type VkDeviceSize = u64;
 pub(crate) type VkDriverId = i32;
+pub(crate) type VkDynamicState = i32;
 pub(crate) type VkExternalSemaphoreHandleTypeFlags = u32;
 pub(crate) type VkFence = u64;
 pub(crate) type VkFenceCreateFlags = u32;
@@ -4000,7 +4853,9 @@ pub(crate) type VkFilter = i32;
 pub(crate) type VkFormat = i32;
 pub(crate) type VkFormatFeatureFlags = u32;
 pub(crate) type VkFormatFeatureFlags2 = u64;
+pub(crate) type VkFragmentShadingRateCombinerOpKHR = i32;
 pub(crate) type VkFramebuffer = u64;
+pub(crate) type VkFrontFace = i32;
 pub(crate) type VkImage = u64;
 pub(crate) type VkImageAspectFlagBits = i32;
 pub(crate) type VkImageAspectFlags = u32;
@@ -4012,9 +4867,18 @@ pub(crate) type VkImageUsageFlags = u32;
 pub(crate) type VkImageView = u64;
 pub(crate) type VkImageViewCreateFlags = u32;
 pub(crate) type VkImageViewType = i32;
+pub(crate) type VkIndexType = i32;
+pub(crate) type VkIndirectCommandsInputModeFlagBitsEXT = i32;
+pub(crate) type VkIndirectCommandsInputModeFlagsEXT = u32;
+pub(crate) type VkIndirectCommandsLayoutEXT = u64;
+pub(crate) type VkIndirectCommandsLayoutUsageFlagsEXT = u32;
+pub(crate) type VkIndirectCommandsTokenTypeEXT = i32;
+pub(crate) type VkIndirectExecutionSetEXT = u64;
+pub(crate) type VkIndirectExecutionSetInfoTypeEXT = i32;
 pub(crate) type VkInstance = *mut c_void;
 pub(crate) type VkInstanceCreateFlags = u32;
 pub(crate) type VkLayerSettingTypeEXT = i32;
+pub(crate) type VkLogicOp = i32;
 pub(crate) type VkMemoryAllocateFlags = u32;
 pub(crate) type VkMemoryHeapFlags = u32;
 pub(crate) type VkMemoryMapFlags = u32;
@@ -4027,24 +4891,39 @@ pub(crate) type VkPipelineBindPoint = i32;
 pub(crate) type VkPipelineCache = u64;
 pub(crate) type VkPipelineCacheCreateFlags = u32;
 pub(crate) type VkPipelineCacheHeaderVersion = i32;
+pub(crate) type VkPipelineColorBlendStateCreateFlags = u32;
 pub(crate) type VkPipelineCreateFlags = u32;
 pub(crate) type VkPipelineCreateFlags2 = u64;
+pub(crate) type VkPipelineDepthStencilStateCreateFlags = u32;
+pub(crate) type VkPipelineDynamicStateCreateFlags = u32;
+pub(crate) type VkPipelineInputAssemblyStateCreateFlags = u32;
 pub(crate) type VkPipelineLayout = u64;
+pub(crate) type VkPipelineMultisampleStateCreateFlags = u32;
+pub(crate) type VkPipelineRasterizationConservativeStateCreateFlagsEXT = u32;
+pub(crate) type VkPipelineRasterizationStateCreateFlags = u32;
 pub(crate) type VkPipelineRobustnessBufferBehavior = i32;
 pub(crate) type VkPipelineRobustnessImageBehavior = i32;
 pub(crate) type VkPipelineShaderStageCreateFlags = u32;
 pub(crate) type VkPipelineStageFlags2 = u64;
+pub(crate) type VkPipelineTessellationStateCreateFlags = u32;
+pub(crate) type VkPipelineVertexInputStateCreateFlags = u32;
+pub(crate) type VkPipelineViewportStateCreateFlags = u32;
 pub(crate) type VkPointClippingBehavior = i32;
+pub(crate) type VkPolygonMode = i32;
+pub(crate) type VkPrimitiveTopology = i32;
 pub(crate) type VkQueryControlFlags = u32;
 pub(crate) type VkQueryPipelineStatisticFlags = u32;
 pub(crate) type VkQueryPool = u64;
 pub(crate) type VkQueue = *mut c_void;
 pub(crate) type VkQueueFlags = u32;
 pub(crate) type VkRenderPass = u64;
+pub(crate) type VkRenderingFlags = u32;
+pub(crate) type VkResolveModeFlagBits = i32;
 pub(crate) type VkResolveModeFlags = u32;
 pub(crate) type VkResult = i32;
 pub(crate) type VkSampleCountFlagBits = i32;
 pub(crate) type VkSampleCountFlags = u32;
+pub(crate) type VkSampleMask = u32;
 pub(crate) type VkSamplerAddressMode = i32;
 pub(crate) type VkSamplerCreateFlags = u32;
 pub(crate) type VkSamplerMipmapMode = i32;
@@ -4062,6 +4941,8 @@ pub(crate) type VkSharingMode = i32;
 pub(crate) type VkSparseImageFormatFlags = u32;
 pub(crate) type VkSparseMemoryBindFlags = u32;
 pub(crate) type VkSpirvResourceTypeFlagsEXT = u32;
+pub(crate) type VkStencilFaceFlags = u32;
+pub(crate) type VkStencilOp = i32;
 pub(crate) type VkStructureType = i32;
 pub(crate) type VkSubgroupFeatureFlags = u32;
 pub(crate) type VkSubmitFlags = u32;
@@ -4069,3 +4950,4 @@ pub(crate) type VkSurfaceKHR = u64;
 pub(crate) type VkSwapchainKHR = u64;
 pub(crate) type VkTensorARM = u64;
 pub(crate) type VkTensorViewCreateFlagsARM = u64;
+pub(crate) type VkVertexInputRate = i32;
