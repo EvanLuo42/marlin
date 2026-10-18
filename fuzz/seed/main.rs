@@ -22,6 +22,8 @@ use marlin_compress::{Codec, Level, compress, gdeflate, lz4, zstd};
 use marlin_fuzz::{Bounds, CookedItem, CookedRoot, Everything, Node, Shape, Tuple, Unit};
 use marlin_serial::cooked::{CookedBuilder, RelPtr, RelSlice};
 use marlin_serial::to_bytes;
+use marlin_shaderc_backend_spirv::write_module;
+use marlin_shaderc_ir::parse_module;
 use marlin_text::loc::{Locale, StringTableBuilder};
 
 fn main() {
@@ -36,6 +38,7 @@ fn main() {
     front_syntax(&mut out, repo);
     shaderc_ir(&mut out, repo);
     shaderc_opt(&mut out, repo);
+    shaderc_spirv(&mut out, repo);
 }
 
 struct Corpus {
@@ -513,7 +516,10 @@ fn shaderc_ir(out: &mut Corpus, repo: &Path) {
 
 fn shaderc_opt(out: &mut Corpus, repo: &Path) {
     let mut sources: Vec<PathBuf> = Vec::new();
-    for dir in ["compiler/shader/ir/tests/data/text", "compiler/shader/opt/tests/data/passes"] {
+    for dir in [
+        "compiler/shader/ir/tests/data/text",
+        "compiler/shader/opt/tests/data/passes",
+    ] {
         sources.extend(
             fs::read_dir(repo.join(dir))
                 .unwrap()
@@ -525,5 +531,27 @@ fn shaderc_opt(out: &mut Corpus, repo: &Path) {
     for path in sources {
         let stem = path.file_stem().unwrap().to_string_lossy().into_owned();
         out.put("shaderc_opt_pipeline", &stem, &fs::read(&path).unwrap());
+    }
+}
+
+/// The backend's compute fixtures written as SPIR-V.
+fn shaderc_spirv(out: &mut Corpus, repo: &Path) {
+    let dir = repo.join("compiler/shader/backend_spirv/tests/data/compute");
+    let mut sources: Vec<PathBuf> = fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|e| e == "ir"))
+        .collect();
+    sources.sort();
+    for path in sources {
+        let stem = path.file_stem().unwrap().to_string_lossy().into_owned();
+        let text = fs::read_to_string(&path).unwrap().replace("\r\n", "\n");
+        let m = parse_module(&text).unwrap();
+        let words = write_module(&m, m.entries[0].func).unwrap();
+        out.put(
+            "shaderc_backend_spirv_validate",
+            &stem,
+            &marlin_shaderc_backend_spirv::to_bytes(&words),
+        );
     }
 }

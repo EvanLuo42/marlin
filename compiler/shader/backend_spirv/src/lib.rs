@@ -12,12 +12,15 @@
 //! - What SPIR-V leaves undefined is made defined, as the IR has it: shift counts are taken
 //!   modulo the width, float-to-integer conversions saturate (NaN to 0).
 //!
-//! Still to come: the validator (step 9b), the other stages, textures, samplers and
-//! `debug.*` (step 10).
+//! Step 9b, the validator ([`validate`], also [`Backend::validate`]): our own check of the
+//! SPIR-V rules the code above relies on, with no outside tools (0005 §4.6).
+//!
+//! Still to come: the other stages, textures, samplers and `debug.*` (step 10).
 
 mod body;
 mod dis;
 pub mod spirv;
+mod validate;
 mod write;
 
 use std::collections::BTreeSet;
@@ -26,6 +29,7 @@ use marlin_shaderc_ir::{FuncId, Module, Stage};
 use marlin_shaderc_target::{Backend, BackendError, Blob, Target};
 
 pub use dis::disassemble;
+pub use validate::validate;
 
 /// The Vulkan 1.4 target (0016 §3): SPIR-V 1.6 with descriptor heaps.
 pub fn vulkan_1_4() -> Target {
@@ -94,7 +98,10 @@ impl Backend for SpirvBackend {
         })
     }
 
-    fn validate(&self, _blob: &Blob, _target: &Target) -> Vec<String> {
-        Vec::new()
+    fn validate(&self, blob: &Blob, _target: &Target) -> Vec<String> {
+        match from_bytes(&blob.bytes) {
+            Some(words) => validate(&words),
+            None => vec!["not a whole number of words".into()],
+        }
     }
 }

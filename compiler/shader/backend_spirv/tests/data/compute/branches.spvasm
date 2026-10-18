@@ -1,0 +1,121 @@
+; SPIR-V 1.6, bound 65
+OpCapability 1
+OpCapability 4473
+OpCapability 5128
+OpExtension "SPV_EXT_descriptor_heap"
+OpExtension "SPV_KHR_untyped_pointers"
+OpMemoryModel 0 1
+OpEntryPoint 5 1 "main" 19 24 57
+OpExecutionMode 1 17 64 1 1
+OpName 16 "Args"
+OpMemberName 16 0 "Out"
+OpMemberName 16 1 "N"
+OpName 19 "args"
+OpName 24 "gi"
+OpName 25 "Args"
+OpMemberName 25 0 "Out"
+OpMemberName 25 1 "N"
+OpName 57 "resource_heap"
+OpName 1 "Branches"
+OpMemberDecorate 16 0 35 0
+OpMemberDecorate 16 1 35 4
+OpDecorate 17 2
+OpMemberDecorate 17 0 35 0
+OpDecorate 24 11 29
+OpDecorateId 56 5124 55
+OpDecorate 57 11 5123
+OpDecorate 60 6 4
+OpDecorate 61 2
+OpMemberDecorate 61 0 35 0
+%13 = OpTypeVoid
+%14 = OpTypeFunction 13
+%15 = OpTypeInt 32 0
+%16 = OpTypeStruct 15 15
+%17 = OpTypeStruct 16
+%18 = OpTypePointer 9 17
+%19 = OpVariable %18 9
+%20 = OpTypePointer 9 16
+%21 = OpConstant %15 0
+%23 = OpTypePointer 1 15
+%24 = OpVariable %23 1
+%25 = OpTypeStruct 15 15
+%30 = OpTypeBool
+%32 = OpConstant %15 2
+%34 = OpConstant %15 1
+%41 = OpConstant %15 4
+%48 = OpTypeUntypedPointerKHR 0
+%49 = OpTypeBufferEXT 12
+%50 = OpTypeFloat 32
+%51 = OpTypeImage 50 1 0 0 0 1 0
+%52 = OpConstantSizeOfEXT %15 51
+%53 = OpConstantSizeOfEXT %15 49
+%54 = OpSpecConstantOp %30 172 52 53
+%55 = OpSpecConstantOp %15 169 54 52 53
+%56 = OpTypeRuntimeArray 49
+%57 = OpUntypedVariableKHR %48 0
+%59 = OpTypePointer 12 15
+%60 = OpTypeRuntimeArray 15
+%61 = OpTypeStruct 60
+%62 = OpTypePointer 12 61
+
+%1 = OpFunction %13 0 14
+
+%2 = OpLabel
+%22 = OpAccessChain %20 19 21
+%26 = OpLoad %16 22
+%27 = OpCopyLogical %25 26
+%28 = OpCompositeExtract %15 27 1
+%29 = OpLoad %15 24
+%31 = OpSLessThan %30 29 28
+OpSelectionMerge 5 0
+OpBranchConditional 31 3 4
+
+%4 = OpLabel
+%33 = OpIMul %15 29 32
+OpBranch 5
+
+%3 = OpLabel
+%35 = OpIAdd %15 29 34
+OpBranch 5
+
+%5 = OpLabel
+%36 = OpPhi %15 35 3 33 4
+OpBranch 6
+
+%6 = OpLabel
+%39 = OpPhi %15 21 5 37 11
+%40 = OpPhi %15 36 5 38 11
+%42 = OpSGreaterThanEqual %30 39 41
+OpLoopMerge 12 11 0
+OpBranchConditional 42 12 7
+
+%7 = OpLabel
+%43 = OpBitwiseAnd %15 39 34
+OpSelectionMerge 10 0
+OpSwitch 43 9 0 8
+
+%9 = OpLabel
+OpBranch 10
+
+%8 = OpLabel
+%44 = OpIAdd %15 40 39
+OpBranch 10
+
+%10 = OpLabel
+%38 = OpPhi %15 44 8 40 9
+OpBranch 11
+
+%11 = OpLabel
+%45 = OpIAdd %15 39 34
+%37 = OpCopyObject %15 45
+OpBranch 6
+
+%12 = OpLabel
+%46 = OpPhi %15 40 6
+%47 = OpCompositeExtract %15 27 0
+%58 = OpUntypedAccessChainKHR %48 56 57 47
+%63 = OpBufferPointerEXT %62 58
+%64 = OpAccessChain %59 63 21 29
+OpStore 64 46
+OpReturn
+OpFunctionEnd

@@ -1,4 +1,4 @@
-use marlin_shaderc_backend_spirv::{disassemble, to_bytes, write_module};
+use marlin_shaderc_backend_spirv::{disassemble, to_bytes, validate, write_module};
 use marlin_shaderc_ir::{Module, parse_module, verify_module};
 use marlin_test_support::{data_path, golden};
 
@@ -35,9 +35,10 @@ fn check(name: &str) -> Vec<u32> {
 
 #[test]
 fn compute_entries_become_spirv() {
-    for name in ["mirror", "move"] {
+    for name in ["mirror", "move", "branches"] {
         let words = check(name);
-        assert_eq!(words[0], 0x0723_0203);
+        let problems = validate(&words);
+        assert!(problems.is_empty(), "{name}: {problems:#?}");
     }
 }
 
@@ -85,6 +86,13 @@ fn random_programs_become_spirv() {
         let words = write_module(&m, entry).unwrap_or_else(|e| {
             panic!("seed {seed}: {e}\n{}", marlin_shaderc_ir::print_module(&m))
         });
+        let problems = validate(&words);
+        assert!(
+            problems.is_empty(),
+            "seed {seed}: {problems:#?}
+{}",
+            disassemble(&words)
+        );
         external_check(&words, &format!("random-{seed}"));
     }
 }

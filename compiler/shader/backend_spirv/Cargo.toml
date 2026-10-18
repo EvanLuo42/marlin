@@ -10,6 +10,7 @@ marlin-shaderc-ir.workspace = true
 marlin-shaderc-target.workspace = true
 
 [dev-dependencies]
+marlin-math.workspace = true
 marlin-shaderc-opt.workspace = true
 marlin-shaderc-testgen.workspace = true
 marlin-test-support.workspace = true

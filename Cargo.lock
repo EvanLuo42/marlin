@@ -896,6 +896,7 @@ version = "0.1.0"
 name = "marlin-shaderc-backend-spirv"
 version = "0.1.0"
 dependencies = [
+ "marlin-math",
  "marlin-shaderc-ir",
  "marlin-shaderc-opt",
  "marlin-shaderc-target",

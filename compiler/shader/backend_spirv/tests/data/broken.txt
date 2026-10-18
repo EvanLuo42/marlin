@@ -1,0 +1,53 @@
+== capability left out
+%37 = OpTypeBufferEXT: descriptor heaps need the `DescriptorHeapEXT` capability, which is not declared
+== extension left out
+%37 = OpTypeBufferEXT: needs extension `SPV_EXT_descriptor_heap`, which is not declared
+== two memory models
+the module has more than one `OpMemoryModel`
+== an id nothing defines
+%31 = OpIMul: operand 3 names id 9999, which nothing defines
+== a bound under the ids
+68 result id(s) are not under the bound 3 (the first: %3 = OpTypeVoid)
+== a type declared twice
+%71 = OpTypeInt: the same type is declared twice
+== an offset left out
+%11: member 0 of a struct in laid-out memory has no `Offset`
+== an offset that overlaps
+%11: member 1's offset 2 is not a multiple of its alignment 4
+%11: member 1 at 2 overlaps member 0
+== layout in groupshared memory
+%19: an array in `Workgroup` memory has an `ArrayStride` (Vulkan)
+== a variable missing from the interface
+entry point `main`: it uses %46, which its interface does not list (SPIR-V 1.4)
+== no LocalSize
+entry point `main`: a compute entry point needs `LocalSize`
+== a built-in on the wrong type
+%10: `GlobalInvocationId` is not on a variable of the type it needs
+== a load of the wrong type
+%22 = OpLoad: its type is not the pointer's
+%29 = OpCompositeExtract: the indices do not lead to the result's type
+%35 = OpCompositeExtract: the indices do not lead to the result's type
+%58 = OpCompositeExtract: the indices do not lead to the result's type
+%65 = OpCompositeExtract: the indices do not lead to the result's type
+== a float added as integers
+%67 = OpIAdd: integer operands and result of one type
+== no loop merge
+OpBranchConditional (word 352): selection must be structured (no merge instruction)
+== a loop header's branch that does not leave
+OpBranchConditional (word 356): selection must be structured (a loop header's branch leaves for its merge or continue target)
+== a second back edge
+loop header %3 is the target of 2 back edges, not one
+the back edge from %4 to loop header %3 does not come from its continue construct
+== a break out of a selection, not to its merge
+%36 = OpPhi: %4 is not a predecessor
+%36 = OpPhi: block %5 has 1 predecessors, the phi names 2
+%46 = OpPhi: block %12 has 2 predecessors, the phi names 1
+the branch from %6 to %12 enters the selection construct at %2 other than through its header
+== a phi missing a predecessor
+%36 = OpPhi: block %5 has 2 predecessors, the phi names 1
+== a block without its terminator
+block %5 ends without a terminator
+== a branch to something that is not a block
+OpBranch (word 318): %9 is not a block of this function
+== an instruction after the terminator
+OpReturn (word 460): after block %5's terminator

@@ -166,7 +166,7 @@ GPU 层的看门狗：xtask 监控测试进程，超时没有输出就报告卡�
 | `data_path(env!("CARGO_MANIFEST_DIR"), rel)`：`<crate>/tests/data/rel` | 各处 `env!("CARGO_MANIFEST_DIR")` 拼路径 |
 | `regress::for_each(manifest_dir, target, |bytes| …)`：回放 `tests/data/regress/<target>/*`，全部跑完再报出失败的输入 | fuzz 找到的崩溃用例（§7.3） |
 
-shader 编译器另有一个只给测试用的 crate `marlin-shaderc-testgen`（`compiler/shader/testgen`）：随机生成的结构化 IR 程序和包住它的 compute 入口，pass 和后端的差分测试共用（0005 §4.6）。SPIR-V 后端的测试可以选择性地用 Khronos 的 `spirv-val` 再查一遍：设 `MARLIN_SPIRV_VAL` 为它的路径（Vulkan SDK 里有），不设就不查；测试从不依赖它，判定标准是我们自己的验证器（0005 §4.6）。
+shader 编译器另有一个只给测试用的 crate `marlin-shaderc-testgen`（`compiler/shader/testgen`）：随机生成的结构化 IR 程序和包住它的 compute 入口，pass 和后端的差分测试共用（0005 §4.6）。SPIR-V 后端的测试可以选择性地用 Khronos 的 `spirv-val` 再查一遍：设 `MARLIN_SPIRV_VAL` 为它的路径（Vulkan SDK 里有），不设就不查；测试从不依赖它，判定标准是我们自己的验证器（0005 §4.6）。设了的话，`verdicts_agree_with_spirv_val` 还会在随机改坏的模块上比较两边的判定。
 
 ### 6.2 `marlin-gpu-test-support`（新 crate，`tools/gpu_test_support`）
 

@@ -259,7 +259,7 @@ DXC **故意关掉**了以下几项：
   - 后端 IR 有一个参考解释器，按 wave 语义执行，也支持 groupshared 和 barrier；
   - 测试里对每个 pass 做差分测试：用随机生成的 IR 和随机输入，比较 pass 前后的执行结果；
   - peephole 规则表里的每条规则也用它验证。
-- **后端验证**：DXIL 写出之后跑我们自己的验证器（规则对齐 DxilValidation），SPIR-V 写出之后检查 SPIR-V 的合法性规则。都不依赖外部工具。
+- **后端验证**：DXIL 写出之后跑我们自己的验证器（规则对齐 DxilValidation），SPIR-V 写出之后检查 SPIR-V 的合法性规则。都不依赖外部工具。SPIR-V 的验证器（`backend_spirv` 的 `validate`，第 9b 步）查后端用到的那部分规则：模块结构、id、类型、Vulkan 的布局规则、入口的 interface、能力和扩展、函数里的类型和支配关系、SPIR-V 2.11 的结构化控制流；它不认识的指令会明说。测试把 fixture 故意改坏，验证器必须报出来；随机改坏的模块上它和 `spirv-val` 的判定比较（可选，0014 §6.1），它可以比 `spirv-val` 宽，但不能拒绝 `spirv-val` 接受的模块（Vulkan 要求而 `spirv-val` 不查的规则除外）；fuzz target `shaderc_backend_spirv_validate` 保证它在任何输入上都不 panic。
 
 ## 5. API
 

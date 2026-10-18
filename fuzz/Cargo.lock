@@ -151,6 +151,7 @@ dependencies = [
  "marlin-hash",
  "marlin-reflect",
  "marlin-serial",
+ "marlin-shaderc-backend-spirv",
  "marlin-shaderc-ir",
  "marlin-shaderc-opt",
  "marlin-text",
@@ -291,6 +292,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "marlin-shaderc-backend-spirv"
+version = "0.1.0"
+dependencies = [
+ "marlin-shaderc-ir",
+ "marlin-shaderc-target",
+]
+
+[[package]]
 name = "marlin-shaderc-ir"
 version = "0.1.0"
 dependencies = [
@@ -299,6 +308,13 @@ dependencies = [
 
 [[package]]
 name = "marlin-shaderc-opt"
+version = "0.1.0"
+dependencies = [
+ "marlin-shaderc-ir",
+]
+
+[[package]]
+name = "marlin-shaderc-target"
 version = "0.1.0"
 dependencies = [
  "marlin-shaderc-ir",

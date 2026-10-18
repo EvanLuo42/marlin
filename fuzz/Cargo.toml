@@ -20,6 +20,7 @@ marlin-front-syntax = { path = "../compiler/front/syntax" }
 marlin-hash = { path = "../runtime/core/hash" }
 marlin-reflect = { path = "../runtime/core/reflect" }
 marlin-serial = { path = "../runtime/core/serial" }
+marlin-shaderc-backend-spirv = { path = "../compiler/shader/backend_spirv" }
 marlin-shaderc-ir = { path = "../compiler/shader/ir" }
 marlin-shaderc-opt = { path = "../compiler/shader/opt" }
 marlin-text = { path = "../runtime/core/text" }
@@ -48,6 +49,13 @@ bench = false
 [[bin]]
 name = "shaderc_opt_pipeline"
 path = "fuzz_targets/shaderc_opt_pipeline.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "shaderc_backend_spirv_validate"
+path = "fuzz_targets/shaderc_backend_spirv_validate.rs"
 test = false
 doc = false
 bench = false

@@ -30,7 +30,7 @@ table! {
         ConstantTrue = 41, ConstantFalse = 42, Constant = 43, ConstantComposite = 44,
         ConstantNull = 46, SpecConstantOp = 52, Function = 54, FunctionParameter = 55,
         FunctionEnd = 56, FunctionCall = 57, Variable = 59, Load = 61, Store = 62,
-        AccessChain = 65, ArrayLength = 68, Decorate = 71, MemberDecorate = 72,
+        AccessChain = 65, InBoundsAccessChain = 66, ArrayLength = 68, Decorate = 71, MemberDecorate = 72,
         VectorExtractDynamic = 77, VectorInsertDynamic = 78, VectorShuffle = 79,
         CompositeConstruct = 80, CompositeExtract = 81, CompositeInsert = 82, CopyObject = 83,
         Transpose = 84, ConvertFToU = 109, ConvertFToS = 110, ConvertSToF = 111,
@@ -69,7 +69,8 @@ table! {
         GroupNonUniformLogicalXor = 364, GroupNonUniformQuadBroadcast = 365,
         GroupNonUniformQuadSwap = 366, CopyLogical = 400,
         TypeUntypedPointerKHR = 4417, UntypedVariableKHR = 4418,
-        UntypedAccessChainKHR = 4419, UntypedArrayLengthKHR = 4425, TypeBufferEXT = 5115,
+        UntypedAccessChainKHR = 4419, UntypedInBoundsAccessChainKHR = 4420,
+        UntypedArrayLengthKHR = 4425, TypeBufferEXT = 5115,
         BufferPointerEXT = 5119, ConstantSizeOfEXT = 5129,
     }
 }
