@@ -280,3 +280,23 @@ block0:
     mesh.dispatch i32 2, i32 1, i32 1
     return
 }
+
+// Ray queries (§8.9).
+global @scene : ptr<push, res<AccelerationStructure>>
+
+entry compute(1, 1, 1) @Game.Trace uses(@scene) {
+block0:
+    %q = var function : rayquery
+    %idx = load @scene
+    %accel = desc.get %idx
+    rq.init %q, %accel, f32x3 (0.0, 0.0, -1.0), f32 0.0, f32x3 (0.0, 0.0, 1.0), f32 100.0, i32 1, i32 255
+    %more = rq.proceed %q
+    %ck = rq.get %q, candidate.kind
+    rq.commit_triangle %q
+    %k = rq.get %q, committed.kind
+    %t = rq.get %q, committed.t
+    %b = rq.get %q, committed.barycentrics
+    %id = rq.get %q, committed.instance_id
+    %front = rq.get %q, committed.front_face
+    return
+}

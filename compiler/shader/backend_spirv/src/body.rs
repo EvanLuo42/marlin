@@ -637,7 +637,10 @@ impl<'w, 'm> Body<'w, 'm> {
                     .untyped_ptr_ty(crate::spirv::storage_class::UniformConstant);
                 let p = self.value(ptr_t, op::UntypedAccessChainKHR, &[array, heap, index]);
                 // Images and samplers are loaded; a buffer is reached through the pointer.
-                let v = if kind.kind.texture().is_some() || sampler {
+                let loaded = kind.kind.texture().is_some()
+                    || sampler
+                    || kind.kind == marlin_shaderc_ir::ResourceKind::AccelerationStructure;
+                let v = if loaded {
                     self.value(rt.unwrap_or(0), op::Load, &[p])
                 } else {
                     p
@@ -652,6 +655,34 @@ impl<'w, 'm> Body<'w, 'm> {
                 Some(v)
             }
             Op::TexSample(targs) => Some(self.tex_sample(&ops, targs, rt)?),
+            Op::RqInit => {
+                // IR: query, accel, origin, t-min, direction, t-max, flags, mask; SPIR-V puts
+                // the flags and mask before the ray.
+                let mut ids = Vec::new();
+                for k in 0..8 {
+                    ids.push(a(self, k)?);
+                }
+                self.emit(
+                    op::RayQueryInitializeKHR,
+                    &[
+                        ids[0], ids[1], ids[6], ids[7], ids[2], ids[3], ids[4], ids[5],
+                    ],
+                );
+                None
+            }
+            Op::RqProceed => {
+                let q = a(self, 0)?;
+                Some(self.value(rt.unwrap_or(0), op::RayQueryProceedKHR, &[q]))
+            }
+            Op::RqCommitTriangle => {
+                let q = a(self, 0)?;
+                self.emit(op::RayQueryConfirmIntersectionKHR, &[q]);
+                None
+            }
+            Op::RqGet { committed, field } => {
+                let q = a(self, 0)?;
+                Some(self.rq_get(q, *committed, *field, rt)?)
+            }
             Op::MeshSetCounts => {
                 let (nv, np) = (a(self, 0)?, a(self, 1)?);
                 self.emit(op::SetMeshOutputsEXT, &[nv, np]);
@@ -1488,5 +1519,41 @@ impl Body<'_, '_> {
         self.w.capability(cap::StorageImageWriteWithoutFormat);
         self.emit(op::ImageWrite, &[image, coord, texel]);
         Ok(())
+    }
+}
+
+impl Body<'_, '_> {
+    /// A field of the committed (or candidate) intersection of query `q`.
+    fn rq_get(
+        &mut self,
+        q: u32,
+        committed: bool,
+        field: marlin_shaderc_ir::RqField,
+        rt: Option<u32>,
+    ) -> R<u32> {
+        use marlin_shaderc_ir::RqField::*;
+        let which = self.w.uint(committed as u32);
+        let rt = rt.unwrap_or(0);
+        let opcode = match field {
+            Kind => {
+                let kind = self.value(rt, op::RayQueryGetIntersectionTypeKHR, &[q, which]);
+                // Committed: 0 none, 1 triangle, 2 procedural, as `HitKind`; a candidate is
+                // 0 triangle, 1 procedural.
+                return Ok(if committed {
+                    kind
+                } else {
+                    let one = self.w.uint(1);
+                    self.value(rt, op::IAdd, &[kind, one])
+                });
+            }
+            T => op::RayQueryGetIntersectionTKHR,
+            Barycentrics => op::RayQueryGetIntersectionBarycentricsKHR,
+            InstanceIndex => op::RayQueryGetIntersectionInstanceIdKHR,
+            InstanceId => op::RayQueryGetIntersectionInstanceCustomIndexKHR,
+            PrimitiveIndex => op::RayQueryGetIntersectionPrimitiveIndexKHR,
+            GeometryIndex => op::RayQueryGetIntersectionGeometryIndexKHR,
+            FrontFace => op::RayQueryGetIntersectionFrontFaceKHR,
+        };
+        Ok(self.value(rt, opcode, &[q, which]))
     }
 }

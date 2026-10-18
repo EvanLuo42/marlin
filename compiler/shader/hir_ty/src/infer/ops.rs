@@ -181,6 +181,31 @@ impl InferCtx<'_, '_> {
             }
         }
 
+        // Enums (0004 §3.5): `==` and `!=` between values of one enum, and for a `[Flags]` enum
+        // `&`, `|` and `^`, which give the enum (as C# has them).
+        if let (Ty::Adt { item: a, .. }, Ty::Adt { item: b, .. }) = (&lt, &rt)
+            && a == b
+        {
+            let tree = self.cx.get::<ItemTreeQuery>(&a.file)?;
+            if tree.items[a.local].kind == ItemKind::Enum {
+                let flags = self
+                    .cx
+                    .get::<crate::attrs::ItemAttributesQuery>(a)?
+                    .has(crate::attrs::KnownAttr::Flags);
+                let result = match op {
+                    BinaryOp::Eq | BinaryOp::Ne => Some(self.scalar_ty(Scalar::Bool)),
+                    BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor if flags => {
+                        Some(lt.clone())
+                    }
+                    _ => None,
+                };
+                if let Some(r) = result {
+                    self.result.callees.insert(e, Callee::BuiltinOp);
+                    return Ok(r);
+                }
+            }
+        }
+
         let (Some((le, ls)), Some((re, rs))) = (self.shape(&lt), self.shape(&rt)) else {
             return Ok(self.no_operator(e, op.symbol(), &lt, &rt));
         };

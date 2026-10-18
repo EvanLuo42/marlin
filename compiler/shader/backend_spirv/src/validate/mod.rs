@@ -408,6 +408,10 @@ impl Validator {
                         req(cap::ImageMSArray, "multisampled arrays");
                     }
                 }
+                op::TypeRayQueryKHR | op::TypeAccelerationStructureKHR => {
+                    req(cap::RayQueryKHR, "ray queries");
+                    ext.push(("SPV_KHR_ray_query", name.clone()));
+                }
                 op::ImageRead => req(
                     cap::StorageImageReadWithoutFormat,
                     "reading storage images without a format",

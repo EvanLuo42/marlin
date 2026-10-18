@@ -1,0 +1,41 @@
+namespace Game;
+
+// The RHI tests' ray query shader: one ray per thread along +z through the scene; each
+// writes (instance id << 16) | primitive index of the closest hit, or all ones.
+
+public struct RayArgs
+{
+    public AccelerationStructure Scene;
+    public ByteBuffer Output;
+    public uint Count;
+}
+
+[Compute(64, 1, 1)]
+public void Trace([DispatchThreadId] uint3 id, [Push] in RayArgs a)
+{
+    if (id.x >= a.Count)
+        return;
+    var ray = Ray
+    {
+        Origin = float3(((float)id.x + 0.5) / (float)a.Count * 4 - 2, 0.1, -1),
+        Direction = float3(0, 0, 1),
+        TMin = 0,
+        TMax = 100,
+    };
+    var q = RayQuery(a.Scene, ray, RayFlags.Opaque | RayFlags.CullNoOpaque);
+    q.Proceed();
+    uint result = 0xFFFFFFFF;
+    RayHit hit = q.Committed;
+    if (hit.Kind == HitKind.Triangle)
+        result = (hit.InstanceId << 16) | hit.PrimitiveIndex;
+    a.Output.Store(id.x * 4, result);
+}
+
+// The convenience calls, in a pixel entry.
+[Pixel]
+public float4 Shadowed([Position] float4 pos, [Push] in RayArgs a)
+{
+    var ray = Ray { Origin = pos.xyz, Direction = float3(0, 1, 0), TMin = 0.01, TMax = 1000 };
+    RayHit h = a.Scene.TraceClosest(ray, RayFlags.CullBackFace);
+    return a.Scene.TraceAny(ray) ? float4(h.T, 0, 0, 1) : float4(1, 1, 1, 1);
+}

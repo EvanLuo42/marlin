@@ -298,6 +298,21 @@ impl Term {
             Term::Return(_) | Term::Unreachable => Vec::new(),
         }
     }
+
+    /// Makes the values it reads read `new` for `old`.
+    fn replace(&mut self, old: Value, new: Value) {
+        let values = match self {
+            Term::CondBr { cond, .. } => std::slice::from_mut(cond),
+            Term::Switch { value, .. } => std::slice::from_mut(value),
+            Term::Return(values) => values.as_mut_slice(),
+            Term::Br(_) | Term::Loop { .. } | Term::Unreachable => &mut [],
+        };
+        for v in values {
+            if *v == old {
+                *v = new;
+            }
+        }
+    }
 }
 
 /// Where a local lives.
@@ -641,8 +656,9 @@ impl FnCx<'_, '_, '_> {
     pub(crate) fn emit(&mut self, op: Op, operands: Vec<Value>, explicit: Option<Type>) -> R<Inst> {
         let b = self.current();
         let types: Vec<Type> = operands.iter().map(|&v| self.f.ty(v)).collect();
-        let results = result_types(&mut self.l.module, &op, &types, explicit)
-            .map_err(|e| LowerError::new("E1304", format!("lowering produced bad IR: {e}")))?;
+        let results = result_types(&mut self.l.module, &op, &types, explicit).map_err(|e| {
+            LowerError::new("E1304", format!("lowering produced bad IR (`{op:?}`): {e}"))
+        })?;
         let inst = self.f.create_inst(op, operands, &results);
         self.f.insts[inst].loc = self.loc;
         self.f.append_inst(b, inst);
@@ -710,6 +726,7 @@ impl FnCx<'_, '_, '_> {
         for &b in &blocks {
             self.seal(b);
         }
+        self.remove_trivial_params(&blocks);
         for &b in &blocks {
             let term = self.terms.get(&b).cloned().unwrap_or(Term::Unreachable);
             let args = |cx: &Self, target: Block| -> Vec<Value> {
@@ -787,6 +804,44 @@ impl FnCx<'_, '_, '_> {
 }
 
 impl FnCx<'_, '_, '_> {
+    /// Braun et al.'s trivial phis: a parameter for which every predecessor passes one value
+    /// (or the parameter itself) is that value. A variable that only seems to change in a loop
+    /// stays one value; for a pointer (a ray query), which is never a block parameter, it must.
+    fn remove_trivial_params(&mut self, blocks: &[Block]) {
+        loop {
+            let mut found = None;
+            'scan: for &b in blocks {
+                for (i, &p) in self.f.blocks[b].params.iter().enumerate() {
+                    let Some(args) = self.ssa.phi_args.get(&p) else {
+                        continue;
+                    };
+                    let mut others = args.values().filter(|&&v| v != p);
+                    let Some(&same) = others.next() else { continue };
+                    if others.all(|&v| v == same) {
+                        found = Some((b, i, p, same));
+                        break 'scan;
+                    }
+                }
+            }
+            let Some((b, i, p, same)) = found else {
+                return;
+            };
+            self.f.replace_all_uses(p, same);
+            self.ssa.phi_args.remove(&p);
+            for args in self.ssa.phi_args.values_mut() {
+                for v in args.values_mut() {
+                    if *v == p {
+                        *v = same;
+                    }
+                }
+            }
+            for t in self.terms.values_mut() {
+                t.replace(p, same);
+            }
+            self.f.remove_param(b, i);
+        }
+    }
+
     /// An operation on constants computed now, the way the interpreter computes it; `None`
     /// when the operation is not a pure one or an operand is not a constant.
     fn fold(&mut self, op: &Op, operands: &[Value], explicit: Option<Type>) -> R<Option<Value>> {

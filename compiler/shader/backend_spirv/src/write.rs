@@ -322,6 +322,7 @@ impl<'m> Writer<'m> {
             }
             // Textures and samplers are loaded from the heap; buffers are pointers into it.
             TypeData::Handle(k) if k.kind.texture().is_some() => self.image_ty(&k)?,
+            TypeData::Handle(k) if k.kind == ResourceKind::AccelerationStructure => self.accel_ty(),
             TypeData::Handle(k)
                 if matches!(
                     k.kind,
@@ -331,7 +332,10 @@ impl<'m> Writer<'m> {
                 self.sampler_ty()
             }
             TypeData::Handle(_) => self.untyped_ptr_ty(sc::UniformConstant),
-            TypeData::RayQuery => return unsupported("a ray query"),
+            TypeData::RayQuery => {
+                self.ray_query_ext();
+                self.once("", op::TypeRayQueryKHR, vec![])
+            }
         };
         self.types.insert(Key::Ir(t, laid), id);
         Ok(id)
@@ -660,6 +664,7 @@ impl<'m> Writer<'m> {
         let (desc, sampler) = match kind.kind {
             k if k.texture().is_some() => (self.image_ty(kind)?, false),
             ResourceKind::Sampler | ResourceKind::ComparisonSampler => (self.sampler_ty(), true),
+            ResourceKind::AccelerationStructure => (self.accel_ty(), false),
             ResourceKind::Buffer
             | ResourceKind::ReadOnlyBuffer
             | ResourceKind::ByteBuffer
@@ -922,5 +927,17 @@ impl Writer<'_> {
 
     pub fn sampled_image_ty(&mut self, image: u32) -> u32 {
         self.once("", op::TypeSampledImage, vec![image])
+    }
+}
+
+impl Writer<'_> {
+    pub fn ray_query_ext(&mut self) {
+        self.capability(cap::RayQueryKHR);
+        self.extension("SPV_KHR_ray_query");
+    }
+
+    pub fn accel_ty(&mut self) -> u32 {
+        self.ray_query_ext();
+        self.once("", op::TypeAccelerationStructureKHR, vec![])
     }
 }

@@ -1231,8 +1231,20 @@ impl FnCx<'_, '_, '_> {
         };
         // Arguments in source order.
         let mut evaluated: Vec<Option<CallArg>> = Vec::new();
-        // The receiver first, for instance methods.
-        let receiver = self.receiver(callee)?;
+        // The receiver first, for instance methods (a constructor or static function named
+        // bare inside a method has none).
+        let tree = self.l.cx.get::<ItemTreeQuery>(&item.file)?;
+        let data = &tree.items[item.local];
+        let instance = !data.is_static
+            && data.kind != ItemKind::Constructor
+            && data
+                .parent
+                .is_some_and(|p| tree.items[p].kind != ItemKind::Namespace);
+        let receiver = if instance {
+            self.receiver(callee)?
+        } else {
+            None
+        };
         let types = self.l.cx.get::<ItemTypesQuery>(&item)?;
         if let Some(op) = types.intrinsic.clone() {
             return self.intrinsic(e, &op, item, &subst, receiver, args);
@@ -1491,8 +1503,26 @@ impl FnCx<'_, '_, '_> {
                     }
                 }
             }
+            // A constant or enum member (`flags = RayFlags.None`).
+            Expr::Path(p) if !negate => {
+                let resolver = marlin_front_hir_def::Resolver::for_item(self.l.cx, item)?;
+                match resolver.resolve(self.l.cx, &p.to_def_path(), true)? {
+                    marlin_front_hir_def::Resolution::Values(items) if items.len() == 1 => {
+                        let c = self
+                            .l
+                            .const_operand(items[0], &ty)
+                            .map_err(|err| err.located(self.owner(), Self::loc(e)))?;
+                        Ok(self.f.const_value(c, t))
+                    }
+                    _ => Err(LowerError::unsupported(
+                        "a default argument that is not a constant",
+                        self.owner(),
+                        Self::loc(e),
+                    )),
+                }
+            }
             _ => Err(LowerError::unsupported(
-                "a default argument that is not a literal",
+                "a default argument that is not a literal or a constant",
                 self.owner(),
                 Self::loc(e),
             )),
@@ -1510,14 +1540,13 @@ impl FnCx<'_, '_, '_> {
         receiver: Option<Receiver>,
         args: &[Arg],
     ) -> R<Option<Value>> {
-        let _ = subst;
         let picked = self.by_kind(name, args)?;
         let name = picked.unwrap_or(name);
         if matches!(name, "tex.sample" | "tex.load" | "tex.texel") {
             return self.texture_op(e, name, item, receiver, args, None);
         }
         if name.starts_with("mesh.") {
-            return self.mesh_op(e, name, item, args);
+            return self.mesh_op(e, name, item, subst, args);
         }
         // `Debug.Print($"...")`: the format goes to the module's table.
         if name == "debug.print"
@@ -1549,7 +1578,7 @@ impl FnCx<'_, '_, '_> {
         }
         // `T.Zero` and `T.One` of scalars and vectors: a constant of the call's type.
         if name == "const.zero" || name == "const.one" {
-            let ty = self.concrete(&self.infer.type_of(e));
+            let ty = self.member_result_ty(item, subst)?;
             let t = self.l.ty(&ty)?;
             let c = self.unit_const(t, name == "const.one", e)?;
             let ct = self.l.module.consts[c].ty;
@@ -1678,6 +1707,9 @@ impl FnCx<'_, '_, '_> {
                     .ok_or_else(|| self.error("E1305", "an argument used twice", Self::loc(e)))?,
                 None => self.default_arg(item, p, subst, e)?,
             });
+        }
+        if name.starts_with("rq.") {
+            return self.ray_query(e, name, item, subst, operands);
         }
         let Some(op) = crate::intrinsic::op(name) else {
             return Err(LowerError::unsupported(
@@ -1858,5 +1890,18 @@ impl FnCx<'_, '_, '_> {
                 ));
             }
         })
+    }
+}
+
+impl FnCx<'_, '_, '_> {
+    /// The type an intrinsic member gives: its declared type with the call's type arguments.
+    /// Not the type of the expression it is read in, which for `q.Committed.T` is `T`'s.
+    pub(crate) fn member_result_ty(
+        &self,
+        item: marlin_front_hir_def::ItemId,
+        subst: &Subst,
+    ) -> R<Ty> {
+        let types = self.l.cx.get::<ItemTypesQuery>(&item)?;
+        Ok(self.concrete(&subst.ty(types.ty.as_ref().unwrap_or(&Ty::Error))))
     }
 }

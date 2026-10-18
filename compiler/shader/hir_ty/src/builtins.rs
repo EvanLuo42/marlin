@@ -106,6 +106,8 @@ pub enum BuiltinKind {
     Func,
     /// `Action<...>` of any arity.
     Action,
+    /// An inline ray query (0004 §12.4): a variable of its own.
+    RayQuery,
     /// A mesh entry's outputs (0004 §11.6).
     MeshOutput,
     /// A mesh output's vertices, primitives or index list, written by index.
@@ -125,6 +127,7 @@ impl BuiltinKind {
             "matrix" => BuiltinKind::Matrix,
             "func" => BuiltinKind::Func,
             "action" => BuiltinKind::Action,
+            "ray_query" => BuiltinKind::RayQuery,
             "mesh_output" => BuiltinKind::MeshOutput,
             "mesh_elements" => BuiltinKind::MeshElements,
             "string" => BuiltinKind::String,

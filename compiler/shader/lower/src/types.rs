@@ -212,6 +212,13 @@ impl Lowering<'_, '_> {
                 ) {
                     return Ok(self.module.scalar(marlin_shaderc_ir::Scalar::I32));
                 }
+                // A ray query is the address of its own variable (0006 §8.9).
+                if self.builtins.kind(*item) == Some(BuiltinKind::RayQuery) {
+                    let rq = self.module.ty(TypeData::RayQuery);
+                    return Ok(self
+                        .module
+                        .ptr(marlin_shaderc_ir::Space::Function, false, rq));
+                }
                 if matches!(
                     self.builtins.kind(*item),
                     Some(BuiltinKind::Func | BuiltinKind::Action)

@@ -137,6 +137,11 @@ ShaderReflection {
         },
         SourceHash {
             package: "Marlin",
+            path: "RayTracing.mshader",
+            hash: 0,
+        },
+        SourceHash {
+            package: "Marlin",
             path: "Scalars.mshader",
             hash: 0,
         },
@@ -168,6 +173,11 @@ ShaderReflection {
         SourceHash {
             package: "Game",
             path: "Meshes.mshader",
+            hash: 0,
+        },
+        SourceHash {
+            package: "Game",
+            path: "Rays.mshader",
             hash: 0,
         },
         SourceHash {

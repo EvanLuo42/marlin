@@ -11,8 +11,7 @@
 //! - `Textures.mshader`: textures, storage textures and samplers (§10.4).
 //! - `Gpu.mshader`: `Barrier`, `Wave`, `Debug`, `NonUniform` (§10.3, §12).
 //! - `Mesh.mshader`: mesh outputs and `Mesh.Dispatch` (§11.6).
-//!
-//! Derivatives and ray queries come with the rest of step 10.
+//! - `RayTracing.mshader`: rays, inline ray queries and acceleration structures (§12.4).
 
 /// The package's name.
 pub const PACKAGE: &str = "Marlin";
@@ -29,6 +28,10 @@ pub const FILES: &[(&str, &str)] = &[
     (
         "Resources.mshader",
         include_str!("../library/Resources.mshader"),
+    ),
+    (
+        "RayTracing.mshader",
+        include_str!("../library/RayTracing.mshader"),
     ),
     (
         "Scalars.mshader",

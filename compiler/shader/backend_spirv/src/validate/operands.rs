@@ -192,6 +192,18 @@ pub fn layout(opcode: u32) -> Option<&'static str> {
         op::BufferPointerEXT => "tri",
         op::ConstantSizeOfEXT => "tri",
         op::SetMeshOutputsEXT => "ii",
+        op::TypeRayQueryKHR | op::TypeAccelerationStructureKHR => "r",
+        op::RayQueryInitializeKHR => "iiiiiiii",
+        op::RayQueryConfirmIntersectionKHR => "i",
+        op::RayQueryProceedKHR => "tri",
+        op::RayQueryGetIntersectionTypeKHR
+        | op::RayQueryGetIntersectionTKHR
+        | op::RayQueryGetIntersectionInstanceCustomIndexKHR
+        | op::RayQueryGetIntersectionInstanceIdKHR
+        | op::RayQueryGetIntersectionGeometryIndexKHR
+        | op::RayQueryGetIntersectionPrimitiveIndexKHR
+        | op::RayQueryGetIntersectionBarycentricsKHR
+        | op::RayQueryGetIntersectionFrontFaceKHR => "trii",
         op::EmitMeshTasksEXT => "iiii?",
         _ => return None,
     })

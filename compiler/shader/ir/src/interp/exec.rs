@@ -519,6 +519,9 @@ impl<'m, 'r> Machine<'m, 'r> {
             Op::TexSample(_) | Op::TexLoad(_) | Op::TexStore(_) => {
                 return Err(self.error(fr, Some(inst), "textures are not interpreted yet"));
             }
+            Op::RqInit | Op::RqProceed | Op::RqGet { .. } | Op::RqCommitTriangle => {
+                return Err(self.error(fr, Some(inst), "ray queries are not interpreted yet"));
+            }
             _ => {}
         }
         for &lane in lanes {

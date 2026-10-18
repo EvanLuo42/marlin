@@ -14,6 +14,9 @@ pub(crate) fn is_pure(op: &Op) -> bool {
             Op::Store { .. }
                 | Op::MeshSetCounts
                 | Op::MeshDispatch
+                | Op::RqInit
+                | Op::RqProceed
+                | Op::RqCommitTriangle
                 | Op::TexStore(_)
                 | Op::Atomic { .. }
                 | Op::Barrier { .. }

@@ -105,3 +105,15 @@ error[E1124]: this function returns nothing
    |
 23 |     return 1;
    |            ^
+
+error[E1101]: no operator `|` for `Lobe` and `Lobe`
+  --> game/BodyErrors.mshader:32:20
+   |
+32 |     var notFlags = Lobe.Diffuse | Lobe.Specular;
+   |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E1101]: no operator `<` for `Lobe` and `Lobe`
+  --> game/BodyErrors.mshader:33:19
+   |
+33 |     var ordered = Lobe.Diffuse < Lobe.Specular;
+   |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^

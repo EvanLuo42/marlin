@@ -153,6 +153,15 @@ words! {
 }
 
 words! {
+    /// What `rq.get` reads of an intersection (§8.9).
+    RqField {
+        Kind = "kind", T = "t", Barycentrics = "barycentrics", InstanceIndex = "instance_index",
+        InstanceId = "instance_id", PrimitiveIndex = "primitive_index",
+        GeometryIndex = "geometry_index", FrontFace = "front_face",
+    }
+}
+
+words! {
     /// The operands of a texture operation after its coordinate (§8.6), always in this order;
     /// `grad` is two operands (the derivatives along x and y).
     TexArg {
@@ -314,6 +323,20 @@ pub enum Op {
     TexLoad(Vec<TexArg>),
     /// Operands: the storage texture, the integer coordinate, the value, then `layer`.
     TexStore(Vec<TexArg>),
+
+    // ---- ray queries (§8.9) ----
+    /// Operands: the query (a pointer to a `rayquery` variable), the acceleration structure,
+    /// the ray's origin, t-min, direction and t-max, the flags, the instance mask.
+    RqInit,
+    /// Operand: the query. Result: whether there is a candidate to look at.
+    RqProceed,
+    /// Operand: the query. A field of the committed intersection, or the candidate's.
+    RqGet {
+        committed: bool,
+        field: RqField,
+    },
+    /// Operand: the query. Commits the candidate triangle.
+    RqCommitTriangle,
 
     // ---- mesh and amplification (§8.9) ----
     /// Operands: the vertex count, the primitive count; before any mesh output is written.

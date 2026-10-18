@@ -49,3 +49,16 @@ public T Twice<T>(T x) where T : IFloat<T> => x * (T.One + T.One) + T.Zero;
 public float TwiceF(float x) => Twice(x);
 public float3 TwiceV(float3 x) => Twice(x);
 public uint3 Units() => uint3.One + uint3.Zero;
+
+// Enums: `==` and `!=` on any, `&`, `|` and `^` on [Flags] ones.
+public bool IsTriangle(bool t) => (t ? HitKind.Triangle : HitKind.None) == HitKind.Triangle;
+public uint FlagOps(bool back)
+{
+    var f = (back ? RayFlags.CullBackFace : RayFlags.None) | RayFlags.Opaque;
+    uint r = 0;
+    if ((f & RayFlags.CullBackFace) != RayFlags.None)
+        r |= 1;
+    if ((f ^ RayFlags.Opaque) == RayFlags.None)
+        r |= 2;
+    return r;
+}

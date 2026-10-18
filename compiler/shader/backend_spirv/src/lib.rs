@@ -12,6 +12,11 @@
 //! - What SPIR-V leaves undefined is made defined, as the IR has it: shift counts are taken
 //!   modulo the width, float-to-integer conversions saturate (NaN to 0).
 //!
+//! Step 10d: inline ray queries (`SPV_KHR_ray_query`): the acceleration structure is loaded
+//! from the resource heap, a query is a `Function` variable of `OpTypeRayQueryKHR`, and
+//! `rq.get` is the `OpRayQueryGet*KHR` for its field (the hit kind mapped to `HitKind`). The
+//! `RayQuery` capability is the target's one optional capability.
+//!
 //! Step 10c: mesh and task shaders (`SPV_EXT_mesh_shader`): mesh outputs are `Output` arrays
 //! (`PerPrimitiveEXT` for primitives, the index list a `Primitive*IndicesEXT` built-in); the
 //! output counts and topology come from those arrays; `OpSetMeshOutputsEXT`; and
@@ -38,15 +43,14 @@
 //! Step 9b, the validator ([`validate`], also [`Backend::validate`]): our own check of the
 //! SPIR-V rules the code above relies on, with no outside tools (0005 §4.6).
 //!
-//! Still to come: the other stages, textures, samplers and `debug.*` (step 10).
+//! Still to come: `debug.*` (with the RHI's debug buffer), ray tracing pipelines, and the
+//! texture operations no shader uses yet (comparison, gather, offsets, size queries).
 
 mod body;
 mod dis;
 pub mod spirv;
 mod validate;
 mod write;
-
-use std::collections::BTreeSet;
 
 use marlin_shaderc_ir::{FuncId, Module};
 use marlin_shaderc_target::{Backend, BackendError, Blob, Target};
@@ -59,9 +63,10 @@ pub fn vulkan_1_4() -> Target {
     Target {
         name: "vulkan-1.4".into(),
         version: 1,
-        // The baseline every device the RHI accepts has; optional features (16-bit and 64-bit
-        // types, ...) come with the core library's capability names.
-        capabilities: BTreeSet::new(),
+        // Beyond the baseline every device the RHI accepts has: inline ray queries, which a
+        // device without them skips (reflection lists the capability). 16-bit and 64-bit types
+        // come when the RHI checks for them.
+        capabilities: ["RayQuery".into()].into_iter().collect(),
         wave_sizes: (4, 128),
         calls: true,
         vectors: true,

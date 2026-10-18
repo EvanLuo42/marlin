@@ -938,7 +938,9 @@ impl InferCtx<'_, '_> {
                 .insert(e, Callee::BuiltinConstruct(ty.clone()));
             return Ok(ty.clone());
         }
-        if self.builtins.kind(*item).is_some() {
+        // A built-in type is built by the constructors it declares (`RayQuery(accel, ray)`), if
+        // any.
+        if self.builtins.kind(*item).is_some() && self.constructors(*item, type_args)?.is_empty() {
             self.arg_infos(args)?;
             self.report(
                 InferLoc::Expr(e),

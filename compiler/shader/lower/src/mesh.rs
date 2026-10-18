@@ -4,7 +4,7 @@
 
 use marlin_front_hir_def::store::{Arg, ExprId};
 use marlin_front_hir_def::{ItemId, ItemTreeQuery};
-use marlin_shaderc_hir_ty::InferLoc;
+use marlin_shaderc_hir_ty::{InferLoc, Subst};
 use marlin_shaderc_ir::{AccessStep, Op, Value};
 
 use crate::R;
@@ -20,6 +20,7 @@ impl FnCx<'_, '_, '_> {
         e: ExprId,
         name: &str,
         item: ItemId,
+        subst: &Subst,
         args: &[Arg],
     ) -> R<Option<Value>> {
         let loc = InferLoc::Expr(e);
@@ -39,7 +40,7 @@ impl FnCx<'_, '_, '_> {
             _ => None,
         };
         if let Some(list) = list {
-            let ty = self.concrete(&self.infer.type_of(e));
+            let ty = self.member_result_ty(item, subst)?;
             let t = self.l.ty(&ty)?;
             return Ok(Some(self.int_const(t, list)));
         }

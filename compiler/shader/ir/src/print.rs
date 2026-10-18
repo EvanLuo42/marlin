@@ -615,6 +615,15 @@ impl<'a> FuncText<'a> {
             Op::BufferElem => format!("buffer.elem {}", self.values(ops)),
             Op::TexSample(a) => format!("tex.sample {}", self.tex(ops, 3, a)),
             Op::MeshSetCounts => format!("mesh.set_counts {}", self.values(ops)),
+            Op::RqInit => format!("rq.init {}", self.values(ops)),
+            Op::RqProceed => format!("rq.proceed {}", self.values(ops)),
+            Op::RqCommitTriangle => format!("rq.commit_triangle {}", self.values(ops)),
+            Op::RqGet { committed, field } => format!(
+                "rq.get {}, {}.{}",
+                self.values(ops),
+                if *committed { "committed" } else { "candidate" },
+                field.name()
+            ),
             Op::MeshDispatch => format!("mesh.dispatch {}", self.values(ops)),
             Op::TexLoad(a) => format!("tex.load {}", self.tex(ops, 2, a)),
             Op::TexStore(a) => format!("tex.store {}", self.tex(ops, 3, a)),

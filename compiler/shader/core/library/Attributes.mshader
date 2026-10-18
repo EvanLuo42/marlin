@@ -111,6 +111,8 @@ public enum Capability
     /// `double`.
     Float64,
     WaveMatrix,
+    /// Inline ray queries (`RayQuery`, `AccelerationStructure.TraceAny` and the like).
+    RayQuery,
 }
 
 /// The capabilities a function or type needs: a contract its body is checked against.

@@ -73,8 +73,14 @@ table! {
         TypeUntypedPointerKHR = 4417, UntypedVariableKHR = 4418,
         UntypedAccessChainKHR = 4419, UntypedInBoundsAccessChainKHR = 4420,
         UntypedArrayLengthKHR = 4425, TypeBufferEXT = 5115,
+        TypeRayQueryKHR = 4472, RayQueryInitializeKHR = 4473, RayQueryConfirmIntersectionKHR = 4476,
+        RayQueryProceedKHR = 4477, RayQueryGetIntersectionTypeKHR = 4479,
         BufferPointerEXT = 5119, ConstantSizeOfEXT = 5129, EmitMeshTasksEXT = 5294,
-        SetMeshOutputsEXT = 5295,
+        SetMeshOutputsEXT = 5295, TypeAccelerationStructureKHR = 5341,
+        RayQueryGetIntersectionTKHR = 6018, RayQueryGetIntersectionInstanceCustomIndexKHR = 6019,
+        RayQueryGetIntersectionInstanceIdKHR = 6020, RayQueryGetIntersectionGeometryIndexKHR = 6022,
+        RayQueryGetIntersectionPrimitiveIndexKHR = 6023,
+        RayQueryGetIntersectionBarycentricsKHR = 6024, RayQueryGetIntersectionFrontFaceKHR = 6025,
     }
 }
 
@@ -85,7 +91,7 @@ table! {
         StorageImageReadWithoutFormat = 55, StorageImageWriteWithoutFormat = 56, GroupNonUniform = 61, GroupNonUniformVote = 62,
         GroupNonUniformArithmetic = 63, GroupNonUniformBallot = 64,
         GroupNonUniformShuffle = 65, GroupNonUniformClustered = 67, GroupNonUniformQuad = 68,
-        DrawParameters = 4427, ShaderNonUniform = 5301, StorageBuffer16BitAccess = 4433, StoragePushConstant16 = 4435,
+        DrawParameters = 4427, RayQueryKHR = 4472, ShaderNonUniform = 5301, StorageBuffer16BitAccess = 4433, StoragePushConstant16 = 4435,
         UntypedPointersKHR = 4473, DescriptorHeapEXT = 5128, MeshShadingEXT = 5283,
     }
 }

@@ -1387,6 +1387,37 @@ impl<'v, 'a> FunctionVerifier<'v, 'a> {
             }
             Op::UniformPtr | Op::BufferLength | Op::DescGet { .. } => count(1),
             Op::TexSample(a) | Op::TexLoad(a) | Op::TexStore(a) => tex_problem(v, op, a, args),
+            Op::RqInit | Op::RqProceed | Op::RqGet { .. } | Op::RqCommitTriangle => {
+                let n = if matches!(op, Op::RqInit) { 8 } else { 1 };
+                if let Some(p) = count(n) {
+                    return Some(p);
+                }
+                let query = matches!(v.data(args[0]), TypeData::Ptr { space: Space::Function, pointee, .. }
+                    if matches!(v.data(*pointee), TypeData::RayQuery));
+                if !query {
+                    return Some("the first operand points to a `rayquery` variable".into());
+                }
+                if let Op::RqInit = op {
+                    let accel = matches!(v.data(args[1]), TypeData::Handle(k)
+                        if k.kind == ResourceKind::AccelerationStructure);
+                    let f3 = |t: Type| v.shape(t) == Some((Scalar::F32, 3));
+                    let f1 = |t: Type| v.shape(t) == Some((Scalar::F32, 1));
+                    if !accel
+                        || !f3(args[2])
+                        || !f1(args[3])
+                        || !f3(args[4])
+                        || !f1(args[5])
+                        || !index_ok(args[6])
+                        || !index_ok(args[7])
+                    {
+                        return Some(
+                            "`rq.init` takes the query, an acceleration structure handle, the \n                             origin, t-min, direction and t-max, the flags and the mask"
+                                .into(),
+                        );
+                    }
+                }
+                None
+            }
             Op::MeshSetCounts | Op::MeshDispatch => {
                 let n = if matches!(op, Op::MeshSetCounts) {
                     2

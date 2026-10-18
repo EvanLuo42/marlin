@@ -18,6 +18,7 @@ global @verts : ptr<mesh_vertex, [f32x4; 4]> builtin(Position)
 global @cluster : ptr<mesh_primitive, [i32; 2]> location(0) interp(flat)
 global @tris : ptr<mesh_index, [i32x3; 2]>
 global @payload : ptr<payload, i32>
+global @scene : ptr<push, res<AccelerationStructure>>
 
 func @Game.Arith(%a: i32, %b: i32, %x: f32, %y: f32) -> (i32, f32) {
 block0:
@@ -285,5 +286,22 @@ entry amplification(1, 1, 1) @Game.As uses(@payload) {
 block0:
     store @payload, i32 3
     mesh.dispatch i32 2, i32 1, i32 1
+    return
+}
+
+entry compute(1, 1, 1) @Game.Trace uses(@scene) {
+block0:
+    %q = var function : rayquery
+    %idx = load @scene
+    %accel = desc.get %idx
+    rq.init %q, %accel, f32x3 (0.0, 0.0, -1.0), f32 0.0, f32x3 (0.0, 0.0, 1.0), f32 100.0, i32 1, i32 255
+    %more = rq.proceed %q
+    %ck = rq.get %q, candidate.kind
+    rq.commit_triangle %q
+    %k = rq.get %q, committed.kind
+    %t = rq.get %q, committed.t
+    %b = rq.get %q, committed.barycentrics
+    %id = rq.get %q, committed.instance_id
+    %front = rq.get %q, committed.front_face
     return
 }

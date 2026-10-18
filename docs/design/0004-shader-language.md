@@ -798,6 +798,10 @@ RayHit h = accel.TraceClosest(ray, RayFlags.Opaque);
 - 完整版是 `RayQuery` 对象，带 candidate 循环，用来写 alpha test 这类逻辑。
 - 常见情况用便捷方法 `TraceAny` 和 `TraceClosest`，它们内部用的是同一套实现。
 - flags 是普通参数，在编译期是常量时自动折叠。
+- 光线是 `Ray` struct，字段照 HLSL 的 RayDesc：`Origin`、`TMin`、`Direction`、`TMax`，用初始化器构造：`Ray { Origin = o, Direction = d, TMin = 0, TMax = 100 }`（2026-10-17 定）。
+- `RayFlags` 是 `[Flags]` enum，成员用短的 C# 名字：`None`、`Opaque`、`NoOpaque`、`TerminateOnFirstHit`、`CullBackFace`、`CullFrontFace`、`CullOpaque`、`CullNoOpaque`、`SkipTriangles`、`SkipProcedurals`（2026-10-17 定）。
+- `q.Committed`、`q.Candidate` 和 `TraceClosest` 的结果都是 `RayHit`，包括 `Kind`（`HitKind`：`None`、`Triangle`、`Procedural`）、`T`、`Barycentrics`、`InstanceIndex`（在 TLAS 里的位置）、`InstanceId`（实例自定义的 id，即 HLSL 的 InstanceID）、`PrimitiveIndex`、`GeometryIndex`、`FrontFace`（2026-10-17 定）。
+- 用到 ray query 要有 `Capability.RayQuery`：`RayQuery` 和 `AccelerationStructure` 的成员都标了 `[Requires(Capability.RayQuery)]`。`vulkan-1.4` target 有这个 capability；反射会列出它，引擎在不支持的设备上可以跳过这个 pipeline（2026-10-17 定）。
 
 ### 12.5 调试输出与断言
 

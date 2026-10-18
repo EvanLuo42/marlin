@@ -17,7 +17,7 @@ use crate::module::{
 use crate::num::f32_to_f16;
 use crate::op::{
     AccessStep, AtomicOp, Axis, BinaryOp, ConvertOp, FloatCmp, IntCmp, MathOp, MemOrder, Op,
-    QuadOp, ReduceOp, Scope, SwitchCase, TexArg, UnaryOp, VoteOp, WaveOp,
+    QuadOp, ReduceOp, RqField, Scope, SwitchCase, TexArg, UnaryOp, VoteOp, WaveOp,
 };
 use crate::ty::{ResKind, ResourceKind, Scalar, Space, StructId, Type, TypeData};
 
@@ -1390,6 +1390,28 @@ impl Parser {
                 "buffer.elem" => (Op::BufferElem, self.operands(b, line, 2)?, None),
                 "tex.sample" => self.tex(b, line, 3, Op::TexSample)?,
                 "mesh.set_counts" => (Op::MeshSetCounts, self.operands(b, line, 2)?, None),
+                "rq.init" => (Op::RqInit, self.operands(b, line, 8)?, None),
+                "rq.proceed" => (Op::RqProceed, self.operands(b, line, 1)?, None),
+                "rq.commit_triangle" => (Op::RqCommitTriangle, self.operands(b, line, 1)?, None),
+                "rq.get" => {
+                    let operands = self.operands(b, line, 1)?;
+                    self.expect_punct(',')?;
+                    // `committed.t`: one word, or three tokens.
+                    let mut w = self.ident()?;
+                    if !w.contains('.') && self.eat_punct('.') {
+                        w = format!("{w}.{}", self.ident()?);
+                    }
+                    let (which, f) = w.split_once('.').unwrap_or((&w, ""));
+                    let committed = match which {
+                        "committed" => true,
+                        "candidate" => false,
+                        _ => return self.error("expected `committed.` or `candidate.`"),
+                    };
+                    let Some(field) = RqField::from_name(f) else {
+                        return self.error(format!("unknown intersection field `{f}`"));
+                    };
+                    (Op::RqGet { committed, field }, operands, None)
+                }
                 "mesh.dispatch" => (Op::MeshDispatch, self.operands(b, line, 3)?, None),
                 "tex.load" => self.tex(b, line, 2, Op::TexLoad)?,
                 "tex.store" => self.tex(b, line, 3, Op::TexStore)?,

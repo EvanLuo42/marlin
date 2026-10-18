@@ -1,0 +1,100 @@
+// Inline ray queries (0004 §12.4): a ray against an acceleration structure, from any stage.
+// They need `Capability.RayQuery`.
+namespace Marlin;
+
+/// A ray from `Origin` along `Direction`, hitting between `TMin` and `TMax`.
+public struct Ray
+{
+    public float3 Origin;
+    public float TMin;
+    public float3 Direction;
+    public float TMax;
+}
+
+/// How a query treats geometry.
+[Flags]
+public enum RayFlags : uint
+{
+    None = 0,
+    /// Every geometry as opaque.
+    Opaque = 0x1,
+    /// Every geometry as non-opaque (each candidate is the shader's to commit).
+    NoOpaque = 0x2,
+    /// Stop at the first hit committed.
+    TerminateOnFirstHit = 0x4,
+    CullBackFace = 0x10,
+    CullFrontFace = 0x20,
+    CullOpaque = 0x40,
+    CullNoOpaque = 0x80,
+    SkipTriangles = 0x100,
+    SkipProcedurals = 0x200,
+}
+
+public enum HitKind : uint { None, Triangle, Procedural }
+
+/// An intersection: the committed one, or the candidate a query stopped at.
+public struct RayHit
+{
+    public HitKind Kind;
+    /// The distance along the ray.
+    public float T;
+    /// The hit's barycentrics in its triangle (weights of the second and third vertices).
+    public float2 Barycentrics;
+    /// The instance's position in the acceleration structure.
+    public uint InstanceIndex;
+    /// The instance's own id, set when the acceleration structure was built.
+    public uint InstanceId;
+    public uint PrimitiveIndex;
+    public uint GeometryIndex;
+    /// The ray hit the triangle's front.
+    public bool FrontFace;
+}
+
+/// A ray traced step by step: `Proceed` stops at each candidate the shader decides about
+/// (non-opaque triangles, procedural primitives), until it returns `false`.
+[Builtin("ray_query")]
+[Requires(Capability.RayQuery)]
+public struct RayQuery
+{
+    [Intrinsic("rq.init")]
+    public RayQuery(AccelerationStructure accel, Ray ray, RayFlags flags = RayFlags.None, uint mask = 0xFF);
+
+    [Intrinsic("rq.proceed")] public bool Proceed();
+
+    /// Commits the candidate triangle as the closest hit so far.
+    [Intrinsic("rq.commit_triangle")] public void CommitTriangle();
+
+    [Intrinsic("rq.committed")] public RayHit Committed { get; }
+    [Intrinsic("rq.candidate")] public RayHit Candidate { get; }
+}
+
+/// A top-level acceleration structure (0007 §9): a 32-bit bindless index.
+[Builtin("acceleration_structure")]
+public readonly struct AccelerationStructure
+{
+    /// Whether anything (opaque or not) is hit between `ray.TMin` and `ray.TMax`.
+    [Requires(Capability.RayQuery)]
+    public bool TraceAny(Ray ray, RayFlags flags = RayFlags.None, uint mask = 0xFF)
+    {
+        var q = RayQuery(this, ray, flags | RayFlags.TerminateOnFirstHit, mask);
+        while (q.Proceed())
+        {
+            if (q.Candidate.Kind == HitKind.Triangle)
+                q.CommitTriangle();
+        }
+        return q.Committed.Kind != HitKind.None;
+    }
+
+    /// The closest triangle hit (non-opaque ones count too); `Kind` is `None` without one.
+    [Requires(Capability.RayQuery)]
+    public RayHit TraceClosest(Ray ray, RayFlags flags = RayFlags.None, uint mask = 0xFF)
+    {
+        var q = RayQuery(this, ray, flags, mask);
+        while (q.Proceed())
+        {
+            if (q.Candidate.Kind == HitKind.Triangle)
+                q.CommitTriangle();
+        }
+        return q.Committed;
+    }
+}

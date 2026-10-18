@@ -66,6 +66,12 @@
 //! amplification entry dispatches lives in `payload` memory; `Mesh.Dispatch` must end the
 //! entry's body (the first version's rule). Writes before `SetCounts` are E1308.
 //!
+//! Step 10d: inline ray queries (`ray.rs`). A `RayQuery` is a pointer to a `rayquery` variable
+//! its constructor makes; `Committed` and `Candidate` read every `RayHit` field with `rq.get`.
+//! Block parameters every predecessor passes one value for are that value (Braun et al.'s
+//! trivial phis), so a query read in a loop stays one pointer. Intrinsic results take the
+//! member's declared type, not the expression's.
+//!
 //! Not lowered yet: auto-properties.
 
 mod closures;
@@ -80,6 +86,7 @@ mod members;
 mod mesh;
 mod pat;
 mod place;
+mod ray;
 mod ssa;
 mod stmt;
 mod texture;

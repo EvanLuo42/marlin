@@ -92,6 +92,8 @@ pub fn result_types_in(
         | Op::TexStore(_)
         | Op::MeshSetCounts
         | Op::MeshDispatch
+        | Op::RqInit
+        | Op::RqCommitTriangle
         | Op::Barrier { .. }
         | Op::Discard
         | Op::DebugPrint(_)
@@ -247,6 +249,16 @@ pub fn result_types_in(
             }))
         }
         Op::BufferLength => one(scalar(t, Scalar::I32)),
+        Op::RqProceed => one(scalar(t, Scalar::I1)),
+        Op::RqGet { field, .. } => {
+            use crate::op::RqField::*;
+            match field {
+                T => one(scalar(t, Scalar::F32)),
+                Barycentrics => one(t.make(TypeData::Vector(Scalar::F32, 2))),
+                FrontFace => one(scalar(t, Scalar::I1)),
+                _ => one(scalar(t, Scalar::I32)),
+            }
+        }
         Op::TexSample(_) | Op::TexLoad(_) => match data(t, arg(0)?) {
             TypeData::Handle(kind) if kind.kind.texture().is_some() => match kind.element {
                 Some(e) => one(Ok(e)),

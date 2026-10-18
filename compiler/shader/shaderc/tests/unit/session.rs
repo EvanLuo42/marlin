@@ -128,6 +128,7 @@ fn an_entry_compiles_to_spirv_with_its_reflection() {
             SourcePath::new("Game", "Kernel.mshader"),
             SourcePath::new("Game", "Main.mshader"),
             SourcePath::new("Game", "Meshes.mshader"),
+            SourcePath::new("Game", "Rays.mshader"),
             SourcePath::new("Game", "Textures.mshader"),
             SourcePath::new("Game", "Wide.mshader"),
         ]
@@ -411,6 +412,8 @@ fn the_core_library_compiles_for_vulkan() {
         "Game.MeshMain",
         "Game.AmplifyMain",
         "Game.MeshAmplified",
+        "Game.Trace",
+        "Game.Shadowed",
     ] {
         let mut req = request(entry, &[]);
         req.profile = Profile::Shipping;

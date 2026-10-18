@@ -47,6 +47,8 @@ pub(crate) enum Ty {
     /// The sampled type, dimension, depth, arrayed, multisampled, sampled and format words.
     Image(Vec<u32>),
     SampledImage(u32),
+    RayQuery,
+    AccelerationStructure,
     Sampler,
     Buffer {
         class: u32,
@@ -165,6 +167,8 @@ pub(crate) fn declare(v: &mut Validator, i: &Inst) {
         },
         op::TypeImage => Ty::Image(o[1..].to_vec()),
         op::TypeSampledImage => Ty::SampledImage(o[1]),
+        op::TypeRayQueryKHR => Ty::RayQuery,
+        op::TypeAccelerationStructureKHR => Ty::AccelerationStructure,
         op::TypeSampler => Ty::Sampler,
         op::TypeBufferEXT => {
             if !matches!(o[1], sc::StorageBuffer | sc::Uniform) {
@@ -291,7 +295,7 @@ fn laid_out(v: &mut Validator, t: u32, seen: &mut HashSet<u32>) {
         Some(Ty::Array { element, .. } | Ty::RuntimeArray { element }) => {
             let descriptors = matches!(
                 v.types.get(element),
-                Some(Ty::Buffer { .. } | Ty::Image(_) | Ty::Sampler)
+                Some(Ty::Buffer { .. } | Ty::Image(_) | Ty::Sampler | Ty::AccelerationStructure)
             );
             match v
                 .decorated(t, decoration::ArrayStride)

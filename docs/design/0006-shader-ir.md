@@ -303,7 +303,7 @@ tex.store %st, %coord, %v
 
 ```text
 %q = var function : rayquery
-rq.init %q, %accel, %ray, flags(cull_back), mask(0xff)
+rq.init %q, %accel, %origin, %tmin, %dir, %tmax, %flags, %mask
 %more = rq.proceed %q
 %k = rq.get %q, candidate.kind
 rq.commit_triangle %q
@@ -317,6 +317,7 @@ mesh.dispatch %x, %y, %z          // amplification；payload 是 @payload 变量
 ```
 
 - `rayquery` 是不透明类型，只能存在于 `function` 地址空间的变量里，`rq.*` op 接收指向它的指针，这和 SPIR-V 一样。DXIL 把它降低成 ray query 句柄整数。
+- 第 10d 步：`rq.init` 的操作数依次是 query 指针、加速结构句柄、射线的四个字段（`Origin`、`TMin`、`Direction`、`TMax`），然后是 flags 和 mask，都是 `i32` 值，不是写死的立即数。`rq.get %q, committed.<field>` 和 `candidate.<field>` 各读一个字段：`kind`、`t`、`barycentrics`、`instance_index`、`instance_id`、`primitive_index`、`geometry_index`、`front_face`。`kind` 和 `HitKind` 一致，0 是没有命中，1 是三角形，2 是 procedural。块参数不能是指针，所以降低时会把每个前驱都传同一个值的块参数换成那个值（Braun 的 trivial phi）。
 - mesh 输出是 `mesh_*` 地址空间的数组变量，写之前必须先调用 `mesh.set_counts`，由 verifier 检查（0004 §11.6）。
 - 第 10c 步：顶点和图元类型的每个字段各是一个数组变量（`mesh_vertex`、`mesh_primitive`），绑定照 stage I/O，location 按声明顺序，先排顶点再排图元；下标列表是 `mesh_index` 的数组，元素是 `i32`、`i32x2` 或 `i32x3`，对应点、线、三角形。verifier 检查：在含 `mesh.set_counts` 的函数里，每次写 mesh 输出都要被它支配（`early_mesh_writes`）；`mesh.set_counts` 只能在 mesh 入口里用，`mesh.dispatch` 只能在 amplification 入口里用。payload 就是 module 里那个 `payload` 变量，`mesh.dispatch` 后面直接是 `return`。
 

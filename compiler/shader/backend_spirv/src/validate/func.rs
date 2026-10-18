@@ -558,7 +558,7 @@ impl Func<'_> {
                             )
                         )
                     });
-                let descriptors = matches!(self.ty(ops[0]), Some(Ty::RuntimeArray { element }) if matches!(self.ty(*element), Some(Ty::Buffer { .. } | Ty::Image(_) | Ty::Sampler)));
+                let descriptors = matches!(self.ty(ops[0]), Some(Ty::RuntimeArray { element }) if matches!(self.ty(*element), Some(Ty::Buffer { .. } | Ty::Image(_) | Ty::Sampler | Ty::AccelerationStructure)));
                 if base_is_heap && !descriptors {
                     self.error(format!(
                         "{name}: a heap is indexed as an array of descriptors"

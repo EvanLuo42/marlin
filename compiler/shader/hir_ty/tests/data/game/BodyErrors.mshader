@@ -25,3 +25,10 @@ void Errors(uint3 id, int n)
 
 float TakesFunc(Func<float, float> f) => f(1);
 float TwoArgs(float a, float b) => a;
+
+// `&`, `|` and `^` need a [Flags] enum; no enum has `<`.
+void EnumErrors()
+{
+    var notFlags = Lobe.Diffuse | Lobe.Specular;
+    var ordered = Lobe.Diffuse < Lobe.Specular;
+}

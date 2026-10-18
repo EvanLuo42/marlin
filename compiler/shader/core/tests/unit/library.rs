@@ -143,6 +143,16 @@ fn float_functions_match_rust() {
 }
 
 #[test]
+fn enum_operators_compare_and_combine_flags() {
+    let w = calls();
+    assert_eq!(uint(&w.run("Game.IsTriangle", &[Val::bool(true)])), 1);
+    assert_eq!(uint(&w.run("Game.IsTriangle", &[Val::bool(false)])), 0);
+    // CullBackFace | Opaque has the back-face bit, and is not Opaque alone.
+    assert_eq!(uint(&w.run("Game.FlagOps", &[Val::bool(true)])), 1);
+    assert_eq!(uint(&w.run("Game.FlagOps", &[Val::bool(false)])), 2);
+}
+
+#[test]
 fn vector_functions_match_rust() {
     let w = calls();
     assert_eq!(
