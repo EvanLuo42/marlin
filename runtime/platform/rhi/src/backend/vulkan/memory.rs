@@ -104,6 +104,30 @@ pub(crate) struct Memory {
     pub(crate) memory_type: u32,
     /// The whole allocation's CPU mapping, for host-visible memory.
     pub(crate) mapped: Option<NonNull<u8>>,
+    /// Allocated with `VkExportMemoryAllocateInfo`: OS handles can be made of it (share.rs).
+    pub(crate) exportable: bool,
+}
+
+/// Whether a `pNext` chain holds a structure of type `ty`.
+///
+/// # Safety
+/// `next` is null or a valid chain of Vulkan structures.
+unsafe fn chain_has(mut next: *const c_void, ty: VkStructureType) -> bool {
+    /// The header every chained structure starts with (`VkBaseInStructure`).
+    #[repr(C)]
+    struct Base {
+        s_type: VkStructureType,
+        next: *const c_void,
+    }
+    while !next.is_null() {
+        // SAFETY: every structure in a valid chain starts with this header.
+        let base = unsafe { &*next.cast::<Base>() };
+        if base.s_type == ty {
+            return true;
+        }
+        next = base.next;
+    }
+    false
 }
 
 // SAFETY: device memory and its mapping may be used from any thread; the mapping is only read
@@ -160,6 +184,8 @@ impl Memory {
             size,
             memory_type,
             mapped: None,
+            // SAFETY: the caller's chain, which the allocation just accepted.
+            exportable: unsafe { chain_has(next, VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO) },
         };
         if shared.memory.host_visible(memory_type) {
             let mut data = ptr::null_mut();

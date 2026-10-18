@@ -266,6 +266,7 @@ struct FeatureChain {
     depth_clip: VkPhysicalDeviceDepthClipEnableFeaturesEXT,
     present_id2: VkPhysicalDevicePresentId2FeaturesKHR,
     present_wait2: VkPhysicalDevicePresentWait2FeaturesKHR,
+    swapchain_maintenance1: VkPhysicalDeviceSwapchainMaintenance1FeaturesKHR,
 }
 
 impl FeatureChain {
@@ -278,6 +279,9 @@ impl FeatureChain {
                 self.$field.pNext = next;
                 next = (&raw mut self.$field).cast();
             }};
+        }
+        if ext.swapchain_maintenance1 {
+            push!(swapchain_maintenance1);
         }
         if ext.present_wait2 {
             push!(present_wait2);

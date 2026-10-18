@@ -25,13 +25,35 @@ pub(crate) struct Queue {
     raw: VkQueue,
     pub(crate) family: u32,
     pub(crate) ty: QueueType,
-    pub(crate) state: Mutex<QueueState>,
+    pub(crate) state: Arc<Mutex<QueueState>>,
 }
 
 // SAFETY: every `vkQueue*` call holds `state`'s lock.
 unsafe impl Send for Queue {}
 // SAFETY: as above.
 unsafe impl Sync for Queue {}
+
+/// A queue shared with an object that outlives the borrow it was made from; the `VkQueue` lives as
+/// long as the device, which the object keeps alive.
+#[derive(Clone)]
+pub(crate) struct QueueHandle {
+    pub(crate) raw: VkQueue,
+    pub(crate) family: u32,
+    state: Arc<Mutex<QueueState>>,
+}
+
+// SAFETY: as `Queue`: every `vkQueue*` call holds `state`'s lock.
+unsafe impl Send for QueueHandle {}
+// SAFETY: as above.
+unsafe impl Sync for QueueHandle {}
+
+impl QueueHandle {
+    /// As [`Queue::with_lock`].
+    pub(crate) fn with_lock<R>(&self, f: impl FnOnce(VkQueue, &mut QueueState) -> R) -> R {
+        let mut state = self.state.lock();
+        f(self.raw, &mut state)
+    }
+}
 
 fn timeout_ns(timeout: Option<Duration>) -> u64 {
     timeout.map_or(u64::MAX, |t| t.as_nanos().min(u64::MAX as u128 - 1) as u64)
@@ -52,7 +74,7 @@ impl Queue {
             raw,
             family,
             ty,
-            state: Mutex::new(QueueState::default()),
+            state: Arc::new(Mutex::new(QueueState::default())),
         }
     }
 
@@ -120,6 +142,15 @@ impl Queue {
         f(self.raw, &mut state)
     }
 
+    /// The queue for an object that outlives this borrow of it (a swapchain).
+    pub(crate) fn handle(&self) -> QueueHandle {
+        QueueHandle {
+            raw: self.raw,
+            family: self.family,
+            state: self.state.clone(),
+        }
+    }
+
     pub(crate) fn timestamp_frequency(&self) -> Result<u64> {
         let period = self.shared.properties.limits.timestampPeriod;
         let bits = self.shared.families.properties[self.family as usize].timestampValidBits;
@@ -142,6 +173,8 @@ impl Queue {
 pub(crate) struct Fence {
     shared: Arc<Shared>,
     pub(crate) raw: VkSemaphore,
+    /// Created with export info (`create_shared_fence`): OS handles can be made of it.
+    exportable: bool,
 }
 
 impl Fence {
@@ -177,7 +210,9 @@ impl Fence {
         shared.lost.result(unsafe {
             (shared.fns.vkCreateSemaphore)(shared.raw, &info, ptr::null(), &mut raw)
         })?;
-        Ok(Self::from_raw(shared, raw))
+        let mut fence = Self::from_raw(shared, raw);
+        fence.exportable = exportable;
+        Ok(fence)
     }
 
     /// Wraps a timeline semaphore of this device (created or imported), destroyed on drop.
@@ -185,6 +220,7 @@ impl Fence {
         Self {
             shared: shared.clone(),
             raw,
+            exportable: false,
         }
     }
 
@@ -194,6 +230,10 @@ impl Fence {
 
     pub(crate) fn raw(&self) -> VkSemaphore {
         self.raw
+    }
+
+    pub(crate) fn exportable(&self) -> bool {
+        self.exportable
     }
 
     pub(crate) fn completed_value(&self) -> u64 {

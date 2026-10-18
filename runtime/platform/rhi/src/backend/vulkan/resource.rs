@@ -4,6 +4,7 @@
 //! transfers, 0016 §5). Buffers always have device addresses: buffer descriptors are address
 //! ranges.
 
+use core::ffi::c_void;
 use core::ptr::{self, NonNull};
 
 use alloc::sync::Arc;
@@ -13,6 +14,7 @@ use super::device::{Device, Shared};
 use super::ffi::*;
 use super::memory::{Dedicated, Heap, Memory};
 use super::queue::Queue;
+use super::share::External;
 use super::unsupported;
 use crate::{
     BufferDesc, BufferUsage, BufferViewDesc, BufferViewKind, DepthStencilViewDesc, Format,
@@ -137,8 +139,19 @@ pub(crate) fn create_raw_buffer(
     desc: &BufferDesc,
     flags: VkBufferCreateFlags,
 ) -> Result<VkBuffer> {
+    create_raw_buffer_with(shared, desc, flags, ptr::null())
+}
+
+/// As [`create_raw_buffer`], with `next` chained into the create info (external memory).
+pub(crate) fn create_raw_buffer_with(
+    shared: &Shared,
+    desc: &BufferDesc,
+    flags: VkBufferCreateFlags,
+    next: *const c_void,
+) -> Result<VkBuffer> {
     let usage = VkBufferUsageFlags2CreateInfo {
         usage: buffer_usage(shared, desc.usage),
+        pNext: next,
         ..Default::default()
     };
     let (sharing, family_count, families) = shared.families.sharing();
@@ -177,9 +190,24 @@ fn destroy_buffer(shared: &Shared, raw: VkBuffer) {
 }
 
 pub(crate) fn create_buffer(device: &Device, desc: &BufferDesc) -> Result<Buffer> {
+    let external = External::export(&device.shared, desc.usage.contains(BufferUsage::SHARED));
+    create_buffer_with(device, desc, external.as_ref())
+}
+
+/// A committed buffer; `external` makes its memory exportable, or imports it (share.rs).
+pub(crate) fn create_buffer_with(
+    device: &Device,
+    desc: &BufferDesc,
+    external: Option<&External>,
+) -> Result<Buffer> {
     let s = &device.shared;
     s.lost.check()?;
-    let raw = create_raw_buffer(s, desc, 0)?;
+    let raw = create_raw_buffer_with(
+        s,
+        desc,
+        0,
+        external.map_or(ptr::null(), |e| e.buffer_info()),
+    )?;
     let info = VkBufferMemoryRequirementsInfo2 {
         buffer: raw,
         ..Default::default()
@@ -192,8 +220,8 @@ pub(crate) fn create_buffer(device: &Device, desc: &BufferDesc) -> Result<Buffer
         destroy_buffer(s, raw);
         return Err(unsupported());
     };
-    let memory = match Memory::allocate(s, r.size, memory_type, Dedicated::Buffer(raw), ptr::null())
-    {
+    let next = external.map_or(ptr::null(), |e| e.memory_info());
+    let memory = match Memory::allocate(s, r.size, memory_type, Dedicated::Buffer(raw), next) {
         Ok(m) => m,
         Err(e) => {
             destroy_buffer(s, raw);
@@ -307,7 +335,6 @@ pub(crate) fn create_buffer_view(
 
 // --- Textures (resource area) ---
 
-use core::ffi::c_void;
 
 use alloc::vec::Vec;
 

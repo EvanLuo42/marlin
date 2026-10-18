@@ -146,7 +146,9 @@ fn library() -> Result<(Library, PFN_vkGetInstanceProcAddr)> {
 ///
 /// # Safety
 /// `f` writes at most `*count` items when given a buffer.
-unsafe fn enumerate<T: Default + Clone>(f: impl Fn(*mut u32, *mut T) -> VkResult) -> Vec<T> {
+pub(crate) unsafe fn enumerate<T: Default + Clone>(
+    f: impl Fn(*mut u32, *mut T) -> VkResult,
+) -> Vec<T> {
     loop {
         let mut count = 0;
         if f(&mut count, ptr::null_mut()) < 0 {
