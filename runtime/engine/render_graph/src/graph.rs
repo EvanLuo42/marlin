@@ -170,6 +170,8 @@ pub struct RenderGraph<'g, B: Backend = Rhi> {
     pub(crate) retained: Vec<RetainedUse<'g>, &'g Arena>,
     /// Views whose history this frame does not continue.
     pub(crate) invalidated: Vec<u64, &'g Arena>,
+    /// Runs every pass on the graphics queue, whatever queues the device has.
+    pub(crate) single_queue: bool,
 }
 
 impl<'g, B: Backend> RenderGraph<'g, B> {
@@ -186,6 +188,7 @@ impl<'g, B: Backend> RenderGraph<'g, B> {
             readbacks: 0,
             retained: Vec::new_in(arena),
             invalidated: Vec::new_in(arena),
+            single_queue: false,
         }
     }
 
@@ -195,6 +198,12 @@ impl<'g, B: Backend> RenderGraph<'g, B> {
             states: Some(states),
             ..Self::new(arena)
         }
+    }
+
+    /// Runs every pass on the graphics queue, whatever queues the device has: to compare with
+    /// the work spread over queues, or to rule the other queues out.
+    pub fn set_single_queue(&mut self, single: bool) {
+        self.single_queue = single;
     }
 
     /// The frame this graph is for: its state table's.
@@ -676,6 +685,15 @@ impl<'g, B: Backend> PassBuilder<'_, 'g, B> {
             pass.name
         );
         pass.queue = QueueType::Copy;
+        let start = pass.accesses.start as usize;
+        let clears = self.graph.accesses[start..]
+            .iter()
+            .any(|r| r.usage == Use::Shader(Access::Clear));
+        assert!(
+            !clears,
+            "pass {}: the copy queue cannot clear; clear on the graphics or compute queue",
+            self.pass_name()
+        );
     }
 
     /// Keeps the pass even when nothing reads what it writes: readbacks, presents, captures.
@@ -861,6 +879,12 @@ impl<'g, B: Backend> PassBuilder<'_, 'g, B> {
     fn push(&mut self, rec: AccessRec) {
         let g = &mut *self.graph;
         let start = g.passes[self.pass].accesses.start as usize;
+        assert!(
+            !(g.passes[self.pass].queue == QueueType::Copy
+                && rec.usage == Use::Shader(Access::Clear)),
+            "pass {}: the copy queue cannot clear; clear on the graphics or compute queue",
+            g.passes[self.pass].name
+        );
         if cfg!(debug_assertions) {
             for prior in &g.accesses[start..] {
                 if prior.res != rec.res || !overlaps(prior, &rec) {

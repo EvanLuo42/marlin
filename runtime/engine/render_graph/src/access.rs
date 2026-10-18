@@ -235,11 +235,6 @@ pub enum PassKind {
     Copy,
 }
 
-/// Whether two read states of a texture can be one state: they share a layout.
-pub(crate) fn texture_reads_merge(a: TextureState, b: TextureState) -> bool {
-    a.layout == b.layout
-}
-
 /// The stages `stage` stands for: the umbrella stages expanded into the shader stages they
 /// cover.
 const fn expand(stage: Stage) -> Stage {

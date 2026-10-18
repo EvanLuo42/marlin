@@ -2,7 +2,7 @@
 //! RHI is the backend of the engine; [`Recording`](crate::recording::Recording) stands in for it
 //! in tests that run without a GPU (0007 §12).
 
-use marlin_rhi::{BufferDesc, MemoryRequirements, Result, TextureDesc};
+use marlin_rhi::{BufferDesc, MemoryRequirements, QueueType, Result, TextureDesc};
 
 pub trait Backend: Sized + 'static {
     /// Sizes and aligns placed resources.
@@ -23,6 +23,15 @@ pub trait Backend: Sized + 'static {
         desc: &TextureDesc,
     ) -> Result<MemoryRequirements>;
     fn buffer_requirements(device: &Self::Device, desc: &BufferDesc) -> MemoryRequirements;
+    /// Which dedicated queues the device has; work for a missing one runs on the graphics queue.
+    fn queues(device: &Self::Device) -> Queues;
+}
+
+/// The dedicated queues a device has besides the graphics queue.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Queues {
+    pub compute: bool,
+    pub copy: bool,
 }
 
 /// The engine's backend: [`marlin_rhi`] objects.
@@ -60,5 +69,12 @@ impl Backend for Rhi {
 
     fn buffer_requirements(device: &Self::Device, desc: &BufferDesc) -> MemoryRequirements {
         device.buffer_requirements(desc)
+    }
+
+    fn queues(device: &Self::Device) -> Queues {
+        Queues {
+            compute: device.dedicated_queue(QueueType::Compute).is_some(),
+            copy: device.dedicated_queue(QueueType::Copy).is_some(),
+        }
     }
 }

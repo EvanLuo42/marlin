@@ -10,7 +10,7 @@ use marlin_std::mem::Arena;
 pub type Graph<'g> = RenderGraph<'g, Recording>;
 pub type Builder<'b, 'g> = PassBuilder<'b, 'g, Recording>;
 
-pub static DEVICE: recording::Device = recording::Device;
+pub static DEVICE: recording::Device = recording::Device::ASYNC;
 
 /// A frame arena for one test.
 pub fn arena() -> Arena {

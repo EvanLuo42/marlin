@@ -192,7 +192,7 @@ let lum = g.add_compute("Luminance", |b| {
 - 每个队列一个 timeline fence。跨队列的依赖边变成"signal 某值 / wait 该值"，并且只在段边界上发生（§4.7）。
 - 同一对队列之间相邻的多个同步点合并成一个。
 - 异步 pass 用到的瞬态资源，生命周期延长到对应的等待点之后，避免和 Graphics 队列上的资源别名冲突。
-- 跨队列的资源状态交接：生产方队列上先把资源切换到消费方需要的状态（D3D12 enhanced barrier 和 Vulkan 的队列族所有权转移都按这个顺序做）。
+- 跨队列的资源状态交接：由**消费方队列**在等待之后切换 layout，barrier 的 before 是 `{ stage: ALL, access: NONE, layout: 原 layout }`。原来的设计是在生产方队列上切换，但 compute 和 copy 队列不支持图形 stage 的 layout（例如切到 render target），而 Vulkan 后端的资源都是 `CONCURRENT` 共享，不需要队列族所有权转移；semaphore 的等待本身就带内存依赖，所以消费方只需要切换 layout（2026-10-18 改，见 §11.4 R1d）。
 - **跨帧**：跨帧状态表（§2.3）除了状态，还记录每个导入、历史和持久资源最后一次访问所在的队列和 fence 值。下一帧第一次访问它的 pass 如果在另一个队列上，graph 插入对那个 fence 值的等待。否则下一帧的异步 pass 可能和上一帧另一个队列上还没跑完的 pass 重叠（§9.9 是一个例子）。
 
 ### 4.5 生命周期与别名
@@ -544,6 +544,16 @@ R1c 做完时（2026-10-18）定下的细节：
 - **usage**：每个对象的 usage 是本帧需要的加上一组基础 usage。纹理的基础是 `SAMPLED`、`COPY_SRC`、`COPY_DST`：一帧写、下一帧采样的历史不需要换对象。buffer 的基础是所有普通 usage（读写、uniform、indirect、index、拷贝），因为 buffer 的 usage 不影响压缩和布局。某一帧需要对象没有的 usage（比如原来是 storage 写，现在当 render target）时，换一个 usage 取并集的新对象，内容和状态从 undefined 开始。这只在开发期偶尔发生，所以那一帧的 `prev` 内容未定义，接受这一点。编译时（初始状态取 undefined）、`FrameContext`（换对象）和状态表（记下新的 usage）按同一条规则判断，三者一致。
 - **`fresh`**：持久资源第一次被请求、描述变了，或者还从没被写过时为 `true`，调用方据此清零（例如在一个 copy pass 里 `ctx.fill_buffer`）。因为 usage 增长而换的对象不会标 `fresh`，同上，只在开发期发生。
 - GPU 测试：历史 buffer 每帧读上一帧的值加一，6 帧的读回分别是 1 到 6，第 4 帧起不再创建任何 RHI 对象；持久 buffer 累加，改尺寸后从头开始。
+
+R1d 做完时（2026-10-18）定下的细节：
+- **队列**：`b.async_compute()` 的 pass 在 Compute 队列，`b.copy_queue()` 的在 Copy 队列；设备没有对应的专用队列（`Backend::queues`）时放回 Graphics 队列。`g.set_single_queue(true)`（或 `FrameContextDesc::single_queue`）让所有 pass 都在 Graphics 队列，用来和分队列的结果对比，它也进拓扑键。Copy 队列上不能 `Clear`（`fill_buffer` 只能录在 graphics/compute list 上），声明时就 panic。
+- **依赖**单独算一遍，在别名之前：写后读、读后写、写后写，再加上"改 layout 的读"对它之前的读的依赖（layout 切换本身是一次写）。跨队列的依赖都变成段之间的等待。
+- **段**：一个新段从一个要等别的队列的 pass 开始（等待正好在第一个需要它的 pass 之前，也就是推迟），在一个别的队列要等的 pass 之后结束（尽早 signal）。段按第一个 pass 的声明位置排序提交，这样每个等待的 signal 都已经提交过了。每段一个 command list、一次提交，在自己队列的 fence 上 signal 一个新值；同一个生产方队列上的多个等待合并成最后那一个。"提前"不需要单独做：异步段一提交就和 Graphics 并行，只受它的等待约束。
+- **生命周期按执行窗口**：Graphics pass 的窗口就是它的位置。别的队列上的 pass，窗口从依赖允许的最早位置（同队列前一个 pass 和跨队列前驱的最早位置），到下一个等它的地方（Graphics 后继的位置，或者别的队列后继的窗口末尾；没人等就是帧末）。瞬态资源的生命周期是用到它的 pass 窗口的并集，再交给 first-fit。窗口重叠的资源可能同时在用，所以不会别名；不重叠的，它们之间一定有等待把执行排好序。
+- **跨队列的 barrier**：同队列的冲突照旧用 barrier；冲突只在别的队列上时，等待已经排好执行顺序、带了内存可见性，buffer 不加 barrier，纹理只在需要换 layout 时加，before 是 `{ ALL, NONE, 原 layout }`（§4.4 改过）。读组按队列分开记：每个队列上从上一次写以来的读合成一个状态，同队列的后续读加宽这组的 barrier。瞬态资源第一次使用时，等的是同队列上旧占用者的 stage；旧占用者在别的队列上时用 `ALL` 和那边的等待衔接。
+- **跨帧**先用保守做法：每帧 Compute、Copy 队列的第一段等上一帧的最后一个 Graphics fence 值；每帧结束时，如果用了别的队列，就做一次空的 Graphics 提交，等这一帧所有别的队列的最后一个值，再 signal。这样一个 Graphics fence 值代表整帧完成，帧槽回收、退休队列和 readback 都只看它。代价是本帧的异步工作不能和上一帧的 Graphics 尾巴重叠；按资源精确插入跨帧等待（§4.4 的最后一条）留到需要时再做，和 §13 的"跨帧的异步重叠"一起。导入资源的初始状态按"上一次在 Graphics 队列上访问"处理，上面的帧首等待保证了这一点成立。
+- readback 的数据在整帧的最后一个 fence 值之后才可读（一开始记成了帧开始时的值，多段提交时会提前读，GPU 测试和验证层都抓到了）。
+- GPU 测试（RTX 5060，有专用 compute 和 copy 队列）：Graphics → 异步计算 → Graphics 的链加一个独立的异步 pass，连续 4 帧的读回和 `single_queue` 逐字节相同；Copy 队列上的拷贝结果正确；验证层没有报错。
 
 ## 12. 测试
 

@@ -42,9 +42,10 @@ mod plan;
 pub mod recording;
 mod retained;
 mod state;
+mod sync;
 
 pub use access::{Access, PassKind};
-pub use backend::{Backend, Rhi};
+pub use backend::{Backend, Queues, Rhi};
 pub use cache::{Lookup, PlanCache};
 pub use context::{PassContext, Pipeline, RhiParts, ViewHandle};
 pub use desc::{BufferDesc, TextureDesc};
@@ -53,7 +54,7 @@ pub use graph::{ImportBuffer, ImportTexture, PassBuilder, Readback, RenderGraph}
 pub use handle::{BufferHandle, TextureHandle};
 pub use plan::{
     BufferTransition, CompiledPlan, Lifetime, Placement, PlannedBuffer, PlannedPass,
-    PlannedTexture, TextureFinal, TextureTransition,
+    PlannedTexture, Segment, TextureFinal, TextureTransition,
 };
 pub use retained::{GLOBAL_SCOPE, History, Persistent, RETIRE_FRAMES, RetainedDesc, RetainedKind};
 pub use state::{FrameStates, StateTable};

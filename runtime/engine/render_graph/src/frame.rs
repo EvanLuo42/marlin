@@ -1,25 +1,27 @@
 //! The frame context (0007 §7): runs compiled plans on the RHI. It owns what outlives one
-//! frame's graph: the frame arenas, the plan cache and state table, a command list and transient
-//! heaps per frame slot, the physical resources each plan places in them, the upload memory, the
+//! frame's graph: the frame arenas, the plan cache and state table, a fence per queue, command
+//! pools and lists and transient heaps per frame slot, the physical resources each plan places in them, the upload memory, the
 //! views of imported objects, readbacks, and the queue of objects waiting for the GPU before they
 //! are dropped.
 //!
-//! One graphics queue and one command list per frame for now; the compute and copy queues and
-//! parallel recording come next (0007 §4.3, §6).
+//! Each of the plan's segments is one command list, submitted in order with its waits and a
+//! signal on its queue; the frame ends with a graphics submission that waits for the other
+//! queues, so one graphics fence value covers the whole frame. Recording is on one thread for now;
+//! parallel recording comes next (0007 §6).
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 use core::ptr;
 
-use marlin_containers::{HashMap, HashMapExt};
+use marlin_containers::{HashMap, HashMapExt, SmallVec};
 use marlin_rhi::{
     Buffer, BufferBarrier, BufferDesc as RhiBufferDesc, BufferTextureCopy, BufferUsage,
     BufferViewDesc, BufferViewKind, ColorAttachment, CommandList, CommandPool, DepthAttachment,
     DepthStencilView, DepthStencilViewDesc, Device, Fence, Heap, HeapDesc, HeapKind,
-    MAX_COLOR_ATTACHMENTS, MemoryLocation, Rect, RenderPassDesc, RenderTargetView,
-    RenderTargetViewDesc, Result, ShaderView, Texture, TextureBarrier, TextureDimension,
-    TextureViewDesc, TextureViewDimension, Viewport, aligned_row_pitch,
+    MAX_COLOR_ATTACHMENTS, MemoryLocation, QueueType, Rect, RenderPassDesc, RenderTargetView,
+    RenderTargetViewDesc, Result, ShaderView, SubmitDesc, Texture, TextureBarrier,
+    TextureDimension, TextureViewDesc, TextureViewDimension, Viewport, aligned_row_pitch,
 };
 use marlin_std::mem::{Arena, FrameArenas};
 
@@ -33,6 +35,7 @@ use crate::plan::CompiledPlan;
 use crate::retained::RetainedKind;
 use crate::state::StateTable;
 use crate::state::{buffer_object_usage, texture_object_usage};
+use crate::sync;
 
 /// Frames the CPU may record ahead of the GPU.
 pub const FRAMES_IN_FLIGHT: usize = 2;
@@ -43,6 +46,8 @@ pub struct FrameContextDesc {
     pub arena_capacity: usize,
     /// Bytes of each upload memory chunk; larger uploads get a chunk of their own size.
     pub upload_chunk: u64,
+    /// Run every pass on the graphics queue ([`RenderGraph::set_single_queue`]).
+    pub single_queue: bool,
 }
 
 impl Default for FrameContextDesc {
@@ -50,6 +55,7 @@ impl Default for FrameContextDesc {
         Self {
             arena_capacity: 256 << 20,
             upload_chunk: 4 << 20,
+            single_queue: false,
         }
     }
 }
@@ -151,8 +157,10 @@ struct Physical {
 }
 
 struct Slot {
-    pool: CommandPool,
-    list: CommandList,
+    /// Per queue (graphics, compute, copy), made when first needed.
+    pools: [Option<CommandPool>; 3],
+    /// Per queue, one per segment; reused frame after frame.
+    lists: [Vec<CommandList>; 3],
     /// Fence value of the slot's last submission.
     value: u64,
     /// Buffers, textures, targets.
@@ -197,9 +205,13 @@ pub struct FrameContext {
     arenas: FrameArenas<FRAMES_IN_FLIGHT>,
     states: StateTable<Rhi>,
     cache: PlanCache,
+    /// The graphics queue's: its value at the end of a frame covers the whole frame.
     fence: Fence,
-    /// Value the next submission signals.
+    /// Value the next graphics submission signals.
     next_value: u64,
+    /// The compute and copy queues', and the values their next submissions signal.
+    async_fences: [Fence; 2],
+    async_values: [u64; 2],
     slots: Vec<Slot>,
     import_views: HashMap<(u64, ViewSpec), Cached>,
     /// The objects of history and persistent resources, by key and slot.
@@ -208,6 +220,7 @@ pub struct FrameContext {
     retired: Vec<(u64, Box<dyn Send>)>,
     readbacks: Vec<PendingReadback>,
     stats: Option<FrameStats>,
+    single_queue: bool,
 }
 
 const fn heap_slot(kind: HeapKind) -> usize {
@@ -224,11 +237,9 @@ impl FrameContext {
     pub fn new(device: &Device, desc: &FrameContextDesc) -> Result<Self> {
         let mut slots = Vec::with_capacity(FRAMES_IN_FLIGHT);
         for _ in 0..FRAMES_IN_FLIGHT {
-            let pool = device.create_command_pool()?;
-            let list = device.create_command_list(&pool)?;
             slots.push(Slot {
-                pool,
-                list,
+                pools: [None, None, None],
+                lists: Default::default(),
                 value: 0,
                 heaps: [None, None, None],
                 physical: Vec::new(),
@@ -247,12 +258,15 @@ impl FrameContext {
             cache: PlanCache::new(),
             fence: device.create_fence(0)?,
             next_value: 1,
+            async_fences: [device.create_fence(0)?, device.create_fence(0)?],
+            async_values: [1, 1],
             slots,
             import_views: HashMap::new(),
             retained: HashMap::new(),
             retired: Vec::new(),
             readbacks: Vec::new(),
             stats: None,
+            single_queue: desc.single_queue,
         })
     }
 
@@ -299,25 +313,31 @@ impl FrameContext {
             cache,
             fence,
             next_value,
+            async_fences,
+            async_values,
             slots,
             import_views,
             retained,
             retired,
             readbacks,
             stats,
+            single_queue,
         } = self;
 
         // The slot's previous frame finished: its pool, upload memory and arena are free.
         let slot = &mut slots[slot_index];
-        // SAFETY: the fence shows the GPU finished the slot's last submission, the only work
-        // recorded from this pool.
-        unsafe { slot.pool.reset()? };
+        for pool in slot.pools.iter_mut().flatten() {
+            // SAFETY: the fence shows the GPU finished the slot's last frame, which covers every
+            // queue's work recorded from the slot's pools.
+            unsafe { pool.reset()? };
+        }
         slot.upload.reset();
         // SAFETY: frame `frame - FRAMES_IN_FLIGHT`, the arena's last user, ended inside its own
         // `execute` (its graph and closures are gone), and only this frame allocates from it.
         let arena: &Arena = unsafe { arenas.begin(frame) };
 
         let mut g = RenderGraph::with_states(arena, states);
+        g.set_single_queue(*single_queue);
         let out = declare(&mut g, &info);
         let (plan_index, lookup) = cache.ensure(&g, device)?;
         let plan = cache.get(plan_index);
@@ -544,83 +564,167 @@ impl FrameContext {
             Vec::with_capacity_in(g.passes.len(), arena);
         execs.extend(g.passes.iter_mut().map(|p| p.exec.take()));
         let mut retire_now: Vec<Box<dyn Send>> = Vec::new();
-        let (pool, list, upload) = (&mut slot.pool, &mut slot.list, &mut slot.upload);
-        list.begin(pool)?;
-        for (pos, pp) in plan.passes.iter().enumerate() {
-            let pass = &g.passes[pp.node as usize];
-            list.begin_event(&pp.name);
-            record_barriers(list, plan, pos, &textures, &buffers);
-            let recs = &g.accesses[pass.accesses.start as usize..pass.accesses.end as usize];
-            match pass.builtin {
-                Some(Builtin::Present) => {}
-                Some(Builtin::ReadbackBuffer(index) | Builtin::ReadbackTexture(index)) => {
-                    let dst = &readbacks[first_readback..]
-                        .iter()
-                        .find(|r| r.ticket.index == index)
-                        .expect("made above")
-                        .buffer;
-                    let rec = &recs[0];
-                    match rec.res {
-                        Res::Buffer(b) => {
-                            let src = buffers[b as usize].expect("a used buffer");
-                            list.copy_buffer(src, rec.bytes.0, dst, 0, rec.bytes.1);
-                        }
-                        Res::Texture(t) => {
-                            let src = textures[t as usize].expect("a used texture");
-                            let copy = texture_copy(&g.textures[t as usize].desc, rec);
-                            list.copy_texture_to_buffer(src, dst, &copy);
-                        }
-                    }
-                }
-                None => {
-                    let raster = pass.kind == PassKind::Raster;
-                    if raster {
-                        begin_render_pass(
-                            list,
-                            &g,
-                            pass,
-                            physical,
-                            &*import_views,
-                            &textures,
-                            &buffers,
-                        );
-                    }
-                    if let Some(exec) = execs[pp.node as usize].take() {
-                        let views =
-                            &views[pass.accesses.start as usize..pass.accesses.end as usize];
-                        let mut ctx = PassContext {
-                            parts: RhiParts {
-                                list: &mut *list,
-                                device,
-                                pass: pass.name,
-                                recs,
-                                views,
-                                textures: &textures,
-                                buffers: &buffers,
-                                shapes: &shapes,
-                                upload: &mut *upload,
-                                retire: &mut retire_now,
-                            },
-                        };
-                        exec(&mut ctx);
-                    }
-                    if raster {
-                        list.end_render_pass();
-                    }
-                }
+        let (pools, lists, upload) = (&mut slot.pools, &mut slot.lists, &mut slot.upload);
+        let mut used_lists = [0usize; 3];
+        // Each segment's signal value on its queue, for the waits on it.
+        let mut segment_values: Vec<u64, &Arena> =
+            Vec::with_capacity_in(plan.segments.len(), arena);
+        let mut waited_last_frame = [false; 3];
+        let previous_frame_end = *next_value - 1;
+        let mut last_async = [0u64; 3];
+        for (si, segment) in plan.segments.iter().enumerate() {
+            let q = sync::queue_index(segment.queue) as usize;
+            if pools[q].is_none() {
+                pools[q] = Some(device.create_command_pool_for(segment.queue)?);
             }
-            list.end_event();
+            let pool = pools[q].as_mut().expect("made above");
+            if lists[q].len() == used_lists[q] {
+                lists[q].push(device.create_command_list(pool)?);
+            }
+            let list = &mut lists[q][used_lists[q]];
+            used_lists[q] += 1;
+            list.begin(pool)?;
+            for &pos in plan.segment_passes(si) {
+                let pos = pos as usize;
+                let pp = &plan.passes[pos];
+                let pass = &g.passes[pp.node as usize];
+                list.begin_event(&pp.name);
+                record_barriers(list, plan, pos, &textures, &buffers);
+                let recs = &g.accesses[pass.accesses.start as usize..pass.accesses.end as usize];
+                match pass.builtin {
+                    Some(Builtin::Present) => {}
+                    Some(Builtin::ReadbackBuffer(index) | Builtin::ReadbackTexture(index)) => {
+                        let dst = &readbacks[first_readback..]
+                            .iter()
+                            .find(|r| r.ticket.index == index)
+                            .expect("made above")
+                            .buffer;
+                        let rec = &recs[0];
+                        match rec.res {
+                            Res::Buffer(b) => {
+                                let src = buffers[b as usize].expect("a used buffer");
+                                list.copy_buffer(src, rec.bytes.0, dst, 0, rec.bytes.1);
+                            }
+                            Res::Texture(t) => {
+                                let src = textures[t as usize].expect("a used texture");
+                                let copy = texture_copy(&g.textures[t as usize].desc, rec);
+                                list.copy_texture_to_buffer(src, dst, &copy);
+                            }
+                        }
+                    }
+                    None => {
+                        let raster = pass.kind == PassKind::Raster;
+                        if raster {
+                            begin_render_pass(
+                                list,
+                                &g,
+                                pass,
+                                physical,
+                                &*import_views,
+                                &textures,
+                                &buffers,
+                            );
+                        }
+                        if let Some(exec) = execs[pp.node as usize].take() {
+                            let views =
+                                &views[pass.accesses.start as usize..pass.accesses.end as usize];
+                            let mut ctx = PassContext {
+                                parts: RhiParts {
+                                    list: &mut *list,
+                                    device,
+                                    pass: pass.name,
+                                    recs,
+                                    views,
+                                    textures: &textures,
+                                    buffers: &buffers,
+                                    shapes: &shapes,
+                                    upload: &mut *upload,
+                                    retire: &mut retire_now,
+                                },
+                            };
+                            exec(&mut ctx);
+                        }
+                        if raster {
+                            list.end_render_pass();
+                        }
+                    }
+                }
+                list.end_event();
+            }
+            list.end()?;
+            let mut waits: SmallVec<(&Fence, u64), 4> = segment
+                .waits
+                .iter()
+                .map(|&w| {
+                    let wq = sync::queue_index(plan.segments[w as usize].queue) as usize;
+                    (
+                        queue_fence(fence, async_fences, wq),
+                        segment_values[w as usize],
+                    )
+                })
+                .collect();
+            // A queue other than graphics starts after the previous frame (the frame's last
+            // graphics submission waited for all its queues).
+            if q != 0 && !waited_last_frame[q] && previous_frame_end > 0 {
+                waits.push((&*fence, previous_frame_end));
+            }
+            waited_last_frame[q] = true;
+            let (signal_fence, value) = if q == 0 {
+                let v = *next_value;
+                *next_value += 1;
+                (&*fence, v)
+            } else {
+                let v = async_values[q - 1];
+                async_values[q - 1] += 1;
+                last_async[q] = v;
+                (&async_fences[q - 1], v)
+            };
+            // SAFETY: what the lists use stays alive until the frame's graphics fence value, which
+            // comes after every list of the frame (the last graphics submission waits for the
+            // other queues): transients and their views in the slot's physical set (dropped
+            // only after this slot's fence, or through `retired`), imported objects' views in
+            // the cache (retired the same way), upload views in `retired` below, and imported
+            // objects by the caller's contract (forget them before dropping them). Pools are
+            // reset only after the slot's fence. Every wait is on a value submitted before.
+            unsafe {
+                device.queue_for(segment.queue).submit_with(&SubmitDesc {
+                    waits: &waits,
+                    lists: &[&*list],
+                    signals: &[(signal_fence, value)],
+                })?
+            };
+            segment_values.push(value);
         }
-        list.end()?;
-        let value = *next_value;
-        // SAFETY: what the list uses stays alive until the fence reaches `value`: transients and
-        // their views in the slot's physical set (dropped only after this slot's fence, or
-        // through `retired`), imported objects' views in the cache (retired the same way),
-        // upload views in `retired` below, and imported objects by the caller's contract
-        // (forget them before dropping them). The pool is reset only after the fence.
-        unsafe { device.queue().submit(&[list], Some((fence, value)))? };
+        // The frame ends on the graphics queue, after the other queues' work: one value covers
+        // the whole frame.
+        let async_waits: SmallVec<(&Fence, u64), 2> = (1..3)
+            .filter(|&q| last_async[q] != 0)
+            .map(|q| (&async_fences[q - 1], last_async[q]))
+            .collect();
+        let graphics_last = plan
+            .segments
+            .iter()
+            .rposition(|s| s.queue == QueueType::Graphics);
+        let value = if async_waits.is_empty() && graphics_last.is_some() {
+            *next_value - 1
+        } else {
+            let v = *next_value;
+            *next_value += 1;
+            // SAFETY: an empty submission; the waits are on values submitted above.
+            unsafe {
+                device.queue().submit_with(&SubmitDesc {
+                    waits: &async_waits,
+                    lists: &[],
+                    signals: &[(&*fence, v)],
+                })?
+            };
+            v
+        };
         slot.value = value;
-        *next_value += 1;
+        // Readbacks hold their data once the whole frame is done.
+        for r in &mut readbacks[first_readback..] {
+            r.value = value;
+        }
         for object in retire_now {
             retired.push((value, object));
         }
@@ -1150,5 +1254,13 @@ fn begin_render_pass(
             width: w,
             height: h,
         });
+    }
+}
+
+/// Queue `q`'s fence: graphics, compute or copy.
+fn queue_fence<'f>(graphics: &'f Fence, others: &'f [Fence; 2], q: usize) -> &'f Fence {
+    match q {
+        0 => graphics,
+        q => &others[q - 1],
     }
 }

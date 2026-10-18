@@ -4,4 +4,5 @@
 #![cfg(marlin_platform = "windows")]
 
 mod frame;
+mod queues;
 mod retained;

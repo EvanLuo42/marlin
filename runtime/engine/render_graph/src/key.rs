@@ -19,6 +19,7 @@ const fn load_kind<T>(op: &LoadOp<T>) -> u8 {
 
 pub(crate) fn topology_key<B: Backend>(g: &RenderGraph<'_, B>) -> u64 {
     let mut h = FastHasher::default();
+    g.single_queue.hash(&mut h);
     g.textures.len().hash(&mut h);
     for t in &g.textures {
         t.desc.hash(&mut h);

@@ -6,17 +6,37 @@ use marlin_rhi::{
     TextureDesc,
 };
 
-use crate::backend::Backend;
+use crate::backend::{Backend, Queues};
 
 pub enum Recording {}
 
 /// Sizes resources by a fixed model: a texture takes the bytes of its mips and layers rounded up
 /// to [`PLACEMENT_ALIGNMENT`] (multisampled ones to [`MSAA_PLACEMENT_ALIGNMENT`]), a buffer its
-/// size rounded up to [`Device::BUFFER_ALIGNMENT`].
-#[derive(Default, Debug)]
-pub struct Device;
+/// size rounded up to [`Device::BUFFER_ALIGNMENT`]. Says which dedicated queues it has.
+#[derive(Clone, Copy, Debug)]
+pub struct Device {
+    pub compute_queue: bool,
+    pub copy_queue: bool,
+}
+
+impl Default for Device {
+    fn default() -> Self {
+        Self::ASYNC
+    }
+}
 
 impl Device {
+    /// Dedicated compute and copy queues.
+    pub const ASYNC: Self = Self {
+        compute_queue: true,
+        copy_queue: true,
+    };
+    /// The graphics queue only.
+    pub const GRAPHICS_ONLY: Self = Self {
+        compute_queue: false,
+        copy_queue: false,
+    };
+
     pub const BUFFER_ALIGNMENT: u64 = 256;
 
     pub fn texture_requirements(&self, desc: &TextureDesc) -> MemoryRequirements {
@@ -88,5 +108,12 @@ impl Backend for Recording {
 
     fn buffer_requirements(device: &Device, desc: &BufferDesc) -> MemoryRequirements {
         device.buffer_requirements(desc)
+    }
+
+    fn queues(device: &Device) -> Queues {
+        Queues {
+            compute: device.compute_queue,
+            copy: device.copy_queue,
+        }
     }
 }

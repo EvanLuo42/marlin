@@ -9,6 +9,7 @@ mod alias;
 mod barriers;
 mod cache;
 mod cull;
+mod queues;
 mod retained;
 mod state;
 // Development checks are compiled out without debug assertions.

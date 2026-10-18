@@ -12,6 +12,7 @@ use marlin_rhi::{
 
 use crate::access::PassKind;
 use crate::handle::{BufferHandle, TextureHandle};
+pub use crate::sync::Segment;
 
 /// A pass that survived culling.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -123,6 +124,9 @@ pub struct CompiledPlan {
     pub(crate) buffer_finals: Vec<(u32, BufferState)>,
     /// Bytes of each transient heap kind: buffers, textures, targets.
     pub(crate) heap_sizes: [u64; 3],
+    /// In submission order.
+    pub(crate) segments: Vec<Segment>,
+    pub(crate) segment_passes: Vec<u32>,
 }
 
 impl CompiledPlan {
@@ -176,6 +180,17 @@ impl CompiledPlan {
     /// Where imported buffers the frame touched end it.
     pub fn buffer_finals(&self) -> &[(u32, BufferState)] {
         &self.buffer_finals
+    }
+
+    /// The command lists the plan is submitted as, in submission order (0007 §4.3).
+    pub fn segments(&self) -> &[Segment] {
+        &self.segments
+    }
+
+    /// The retained passes (positions in [`passes`](Self::passes)) of segment `i`, in order.
+    pub fn segment_passes(&self, i: usize) -> &[u32] {
+        let r = &self.segments[i].passes;
+        &self.segment_passes[r.start as usize..r.end as usize]
     }
 
     /// Bytes the transient heap of `kind` needs (`HeapKind::Any` is not used).
