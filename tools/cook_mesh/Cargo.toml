@@ -15,9 +15,14 @@ marlin-render.workspace = true
 marlin-serial.workspace = true
 
 [dev-dependencies]
+marlin-bench.workspace = true
 marlin-math.workspace = true
 marlin-test-support.workspace = true
 marlin-asset-db.workspace = true
+
+[[bench]]
+name = "cluster_dag"
+harness = false
 
 [lints]
 workspace = true

@@ -309,7 +309,7 @@ cook 侧做完时（2026-10-18）定下的细节：
 - **格式**：`CookedMesh::cluster_dag` 是 0 或 1 个 `ClusterDag`（常驻部分：页表和依赖、group、part、层级节点、RT LOD）。bulk blob 的顺序是离散 LOD 页、DAG 页、RT LOD。`Mesh::cluster_dag` 默认打开。离散 LOD 链先保留，前向渲染器还在用，visbuffer 接手后删掉。网格 cooker 版本升到 2。
 - **校验**：`MeshView::new` 检查常驻部分（页和 RT LOD 在 bulk 范围内、页不超过 128 KiB、依赖、part、层级是以节点 0 为根的树）；页在加载时用 `ClusterDagView::page` 检查一次（各段大小、每个 cluster 的范围、三角形下标、section 下标），RT LOD 用 `check_rt`。随机破坏的页和 payload 只返回错误。
 - 测试（`tools/cook_mesh/tests/unit/clusters.rs`）：cluster 覆盖每个三角形一次且在限制内，法线锥保守；误差和包围球单调，闭合的球收敛到一个根；group 边界在简化前后不变；随机阈值的对象空间切割和随机相机的投影切割都水密；量化往返；页的限制和填充率、每个 cluster 恰好一次且解码回原三角形和 section、part 和依赖、层级的球和误差、只从页解码出来的切割水密、损坏的页被拒绝；RT LOD 约 1/4、水密、section 正确。
-- 规模：32.8 万三角形的球，release 下 1.9 秒，6076 个 cluster、13 层。
+- 规模：基准 `cargo bench -p marlin-cook-mesh --bench cluster_dag`（分 cluster、DAG、打页、RT LOD 四段）。32.8 万三角形的球：DAG 1.8 秒（约 18 万三角形/秒）、6076 个 cluster、13 层，分 cluster 0.28 秒，打页 0.11 秒（79 页），RT LOD 3 毫秒。
 
 运行时（R2 后半）要从这个格式用到的东西：
 - 页池按 128 KiB 切槽；GPU 读页头找各段，cluster 下标 = 槽位基址 + 页内下标（visbuffer 的 25 位 cluster id 是全局可见 cluster 的编号，三角形 7 位正好放下 128）。

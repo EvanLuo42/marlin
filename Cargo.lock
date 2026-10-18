@@ -389,6 +389,7 @@ dependencies = [
  "marlin-anim",
  "marlin-asset",
  "marlin-asset-db",
+ "marlin-bench",
  "marlin-cook-core",
  "marlin-math",
  "marlin-reflect",
