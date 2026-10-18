@@ -4411,6 +4411,586 @@ impl Default for VkCheckpointData2NV {
     }
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkWin32SurfaceCreateInfoKHR {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub flags: VkWin32SurfaceCreateFlagsKHR,
+    pub hinstance: *mut c_void,
+    pub hwnd: *mut c_void,
+}
+
+impl Default for VkWin32SurfaceCreateInfoKHR {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000009000; // VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkSurfaceCapabilitiesKHR {
+    pub minImageCount: u32,
+    pub maxImageCount: u32,
+    pub currentExtent: VkExtent2D,
+    pub minImageExtent: VkExtent2D,
+    pub maxImageExtent: VkExtent2D,
+    pub maxImageArrayLayers: u32,
+    pub supportedTransforms: VkSurfaceTransformFlagsKHR,
+    pub currentTransform: VkSurfaceTransformFlagBitsKHR,
+    pub supportedCompositeAlpha: VkCompositeAlphaFlagsKHR,
+    pub supportedUsageFlags: VkImageUsageFlags,
+}
+
+impl Default for VkSurfaceCapabilitiesKHR {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        unsafe { core::mem::zeroed() }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkSurfaceFormatKHR {
+    pub format: VkFormat,
+    pub colorSpace: VkColorSpaceKHR,
+}
+
+impl Default for VkSurfaceFormatKHR {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        unsafe { core::mem::zeroed() }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkPhysicalDeviceSurfaceInfo2KHR {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub surface: VkSurfaceKHR,
+}
+
+impl Default for VkPhysicalDeviceSurfaceInfo2KHR {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000119000; // VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SURFACE_INFO_2_KHR
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkSurfaceCapabilities2KHR {
+    pub sType: VkStructureType,
+    pub pNext: *mut c_void,
+    pub surfaceCapabilities: VkSurfaceCapabilitiesKHR,
+}
+
+impl Default for VkSurfaceCapabilities2KHR {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000119001; // VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_2_KHR
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkSurfacePresentModeKHR {
+    pub sType: VkStructureType,
+    pub pNext: *mut c_void,
+    pub presentMode: VkPresentModeKHR,
+}
+
+impl Default for VkSurfacePresentModeKHR {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000274000; // VK_STRUCTURE_TYPE_SURFACE_PRESENT_MODE_KHR
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkSurfacePresentScalingCapabilitiesKHR {
+    pub sType: VkStructureType,
+    pub pNext: *mut c_void,
+    pub supportedPresentScaling: VkPresentScalingFlagsKHR,
+    pub supportedPresentGravityX: VkPresentGravityFlagsKHR,
+    pub supportedPresentGravityY: VkPresentGravityFlagsKHR,
+    pub minScaledImageExtent: VkExtent2D,
+    pub maxScaledImageExtent: VkExtent2D,
+}
+
+impl Default for VkSurfacePresentScalingCapabilitiesKHR {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000274001; // VK_STRUCTURE_TYPE_SURFACE_PRESENT_SCALING_CAPABILITIES_KHR
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkSurfacePresentModeCompatibilityKHR {
+    pub sType: VkStructureType,
+    pub pNext: *mut c_void,
+    pub presentModeCount: u32,
+    pub pPresentModes: *mut VkPresentModeKHR,
+}
+
+impl Default for VkSurfacePresentModeCompatibilityKHR {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000274002; // VK_STRUCTURE_TYPE_SURFACE_PRESENT_MODE_COMPATIBILITY_KHR
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkSurfaceCapabilitiesPresentId2KHR {
+    pub sType: VkStructureType,
+    pub pNext: *mut c_void,
+    pub presentId2Supported: VkBool32,
+}
+
+impl Default for VkSurfaceCapabilitiesPresentId2KHR {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000479000; // VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_PRESENT_ID_2_KHR
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkSurfaceCapabilitiesPresentWait2KHR {
+    pub sType: VkStructureType,
+    pub pNext: *mut c_void,
+    pub presentWait2Supported: VkBool32,
+}
+
+impl Default for VkSurfaceCapabilitiesPresentWait2KHR {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000480000; // VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_PRESENT_WAIT_2_KHR
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkSwapchainCreateInfoKHR {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub flags: VkSwapchainCreateFlagsKHR,
+    pub surface: VkSurfaceKHR,
+    pub minImageCount: u32,
+    pub imageFormat: VkFormat,
+    pub imageColorSpace: VkColorSpaceKHR,
+    pub imageExtent: VkExtent2D,
+    pub imageArrayLayers: u32,
+    pub imageUsage: VkImageUsageFlags,
+    pub imageSharingMode: VkSharingMode,
+    pub queueFamilyIndexCount: u32,
+    pub pQueueFamilyIndices: *const u32,
+    pub preTransform: VkSurfaceTransformFlagBitsKHR,
+    pub compositeAlpha: VkCompositeAlphaFlagBitsKHR,
+    pub presentMode: VkPresentModeKHR,
+    pub clipped: VkBool32,
+    pub oldSwapchain: VkSwapchainKHR,
+}
+
+impl Default for VkSwapchainCreateInfoKHR {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000001000; // VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkPresentInfoKHR {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub waitSemaphoreCount: u32,
+    pub pWaitSemaphores: *const VkSemaphore,
+    pub swapchainCount: u32,
+    pub pSwapchains: *const VkSwapchainKHR,
+    pub pImageIndices: *const u32,
+    pub pResults: *mut VkResult,
+}
+
+impl Default for VkPresentInfoKHR {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000001001; // VK_STRUCTURE_TYPE_PRESENT_INFO_KHR
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkSwapchainPresentScalingCreateInfoKHR {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub scalingBehavior: VkPresentScalingFlagsKHR,
+    pub presentGravityX: VkPresentGravityFlagsKHR,
+    pub presentGravityY: VkPresentGravityFlagsKHR,
+}
+
+impl Default for VkSwapchainPresentScalingCreateInfoKHR {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000275004; // VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_SCALING_CREATE_INFO_KHR
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkSwapchainPresentModesCreateInfoKHR {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub presentModeCount: u32,
+    pub pPresentModes: *const VkPresentModeKHR,
+}
+
+impl Default for VkSwapchainPresentModesCreateInfoKHR {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000275002; // VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_MODES_CREATE_INFO_KHR
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkSwapchainPresentModeInfoKHR {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub swapchainCount: u32,
+    pub pPresentModes: *const VkPresentModeKHR,
+}
+
+impl Default for VkSwapchainPresentModeInfoKHR {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000275003; // VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_MODE_INFO_KHR
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkPhysicalDeviceSwapchainMaintenance1FeaturesKHR {
+    pub sType: VkStructureType,
+    pub pNext: *mut c_void,
+    pub swapchainMaintenance1: VkBool32,
+}
+
+impl Default for VkPhysicalDeviceSwapchainMaintenance1FeaturesKHR {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000275000; // VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_KHR
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkPresentId2KHR {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub swapchainCount: u32,
+    pub pPresentIds: *const u64,
+}
+
+impl Default for VkPresentId2KHR {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000479001; // VK_STRUCTURE_TYPE_PRESENT_ID_2_KHR
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkPresentWait2InfoKHR {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub presentId: u64,
+    pub timeout: u64,
+}
+
+impl Default for VkPresentWait2InfoKHR {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000480002; // VK_STRUCTURE_TYPE_PRESENT_WAIT_2_INFO_KHR
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkHdrMetadataEXT {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub displayPrimaryRed: VkXYColorEXT,
+    pub displayPrimaryGreen: VkXYColorEXT,
+    pub displayPrimaryBlue: VkXYColorEXT,
+    pub whitePoint: VkXYColorEXT,
+    pub maxLuminance: f32,
+    pub minLuminance: f32,
+    pub maxContentLightLevel: f32,
+    pub maxFrameAverageLightLevel: f32,
+}
+
+impl Default for VkHdrMetadataEXT {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000105000; // VK_STRUCTURE_TYPE_HDR_METADATA_EXT
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkXYColorEXT {
+    pub x: f32,
+    pub y: f32,
+}
+
+impl Default for VkXYColorEXT {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        unsafe { core::mem::zeroed() }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkExternalMemoryBufferCreateInfo {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub handleTypes: VkExternalMemoryHandleTypeFlags,
+}
+
+impl Default for VkExternalMemoryBufferCreateInfo {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000072000; // VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkExternalMemoryImageCreateInfo {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub handleTypes: VkExternalMemoryHandleTypeFlags,
+}
+
+impl Default for VkExternalMemoryImageCreateInfo {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000072001; // VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkExportMemoryAllocateInfo {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub handleTypes: VkExternalMemoryHandleTypeFlags,
+}
+
+impl Default for VkExportMemoryAllocateInfo {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000072002; // VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkImportMemoryWin32HandleInfoKHR {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub handleType: VkExternalMemoryHandleTypeFlagBits,
+    pub handle: *mut c_void,
+    pub name: *mut c_void,
+}
+
+impl Default for VkImportMemoryWin32HandleInfoKHR {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000073000; // VK_STRUCTURE_TYPE_IMPORT_MEMORY_WIN32_HANDLE_INFO_KHR
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkMemoryGetWin32HandleInfoKHR {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub memory: VkDeviceMemory,
+    pub handleType: VkExternalMemoryHandleTypeFlagBits,
+}
+
+impl Default for VkMemoryGetWin32HandleInfoKHR {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000073003; // VK_STRUCTURE_TYPE_MEMORY_GET_WIN32_HANDLE_INFO_KHR
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkImportSemaphoreWin32HandleInfoKHR {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub semaphore: VkSemaphore,
+    pub flags: VkSemaphoreImportFlags,
+    pub handleType: VkExternalSemaphoreHandleTypeFlagBits,
+    pub handle: *mut c_void,
+    pub name: *mut c_void,
+}
+
+impl Default for VkImportSemaphoreWin32HandleInfoKHR {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000078000; // VK_STRUCTURE_TYPE_IMPORT_SEMAPHORE_WIN32_HANDLE_INFO_KHR
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkSemaphoreGetWin32HandleInfoKHR {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub semaphore: VkSemaphore,
+    pub handleType: VkExternalSemaphoreHandleTypeFlagBits,
+}
+
+impl Default for VkSemaphoreGetWin32HandleInfoKHR {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000078003; // VK_STRUCTURE_TYPE_SEMAPHORE_GET_WIN32_HANDLE_INFO_KHR
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkImportMemoryFdInfoKHR {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub handleType: VkExternalMemoryHandleTypeFlagBits,
+    pub fd: i32,
+}
+
+impl Default for VkImportMemoryFdInfoKHR {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000074000; // VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkMemoryGetFdInfoKHR {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub memory: VkDeviceMemory,
+    pub handleType: VkExternalMemoryHandleTypeFlagBits,
+}
+
+impl Default for VkMemoryGetFdInfoKHR {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000074002; // VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkImportSemaphoreFdInfoKHR {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub semaphore: VkSemaphore,
+    pub flags: VkSemaphoreImportFlags,
+    pub handleType: VkExternalSemaphoreHandleTypeFlagBits,
+    pub fd: i32,
+}
+
+impl Default for VkImportSemaphoreFdInfoKHR {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000079000; // VK_STRUCTURE_TYPE_IMPORT_SEMAPHORE_FD_INFO_KHR
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkSemaphoreGetFdInfoKHR {
+    pub sType: VkStructureType,
+    pub pNext: *const c_void,
+    pub semaphore: VkSemaphore,
+    pub handleType: VkExternalSemaphoreHandleTypeFlagBits,
+}
+
+impl Default for VkSemaphoreGetFdInfoKHR {
+    fn default() -> Self {
+        // SAFETY: all-zero is valid for this plain C structure.
+        let mut s: Self = unsafe { core::mem::zeroed() };
+        s.sType = 1000079001; // VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR
+        s
+    }
+}
+
 // --- Function pointer types ---
 
 pub(crate) type PFN_vkGetInstanceProcAddr = unsafe extern "system" fn(instance: VkInstance, pName: *const c_char) -> PFN_vkVoidFunction;
@@ -4540,6 +5120,26 @@ pub(crate) type PFN_vkCmdCopyAccelerationStructureKHR = unsafe extern "system" f
 pub(crate) type PFN_vkCmdWriteAccelerationStructuresPropertiesKHR = unsafe extern "system" fn(commandBuffer: VkCommandBuffer, accelerationStructureCount: u32, pAccelerationStructures: *const VkAccelerationStructureKHR, queryType: VkQueryType, queryPool: VkQueryPool, firstQuery: u32);
 pub(crate) type PFN_vkCmdSetCheckpointNV = unsafe extern "system" fn(commandBuffer: VkCommandBuffer, pCheckpointMarker: *const c_void);
 pub(crate) type PFN_vkGetQueueCheckpointData2NV = unsafe extern "system" fn(queue: VkQueue, pCheckpointDataCount: *mut u32, pCheckpointData: *mut VkCheckpointData2NV);
+pub(crate) type PFN_vkCreateWin32SurfaceKHR = unsafe extern "system" fn(instance: VkInstance, pCreateInfo: *const VkWin32SurfaceCreateInfoKHR, pAllocator: *const VkAllocationCallbacks, pSurface: *mut VkSurfaceKHR) -> VkResult;
+pub(crate) type PFN_vkDestroySurfaceKHR = unsafe extern "system" fn(instance: VkInstance, surface: VkSurfaceKHR, pAllocator: *const VkAllocationCallbacks);
+pub(crate) type PFN_vkGetPhysicalDeviceSurfaceSupportKHR = unsafe extern "system" fn(physicalDevice: VkPhysicalDevice, queueFamilyIndex: u32, surface: VkSurfaceKHR, pSupported: *mut VkBool32) -> VkResult;
+pub(crate) type PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR = unsafe extern "system" fn(physicalDevice: VkPhysicalDevice, surface: VkSurfaceKHR, pSurfaceCapabilities: *mut VkSurfaceCapabilitiesKHR) -> VkResult;
+pub(crate) type PFN_vkGetPhysicalDeviceSurfaceCapabilities2KHR = unsafe extern "system" fn(physicalDevice: VkPhysicalDevice, pSurfaceInfo: *const VkPhysicalDeviceSurfaceInfo2KHR, pSurfaceCapabilities: *mut VkSurfaceCapabilities2KHR) -> VkResult;
+pub(crate) type PFN_vkGetPhysicalDeviceSurfaceFormatsKHR = unsafe extern "system" fn(physicalDevice: VkPhysicalDevice, surface: VkSurfaceKHR, pSurfaceFormatCount: *mut u32, pSurfaceFormats: *mut VkSurfaceFormatKHR) -> VkResult;
+pub(crate) type PFN_vkGetPhysicalDeviceSurfacePresentModesKHR = unsafe extern "system" fn(physicalDevice: VkPhysicalDevice, surface: VkSurfaceKHR, pPresentModeCount: *mut u32, pPresentModes: *mut VkPresentModeKHR) -> VkResult;
+pub(crate) type PFN_vkCreateSwapchainKHR = unsafe extern "system" fn(device: VkDevice, pCreateInfo: *const VkSwapchainCreateInfoKHR, pAllocator: *const VkAllocationCallbacks, pSwapchain: *mut VkSwapchainKHR) -> VkResult;
+pub(crate) type PFN_vkDestroySwapchainKHR = unsafe extern "system" fn(device: VkDevice, swapchain: VkSwapchainKHR, pAllocator: *const VkAllocationCallbacks);
+pub(crate) type PFN_vkGetSwapchainImagesKHR = unsafe extern "system" fn(device: VkDevice, swapchain: VkSwapchainKHR, pSwapchainImageCount: *mut u32, pSwapchainImages: *mut VkImage) -> VkResult;
+pub(crate) type PFN_vkAcquireNextImageKHR = unsafe extern "system" fn(device: VkDevice, swapchain: VkSwapchainKHR, timeout: u64, semaphore: VkSemaphore, fence: VkFence, pImageIndex: *mut u32) -> VkResult;
+pub(crate) type PFN_vkQueuePresentKHR = unsafe extern "system" fn(queue: VkQueue, pPresentInfo: *const VkPresentInfoKHR) -> VkResult;
+pub(crate) type PFN_vkWaitForPresent2KHR = unsafe extern "system" fn(device: VkDevice, swapchain: VkSwapchainKHR, pPresentWait2Info: *const VkPresentWait2InfoKHR) -> VkResult;
+pub(crate) type PFN_vkSetHdrMetadataEXT = unsafe extern "system" fn(device: VkDevice, swapchainCount: u32, pSwapchains: *const VkSwapchainKHR, pMetadata: *const VkHdrMetadataEXT);
+pub(crate) type PFN_vkGetMemoryWin32HandleKHR = unsafe extern "system" fn(device: VkDevice, pGetWin32HandleInfo: *const VkMemoryGetWin32HandleInfoKHR, pHandle: *mut *mut c_void) -> VkResult;
+pub(crate) type PFN_vkGetSemaphoreWin32HandleKHR = unsafe extern "system" fn(device: VkDevice, pGetWin32HandleInfo: *const VkSemaphoreGetWin32HandleInfoKHR, pHandle: *mut *mut c_void) -> VkResult;
+pub(crate) type PFN_vkImportSemaphoreWin32HandleKHR = unsafe extern "system" fn(device: VkDevice, pImportSemaphoreWin32HandleInfo: *const VkImportSemaphoreWin32HandleInfoKHR) -> VkResult;
+pub(crate) type PFN_vkGetMemoryFdKHR = unsafe extern "system" fn(device: VkDevice, pGetFdInfo: *const VkMemoryGetFdInfoKHR, pFd: *mut i32) -> VkResult;
+pub(crate) type PFN_vkGetSemaphoreFdKHR = unsafe extern "system" fn(device: VkDevice, pGetFdInfo: *const VkSemaphoreGetFdInfoKHR, pFd: *mut i32) -> VkResult;
+pub(crate) type PFN_vkImportSemaphoreFdKHR = unsafe extern "system" fn(device: VkDevice, pImportSemaphoreFdInfo: *const VkImportSemaphoreFdInfoKHR) -> VkResult;
 
 // --- Constants ---
 
@@ -5157,6 +5757,47 @@ pub(crate) const VK_DEVICE_FAULT_ADDRESS_TYPE_EXECUTE_INVALID_KHR: VkDeviceFault
 pub(crate) const VK_DEVICE_FAULT_ADDRESS_TYPE_INSTRUCTION_POINTER_UNKNOWN_KHR: VkDeviceFaultAddressTypeKHR = 4;
 pub(crate) const VK_DEVICE_FAULT_ADDRESS_TYPE_INSTRUCTION_POINTER_INVALID_KHR: VkDeviceFaultAddressTypeKHR = 5;
 pub(crate) const VK_DEVICE_FAULT_ADDRESS_TYPE_INSTRUCTION_POINTER_FAULT_KHR: VkDeviceFaultAddressTypeKHR = 6;
+pub(crate) const VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR: VkStructureType = 1000009000;
+pub(crate) const VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SURFACE_INFO_2_KHR: VkStructureType = 1000119000;
+pub(crate) const VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_2_KHR: VkStructureType = 1000119001;
+pub(crate) const VK_STRUCTURE_TYPE_SURFACE_PRESENT_MODE_KHR: VkStructureType = 1000274000;
+pub(crate) const VK_STRUCTURE_TYPE_SURFACE_PRESENT_SCALING_CAPABILITIES_KHR: VkStructureType = 1000274001;
+pub(crate) const VK_STRUCTURE_TYPE_SURFACE_PRESENT_MODE_COMPATIBILITY_KHR: VkStructureType = 1000274002;
+pub(crate) const VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_PRESENT_ID_2_KHR: VkStructureType = 1000479000;
+pub(crate) const VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_PRESENT_WAIT_2_KHR: VkStructureType = 1000480000;
+pub(crate) const VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR: VkStructureType = 1000001000;
+pub(crate) const VK_STRUCTURE_TYPE_PRESENT_INFO_KHR: VkStructureType = 1000001001;
+pub(crate) const VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_SCALING_CREATE_INFO_KHR: VkStructureType = 1000275004;
+pub(crate) const VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_MODES_CREATE_INFO_KHR: VkStructureType = 1000275002;
+pub(crate) const VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_MODE_INFO_KHR: VkStructureType = 1000275003;
+pub(crate) const VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_KHR: VkStructureType = 1000275000;
+pub(crate) const VK_STRUCTURE_TYPE_PRESENT_ID_2_KHR: VkStructureType = 1000479001;
+pub(crate) const VK_STRUCTURE_TYPE_PRESENT_WAIT_2_INFO_KHR: VkStructureType = 1000480002;
+pub(crate) const VK_STRUCTURE_TYPE_HDR_METADATA_EXT: VkStructureType = 1000105000;
+pub(crate) const VK_PRESENT_MODE_IMMEDIATE_KHR: VkPresentModeKHR = 0;
+pub(crate) const VK_PRESENT_MODE_MAILBOX_KHR: VkPresentModeKHR = 1;
+pub(crate) const VK_PRESENT_MODE_FIFO_KHR: VkPresentModeKHR = 2;
+pub(crate) const VK_COLOR_SPACE_SRGB_NONLINEAR_KHR: VkColorSpaceKHR = 0;
+pub(crate) const VK_COLOR_SPACE_HDR10_ST2084_EXT: VkColorSpaceKHR = 1000104008;
+pub(crate) const VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT: VkColorSpaceKHR = 1000104002;
+pub(crate) const VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR: VkCompositeAlphaFlagsKHR = 0x00000001;
+pub(crate) const VK_SWAPCHAIN_CREATE_PRESENT_ID_2_BIT_KHR: VkSwapchainCreateFlagsKHR = 0x00000040;
+pub(crate) const VK_SWAPCHAIN_CREATE_PRESENT_WAIT_2_BIT_KHR: VkSwapchainCreateFlagsKHR = 0x00000080;
+pub(crate) const VK_PRESENT_SCALING_STRETCH_BIT_KHR: VkPresentScalingFlagsKHR = 0x00000004;
+pub(crate) const VK_PRESENT_GRAVITY_MIN_BIT_KHR: VkPresentGravityFlagsKHR = 0x00000001;
+pub(crate) const VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO: VkStructureType = 1000072000;
+pub(crate) const VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO: VkStructureType = 1000072001;
+pub(crate) const VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO: VkStructureType = 1000072002;
+pub(crate) const VK_STRUCTURE_TYPE_IMPORT_MEMORY_WIN32_HANDLE_INFO_KHR: VkStructureType = 1000073000;
+pub(crate) const VK_STRUCTURE_TYPE_MEMORY_GET_WIN32_HANDLE_INFO_KHR: VkStructureType = 1000073003;
+pub(crate) const VK_STRUCTURE_TYPE_IMPORT_SEMAPHORE_WIN32_HANDLE_INFO_KHR: VkStructureType = 1000078000;
+pub(crate) const VK_STRUCTURE_TYPE_SEMAPHORE_GET_WIN32_HANDLE_INFO_KHR: VkStructureType = 1000078003;
+pub(crate) const VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR: VkStructureType = 1000074000;
+pub(crate) const VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR: VkStructureType = 1000074002;
+pub(crate) const VK_STRUCTURE_TYPE_IMPORT_SEMAPHORE_FD_INFO_KHR: VkStructureType = 1000079000;
+pub(crate) const VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR: VkStructureType = 1000079001;
+pub(crate) const VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT: VkExternalMemoryHandleTypeFlags = 0x00000002;
+pub(crate) const VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT: VkExternalMemoryHandleTypeFlags = 0x00000001;
 
 // --- Referenced types ---
 
@@ -5178,6 +5819,7 @@ pub(crate) type VkBufferUsageFlags2 = u64;
 pub(crate) type VkBuildAccelerationStructureFlagsKHR = u32;
 pub(crate) type VkBuildAccelerationStructureModeKHR = i32;
 pub(crate) type VkColorComponentFlags = u32;
+pub(crate) type VkColorSpaceKHR = i32;
 pub(crate) type VkCommandBuffer = *mut c_void;
 pub(crate) type VkCommandBufferLevel = i32;
 pub(crate) type VkCommandBufferUsageFlags = u32;
@@ -5186,6 +5828,8 @@ pub(crate) type VkCommandPoolCreateFlags = u32;
 pub(crate) type VkCommandPoolResetFlags = u32;
 pub(crate) type VkCompareOp = i32;
 pub(crate) type VkComponentSwizzle = i32;
+pub(crate) type VkCompositeAlphaFlagBitsKHR = i32;
+pub(crate) type VkCompositeAlphaFlagsKHR = u32;
 pub(crate) type VkConditionalRenderingFlagsEXT = u32;
 pub(crate) type VkConservativeRasterizationModeEXT = i32;
 pub(crate) type VkCopyAccelerationStructureModeKHR = i32;
@@ -5208,6 +5852,9 @@ pub(crate) type VkDeviceQueueCreateFlags = u32;
 pub(crate) type VkDeviceSize = u64;
 pub(crate) type VkDriverId = i32;
 pub(crate) type VkDynamicState = i32;
+pub(crate) type VkExternalMemoryHandleTypeFlagBits = i32;
+pub(crate) type VkExternalMemoryHandleTypeFlags = u32;
+pub(crate) type VkExternalSemaphoreHandleTypeFlagBits = i32;
 pub(crate) type VkExternalSemaphoreHandleTypeFlags = u32;
 pub(crate) type VkFence = u64;
 pub(crate) type VkFenceCreateFlags = u32;
@@ -5274,6 +5921,9 @@ pub(crate) type VkPipelineVertexInputStateCreateFlags = u32;
 pub(crate) type VkPipelineViewportStateCreateFlags = u32;
 pub(crate) type VkPointClippingBehavior = i32;
 pub(crate) type VkPolygonMode = i32;
+pub(crate) type VkPresentGravityFlagsKHR = u32;
+pub(crate) type VkPresentModeKHR = i32;
+pub(crate) type VkPresentScalingFlagsKHR = u32;
 pub(crate) type VkPrimitiveTopology = i32;
 pub(crate) type VkQueryControlFlags = u32;
 pub(crate) type VkQueryPipelineStatisticFlags = u32;
@@ -5297,6 +5947,7 @@ pub(crate) type VkSamplerMipmapMode = i32;
 pub(crate) type VkSamplerReductionMode = i32;
 pub(crate) type VkSemaphore = u64;
 pub(crate) type VkSemaphoreCreateFlags = u32;
+pub(crate) type VkSemaphoreImportFlags = u32;
 pub(crate) type VkSemaphoreType = i32;
 pub(crate) type VkSemaphoreWaitFlags = u32;
 pub(crate) type VkShaderFloatControlsIndependence = i32;
@@ -5314,8 +5965,12 @@ pub(crate) type VkStructureType = i32;
 pub(crate) type VkSubgroupFeatureFlags = u32;
 pub(crate) type VkSubmitFlags = u32;
 pub(crate) type VkSurfaceKHR = u64;
+pub(crate) type VkSurfaceTransformFlagBitsKHR = i32;
+pub(crate) type VkSurfaceTransformFlagsKHR = u32;
+pub(crate) type VkSwapchainCreateFlagsKHR = u32;
 pub(crate) type VkSwapchainKHR = u64;
 pub(crate) type VkTensorARM = u64;
 pub(crate) type VkTensorViewCreateFlagsARM = u64;
 pub(crate) type VkTimeDomainKHR = i32;
 pub(crate) type VkVertexInputRate = i32;
+pub(crate) type VkWin32SurfaceCreateFlagsKHR = u32;

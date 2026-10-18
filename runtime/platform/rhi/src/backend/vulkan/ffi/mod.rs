@@ -136,6 +136,13 @@ fn_table! {
         vkCmdEndDebugUtilsLabelEXT: PFN_vkCmdEndDebugUtilsLabelEXT,
         vkCmdInsertDebugUtilsLabelEXT: PFN_vkCmdInsertDebugUtilsLabelEXT,
         // --- swapchain (surfaces) ---
+        vkCreateWin32SurfaceKHR: PFN_vkCreateWin32SurfaceKHR,
+        vkDestroySurfaceKHR: PFN_vkDestroySurfaceKHR,
+        vkGetPhysicalDeviceSurfaceSupportKHR: PFN_vkGetPhysicalDeviceSurfaceSupportKHR,
+        vkGetPhysicalDeviceSurfaceCapabilitiesKHR: PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR,
+        vkGetPhysicalDeviceSurfaceCapabilities2KHR: PFN_vkGetPhysicalDeviceSurfaceCapabilities2KHR,
+        vkGetPhysicalDeviceSurfaceFormatsKHR: PFN_vkGetPhysicalDeviceSurfaceFormatsKHR,
+        vkGetPhysicalDeviceSurfacePresentModesKHR: PFN_vkGetPhysicalDeviceSurfacePresentModesKHR,
         // --- query (calibrated timestamps) ---
         vkGetPhysicalDeviceCalibrateableTimeDomainsKHR: PFN_vkGetPhysicalDeviceCalibrateableTimeDomainsKHR,
     }
@@ -254,5 +261,18 @@ fn_table! {
         vkCmdSetCheckpointNV: PFN_vkCmdSetCheckpointNV,
         vkGetQueueCheckpointData2NV: PFN_vkGetQueueCheckpointData2NV,
         // --- swapchain and sharing ---
+        vkCreateSwapchainKHR: PFN_vkCreateSwapchainKHR,
+        vkDestroySwapchainKHR: PFN_vkDestroySwapchainKHR,
+        vkGetSwapchainImagesKHR: PFN_vkGetSwapchainImagesKHR,
+        vkAcquireNextImageKHR: PFN_vkAcquireNextImageKHR,
+        vkQueuePresentKHR: PFN_vkQueuePresentKHR,
+        vkWaitForPresent2KHR: PFN_vkWaitForPresent2KHR,
+        vkSetHdrMetadataEXT: PFN_vkSetHdrMetadataEXT,
+        vkGetMemoryWin32HandleKHR: PFN_vkGetMemoryWin32HandleKHR,
+        vkGetSemaphoreWin32HandleKHR: PFN_vkGetSemaphoreWin32HandleKHR,
+        vkImportSemaphoreWin32HandleKHR: PFN_vkImportSemaphoreWin32HandleKHR,
+        vkGetMemoryFdKHR: PFN_vkGetMemoryFdKHR,
+        vkGetSemaphoreFdKHR: PFN_vkGetSemaphoreFdKHR,
+        vkImportSemaphoreFdKHR: PFN_vkImportSemaphoreFdKHR,
     }
 }
