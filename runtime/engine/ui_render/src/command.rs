@@ -12,8 +12,9 @@
 //! | 2 | | paint index |
 //! | 3 | | payload offset, in words |
 //!
-//! A **paint** is four words: kind (0, solid), the color ([`Color::packed`], sRGB, straight
-//! alpha), two spare. The **payload** is 32-bit words, per kind (coordinates are physical
+//! A **paint** is four words: kind ([`PAINT_SOLID`] or [`PAINT_IMAGE`]), the color
+//! ([`Color::packed`], sRGB, straight alpha; an image's tint), and for images the texture's view
+//! index and the sampler index ([`DEFAULT_SAMPLER`] until the renderer puts its own there). The **payload** is 32-bit words, per kind (coordinates are physical
 //! pixels, y down, as `f32` bits):
 //!
 //! | kind | words |
@@ -23,7 +24,7 @@
 //! | `Line` | ax ay bx by, width, cap, dash, gap, phase (dash 0: solid) |
 //! | `Triangle` | x0 y0 x1 y1 x2 y2, stroke width, stroke color |
 //! | `Glyph` | pen x, pen y (whole pixels, `i32`), glyph id |
-//! | `Image` | x0 y0 x1 y1, u0 v0 u1 v1, view, sampler, width \| height << 16, radii ×4 |
+//! | `Image` | x0 y0 x1 y1, u0 v0 u1 v1, texture width | height << 16, radii ×4 || height << 16, radii ×4 |
 
 use alloc::vec::Vec;
 
@@ -43,6 +44,9 @@ pub const BLOCK_COMMANDS: u32 = BLOCK_WORDS - 1;
 pub const NO_BLOCK: u32 = u32::MAX;
 /// The renderer's own sampler, in an image command's sampler word.
 pub const DEFAULT_SAMPLER: u32 = u32::MAX;
+/// Paint kinds.
+pub const PAINT_SOLID: u32 = 0;
+pub const PAINT_IMAGE: u32 = 1;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u32)]
@@ -76,7 +80,7 @@ impl Kind {
             Self::Line => 9,
             Self::Triangle => 8,
             Self::Glyph => 3,
-            Self::Image => 15,
+            Self::Image => 13,
         }
     }
 }
@@ -115,11 +119,18 @@ impl Chunk {
 
     /// The paint index of a solid `color`; consecutive commands of one color share it.
     pub(crate) fn solid(&mut self, color: Color) -> u32 {
-        let words = [0, color.packed(), 0, 0];
+        let words = [PAINT_SOLID, color.packed(), 0, 0];
         if self.paints.last() == Some(&words) {
             return self.paints.len() as u32 - 1;
         }
         self.paints.push(words);
+        self.paints.len() as u32 - 1
+    }
+
+    /// A new image paint.
+    pub(crate) fn image(&mut self, tint: Color, view: u32, sampler: u32) -> u32 {
+        self.paints
+            .push([PAINT_IMAGE, tint.packed(), view, sampler]);
         self.paints.len() as u32 - 1
     }
 

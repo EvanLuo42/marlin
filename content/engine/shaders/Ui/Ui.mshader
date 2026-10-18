@@ -1,0 +1,607 @@
+namespace Marlin.Engine.Ui;
+
+// The UI renderer's passes (docs/design/0012-ui-renderer.md §5), all compute but the encode:
+//
+// 1. `Bounds`: one thread per command: its screen bounding box and opaque interior.
+// 2. `Bin`: one thread per command: a bit per (256-command chunk, 256 × 256 bin) mask word for
+//    every bin the bounds touch.
+// 3. `Coarse`: one workgroup per bin, one thread per 16 × 16 tile: walks the masks in command
+//    order and appends each command that reaches the tile to the tile's list; an opaque command
+//    covering the whole tile empties the list first. Lists are 32-word blocks from a pool.
+// 4. `Fine`: one workgroup per tile, one thread per pixel: every listed command's coverage and
+//    color, blended in registers (premultiplied, sRGB-encoded), into the UI target.
+// 5. `EncodeVs`/`EncodePs`: the UI target into the swapchain.
+//
+// The command format is `marlin_ui_render::command`'s, and every function here mirrors
+// `marlin_ui_render::shape`, which is the CPU reference the tests compare with.
+
+public struct UiFrame
+{
+    public uint Width;
+    public uint Height;
+    public uint Commands;
+    /// 256-command chunks.
+    public uint Chunks;
+    public uint BinsX;
+    public uint BinsY;
+    public uint TilesX;
+    public uint TilesY;
+    /// Blocks in the tile list pool.
+    public uint PoolBlocks;
+    public uint Spare0;
+    public uint Spare1;
+    public uint Spare2;
+    /// Premultiplied, sRGB-encoded.
+    public float4 Clear;
+}
+
+/// A paint: solid (kind 0) or image (kind 1, with its texture and sampler).
+public struct UiPaint
+{
+    public uint Kind;
+    /// RGBA8, sRGB, straight alpha.
+    public uint Color;
+    public Texture2D<float4> Texture;
+    public Sampler Sampler;
+}
+
+const uint KindRect = 1;
+const uint KindCircle = 2;
+const uint KindLine = 3;
+const uint KindTriangle = 4;
+const uint KindGlyph = 5;
+const uint KindImage = 6;
+
+const uint FlagOpaque = 64;
+const uint FlagImageSrgbPremultiplied = 128;
+
+const uint NoBlock = 4294967295;
+const uint BlockWords = 32;
+const uint BlockCommands = 31;
+
+/// Half a tile's diagonal.
+const float TileRadius = 11.313708;
+
+float P(ReadOnlyBuffer<uint> p, uint at) => AsFloat(p[at]);
+
+/// floor/ceil of a box, clamped to the surface: x0 y0 x1 y1.
+int4 Pixels(float x0, float y0, float x1, float y1, in UiFrame f)
+{
+    float w = (float)f.Width;
+    float h = (float)f.Height;
+    return int4(
+        (int)Clamp(Floor(x0), 0, w),
+        (int)Clamp(Floor(y0), 0, h),
+        (int)Clamp(Ceil(x1), 0, w),
+        (int)Clamp(Ceil(y1), 0, h));
+}
+
+/// ceil/floor of a box, clamped: the whole pixels inside it.
+int4 Inside(float x0, float y0, float x1, float y1, in UiFrame f)
+{
+    float w = (float)f.Width;
+    float h = (float)f.Height;
+    return int4(
+        (int)Clamp(Ceil(x0), 0, w),
+        (int)Clamp(Ceil(y0), 0, h),
+        (int)Clamp(Floor(x1), 0, w),
+        (int)Clamp(Floor(y1), 0, h));
+}
+
+/// A rectangle payload's radii (at `r`), each at most half the shorter side of the box at `at`.
+float4 Radii(ReadOnlyBuffer<uint> p, uint at, uint r)
+{
+    float limit = Max(Min(P(p, at + 2) - P(p, at), P(p, at + 3) - P(p, at + 1)) * 0.5, 0);
+    return float4(
+        Min(P(p, r), limit),
+        Min(P(p, r + 1), limit),
+        Min(P(p, r + 2), limit),
+        Min(P(p, r + 3), limit));
+}
+
+/// How far a line's ink reaches from its center line.
+float LineReach(ReadOnlyBuffer<uint> p, uint at)
+{
+    float hw = P(p, at + 4) * 0.5;
+    return p[at + 5] == 2 ? hw * 1.41421356 : hw;
+}
+
+/// 16-bit two's complement in the low or high half.
+int Low16(uint v) => ((int)(v << 16)) >> 16;
+int High16(uint v) => ((int)v) >> 16;
+
+/// x0 | y0 << 16, x1 | y1 << 16 of the bounding box; the same of the opaque interior.
+uint4 CommandBounds(uint4 c, ReadOnlyBuffer<uint> p, ReadOnlyBuffer<uint4> glyphs, in UiFrame f)
+{
+    uint kind = c.x & 63;
+    uint at = c.w;
+    bool opaque = (c.x & FlagOpaque) != 0;
+    int4 box = int4(0, 0, 0, 0);
+    int4 inner = int4(0, 0, 0, 0);
+    if (kind == KindRect)
+    {
+        float e = P(p, at + 8) * 0.5 + 0.5;
+        box = Pixels(P(p, at) - e, P(p, at + 1) - e, P(p, at + 2) + e, P(p, at + 3) + e, f);
+        if (opaque)
+        {
+            float4 r = Radii(p, at, at + 4);
+            float m = Max(Max(r.x, r.y), Max(r.z, r.w));
+            inner = Inside(P(p, at) + m, P(p, at + 1) + m, P(p, at + 2) - m, P(p, at + 3) - m, f);
+        }
+    }
+    else if (kind == KindCircle)
+    {
+        float cx = P(p, at);
+        float cy = P(p, at + 1);
+        float r = P(p, at + 2);
+        float e = r + P(p, at + 3) * 0.5 + 0.5;
+        box = Pixels(cx - e, cy - e, cx + e, cy + e, f);
+        if (opaque)
+        {
+            float h = (r - 0.5) * 0.70710678;
+            inner = Inside(cx - h - 0.5, cy - h - 0.5, cx + h + 0.5, cy + h + 0.5, f);
+        }
+    }
+    else if (kind == KindLine)
+    {
+        float e = LineReach(p, at) + 0.5;
+        float ax = P(p, at);
+        float ay = P(p, at + 1);
+        float bx = P(p, at + 2);
+        float by = P(p, at + 3);
+        box = Pixels(Min(ax, bx) - e, Min(ay, by) - e, Max(ax, bx) + e, Max(ay, by) + e, f);
+    }
+    else if (kind == KindTriangle)
+    {
+        float e = P(p, at + 6) * 0.5 + 0.5;
+        float x0 = Min(Min(P(p, at), P(p, at + 2)), P(p, at + 4));
+        float y0 = Min(Min(P(p, at + 1), P(p, at + 3)), P(p, at + 5));
+        float x1 = Max(Max(P(p, at), P(p, at + 2)), P(p, at + 4));
+        float y1 = Max(Max(P(p, at + 1), P(p, at + 3)), P(p, at + 5));
+        box = Pixels(x0 - e, y0 - e, x1 + e, y1 + e, f);
+    }
+    else if (kind == KindGlyph)
+    {
+        uint4 g = glyphs[p[at + 2]];
+        int x0 = (int)p[at] + Low16(g.z);
+        int y0 = (int)p[at + 1] + High16(g.z);
+        int w = (int)f.Width;
+        int h = (int)f.Height;
+        box = int4(
+            Clamp(x0, 0, w),
+            Clamp(y0, 0, h),
+            Clamp(x0 + (int)(g.y & 65535), 0, w),
+            Clamp(y0 + (int)(g.y >> 16), 0, h));
+    }
+    else if (kind == KindImage)
+    {
+        box = Pixels(P(p, at) - 0.5, P(p, at + 1) - 0.5, P(p, at + 2) + 0.5, P(p, at + 3) + 0.5, f);
+    }
+    uint4 u = (uint4)box;
+    uint4 v = (uint4)inner;
+    return uint4(u.x | (u.y << 16), u.z | (u.w << 16), v.x | (v.y << 16), v.z | (v.w << 16));
+}
+
+public struct BoundsArgs
+{
+    public Uniform<UiFrame> Frame;
+    public ReadOnlyBuffer<uint4> Commands;
+    public ReadOnlyBuffer<uint> Payload;
+    public ReadOnlyBuffer<uint4> Glyphs;
+    public Buffer<uint4> Bounds;
+}
+
+[Compute(256, 1, 1)]
+public void Bounds([DispatchThreadId] uint3 id, [Push] in BoundsArgs a)
+{
+    UiFrame f = a.Frame.Value;
+    if (id.x >= f.Commands)
+        return;
+    a.Bounds[id.x] = CommandBounds(a.Commands[id.x], a.Payload, a.Glyphs, f);
+}
+
+public struct BinArgs
+{
+    public Uniform<UiFrame> Frame;
+    public ReadOnlyBuffer<uint4> Bounds;
+    /// Per chunk, per bin: 8 words, a bit per command of the chunk. Cleared before.
+    public Buffer<uint> Masks;
+}
+
+[Compute(256, 1, 1)]
+public void Bin([DispatchThreadId] uint3 id, [Push] in BinArgs a)
+{
+    UiFrame f = a.Frame.Value;
+    if (id.x >= f.Commands)
+        return;
+    uint4 b = a.Bounds[id.x];
+    uint x0 = b.x & 65535;
+    uint y0 = b.x >> 16;
+    uint x1 = b.y & 65535;
+    uint y1 = b.y >> 16;
+    if (x0 >= x1 || y0 >= y1)
+        return;
+    uint chunk = id.x >> 8;
+    uint word = (id.x & 255) >> 5;
+    uint bit = 1u << (id.x & 31);
+    uint bins = f.BinsX * f.BinsY;
+    for (uint by = y0 >> 8; by <= (y1 - 1) >> 8; by++)
+    {
+        for (uint bx = x0 >> 8; bx <= (x1 - 1) >> 8; bx++)
+        {
+            a.Masks.AtomicOr(((chunk * bins) + by * f.BinsX + bx) * 8 + word, bit);
+        }
+    }
+}
+
+/// Distance from `p` to the segment `a`–`b`.
+float SegmentDistance(float2 p, float2 a, float2 b)
+{
+    float2 pa = p - a;
+    float2 ba = b - a;
+    float len2 = Max(ba.x * ba.x + ba.y * ba.y, 0.000000000001);
+    float h = Clamp((pa.x * ba.x + pa.y * ba.y) / len2, 0, 1);
+    float2 q = pa - ba * h;
+    return Sqrt(q.x * q.x + q.y * q.y);
+}
+
+/// Negative or zero: the line's reach includes the tile centered at `t`.
+float LineTouchesTile(ReadOnlyBuffer<uint> p, uint at, float2 t)
+{
+    float d = SegmentDistance(t, float2(P(p, at), P(p, at + 1)), float2(P(p, at + 2), P(p, at + 3)));
+    return d - (LineReach(p, at) + TileRadius + 0.5);
+}
+
+public struct CoarseArgs
+{
+    public Uniform<UiFrame> Frame;
+    public ReadOnlyBuffer<uint4> Commands;
+    public ReadOnlyBuffer<uint> Payload;
+    public ReadOnlyBuffer<uint4> Bounds;
+    public ReadOnlyBuffer<uint> Masks;
+    /// Per tile: first block, command count.
+    public Buffer<uint2> Heads;
+    public Buffer<uint> Pool;
+    /// 0: blocks taken; 1: nonzero if the pool ran out. Cleared before.
+    public Buffer<uint> Counters;
+}
+
+[Compute(16, 16, 1)]
+public void Coarse([GroupId] uint3 group, [GroupThreadId] uint3 thread, [Push] in CoarseArgs a)
+{
+    UiFrame f = a.Frame.Value;
+    uint tx = group.x * 16 + thread.x;
+    uint ty = group.y * 16 + thread.y;
+    bool live = tx < f.TilesX && ty < f.TilesY;
+    uint bin = group.y * f.BinsX + group.x;
+    uint bins = f.BinsX * f.BinsY;
+    int x0 = (int)(tx * 16);
+    int y0 = (int)(ty * 16);
+    float2 center = float2((float)x0 + 8, (float)y0 + 8);
+    uint head = NoBlock;
+    uint current = NoBlock;
+    uint count = 0;
+    bool full = false;
+    for (uint c = 0; c < f.Chunks; c++)
+    {
+        for (uint w = 0; w < 8; w++)
+        {
+            uint m = a.Masks[(c * bins + bin) * 8 + w];
+            while (m != 0)
+            {
+                uint i = c * 256 + w * 32 + FirstBitLow(m);
+                m = m & (m - 1);
+                if (!live || full)
+                    continue;
+                uint4 b = a.Bounds[i];
+                int bx0 = (int)(b.x & 65535);
+                int by0 = (int)(b.x >> 16);
+                int bx1 = (int)(b.y & 65535);
+                int by1 = (int)(b.y >> 16);
+                if (x0 + 16 <= bx0 || x0 >= bx1 || y0 + 16 <= by0 || y0 >= by1)
+                    continue;
+                uint4 cmd = a.Commands[i];
+                if ((cmd.x & 63) == KindLine && LineTouchesTile(a.Payload, cmd.w, center) > 0)
+                    continue;
+                int ix0 = (int)(b.z & 65535);
+                int iy0 = (int)(b.z >> 16);
+                int ix1 = (int)(b.w & 65535);
+                int iy1 = (int)(b.w >> 16);
+                if (x0 >= ix0 && y0 >= iy0 && x0 + 16 <= ix1 && y0 + 16 <= iy1)
+                {
+                    // Hidden: start over, reusing the blocks.
+                    count = 0;
+                    current = head;
+                }
+                uint slot = count % BlockCommands;
+                if (slot == 0)
+                {
+                    uint block = count == 0 ? head : a.Pool[current * BlockWords + BlockCommands];
+                    if (block == NoBlock)
+                    {
+                        block = a.Counters.AtomicAdd(0, 1);
+                        if (block >= f.PoolBlocks)
+                        {
+                            a.Counters.AtomicOr(1, 1);
+                            full = true;
+                            continue;
+                        }
+                        a.Pool[block * BlockWords + BlockCommands] = NoBlock;
+                        if (count == 0)
+                            head = block;
+                        else
+                            a.Pool[current * BlockWords + BlockCommands] = block;
+                    }
+                    current = block;
+                }
+                a.Pool[current * BlockWords + slot] = i;
+                count++;
+            }
+        }
+    }
+    if (live)
+        a.Heads[ty * f.TilesX + tx] = uint2(head, count);
+}
+
+/// Signed distance to a box of half size `b` around the origin, rounded by `r`.
+float RoundBox(float2 p, float2 b, float r)
+{
+    float qx = Abs(p.x) - b.x + r;
+    float qy = Abs(p.y) - b.y + r;
+    float ox = Max(qx, 0);
+    float oy = Max(qy, 0);
+    return Min(Max(qx, qy), 0) + Sqrt(ox * ox + oy * oy) - r;
+}
+
+/// Distance to the rounded rectangle of the box at `at` and the radii at `r`.
+float RectDistance(ReadOnlyBuffer<uint> p, uint at, uint r, float2 px)
+{
+    float cx = (P(p, at) + P(p, at + 2)) * 0.5;
+    float cy = (P(p, at + 1) + P(p, at + 3)) * 0.5;
+    float bx = (P(p, at + 2) - P(p, at)) * 0.5;
+    float by = (P(p, at + 3) - P(p, at + 1)) * 0.5;
+    float2 q = float2(px.x - cx, px.y - cy);
+    float4 radii = Radii(p, at, r);
+    // top-left, top-right, bottom-right, bottom-left; y down.
+    float radius = q.x > 0 ? (q.y > 0 ? radii.z : radii.y) : (q.y > 0 ? radii.w : radii.x);
+    return RoundBox(q, float2(bx, by), radius);
+}
+
+float Dot2(float2 u, float2 v) => u.x * v.x + u.y * v.y;
+
+/// Signed distance to a triangle (either winding), negative inside.
+float TriangleDistance(float2 p, float2 a, float2 b, float2 c)
+{
+    float2 e0 = b - a;
+    float2 e1 = c - b;
+    float2 e2 = a - c;
+    float2 v0 = p - a;
+    float2 v1 = p - b;
+    float2 v2 = p - c;
+    float2 q0 = v0 - e0 * Clamp(Dot2(v0, e0) / Max(Dot2(e0, e0), 0.000000000001), 0, 1);
+    float2 q1 = v1 - e1 * Clamp(Dot2(v1, e1) / Max(Dot2(e1, e1), 0.000000000001), 0, 1);
+    float2 q2 = v2 - e2 * Clamp(Dot2(v2, e2) / Max(Dot2(e2, e2), 0.000000000001), 0, 1);
+    float s = e0.x * e2.y - e0.y * e2.x < 0 ? -1.0 : 1.0;
+    float dx = Min(Min(Dot2(q0, q0), Dot2(q1, q1)), Dot2(q2, q2));
+    float dy = Min(Min(s * (v0.x * e0.y - v0.y * e0.x), s * (v1.x * e1.y - v1.y * e1.x)), s * (v2.x * e2.y - v2.y * e2.x));
+    float mag = Sqrt(dx);
+    return dy > 0 ? -mag : mag;
+}
+
+/// Signed distance to a line command's ink: caps and dashes.
+float LineDistance(ReadOnlyBuffer<uint> p, uint at, float2 px)
+{
+    float ax = P(p, at);
+    float ay = P(p, at + 1);
+    float hw = P(p, at + 4) * 0.5;
+    float dx = P(p, at + 2) - ax;
+    float dy = P(p, at + 3) - ay;
+    float len = Sqrt(dx * dx + dy * dy);
+    float ux = len > 0.000001 ? dx / len : 1.0;
+    float uy = len > 0.000001 ? dy / len : 0.0;
+    float rx = px.x - ax;
+    float ry = px.y - ay;
+    float u = rx * ux + ry * uy;
+    float v = rx * uy - ry * ux;
+    uint cap = p[at + 5];
+    float d = 0;
+    if (cap == 1)
+    {
+        float t = u - Clamp(u, 0, len);
+        d = Sqrt(t * t + v * v) - hw;
+    }
+    else
+    {
+        float ext = cap == 2 ? hw : 0.0;
+        float qx = Abs(u - len * 0.5) - (len * 0.5 + ext);
+        float qy = Abs(v) - hw;
+        float ox = Max(qx, 0);
+        float oy = Max(qy, 0);
+        d = Sqrt(ox * ox + oy * oy) + Min(Max(qx, qy), 0);
+    }
+    float dash = P(p, at + 6);
+    if (dash > 0)
+    {
+        float period = dash + P(p, at + 7);
+        float s = u + P(p, at + 8) - dash * 0.5 + period * 0.5;
+        float t = s - period * Floor(s / period) - period * 0.5;
+        d = Max(d, Abs(t) - dash * 0.5);
+    }
+    return d;
+}
+
+float Coverage(float d) => Clamp(0.5 - d, 0, 1);
+
+/// A packed RGBA8 sRGB color with straight alpha, premultiplied.
+float4 Premultiplied(uint c)
+{
+    float a = (float)(c >> 24) / 255;
+    return float4(
+        (float)(c & 255) / 255 * a,
+        (float)((c >> 8) & 255) / 255 * a,
+        (float)((c >> 16) & 255) / 255 * a,
+        a);
+}
+
+/// `src` over `dst`, premultiplied.
+float4 Over(float4 src, float4 dst) => src + dst * (1 - src.w);
+
+float LinearToSrgb(float x) => x <= 0.0031308 ? x * 12.92 : 1.055 * Pow(x, 1.0 / 2.4) - 0.055;
+
+float SrgbToLinear(float x) => x <= 0.04045 ? x / 12.92 : Pow((x + 0.055) / 1.055, 2.4);
+
+/// The fill under the stroke, both straddling the edge at distance `d`.
+float4 FillAndStroke(float4 fill, float d, float strokeWidth, uint stroke)
+{
+    float4 f = fill * Coverage(d);
+    if (strokeWidth <= 0)
+        return f;
+    return Over(Premultiplied(stroke) * Coverage(Abs(d) - strokeWidth * 0.5), f);
+}
+
+public struct FineArgs
+{
+    public Uniform<UiFrame> Frame;
+    public ReadOnlyBuffer<uint4> Commands;
+    public ReadOnlyBuffer<uint> Payload;
+    public ReadOnlyBuffer<UiPaint> Paints;
+    public ReadOnlyBuffer<uint4> Glyphs;
+    public ReadOnlyBuffer<uint2> Heads;
+    public ReadOnlyBuffer<uint> Pool;
+    /// The glyph cache's pages: R8 coverage.
+    public Texture2DArray<float> GlyphPages;
+    public StorageTexture2D<float4> Output;
+}
+
+/// Command `c`'s premultiplied color at the pixel centered at `px`.
+float4 Shade(uint4 c, in FineArgs a, float2 px)
+{
+    uint kind = c.x & 63;
+    uint at = c.w;
+    ReadOnlyBuffer<uint> p = a.Payload;
+    UiPaint paint = a.Paints[c.z];
+    float4 color = Premultiplied(paint.Color);
+    if (kind == KindRect)
+        return FillAndStroke(color, RectDistance(p, at, at + 4, px), P(p, at + 8), p[at + 9]);
+    if (kind == KindCircle)
+    {
+        float2 d = px - float2(P(p, at), P(p, at + 1));
+        return FillAndStroke(color, Sqrt(d.x * d.x + d.y * d.y) - P(p, at + 2), P(p, at + 3), p[at + 4]);
+    }
+    if (kind == KindLine)
+        return color * Coverage(LineDistance(p, at, px));
+    if (kind == KindTriangle)
+    {
+        float d = TriangleDistance(
+            px,
+            float2(P(p, at), P(p, at + 1)),
+            float2(P(p, at + 2), P(p, at + 3)),
+            float2(P(p, at + 4), P(p, at + 5)));
+        return FillAndStroke(color, d, P(p, at + 6), p[at + 7]);
+    }
+    if (kind == KindGlyph)
+    {
+        uint4 g = a.Glyphs[p[at + 2]];
+        int gw = (int)(g.y & 65535);
+        int gh = (int)(g.y >> 16);
+        int gx = (int)Floor(px.x) - ((int)p[at] + Low16(g.z));
+        int gy = (int)Floor(px.y) - ((int)p[at + 1] + High16(g.z));
+        if (gx < 0 || gy < 0 || gx >= gw || gy >= gh)
+            return float4(0, 0, 0, 0);
+        int2 texel = int2((int)(g.x & 65535) + gx, (int)(g.x >> 16) + gy);
+        return color * a.GlyphPages.Load(texel, layer: (int)g.w);
+    }
+    if (kind == KindImage)
+    {
+        float cov = Coverage(RectDistance(p, at, at + 9, px));
+        if (cov <= 0)
+            return float4(0, 0, 0, 0);
+        float x0 = P(p, at);
+        float y0 = P(p, at + 1);
+        float du = (P(p, at + 6) - P(p, at + 4)) / (P(p, at + 2) - x0);
+        float dv = (P(p, at + 7) - P(p, at + 5)) / (P(p, at + 3) - y0);
+        float2 uv = float2(P(p, at + 4) + (px.x - x0) * du, P(p, at + 5) + (px.y - y0) * dv);
+        uint size = p[at + 8];
+        float texels = Max(Abs(du) * (float)(size & 65535), Abs(dv) * (float)(size >> 16));
+        float lod = Max(Log2(Max(texels, 0.000001)), 0);
+        float4 t = paint.Texture.Sample(paint.Sampler, uv, lod: lod);
+        if ((c.x & FlagImageSrgbPremultiplied) == 0)
+            t = float4(LinearToSrgb(t.x) * t.w, LinearToSrgb(t.y) * t.w, LinearToSrgb(t.z) * t.w, t.w);
+        return t * color * cov;
+    }
+    return float4(0, 0, 0, 0);
+}
+
+[Compute(16, 16, 1)]
+public void Fine([GroupId] uint3 group, [GroupThreadId] uint3 thread, [Push] in FineArgs a)
+{
+    UiFrame f = a.Frame.Value;
+    uint2 xy = group.xy * 16 + thread.xy;
+    float2 px = float2((float)xy.x + 0.5, (float)xy.y + 0.5);
+    uint2 h = a.Heads[group.y * f.TilesX + group.x];
+    uint block = h.x;
+    float4 color = f.Clear;
+    for (uint k = 0; k < h.y; k++)
+    {
+        uint slot = k % BlockCommands;
+        if (slot == 0 && k > 0)
+            block = a.Pool[block * BlockWords + BlockCommands];
+        uint i = a.Pool[block * BlockWords + slot];
+        color = Over(Shade(a.Commands[i], a, px), color);
+    }
+    if (xy.x < f.Width && xy.y < f.Height)
+        a.Output[(int2)xy] = color;
+}
+
+public struct EncodeArgs
+{
+    public Texture2D<float4> Ui;
+    /// 1: the target encodes sRGB on write (an `…Srgb` view), so this writes linear values.
+    public uint Decode;
+}
+
+public struct EncodeVertex
+{
+    [Position] public float4 Pos;
+}
+
+/// One triangle covering the target: vertex ids 0, 1, 2.
+[Vertex]
+public EncodeVertex EncodeVs([VertexId] uint vertex)
+{
+    float2 uv = float2((float)((vertex << 1) & 2), (float)(vertex & 2));
+    return EncodeVertex { Pos = float4(uv * float2(2, -2) + float2(-1, 1), 0, 1) };
+}
+
+/// The UI target's pixel into the window's format (0012 §5.7).
+[Pixel]
+public float4 EncodePs(in EncodeVertex i, [Push] in EncodeArgs a)
+{
+    float4 c = a.Ui.Load((int2)i.Pos.xy);
+    if (a.Decode == 0)
+        return c;
+    return float4(SrgbToLinear(c.x), SrgbToLinear(c.y), SrgbToLinear(c.z), c.w);
+}
+
+public struct GlyphUploadArgs
+{
+    /// Per new glyph: x | y << 16, width | height << 16, page, its first word in `Data`.
+    public ReadOnlyBuffer<uint4> Uploads;
+    /// Coverage bytes, four to a word, row after row; each glyph starts on a word.
+    public ReadOnlyBuffer<uint> Data;
+    public StorageTexture2DArray<float> Pages;
+}
+
+/// New glyph bitmaps into the glyph cache's pages: one thread per texel of glyph `id.z`.
+[Compute(8, 8, 1)]
+public void GlyphUpload([DispatchThreadId] uint3 id, [Push] in GlyphUploadArgs a)
+{
+    uint4 u = a.Uploads[id.z];
+    uint w = u.y & 65535;
+    if (id.x >= w || id.y >= (u.y >> 16))
+        return;
+    uint b = id.y * w + id.x;
+    uint v = (a.Data[u.w + (b >> 2)] >> ((b & 3) * 8)) & 255;
+    int2 texel = int2((int)((u.x & 65535) + id.x), (int)((u.x >> 16) + id.y));
+    a.Pages[texel, (int)u.z] = (float)v / 255;
+}

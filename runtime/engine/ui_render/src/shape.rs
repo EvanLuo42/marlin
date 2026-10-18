@@ -403,8 +403,8 @@ pub fn shade(
             scale4(paint, t)
         }
         Some(Kind::Image) => {
-            let r = rect_radius(p).0;
-            let rect = [p[0], p[1], p[2], p[3], f(r[0]), f(r[1]), f(r[2]), f(r[3])];
+            // The radii follow the texture size; the distance clamps them.
+            let rect = [p[0], p[1], p[2], p[3], p[9], p[10], p[11], p[12]];
             let cov = coverage(rect_distance(&rect, x, y));
             if cov <= 0.0 {
                 return [0.0; 4];
@@ -414,10 +414,11 @@ pub fn shade(
             let du = (u1 - u0) / (x1 - x0);
             let dv = (v1 - v0) / (y1 - y0);
             let uv = [u0 + (x - x0) * du, v0 + (y - y0) * dv];
-            let (tw, th) = ((p[10] & 0xFFFF) as f32, (p[10] >> 16) as f32);
+            let (tw, th) = ((p[8] & 0xFFFF) as f32, (p[8] >> 16) as f32);
             let texels = (du.abs() * tw).max(dv.abs() * th);
             let lod = marlin_math::scalar::log2(texels.max(1e-6)).max(0.0);
-            let mut t = textures.sample(p[8], p[9], uv, lod);
+            let pw = &paints[c[2] as usize];
+            let mut t = textures.sample(pw[2], pw[3], uv, lod);
             if c[0] & IMAGE_SRGB_PREMULTIPLIED == 0 {
                 let a = t[3];
                 t = [
@@ -439,8 +440,4 @@ pub fn shade(
         }
         None => [0.0; 4],
     }
-}
-
-fn f(v: f32) -> u32 {
-    v.to_bits()
 }

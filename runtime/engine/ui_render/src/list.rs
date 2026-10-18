@@ -313,8 +313,6 @@ impl Painter<'_> {
             f(style.uv.min.y),
             f(style.uv.max.x),
             f(style.uv.max.y),
-            view,
-            style.sampler.unwrap_or(DEFAULT_SAMPLER),
             width.min(0xFFFF) | height.min(0xFFFF) << 16,
             r0,
             r1,
@@ -322,7 +320,7 @@ impl Painter<'_> {
             r3,
         ];
         let chunk = self.list.own();
-        let paint = chunk.solid(style.tint);
+        let paint = chunk.image(style.tint, view, style.sampler.unwrap_or(DEFAULT_SAMPLER));
         chunk.push(Kind::Image, flags, paint, &payload);
     }
 

@@ -1169,8 +1169,12 @@ version = "0.1.0"
 dependencies = [
  "marlin-cook-font",
  "marlin-font",
+ "marlin-gpu-test-support",
  "marlin-jobs",
  "marlin-math",
+ "marlin-render-graph",
+ "marlin-rhi",
+ "marlin-serial",
 ]
 
 [[package]]

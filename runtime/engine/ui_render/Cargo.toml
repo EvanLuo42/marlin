@@ -7,11 +7,16 @@ publish.workspace = true
 
 [dependencies]
 marlin-font.workspace = true
+marlin-jobs.workspace = true
 marlin-math.workspace = true
+marlin-render-graph.workspace = true
+marlin-rhi.workspace = true
+marlin-serial.workspace = true
 
 [dev-dependencies]
 marlin-cook-font.workspace = true
-marlin-jobs.workspace = true
+marlin-gpu-test-support.workspace = true
+marlin-render-graph.workspace = true
 
 [lints]
 workspace = true
