@@ -394,6 +394,9 @@ extension<T>(Vector<T, 3> v) where T : IArithmetic<T>
 - 所有标量都实现了对应的接口。
 - 向量按分量实现这些接口，比较运算返回 bool 向量。
 - 泛型数学代码一般只需要写 `where T : IFloat<T>`。
+- 核心库里，接口只放运算符和 `Zero`、`One`。`Sqrt`、`Min` 这些是 `Marlin` namespace 里的泛型函数，约束写这些接口（`Sqrt<T>(T x) where T : IFloat<T>`），所以泛型代码和具体类型的代码写法一样，都是 `Sqrt(x)`（第 9d 步）。
+- `IComparable<T>` 的比较运算返回 `bool`，所以泛型代码只比较标量；向量的比较运算返回 bool 向量，写在具体类型上。
+- 调用处还不检查类型实参是否满足 `where` 约束：`Sqrt(1)` 能通过类型检查，到降低时才报错。这一项还没做。
 
 ## 9. 表达式与语句
 
@@ -729,7 +732,7 @@ public void Blur([GroupIndex] uint gi, ...)
 
 ### 12.2 wave、barrier 与原子操作
 
-内建函数按功能分 namespace 组织：
+内建函数按功能分组，每组是 `Marlin` namespace 里只有静态成员的 struct（像 C# 的 `static class Math`）。这样每个文件通过隐式的 `using Marlin` 就能直接写 `Wave.Sum`（2026-10-17 定）：
 
 ```csharp
 var total = Wave.Sum(v);
@@ -1009,6 +1012,9 @@ public struct Texture2D<T>
 - 由硬件指令实现的函数在核心库里写成正常的签名、**没有函数体**，用 `[Intrinsic("op")]` 指定对应的 IR op（0006 §8）。
 - 重载、泛型、命名参数（`lod:`、`grad:`）都走普通的类型检查。
 - 0006 §8.2 可替换集里的函数（`Pow`、`Normalize`……）在核心库里用 Marlin 写出实现，同时标上 `[Intrinsic]`，target 有原生实现时用原生的。
+- 数学函数用 HLSL 的名字，改成 PascalCase：`Abs`、`Min`、`Max`、`Clamp`、`Saturate`、`Lerp`、`Floor`、`Ceil`、`Trunc`、`Round`、`Frac`、`Sqrt`、`Rsqrt`、`Rcp`、`Fma`、`Pow`、`Exp`、`Exp2`、`Log`、`Log2`、三角函数、`Dot`、`Cross`、`Normalize`、`Length`、`Distance`、`Reflect`、`Refract`、`Smoothstep`、`Step`、`CountBits`、`FirstBitHigh`、`FirstBitLow`、`ReverseBits`。这些是 GPU 作者熟悉的名字，和 IR 的数学集一一对应（2026-10-17 定）。
+- 有几个 intrinsic 名字按实参的种类选 op：浮点、有符号整数、无符号整数。`min` 是 `fmin`、`smin` 或 `umin`，`max`、`firstbit_hi`、`atomic.min`/`atomic.max`、`wave.reduce.sum` 等同理。这样一个泛型声明就覆盖所有标量和向量；某个种类没有对应 op 时报 E1309。`const.zero`、`const.one` 给出调用结果类型的 0 和 1，是标量和向量的 `Zero`、`One`（第 9d 步）。
+- 第 9d 步的可替换集函数先只写 `[Intrinsic]`：SPIR-V 都有原生实现。用 Marlin 写的实现等第一个缺原生实现的 target（DXIL，第 11 步）来了再补。
 
 ### 17.3 使用限制
 

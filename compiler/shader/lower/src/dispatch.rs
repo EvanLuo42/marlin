@@ -47,15 +47,11 @@ impl FnCx<'_, '_, '_> {
                 loc,
             ));
         };
-        if self.l.builtins.kind(*ty_item).is_some() {
-            if data.kind == ItemKind::Operator {
-                return Ok(Resolved::Builtin);
-            }
-            return Err(LowerError::unsupported(
-                format!("interface member `{name}` of a built-in type"),
-                self.owner(),
-                loc,
-            ));
+        // Operators of scalars, vectors and matrices are the compiler's; their other members
+        // (`Zero`, `One`) are declared on the built-in type like any type's.
+        let builtin = self.l.builtins.kind(*ty_item).is_some();
+        if builtin && data.kind == ItemKind::Operator {
+            return Ok(Resolved::Builtin);
         }
         let symbol = self.l.cx.get::<ItemSignature>(&item)?.operator.clone();
         let wanted = self.l.cx.get::<ItemTypesQuery>(&item)?;
@@ -96,11 +92,12 @@ impl FnCx<'_, '_, '_> {
             .or(candidates.first())
             .map(|c| c.0)
             .ok_or_else(|| {
-                LowerError::unsupported(
-                    format!("the default implementation of interface member `{name}`"),
-                    self.owner(),
-                    loc.clone(),
-                )
+                let what = if builtin {
+                    format!("interface member `{name}` of a built-in type that declares none")
+                } else {
+                    format!("the default implementation of interface member `{name}`")
+                };
+                LowerError::unsupported(what, self.owner(), loc.clone())
             })?;
         // The member's own type arguments carry over by position.
         let mut s = impl_subst;

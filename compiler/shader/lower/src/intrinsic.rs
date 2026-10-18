@@ -1,7 +1,9 @@
 //! `[Intrinsic("op")]` names (0004 §17.2): the IR operation's own name (0006 §8), so the core
 //! library says exactly which operation each overload is (`fmax` for floats, `smax` for `int`,
 //! `umax` for `uint`). Operations with immediates spell them with dots: `wave.reduce.fadd`,
-//! `wave.scan.add.exclusive`, `barrier.group`.
+//! `wave.scan.add.exclusive`, `barrier.group`. A few names pick the operation by the operand's
+//! kind instead (`min`, `max`, `wave.reduce.sum`, ...: `BY_KIND` in `expr.rs`), so one generic
+//! declaration covers every scalar and vector type.
 
 use marlin_shaderc_ir::{
     BinaryOp, MathOp, Op, QuadOp, ReduceOp, Scope, Space, UnaryOp, VoteOp, WaveOp,

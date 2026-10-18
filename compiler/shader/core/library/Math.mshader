@@ -1,0 +1,142 @@
+// Math functions (0004 §17.2, 0006 §8.2), with HLSL's names in PascalCase. Each takes a
+// scalar or a vector (per component) of the kind its constraint names. `Min`, `Max` and the
+// bit functions pick their operation by the argument's kind (`fmin`, `smin`, `umin`).
+namespace Marlin;
+
+// ---- numbers ----
+
+[Intrinsic("min")] public T Min<T>(T a, T b) where T : IArithmetic<T>;
+[Intrinsic("max")] public T Max<T>(T a, T b) where T : IArithmetic<T>;
+
+/// `x` limited to `lo..hi`.
+public T Clamp<T>(T x, T lo, T hi) where T : IArithmetic<T> => Min(Max(x, lo), hi);
+
+/// For floats and signed integers.
+[Intrinsic("abs")] public T Abs<T>(T x) where T : IArithmetic<T>;
+
+/// -1, 0 or 1 (0 for NaN), as the argument's type; for floats and signed integers.
+[Intrinsic("sign")] public T Sign<T>(T x) where T : IArithmetic<T>;
+
+// ---- floating point ----
+
+/// `x` limited to `0..1`.
+public T Saturate<T>(T x) where T : IFloat<T> => Clamp(x, T.Zero, T.One);
+
+/// `a` at `t` = 0, `b` at `t` = 1.
+public T Lerp<T>(T a, T b, T t) where T : IFloat<T> => a + (b - a) * t;
+
+[Intrinsic("floor")] public T Floor<T>(T x) where T : IFloat<T>;
+[Intrinsic("ceil")] public T Ceil<T>(T x) where T : IFloat<T>;
+/// Towards zero.
+[Intrinsic("ftrunc")] public T Trunc<T>(T x) where T : IFloat<T>;
+/// To the nearest integer, halves to even.
+[Intrinsic("round_even")] public T Round<T>(T x) where T : IFloat<T>;
+/// `x - Floor(x)`.
+[Intrinsic("fract")] public T Frac<T>(T x) where T : IFloat<T>;
+
+[Intrinsic("sqrt")] public T Sqrt<T>(T x) where T : IFloat<T>;
+/// `1 / Sqrt(x)`, approximate.
+[Intrinsic("rsqrt")] public T Rsqrt<T>(T x) where T : IFloat<T>;
+/// `1 / x`, approximate.
+[Intrinsic("rcp")] public T Rcp<T>(T x) where T : IFloat<T>;
+/// `a * b + c`, rounded once.
+[Intrinsic("fma")] public T Fma<T>(T a, T b, T c) where T : IFloat<T>;
+
+[Intrinsic("pow")] public T Pow<T>(T x, T y) where T : IFloat<T>;
+[Intrinsic("exp")] public T Exp<T>(T x) where T : IFloat<T>;
+[Intrinsic("exp2")] public T Exp2<T>(T x) where T : IFloat<T>;
+[Intrinsic("log")] public T Log<T>(T x) where T : IFloat<T>;
+[Intrinsic("log2")] public T Log2<T>(T x) where T : IFloat<T>;
+
+[Intrinsic("sin")] public T Sin<T>(T x) where T : IFloat<T>;
+[Intrinsic("cos")] public T Cos<T>(T x) where T : IFloat<T>;
+[Intrinsic("tan")] public T Tan<T>(T x) where T : IFloat<T>;
+[Intrinsic("asin")] public T Asin<T>(T x) where T : IFloat<T>;
+[Intrinsic("acos")] public T Acos<T>(T x) where T : IFloat<T>;
+[Intrinsic("atan")] public T Atan<T>(T x) where T : IFloat<T>;
+/// The angle of `(x, y)`, in `-π..π`.
+[Intrinsic("atan2")] public T Atan2<T>(T y, T x) where T : IFloat<T>;
+[Intrinsic("sinh")] public T Sinh<T>(T x) where T : IFloat<T>;
+[Intrinsic("cosh")] public T Cosh<T>(T x) where T : IFloat<T>;
+[Intrinsic("tanh")] public T Tanh<T>(T x) where T : IFloat<T>;
+
+/// 0 below `lo`, 1 above `hi`, a smooth Hermite curve between.
+[Intrinsic("smoothstep")] public T Smoothstep<T>(T lo, T hi, T x) where T : IFloat<T>;
+/// 0 where `x < edge`, 1 elsewhere.
+[Intrinsic("step")] public T Step<T>(T edge, T x) where T : IFloat<T>;
+
+[Intrinsic("isnan")] public bool IsNan(half x);
+[Intrinsic("isnan")] public bool IsNan(float x);
+[Intrinsic("isnan")] public bool IsNan(double x);
+[Intrinsic("isnan")]
+public Vector<bool, N> IsNan<T, const int N>(Vector<T, N> x) where T : IFloat<T>;
+
+[Intrinsic("isinf")] public bool IsInf(half x);
+[Intrinsic("isinf")] public bool IsInf(float x);
+[Intrinsic("isinf")] public bool IsInf(double x);
+[Intrinsic("isinf")]
+public Vector<bool, N> IsInf<T, const int N>(Vector<T, N> x) where T : IFloat<T>;
+
+// ---- vectors ----
+
+[Intrinsic("dot")]
+public T Dot<T, const int N>(Vector<T, N> a, Vector<T, N> b) where T : IArithmetic<T>;
+
+[Intrinsic("cross")]
+public Vector<T, 3> Cross<T>(Vector<T, 3> a, Vector<T, 3> b) where T : IFloat<T>;
+
+[Intrinsic("length")]
+public T Length<T, const int N>(Vector<T, N> v) where T : IFloat<T>;
+
+[Intrinsic("distance")]
+public T Distance<T, const int N>(Vector<T, N> a, Vector<T, N> b) where T : IFloat<T>;
+
+[Intrinsic("normalize")]
+public Vector<T, N> Normalize<T, const int N>(Vector<T, N> v) where T : IFloat<T>;
+
+/// `i` reflected about the normal `n` (unit length).
+[Intrinsic("reflect")]
+public Vector<T, N> Reflect<T, const int N>(Vector<T, N> i, Vector<T, N> n) where T : IFloat<T>;
+
+/// `i` refracted through the normal `n` with the index ratio `eta`; 0 on total reflection.
+[Intrinsic("refract")]
+public Vector<T, N> Refract<T, const int N>(Vector<T, N> i, Vector<T, N> n, T eta)
+    where T : IFloat<T>;
+
+/// `n` if it faces away from `i` (judged by `ng`), `-n` otherwise.
+[Intrinsic("faceforward")]
+public Vector<T, N> FaceForward<T, const int N>(Vector<T, N> n, Vector<T, N> i, Vector<T, N> ng)
+    where T : IFloat<T>;
+
+/// Every component is `true`.
+public bool All(bool2 v) => v.x && v.y;
+public bool All(bool3 v) => v.x && v.y && v.z;
+public bool All(bool4 v) => v.x && v.y && v.z && v.w;
+
+/// Some component is `true`.
+public bool Any(bool2 v) => v.x || v.y;
+public bool Any(bool3 v) => v.x || v.y || v.z;
+public bool Any(bool4 v) => v.x || v.y || v.z || v.w;
+
+/// `a` where `c`, `b` elsewhere; per component for a `bool` vector (0004 §9.4).
+[Intrinsic("select")] public T Select<T>(bool c, T a, T b);
+[Intrinsic("select")]
+public Vector<T, N> Select<T, const int N>(Vector<bool, N> c, Vector<T, N> a, Vector<T, N> b)
+    where T : IScalar<T>;
+
+// ---- matrices ----
+
+[Intrinsic("transpose")]
+public Matrix<T, C, R> Transpose<T, const int R, const int C>(Matrix<T, R, C> m)
+    where T : IScalar<T>;
+
+// ---- integers ----
+
+/// The number of bits set.
+[Intrinsic("popcount")] public T CountBits<T>(T x) where T : IInteger<T>;
+/// The index of the highest set bit (for a negative signed value, of the highest clear bit);
+/// all ones when there is none.
+[Intrinsic("firstbit_hi")] public T FirstBitHigh<T>(T x) where T : IInteger<T>;
+/// The index of the lowest set bit; all ones when there is none.
+[Intrinsic("firstbit_lo")] public T FirstBitLow<T>(T x) where T : IInteger<T>;
+[Intrinsic("bitreverse")] public T ReverseBits<T>(T x) where T : IInteger<T>;

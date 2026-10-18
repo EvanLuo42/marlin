@@ -167,21 +167,44 @@ pub struct Session<'a> {
 }
 
 impl<'a> Session<'a> {
+    /// A session with the core library (`Marlin`) in it; packages that use it name it as a
+    /// dependency.
     pub fn new(desc: SessionDesc<'a>) -> Session<'a> {
         let db = Db::new();
         db.set::<LanguageInput>((), &SHADER_LANGUAGE, Durability::High);
-        Session {
+        let mut s = Session {
             sources: desc.sources,
             targets: desc.targets,
             db,
             packages: Vec::new(),
             files: Vec::new(),
-        }
+        };
+        let core = marlin_shaderc_core::PACKAGE;
+        // Line endings as `\n`, so the files hash the same on every checkout.
+        let texts = marlin_shaderc_core::FILES
+            .iter()
+            .map(|(path, text)| {
+                (
+                    SourcePath::new(core, *path),
+                    text.replace("\r\n", "\n").into(),
+                )
+            })
+            .collect();
+        s.insert_package(core, Vec::new(), texts, Durability::High);
+        s
     }
 
-    /// Adds a package and reads its files. The package with the core library (`Marlin`)
-    /// comes first; every package after its dependencies.
+    /// Adds a package and reads its files; every package comes after its dependencies. The
+    /// core library (`Marlin`) is the compiler's own and in every session already.
     pub fn add_package(&mut self, desc: &PackageDesc<'_>) -> Result<(), SessionError> {
+        if desc.name == marlin_shaderc_core::PACKAGE {
+            return Err(SessionError {
+                message: format!(
+                    "`{}` is the core library, which comes with the compiler",
+                    desc.name
+                ),
+            });
+        }
         if self.package(desc.name).is_some() {
             return Err(SessionError {
                 message: format!("the package `{}` is already in the session", desc.name),
@@ -198,6 +221,17 @@ impl<'a> Session<'a> {
             deps.push(k);
         }
         let texts = self.read_package(desc.name)?;
+        self.insert_package(desc.name, deps, texts, Durability::Low);
+        Ok(())
+    }
+
+    fn insert_package(
+        &mut self,
+        name: &str,
+        deps: Vec<usize>,
+        texts: Vec<(SourcePath, Arc<str>)>,
+        durability: Durability,
+    ) {
         let index = self.packages.len();
         let id = PackageId(index as u32);
         let mut files = Vec::new();
@@ -214,18 +248,17 @@ impl<'a> Session<'a> {
         }
         self.db.update(|u| {
             for (file, text) in sets {
-                u.set::<FileText>(file, text, Durability::Low);
-                u.set::<FilePackage>(file, id, Durability::Low);
+                u.set::<FileText>(file, text, durability);
+                u.set::<FilePackage>(file, id, durability);
             }
         });
         self.packages.push(Package {
-            name: desc.name.to_string(),
+            name: name.to_string(),
             id,
             deps,
             files,
         });
         self.set_package_input(index);
-        Ok(())
     }
 
     /// Reads `path`'s package again from the provider after a change: changed files, new
@@ -234,6 +267,11 @@ impl<'a> Session<'a> {
         let index = self.package(path.package()).ok_or_else(|| SessionError {
             message: format!("the session has no package `{}`", path.package()),
         })?;
+        if path.package() == marlin_shaderc_core::PACKAGE {
+            return Err(SessionError {
+                message: "the core library comes with the compiler and does not change".into(),
+            });
+        }
         let texts = self.read_package(path.package())?;
         let id = self.packages[index].id;
         let mut files = Vec::new();

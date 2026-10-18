@@ -1,0 +1,111 @@
+// The attributes the compiler gives meaning to (0004 §11, §12, §13, §17), and the interface
+// every attribute struct implements (§14). They are recognized by declaration: a user's own
+// `ComputeAttribute` in another namespace is an ordinary attribute.
+namespace Marlin;
+
+/// Implemented by every attribute struct (0004 §14).
+public interface IAttribute { }
+
+/// A type the compiler implements (0004 §17.1); only the core library uses it.
+public struct BuiltinAttribute : IAttribute
+{
+    public string Name;
+    public BuiltinAttribute(string name) { Name = name; }
+}
+
+/// A function that is one IR operation (0004 §17.2, 0006 §8); only the core library uses it.
+public struct IntrinsicAttribute : IAttribute
+{
+    public string Op;
+    public IntrinsicAttribute(string op) { Op = op; }
+}
+
+/// An enum whose values combine members bitwise (0004 §3.5).
+public struct FlagsAttribute : IAttribute { }
+
+// ---- stages (0004 §11.1) ----
+
+/// A compute entry point with its thread-group size.
+public struct ComputeAttribute : IAttribute
+{
+    public ComputeAttribute(int x, int y = 1, int z = 1) { }
+}
+
+public struct VertexAttribute : IAttribute { }
+public struct PixelAttribute : IAttribute { }
+
+/// A mesh entry point with its thread-group size (0004 §11.6).
+public struct MeshAttribute : IAttribute
+{
+    public MeshAttribute(int x, int y = 1, int z = 1) { }
+}
+
+/// An amplification entry point with its thread-group size (0004 §11.6).
+public struct AmplificationAttribute : IAttribute
+{
+    public AmplificationAttribute(int x, int y = 1, int z = 1) { }
+}
+
+// ---- system values (0004 §11.2) ----
+
+public struct DispatchThreadIdAttribute : IAttribute { }
+public struct GroupIdAttribute : IAttribute { }
+public struct GroupThreadIdAttribute : IAttribute { }
+public struct GroupIndexAttribute : IAttribute { }
+public struct VertexIdAttribute : IAttribute { }
+public struct InstanceIdAttribute : IAttribute { }
+public struct PositionAttribute : IAttribute { }
+public struct ClipDistanceAttribute : IAttribute { }
+public struct PrimitiveIdAttribute : IAttribute { }
+public struct CullPrimitiveAttribute : IAttribute { }
+public struct IsFrontFaceAttribute : IAttribute { }
+public struct SampleIndexAttribute : IAttribute { }
+public struct DepthAttribute : IAttribute { }
+public struct CoverageAttribute : IAttribute { }
+
+/// The render target a pixel output goes to, 0 to 7 (0004 §11.5).
+public struct TargetAttribute : IAttribute
+{
+    public TargetAttribute(int index) { }
+}
+
+// ---- interpolation (0004 §11.2) ----
+
+public struct FlatAttribute : IAttribute { }
+public struct NoPerspectiveAttribute : IAttribute { }
+public struct CentroidAttribute : IAttribute { }
+public struct SampleAttribute : IAttribute { }
+
+// ---- data ----
+
+/// The entry parameter that holds the push constants (0004 §11.3).
+public struct PushAttribute : IAttribute { }
+
+/// A namespace-level variable in groupshared memory (0004 §12.1).
+public struct GroupSharedAttribute : IAttribute { }
+
+/// A local whose values are the same in every lane of the group (0004 §10.3).
+public struct UniformAttribute : IAttribute { }
+
+/// An entry point's local constant whose value goes into the reflection (0004 §13.4).
+public struct ExportAttribute : IAttribute { }
+
+// ---- capabilities (0004 §12.3) ----
+
+/// Optional GPU features.
+public enum Capability
+{
+    /// `half`, `short`, `ushort`.
+    Native16Bit,
+    /// `long`, `ulong` and their atomics.
+    Int64,
+    /// `double`.
+    Float64,
+    WaveMatrix,
+}
+
+/// The capabilities a function or type needs: a contract its body is checked against.
+public struct RequiresAttribute : IAttribute
+{
+    public RequiresAttribute(Capability c) { }
+}

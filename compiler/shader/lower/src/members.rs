@@ -194,3 +194,42 @@ impl FnCx<'_, '_, '_> {
         Ok(changed.unwrap_or(base))
     }
 }
+
+impl FnCx<'_, '_, '_> {
+    /// `item` is a property.
+    pub(crate) fn is_property(&self, item: ItemId) -> R<bool> {
+        let tree = self.l.cx.get::<ItemTreeQuery>(&item.file)?;
+        Ok(tree.items[item.local].kind == ItemKind::Property)
+    }
+
+    /// `Type.P` for a static property `item`: the member of the type it is read through
+    /// (an interface's `T.Zero` is the concrete type's), its intrinsic or its getter.
+    pub(crate) fn static_property(&mut self, item: ItemId, e: ExprId) -> R<(Value, Ty)> {
+        let loc = InferLoc::Expr(e);
+        let on = self.infer.receivers.get(e).map(|t| self.concrete(t));
+        let base = match &on {
+            Some(Ty::Adt { item: t, args }) => Subst::new().with_args(*t, args),
+            _ => Subst::new(),
+        };
+        let (p, subst) = match self.resolve_callee(item, &base, on.as_ref(), loc.clone())? {
+            crate::dispatch::Resolved::Item(p, s) => (p, s),
+            crate::dispatch::Resolved::Builtin => {
+                return Err(self.error("E1305", "an operator read as a property", loc));
+            }
+        };
+        let ty = self.member_ty(p, &subst)?;
+        if let Some(op) = self.l.cx.get::<ItemTypesQuery>(&p)?.intrinsic.clone() {
+            let v = self
+                .intrinsic(e, &op, p, &subst, None, &[])?
+                .ok_or_else(|| self.error("E1305", "a property without a value", loc))?;
+            return Ok((v, ty));
+        }
+        let (get, _) = self.accessors(p)?;
+        let get = get.ok_or_else(|| {
+            LowerError::unsupported("an auto-property", self.owner(), loc.clone())
+        })?;
+        let (result, _) = self.call_body(e, get, &subst, None, Vec::new())?;
+        let v = result.ok_or_else(|| self.error("E1305", "a getter without a result", loc))?;
+        Ok((v, ty))
+    }
+}

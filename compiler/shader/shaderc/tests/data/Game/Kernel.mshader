@@ -1,0 +1,35 @@
+namespace Game;
+
+public struct KernelParams
+{
+    public uint Scale;
+    public uint Bias;
+}
+
+public struct KernelArgs
+{
+    public Buffer<uint> Out;
+    public ReadOnlyBuffer<uint> In;
+    public ByteBuffer Bytes;
+    public Uniform<KernelParams> P;
+    public Buffer<uint> Counters;
+}
+
+[GroupShared] uint[64] KernelTile;
+
+// Every resource kind, a barrier, atomics, wave sums and debug output.
+[Compute(64, 1, 1)]
+public void Kernel([DispatchThreadId] uint3 id, [GroupIndex] uint gi, [Push] in KernelArgs a)
+{
+    KernelTile[gi] = a.In[id.x] * a.P.Value.Scale + a.P.Value.Bias;
+    Barrier.Group();
+    a.Out[id.x] = KernelTile[63 - gi];
+    a.Bytes.Store(id.x * 4, a.Bytes.Load(id.x * 4) + 1);
+    a.Counters.AtomicAdd(0, 1);
+    a.Counters.AtomicMax(1, id.x);
+    a.Counters.AtomicMin(2, id.x + 5);
+    uint total = Wave.Sum(id.x);
+    if (Wave.IsFirstLane) a.Counters.AtomicAdd(3, total);
+    a.Counters.AtomicAdd(4, Wave.LaneIndex < Wave.LaneCount ? 1u : 0u);
+    if (id.x == 0) Debug.Print($"length = {a.Out.Length}");
+}

@@ -67,6 +67,7 @@ compiler/shader/          （包名 marlin-shaderc-*）
   backend_spirv SPIR-V 写出器
   reflect       从 IR 构造反射；反射的数据类型在 runtime 的 `marlin-shader`（`runtime/engine/shader` 的 `reflect` 模块）里（运行时读它，运行时不能依赖 compiler/，2026-10-17 定）
   shaderc       facade marlin-shaderc：Session、target 注册表、EntryRequest
+  core          核心库（`Marlin` 包，0004 §17）的 `.mshader` 源码，用 include_str! 嵌进编译器；`Session::new` 自己加上这个包，所以编译器和核心库永远配套，cook 指纹也覆盖它（2026-10-17 定）
   testgen       只给测试用：随机生成的结构化 IR 程序，以及包住它的 compute 入口（pass 和后端的差分测试共用）
 platforms/<p>/shader/  主机平台的后端（在 cook 平台 cfg 下通过 #[path] 引入）
 ```
@@ -434,6 +435,20 @@ public const ClosureInfo Flatten<M>() where M : IMaterial { ... }
 | 9 | 9a 是 `target`（target 描述、`Backend` 接口、注册表）和 `backend_spirv` 的 compute 部分（SPIR-V 1.6、原生 descriptor heap，0002 §6）；9b 是我们自己的 SPIR-V 验证器；9c 是 `reflect` 和 facade `Session`；9d 是真正的核心库；9e 是第一个 compute shader 在真实 GPU 上跑通，和解释器比较 | 第一个 compute shader 生成的 SPIR-V 通过我们自己的验证器；Vulkan RHI 就绪后在真实 GPU 上跑通 |
 | 10 | 补齐其余 stage、资源、wave、纹理；cook 和 build.rs 接入；随 Vulkan RHI 替换占位 shader | |
 | 11 | 阶段 2–5 的其余 pass、自动微分、调试信息（NonSemantic.Shader.DebugInfo）、其他后端：DXIL（Xbox 等需要 D3D12 的平台）、Metal、主机 | |
+
+第 9d 步的核心库（`compiler/shader/core`）覆盖 compute 用得到的部分：
+- 标量、向量、矩阵和全部短名；
+- 数值接口；数学函数；`Select`、`All`、`Any`；
+- `Uniform`、`Buffer`、`ReadOnlyBuffer`、`ByteBuffer`、`ReadOnlyByteBuffer` 和原子操作，`Func`/`Action`；
+- `Barrier`、`Wave`、`Debug`、`NonUniform`；
+- 编译器认识的所有 attribute，以及 `Capability`。
+
+纹理、采样器、导数、ray query 和 mesh 跟着图形 stage 在第 10 步做。为此前端和后端也补了一些：
+- 类型检查：成员和运算符查找沿接口的继承走；`uint3.One` 这类别名上的静态成员；类型已经确定的参数按隐式转换接收字面量（`b.AtomicAdd(0, 1)`）。
+- 降低：通过类型读的静态属性（`Wave.LaneIndex`、`T.Zero`）；按种类选 op 的 intrinsic；`Uniform.Value` 和字节 buffer 的读写。
+- SPIR-V 后端：uniform 和字节 buffer。
+
+Development 下的 `Debug.Print` 在 SPIR-V 上还写不出来，等调试 buffer 和 RHI 一起做。
 
 第 5c 步留到后面的：`[StructLayout]`/`[FieldOffset]`（0004 §16）；mesh 的 `MeshOutput`、`[Payload]` 和 `Mesh.Dispatch` 的检查（§11.6）；长度由 `const` 字段给出的数组，布局要等第 7 步的编译期求值；capability 和具体 target 的对照、`const if` 的裁剪，等第 9 步的 target 描述。
 

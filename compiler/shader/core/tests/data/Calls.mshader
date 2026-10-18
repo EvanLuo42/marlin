@@ -1,0 +1,51 @@
+namespace Game;
+
+// Numbers.
+public float ClampF(float x) => Clamp(x, -1.0, 1.0);
+public int ClampI(int x) => Clamp(x, -3, 3);
+public int MinI(int a, int b) => Min(a, b);
+public uint MaxU(uint a, uint b) => Max(a, b);
+public float MinF(float a, float b) => Min(a, b);
+public float AbsF(float x) => Abs(x);
+public int AbsI(int x) => Abs(x);
+public float SignF(float x) => Sign(x);
+public int SignI(int x) => Sign(x);
+
+// Floating point.
+public float Sat(float x) => Saturate(x);
+public float3 Sat3(float3 x) => Saturate(x);
+public float Mix(float a, float b, float t) => Lerp(a, b, t);
+public float3 Mix3(float3 a, float3 b, float3 t) => Lerp(a, b, t);
+public float Rounding(float x) => Floor(x) * 1000 + Ceil(x) * 100 + Trunc(x) * 10 + Round(x);
+public float Fraction(float x) => Frac(x);
+public float Roots(float x) => Sqrt(x) + Rsqrt(x) * 10 + Rcp(x) * 100;
+public float Fused(float a, float b, float c) => Fma(a, b, c);
+public float Powers(float x) => Pow(x, 2.5) + Exp(x) + Exp2(x) + Log(x) + Log2(x);
+public float Trig(float x) => Sin(x) + Cos(x) + Tan(x) + Asin(x / 4) + Acos(x / 4) + Atan(x);
+public float Angle(float y, float x) => Atan2(y, x);
+public float Hyperbolic(float x) => Sinh(x) + Cosh(x) + Tanh(x);
+public float Steps(float x) => Smoothstep(0.0, 2.0, x) + Step(1.0, x) * 10;
+public bool Special(float x) => IsNan(x) || IsInf(x);
+public bool3 Special3(float3 x) => IsNan(x);
+
+// Vectors.
+public float DotF(float3 a, float3 b) => Dot(a, b);
+public float3 CrossF(float3 a, float3 b) => Cross(a, b);
+public float Len(float3 v) => Length(v) + Distance(v, float3(1, 0, 0)) * 10;
+public float3 Unit(float3 v) => Normalize(v);
+public float3 Mirror(float3 i, float3 n) => Reflect(i, n);
+public bool Positive(float3 v) => All(v > 0);
+public bool AnyPositive(float3 v) => Any(v > 0);
+public float3 Larger(float3 a, float3 b) => Select(a > b, a, b);
+public float Pick(bool c, float a, float b) => Select(c, a, b);
+
+// Integers.
+public uint Bits(uint x) => CountBits(x) * 1000 + FirstBitHigh(x) * 10 + FirstBitLow(x);
+public uint Reversed(uint x) => ReverseBits(x);
+public int HighSigned(int x) => FirstBitHigh(x);
+
+// Generic code over the interfaces.
+public T Twice<T>(T x) where T : IFloat<T> => x * (T.One + T.One) + T.Zero;
+public float TwiceF(float x) => Twice(x);
+public float3 TwiceV(float3 x) => Twice(x);
+public uint3 Units() => uint3.One + uint3.Zero;

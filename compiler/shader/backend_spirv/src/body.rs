@@ -631,10 +631,32 @@ impl<'w, 'm> Body<'w, 'm> {
                 let index = a(self, 1)?;
                 Some(self.value(rt.unwrap_or(0), op::AccessChain, &[bp, zero, index]))
             }
+            Op::BufferByte => {
+                // A byte buffer is an array of words: the word at `offset / 4`.
+                let (bp, _) = self.buffer_pointer(ops[0])?;
+                let zero = self.w.uint(0);
+                let u32t = self.w.uint_ty(32);
+                let two = self.w.uint(2);
+                let offset = a(self, 1)?;
+                let index = self.value(u32t, op::ShiftRightLogical, &[offset, two]);
+                Some(self.value(rt.unwrap_or(0), op::AccessChain, &[bp, zero, index]))
+            }
+            Op::UniformPtr => {
+                let up = self.uniform_pointer(ops[0])?;
+                let zero = self.w.uint(0);
+                Some(self.value(rt.unwrap_or(0), op::AccessChain, &[up, zero]))
+            }
             Op::BufferLength => {
                 let (bp, _) = self.buffer_pointer(ops[0])?;
                 let u32t = self.w.uint_ty(32);
-                Some(self.value(u32t, op::ArrayLength, &[bp, 0]))
+                let n = self.value(u32t, op::ArrayLength, &[bp, 0]);
+                // A byte buffer's length is in bytes.
+                Some(if self.is_byte_buffer(ops[0]) {
+                    let four = self.w.uint(4);
+                    self.value(u32t, op::IMul, &[n, four])
+                } else {
+                    n
+                })
             }
             Op::Atomic {
                 op: aop,
@@ -914,23 +936,54 @@ impl<'w, 'm> Body<'w, 'm> {
         }
     }
 
-    /// The pointer to a buffer's block from its handle, and whether it is read-only.
-    fn buffer_pointer(&mut self, h: Value) -> R<(u32, bool)> {
+    fn is_byte_buffer(&self, h: Value) -> bool {
+        use marlin_shaderc_ir::ResourceKind::{ByteBuffer, ReadOnlyByteBuffer};
+        matches!(
+            self.w.m.data(self.f.ty(h)),
+            TypeData::Handle(k) if matches!(k.kind, ByteBuffer | ReadOnlyByteBuffer)
+        )
+    }
+
+    /// The pointer to a uniform's block from its handle.
+    fn uniform_pointer(&mut self, h: Value) -> R<u32> {
         let TypeData::Handle(kind) = self.w.m.data(self.f.ty(h)).clone() else {
-            return unsupported("a buffer access through something that is not a handle");
+            return unsupported("a uniform access through something that is not a handle");
         };
         let element = kind
             .element
             .ok_or_else(|| marlin_shaderc_target::BackendError {
-                message: "a buffer without an element type".into(),
+                message: "a uniform without a type".into(),
             })?;
-        let block = self.w.buffer_block(element)?;
+        let inner = self.w.ty(element, true)?;
+        let block = self.w.block("uniform", inner);
+        let ptr = self.w.ptr_ty(crate::spirv::storage_class::Uniform, block);
+        let handle = self.val(h)?;
+        Ok(self.value(ptr, op::BufferPointerEXT, &[handle]))
+    }
+
+    /// The pointer to a buffer's block from its handle, and whether it is read-only. A byte
+    /// buffer's block holds words.
+    fn buffer_pointer(&mut self, h: Value) -> R<(u32, bool)> {
+        use marlin_shaderc_ir::ResourceKind::{ReadOnlyBuffer, ReadOnlyByteBuffer};
+        let TypeData::Handle(kind) = self.w.m.data(self.f.ty(h)).clone() else {
+            return unsupported("a buffer access through something that is not a handle");
+        };
+        let block = if self.is_byte_buffer(h) {
+            self.w.word_block()
+        } else {
+            let element = kind
+                .element
+                .ok_or_else(|| marlin_shaderc_target::BackendError {
+                    message: "a buffer without an element type".into(),
+                })?;
+            self.w.buffer_block(element)?
+        };
         let ptr = self
             .w
             .ptr_ty(crate::spirv::storage_class::StorageBuffer, block);
         let handle = self.val(h)?;
         let bp = self.value(ptr, op::BufferPointerEXT, &[handle]);
-        let readonly = kind.kind == marlin_shaderc_ir::ResourceKind::ReadOnlyBuffer;
+        let readonly = matches!(kind.kind, ReadOnlyBuffer | ReadOnlyByteBuffer);
         if readonly {
             self.w
                 .decorate(bp, crate::spirv::decoration::NonWritable, &[]);

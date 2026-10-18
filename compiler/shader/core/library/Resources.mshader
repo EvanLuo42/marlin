@@ -1,0 +1,73 @@
+// Resources (0004 §10): each value is a 32-bit bindless index, which may go in structs, push
+// constants and buffers. Names follow C#'s Span and ReadOnlySpan: no prefix writes, the
+// `ReadOnly` prefix reads.
+namespace Marlin;
+
+/// A uniform block of one `T`.
+[Builtin("uniform")]
+public readonly struct Uniform<T>
+{
+    [Intrinsic("uniform.value")] public T Value { get; }
+}
+
+/// A structured buffer of `T`. Its elements are variables, as an array's are: `b[i].Pos.y +=
+/// dt` writes that one component (0004 §10.4).
+[Builtin("buffer")]
+public readonly struct Buffer<T>
+{
+    [Intrinsic("buffer.elem")] public T this[uint i] { get; set; }
+    [Intrinsic("buffer.length")] public uint Length { get; }
+
+    // Atomics on element `i`, giving the value before (0004 §12.2).
+    [Intrinsic("atomic.add")] public T AtomicAdd(uint i, T v);
+    [Intrinsic("atomic.sub")] public T AtomicSub(uint i, T v);
+    [Intrinsic("atomic.and")] public T AtomicAnd(uint i, T v);
+    [Intrinsic("atomic.or")] public T AtomicOr(uint i, T v);
+    [Intrinsic("atomic.xor")] public T AtomicXor(uint i, T v);
+    [Intrinsic("atomic.min")] public T AtomicMin(uint i, T v);
+    [Intrinsic("atomic.max")] public T AtomicMax(uint i, T v);
+    [Intrinsic("atomic.xchg")] public T AtomicExchange(uint i, T v);
+    /// Writes `v` if the element is `compare`.
+    [Intrinsic("atomic.cmpxchg")] public T AtomicCompareExchange(uint i, T compare, T v);
+}
+
+/// A structured buffer of `T`, read only.
+[Builtin("readonly_buffer")]
+public readonly struct ReadOnlyBuffer<T>
+{
+    [Intrinsic("buffer.elem")] public T this[uint i] { get; }
+    [Intrinsic("buffer.length")] public uint Length { get; }
+}
+
+/// A buffer of 32-bit words, addressed in bytes (multiples of 4).
+[Builtin("byte_buffer")]
+public readonly struct ByteBuffer
+{
+    [Intrinsic("byte.load")] public uint Load(uint offset);
+    [Intrinsic("byte.store")] public void Store(uint offset, uint value);
+    /// In bytes.
+    [Intrinsic("buffer.length")] public uint Length { get; }
+}
+
+/// A buffer of 32-bit words, addressed in bytes (multiples of 4), read only.
+[Builtin("readonly_byte_buffer")]
+public readonly struct ReadOnlyByteBuffer
+{
+    [Intrinsic("byte.load")] public uint Load(uint offset);
+    /// In bytes.
+    [Intrinsic("buffer.length")] public uint Length { get; }
+}
+
+// Parameter types that take a lambda, a local function or a method group (0004 §9.2).
+
+[Builtin("func")] public struct Func<TResult> { }
+[Builtin("func")] public struct Func<T1, TResult> { }
+[Builtin("func")] public struct Func<T1, T2, TResult> { }
+[Builtin("func")] public struct Func<T1, T2, T3, TResult> { }
+[Builtin("func")] public struct Func<T1, T2, T3, T4, TResult> { }
+
+[Builtin("action")] public struct Action { }
+[Builtin("action")] public struct Action<T1> { }
+[Builtin("action")] public struct Action<T1, T2> { }
+[Builtin("action")] public struct Action<T1, T2, T3> { }
+[Builtin("action")] public struct Action<T1, T2, T3, T4> { }

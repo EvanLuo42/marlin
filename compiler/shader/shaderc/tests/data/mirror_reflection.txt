@@ -95,7 +95,37 @@ ShaderReflection {
     sources: [
         SourceHash {
             package: "Marlin",
-            path: "Core.mshader",
+            path: "Attributes.mshader",
+            hash: 0,
+        },
+        SourceHash {
+            package: "Marlin",
+            path: "Gpu.mshader",
+            hash: 0,
+        },
+        SourceHash {
+            package: "Marlin",
+            path: "Math.mshader",
+            hash: 0,
+        },
+        SourceHash {
+            package: "Marlin",
+            path: "Resources.mshader",
+            hash: 0,
+        },
+        SourceHash {
+            package: "Marlin",
+            path: "Scalars.mshader",
+            hash: 0,
+        },
+        SourceHash {
+            package: "Marlin",
+            path: "Vectors.mshader",
+            hash: 0,
+        },
+        SourceHash {
+            package: "Game",
+            path: "Kernel.mshader",
             hash: 0,
         },
         SourceHash {

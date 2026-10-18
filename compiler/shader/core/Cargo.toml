@@ -1,0 +1,22 @@
+[package]
+name = "marlin-shaderc-core"
+description = "Marlin shader compiler: the core library (package `Marlin`: built-in types, math, resources, wave and barrier functions, attributes) as Marlin shader source, embedded in the compiler."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+marlin-front-hir-def.workspace = true
+marlin-lang-diag.workspace = true
+marlin-lang-query.workspace = true
+marlin-lang-span.workspace = true
+marlin-shaderc-hir-ty.workspace = true
+marlin-shaderc-ir.workspace = true
+marlin-shaderc-lower.workspace = true
+marlin-shaderc-opt.workspace = true
+marlin-test-support.workspace = true
+
+[lints]
+workspace = true

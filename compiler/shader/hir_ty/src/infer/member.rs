@@ -97,18 +97,15 @@ impl InferCtx<'_, '_> {
             return Ok(Member::Length);
         }
 
-        // The declarations whose members apply: the type itself, or a parameter's bounds.
+        // The declarations whose members apply: the type itself, or a parameter's bounds and
+        // the interfaces they extend.
         let mut owners: Vec<(ItemId, Subst)> = Vec::new();
         match ty {
             Ty::Adt { item, args } => owners.push((*item, Subst::new().with_args(*item, args))),
             Ty::Param { owner, index } => {
                 let types = self.cx.get::<ItemTypesQuery>(owner)?;
                 if let Some(param) = types.generics.get(*index as usize) {
-                    for bound in &param.bounds {
-                        if let Ty::Adt { item, args } = bound {
-                            owners.push((*item, Subst::new().with_args(*item, args)));
-                        }
-                    }
+                    owners = crate::item::bound_interfaces(self.cx, &param.bounds)?;
                 }
             }
             _ => {}

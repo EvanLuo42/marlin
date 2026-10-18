@@ -421,3 +421,25 @@ pub fn normalize_assoc(cx: &Cx<'_>, ty: &Ty) -> Result<Ty, Cancelled> {
         _ => ty.clone(),
     })
 }
+
+/// The interfaces `bounds` name and every interface they extend, through their bases, each
+/// once with its arguments: where the members of a type parameter come from.
+pub(crate) fn bound_interfaces(
+    cx: &Cx<'_>,
+    bounds: &[Ty],
+) -> Result<Vec<(ItemId, crate::Subst)>, Cancelled> {
+    let mut out: Vec<(ItemId, crate::Subst)> = Vec::new();
+    let mut seen: HashSet<Ty> = HashSet::new();
+    let mut work: Vec<Ty> = bounds.iter().rev().cloned().collect();
+    while let Some(t) = work.pop() {
+        let Ty::Adt { item, args } = &t else { continue };
+        if !seen.insert(t.clone()) {
+            continue;
+        }
+        let subst = crate::Subst::new().with_args(*item, args);
+        let types = cx.get::<ItemTypesQuery>(item)?;
+        work.extend(types.bases.iter().rev().map(|b| subst.ty(b)));
+        out.push((*item, subst));
+    }
+    Ok(out)
+}

@@ -45,6 +45,12 @@
 //! constants ([`Lowering::exports`]) and the static parameters used
 //! ([`Lowering::static_params`]) are kept for the reflection.
 //!
+//! Step 9d, for the core library: static properties read through a type (`Wave.LaneIndex`,
+//! and an interface's `T.Zero` as the concrete type's member, also on built-in types);
+//! intrinsics that pick their operation by the operand's kind (`min` is `fmin`, `smin` or
+//! `umin`; E1309 when a kind has none); `const.zero`/`const.one`; `Uniform.Value` and byte
+//! buffers' `Load`/`Store`.
+//!
 //! Not lowered yet: vertex, pixel, mesh and amplification entries and their stage I/O (step
 //! 10); auto-properties.
 

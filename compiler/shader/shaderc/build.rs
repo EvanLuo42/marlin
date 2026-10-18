@@ -1,6 +1,7 @@
 //! The compiler's own source hash, for the cook fingerprint (0005 §8): xxh3-128 over every
-//! `Cargo.toml` and `src/` file of the crates under `compiler/`, by their paths relative to
-//! it, with line endings made `\n`. Any change to the compiler's code changes it.
+//! `Cargo.toml`, Rust file and `.mshader` file (the core library) of the crates under
+//! `compiler/`, outside their tests, by their paths relative to it, with line endings made
+//! `\n`. Any change to the compiler's code or its core library changes it.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -40,7 +41,7 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>) {
             if !matches!(name.as_str(), "tests" | "target" | "benches") {
                 walk(root, &path, out);
             }
-        } else if name == "Cargo.toml" || name.ends_with(".rs") {
+        } else if name == "Cargo.toml" || name.ends_with(".rs") || name.ends_with(".mshader") {
             let rel = path.strip_prefix(root).unwrap();
             let rel = rel.to_string_lossy().replace('\\', "/");
             out.push((rel, path));

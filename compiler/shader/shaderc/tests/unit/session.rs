@@ -16,7 +16,7 @@ struct Memory {
 impl Memory {
     fn new() -> Memory {
         let mut files = BTreeMap::new();
-        for package in ["Marlin", "Game"] {
+        for package in ["Game"] {
             let dir = data_path(env!("CARGO_MANIFEST_DIR"), package);
             let mut names: Vec<String> = std::fs::read_dir(dir)
                 .unwrap()
@@ -73,11 +73,6 @@ impl SourceProvider for Memory {
 fn session<'a>(sources: &'a Memory, targets: &'a marlin_shaderc::Registry) -> Session<'a> {
     let mut s = Session::new(SessionDesc { sources, targets });
     s.add_package(&PackageDesc {
-        name: "Marlin",
-        dependencies: &[],
-    })
-    .unwrap();
-    s.add_package(&PackageDesc {
         name: "Game",
         dependencies: &["Marlin"],
     })
@@ -120,15 +115,21 @@ fn an_entry_compiles_to_spirv_with_its_reflection() {
     assert_eq!(r.stats.groupshared_bytes, 256);
     assert_eq!(r.stats.code_bytes as usize, out.code.bytes.len());
     assert!(r.stats.instructions > 0);
+    // The core library's files, then the package's.
+    let core: Vec<SourcePath> = marlin_shaderc_core::FILES
+        .iter()
+        .map(|(p, _)| SourcePath::new("Marlin", *p))
+        .collect();
+    assert_eq!(out.used_sources[..core.len()], core[..]);
     assert_eq!(
-        out.used_sources,
+        out.used_sources[core.len()..],
         [
-            SourcePath::new("Marlin", "Core.mshader"),
+            SourcePath::new("Game", "Kernel.mshader"),
             SourcePath::new("Game", "Main.mshader"),
             SourcePath::new("Game", "Wide.mshader"),
         ]
     );
-    // The whole reflection, but for what changes with the stand-in core library's text.
+    // The whole reflection, but for what changes with the core library's text.
     let mut shown = r.clone();
     for source in &mut shown.sources {
         source.hash = 0;
@@ -279,22 +280,33 @@ fn packages_come_after_their_dependencies() {
     let e = s
         .add_package(&PackageDesc {
             name: "Game",
-            dependencies: &["Marlin"],
+            dependencies: &["Marlin", "Game.Shared"],
         })
         .unwrap_err();
     assert!(e.message.contains("add it first"), "{e}");
-    s.add_package(&PackageDesc {
-        name: "Marlin",
-        dependencies: &[],
-    })
-    .unwrap();
-    let again = s
+    let core = s
         .add_package(&PackageDesc {
             name: "Marlin",
             dependencies: &[],
         })
         .unwrap_err();
+    assert!(core.message.contains("core library"), "{core}");
+    s.add_package(&PackageDesc {
+        name: "Game",
+        dependencies: &["Marlin"],
+    })
+    .unwrap();
+    let again = s
+        .add_package(&PackageDesc {
+            name: "Game",
+            dependencies: &["Marlin"],
+        })
+        .unwrap_err();
     assert!(again.message.contains("already"), "{again}");
+    let reload = s
+        .invalidate(&SourcePath::new("Marlin", "Math.mshader"))
+        .unwrap_err();
+    assert!(reload.message.contains("core library"), "{reload}");
 }
 
 #[test]
@@ -324,4 +336,41 @@ fn sessions_are_shared_across_threads() {
             assert_eq!(h.join().unwrap(), one);
         }
     });
+}
+
+/// Khronos' spirv-val on `bytes`, when `MARLIN_SPIRV_VAL` names it (0014 §6.1).
+fn external_check(bytes: &[u8], what: &str) {
+    let Ok(tool) = std::env::var("MARLIN_SPIRV_VAL") else {
+        return;
+    };
+    let dir = std::env::temp_dir().join(format!("marlin-shaderc-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(format!("{what}.spv"));
+    std::fs::write(&path, bytes).unwrap();
+    let out = std::process::Command::new(tool)
+        .args(["--target-env", "vulkan1.3", "--scalar-block-layout"])
+        .arg(&path)
+        .output()
+        .expect("runs spirv-val");
+    let _ = std::fs::remove_file(&path);
+    assert!(
+        out.status.success(),
+        "{what}: spirv-val: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn the_core_library_compiles_for_vulkan() {
+    let (sources, targets) = (Memory::new(), default_targets());
+    let s = session(&sources, &targets);
+    // Shipping: `Debug.Print` is not written for SPIR-V until the debug buffer exists.
+    for entry in ["Game.Mirror", "Game.Kernel"] {
+        let mut req = request(entry, &[]);
+        req.profile = Profile::Shipping;
+        let out = s
+            .compile(&req)
+            .unwrap_or_else(|e| panic!("{entry}: {}", errors(&s, &e)));
+        external_check(&out.code.bytes, entry);
+    }
 }

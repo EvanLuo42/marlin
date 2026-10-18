@@ -476,7 +476,18 @@ impl InferCtx<'_, '_> {
                     let value = self.result.paths.remove(e);
                     (ty, value, false, resolved)
                 }
-                Resolution::Type(item) => (Ty::adt(item), None, true, resolved),
+                Resolution::Type(item) => {
+                    // `uint3.One`: an alias stands for its target.
+                    let tree = self.cx.get::<ItemTreeQuery>(&item.file)?;
+                    let ty = match tree.items[item.local].kind {
+                        ItemKind::TypeAlias => self
+                            .cx
+                            .get::<crate::item::AliasTargetQuery>(&item)?
+                            .unwrap_or_else(|| Ty::adt(item)),
+                        _ => Ty::adt(item),
+                    };
+                    (ty, None, true, resolved)
+                }
                 Resolution::TypeParam { owner, index } => {
                     (Ty::Param { owner, index }, None, true, resolved)
                 }
@@ -496,6 +507,9 @@ impl InferCtx<'_, '_> {
             if statics {
                 // `Type.Member`: the first static step starts the value.
                 if let Some(Step::Field(item) | Step::Property(item)) = &step {
+                    // The type it is read through, for an interface's static property
+                    // (`T.Zero`) to be the concrete type's.
+                    self.result.receivers.insert(e, ty.clone());
                     value = Some(ValuePath {
                         root: Root::Item(*item),
                         steps: vec![],

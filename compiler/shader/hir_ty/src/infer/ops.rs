@@ -104,10 +104,10 @@ impl InferCtx<'_, '_> {
                 Ty::Param { owner, index } => {
                     let types = self.cx.get::<ItemTypesQuery>(owner)?;
                     if let Some(param) = types.generics.get(*index as usize) {
-                        for bound in &param.bounds {
-                            if let Ty::Adt { item, args } = bound {
-                                search(*item, Subst::new().with_args(*item, args), &mut found)?;
-                            }
+                        // The bounds and the interfaces they extend.
+                        for (item, subst) in crate::item::bound_interfaces(self.cx, &param.bounds)?
+                        {
+                            search(item, subst, &mut found)?;
                         }
                     }
                 }

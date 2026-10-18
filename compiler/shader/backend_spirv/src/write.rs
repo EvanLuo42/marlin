@@ -385,6 +385,23 @@ impl<'m> Writer<'m> {
         id
     }
 
+    /// A byte buffer: a Block holding a runtime array of 32-bit words.
+    pub fn word_block(&mut self) -> u32 {
+        let e = self.uint_ty(32);
+        let key = Key::Words("rta", vec![e]);
+        let rta = match self.types.get(&key) {
+            Some(&id) => id,
+            None => {
+                let id = self.id();
+                self.globals.extend(inst(op::TypeRuntimeArray, &[id, e]));
+                self.decorate(id, decoration::ArrayStride, &[4]);
+                self.types.insert(key, id);
+                id
+            }
+        };
+        self.block("buffer", rta)
+    }
+
     /// A buffer of `element`s: a Block holding a runtime array, laid out.
     pub fn buffer_block(&mut self, element: Type) -> R<u32> {
         let e = self.ty(element, true)?;
@@ -569,7 +586,10 @@ impl<'m> Writer<'m> {
     /// The heap seen as an array of `kind` descriptors.
     pub fn heap_array(&mut self, kind: &ResKind) -> R<u32> {
         let class = match kind.kind {
-            ResourceKind::Buffer | ResourceKind::ReadOnlyBuffer => sc::StorageBuffer,
+            ResourceKind::Buffer
+            | ResourceKind::ReadOnlyBuffer
+            | ResourceKind::ByteBuffer
+            | ResourceKind::ReadOnlyByteBuffer => sc::StorageBuffer,
             ResourceKind::Uniform => sc::Uniform,
             other => return unsupported(format!("a `{other:?}` resource")),
         };

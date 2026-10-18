@@ -1,0 +1,116 @@
+// The numeric interfaces (0004 §8.6) and the scalar types (§3.1, §17.1). The compiler
+// implements the scalars' layout and operators; the keywords `bool`, `short`, `ushort`, `int`,
+// `uint`, `long`, `ulong`, `half`, `float` and `double` name these types.
+namespace Marlin;
+
+/// Attribute arguments only (0004 §17.1).
+[Builtin("string")] public struct String { }
+
+/// A scalar type: `bool` or a number.
+public interface IScalar<T> where T : IScalar<T> { }
+
+/// `+ - *`, negation, and the values 0 and 1. Scalars and vectors implement it, vectors per
+/// component.
+public interface IArithmetic<T> where T : IArithmetic<T>
+{
+    static abstract T operator +(T a, T b);
+    static abstract T operator -(T a, T b);
+    static abstract T operator *(T a, T b);
+    static abstract T operator -(T a);
+    static abstract T Zero { get; }
+    static abstract T One { get; }
+}
+
+/// Integers: division, remainder and the bitwise operators on top of arithmetic.
+public interface IInteger<T> : IArithmetic<T> where T : IInteger<T>
+{
+    static abstract T operator /(T a, T b);
+    static abstract T operator %(T a, T b);
+    static abstract T operator &(T a, T b);
+    static abstract T operator |(T a, T b);
+    static abstract T operator ^(T a, T b);
+    static abstract T operator ~(T a);
+}
+
+/// Floating point: division on top of arithmetic; the functions of `Math.mshader` (`Sqrt`,
+/// `Exp`, `Sin`, ...) take any `IFloat`.
+public interface IFloat<T> : IArithmetic<T> where T : IFloat<T>
+{
+    static abstract T operator /(T a, T b);
+}
+
+/// Ordered values: `Min` and `Max` take any `IComparable`. (A vector's comparison operators
+/// give a `bool` vector, so generic code compares scalars.)
+public interface IComparable<T> where T : IComparable<T>
+{
+    static abstract bool operator <(T a, T b);
+    static abstract bool operator <=(T a, T b);
+    static abstract bool operator >(T a, T b);
+    static abstract bool operator >=(T a, T b);
+}
+
+[Builtin("bool")]
+public struct Bool : IScalar<Bool> { }
+
+[Builtin("i16")]
+public struct Short : IScalar<Short>, IInteger<Short>, IComparable<Short>
+{
+    [Intrinsic("const.zero")] public static Short Zero { get; }
+    [Intrinsic("const.one")] public static Short One { get; }
+}
+
+[Builtin("u16")]
+public struct UShort : IScalar<UShort>, IInteger<UShort>, IComparable<UShort>
+{
+    [Intrinsic("const.zero")] public static UShort Zero { get; }
+    [Intrinsic("const.one")] public static UShort One { get; }
+}
+
+[Builtin("i32")]
+public struct Int : IScalar<Int>, IInteger<Int>, IComparable<Int>
+{
+    [Intrinsic("const.zero")] public static Int Zero { get; }
+    [Intrinsic("const.one")] public static Int One { get; }
+}
+
+[Builtin("u32")]
+public struct UInt : IScalar<UInt>, IInteger<UInt>, IComparable<UInt>
+{
+    [Intrinsic("const.zero")] public static UInt Zero { get; }
+    [Intrinsic("const.one")] public static UInt One { get; }
+}
+
+[Builtin("i64")]
+public struct Long : IScalar<Long>, IInteger<Long>, IComparable<Long>
+{
+    [Intrinsic("const.zero")] public static Long Zero { get; }
+    [Intrinsic("const.one")] public static Long One { get; }
+}
+
+[Builtin("u64")]
+public struct ULong : IScalar<ULong>, IInteger<ULong>, IComparable<ULong>
+{
+    [Intrinsic("const.zero")] public static ULong Zero { get; }
+    [Intrinsic("const.one")] public static ULong One { get; }
+}
+
+[Builtin("f16")]
+public struct Half : IScalar<Half>, IFloat<Half>, IComparable<Half>
+{
+    [Intrinsic("const.zero")] public static Half Zero { get; }
+    [Intrinsic("const.one")] public static Half One { get; }
+}
+
+[Builtin("f32")]
+public struct Float : IScalar<Float>, IFloat<Float>, IComparable<Float>
+{
+    [Intrinsic("const.zero")] public static Float Zero { get; }
+    [Intrinsic("const.one")] public static Float One { get; }
+}
+
+[Builtin("f64")]
+public struct Double : IScalar<Double>, IFloat<Double>, IComparable<Double>
+{
+    [Intrinsic("const.zero")] public static Double Zero { get; }
+    [Intrinsic("const.one")] public static Double One { get; }
+}

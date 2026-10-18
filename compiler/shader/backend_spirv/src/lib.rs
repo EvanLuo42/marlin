@@ -12,6 +12,9 @@
 //! - What SPIR-V leaves undefined is made defined, as the IR has it: shift counts are taken
 //!   modulo the width, float-to-integer conversions saturate (NaN to 0).
 //!
+//! Step 9d: uniforms (a `Uniform` block reached through `OpBufferPointerEXT`) and byte
+//! buffers (blocks of 32-bit words, addressed by byte offset / 4; their length in bytes).
+//!
 //! Step 9b, the validator ([`validate`], also [`Backend::validate`]): our own check of the
 //! SPIR-V rules the code above relies on, with no outside tools (0005 §4.6).
 //!

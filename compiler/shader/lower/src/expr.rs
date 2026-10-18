@@ -350,6 +350,7 @@ impl FnCx<'_, '_, '_> {
                 let (p, ty) = self.shared_root(*item, e)?;
                 (self.op(Op::Load { aligned: None }, vec![p], None)?, ty)
             }
+            Root::Item(item) if self.is_property(*item)? => self.static_property(*item, e)?,
             Root::Item(item) => {
                 let tree = self.l.cx.get::<ItemTreeQuery>(&item.file)?;
                 let data = &tree.items[item.local];
@@ -1485,6 +1486,8 @@ impl FnCx<'_, '_, '_> {
         args: &[Arg],
     ) -> R<Option<Value>> {
         let _ = subst;
+        let picked = self.by_kind(name, args)?;
+        let name = picked.unwrap_or(name);
         // `Debug.Print($"...")`: the format goes to the module's table.
         if name == "debug.print"
             && let [arg] = args
@@ -1513,6 +1516,14 @@ impl FnCx<'_, '_, '_> {
             }
             return self.atomic(e, op, receiver, operands);
         }
+        // `T.Zero` and `T.One` of scalars and vectors: a constant of the call's type.
+        if name == "const.zero" || name == "const.one" {
+            let ty = self.concrete(&self.infer.type_of(e));
+            let t = self.l.ty(&ty)?;
+            let c = self.unit_const(t, name == "const.one", e)?;
+            let ct = self.l.module.consts[c].ty;
+            return Ok(Some(self.f.const_value(c, ct)));
+        }
         if name == "buffer.length" {
             let b = match receiver {
                 Some(Receiver::Place(p)) => self.read_path(&p, e)?,
@@ -1527,6 +1538,48 @@ impl FnCx<'_, '_, '_> {
             };
             let h = self.op(Op::DescGet { nonuniform: false }, vec![b], None)?;
             return self.op(Op::BufferLength, vec![h], None).map(Some);
+        }
+        // `u.Value`, `bytes.Load(offset)`, `bytes.Store(offset, v)`: through a pointer into
+        // the resource.
+        if matches!(name, "uniform.value" | "byte.load" | "byte.store") {
+            let r = match receiver {
+                Some(Receiver::Place(p)) => self.read_path(&p, e)?,
+                Some(Receiver::Value(v)) => v,
+                None => {
+                    return Err(self.error(
+                        "E1305",
+                        "a resource access without a resource",
+                        Self::loc(e),
+                    ));
+                }
+            };
+            let h = self.op(Op::DescGet { nonuniform: false }, vec![r], None)?;
+            let p = if name == "uniform.value" {
+                self.op(Op::UniformPtr, vec![h], None)?
+            } else {
+                let offset = match args.first() {
+                    Some(a) => self.value(a.expr)?,
+                    None => {
+                        return Err(self.error(
+                            "E1305",
+                            "a byte access without an offset",
+                            Self::loc(e),
+                        ));
+                    }
+                };
+                self.op(Op::BufferByte, vec![h, offset], None)?
+            };
+            if name == "byte.store" {
+                let v = match args.get(1) {
+                    Some(a) => self.value(a.expr)?,
+                    None => {
+                        return Err(self.error("E1305", "a store without a value", Self::loc(e)));
+                    }
+                };
+                self.emit(Op::Store { aligned: None }, vec![p, v], None)?;
+                return Ok(None);
+            }
+            return self.op(Op::Load { aligned: None }, vec![p], None).map(Some);
         }
         let mut operands = Vec::new();
         if let Some(r) = receiver {
@@ -1605,5 +1658,132 @@ impl FnCx<'_, '_, '_> {
         let t = self.l.ty(&v.ty)?;
         let c = self.l.val_const(&v.val, t)?;
         Ok(self.f.const_value(c, self.l.module.consts[c].ty))
+    }
+}
+
+/// Intrinsic names that pick the operation by the kind of their operand (floats, signed or
+/// unsigned integers), so one generic declaration covers every scalar and vector type:
+/// `min` is `fmin`, `smin` or `umin` (0004 §17.2). `None` where a kind has no operation.
+const BY_KIND: &[(&str, [Option<&str>; 3])] = &[
+    ("min", [Some("fmin"), Some("smin"), Some("umin")]),
+    ("max", [Some("fmax"), Some("smax"), Some("umax")]),
+    (
+        "firstbit_hi",
+        [None, Some("firstbit_hi.s"), Some("firstbit_hi.u")],
+    ),
+    (
+        "bitfield_extract",
+        [None, Some("bitfield_extract.s"), Some("bitfield_extract.u")],
+    ),
+    (
+        "atomic.min",
+        [None, Some("atomic.smin"), Some("atomic.umin")],
+    ),
+    (
+        "atomic.max",
+        [None, Some("atomic.smax"), Some("atomic.umax")],
+    ),
+    (
+        "wave.reduce.sum",
+        [
+            Some("wave.reduce.fadd"),
+            Some("wave.reduce.add"),
+            Some("wave.reduce.add"),
+        ],
+    ),
+    (
+        "wave.reduce.product",
+        [
+            Some("wave.reduce.fmul"),
+            Some("wave.reduce.mul"),
+            Some("wave.reduce.mul"),
+        ],
+    ),
+    (
+        "wave.reduce.min",
+        [
+            Some("wave.reduce.fmin"),
+            Some("wave.reduce.smin"),
+            Some("wave.reduce.umin"),
+        ],
+    ),
+    (
+        "wave.reduce.max",
+        [
+            Some("wave.reduce.fmax"),
+            Some("wave.reduce.smax"),
+            Some("wave.reduce.umax"),
+        ],
+    ),
+    (
+        "wave.scan.sum.exclusive",
+        [
+            Some("wave.scan.fadd.exclusive"),
+            Some("wave.scan.add.exclusive"),
+            Some("wave.scan.add.exclusive"),
+        ],
+    ),
+    (
+        "wave.scan.sum.inclusive",
+        [
+            Some("wave.scan.fadd.inclusive"),
+            Some("wave.scan.add.inclusive"),
+            Some("wave.scan.add.inclusive"),
+        ],
+    ),
+];
+
+impl FnCx<'_, '_, '_> {
+    /// The operation an intrinsic that picks by kind stands for here, from the type of its
+    /// value operand (the last argument of an atomic, the first of anything else).
+    fn by_kind(&mut self, name: &str, args: &[Arg]) -> R<Option<&'static str>> {
+        let Some((_, ops)) = BY_KIND.iter().find(|(n, _)| *n == name) else {
+            return Ok(None);
+        };
+        let arg = if name.starts_with("atomic.") {
+            args.last()
+        } else {
+            args.first()
+        };
+        let Some(arg) = arg else { return Ok(None) };
+        let ty = self.concrete(&self.infer.type_of(arg.expr));
+        let kind = match self.l.num(&ty)? {
+            Some(Num::Float(_)) => 0,
+            Some(Num::Signed(_)) => 1,
+            Some(Num::Unsigned(_)) => 2,
+            _ => 3,
+        };
+        match ops.get(kind).copied().flatten() {
+            Some(op) => Ok(Some(op)),
+            None => Err(self.error(
+                "E1309",
+                format!("`{name}` has no operation for `{}`", self.l.show(&ty)),
+                Self::loc(arg.expr),
+            )),
+        }
+    }
+}
+
+impl FnCx<'_, '_, '_> {
+    /// 0 or 1 of a scalar or vector type (every component).
+    fn unit_const(&mut self, t: Type, one: bool, e: ExprId) -> R<marlin_shaderc_ir::Const> {
+        Ok(match self.l.module.data(t).clone() {
+            TypeData::Scalar(s) if s.is_float() => self.l.module.float(t, one as u8 as f64),
+            TypeData::Scalar(_) => self.l.module.int(t, one as i64),
+            TypeData::Vector(s, n) => {
+                let e_ty = self.l.module.scalar(s);
+                let part = self.unit_const(e_ty, one, e)?;
+                self.l
+                    .module
+                    .constant(t, ConstValue::Composite(vec![part; n as usize]))
+            }
+            _ => {
+                return Err(self.error(
+                    "E1309",
+                    "`Zero` and `One` are of scalars and vectors",
+                    Self::loc(e),
+                ));
+            }
+        })
     }
 }

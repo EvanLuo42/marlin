@@ -1,0 +1,112 @@
+// Vectors and matrices (0004 §3.2, §9.4, §9.5) and their short names. The compiler implements
+// their layout, operators (per component, but for the matrix product), constructors and
+// swizzles.
+namespace Marlin;
+
+/// `N` components of `T`, 2 to 4. Arithmetic, comparison and conversion work per component;
+/// comparisons give a `bool` vector.
+[Builtin("vector")]
+public struct Vector<T, const int N>
+    : IArithmetic<Vector<T, N>>, IInteger<Vector<T, N>>, IFloat<Vector<T, N>>
+    where T : IScalar<T>
+{
+    [Intrinsic("const.zero")] public static Vector<T, N> Zero { get; }
+    [Intrinsic("const.one")] public static Vector<T, N> One { get; }
+}
+
+/// `R` rows by `C` columns of `T`, stored by column (0002 §4). `*` of two matrices, or of a
+/// matrix and a column vector, is the linear-algebra product; `m[r, c]` is one element.
+[Builtin("matrix")]
+public struct Matrix<T, const int R, const int C> where T : IScalar<T> { }
+
+// The short names: `{scalar}{N}` and `{scalar}{R}x{C}` (0004 §3.2).
+
+public type bool2 = Vector<bool, 2>;
+public type bool3 = Vector<bool, 3>;
+public type bool4 = Vector<bool, 4>;
+
+public type short2 = Vector<short, 2>;
+public type short3 = Vector<short, 3>;
+public type short4 = Vector<short, 4>;
+
+public type ushort2 = Vector<ushort, 2>;
+public type ushort3 = Vector<ushort, 3>;
+public type ushort4 = Vector<ushort, 4>;
+
+public type int2 = Vector<int, 2>;
+public type int3 = Vector<int, 3>;
+public type int4 = Vector<int, 4>;
+
+public type uint2 = Vector<uint, 2>;
+public type uint3 = Vector<uint, 3>;
+public type uint4 = Vector<uint, 4>;
+
+public type long2 = Vector<long, 2>;
+public type long3 = Vector<long, 3>;
+public type long4 = Vector<long, 4>;
+
+public type ulong2 = Vector<ulong, 2>;
+public type ulong3 = Vector<ulong, 3>;
+public type ulong4 = Vector<ulong, 4>;
+
+public type half2 = Vector<half, 2>;
+public type half3 = Vector<half, 3>;
+public type half4 = Vector<half, 4>;
+
+public type float2 = Vector<float, 2>;
+public type float3 = Vector<float, 3>;
+public type float4 = Vector<float, 4>;
+
+public type double2 = Vector<double, 2>;
+public type double3 = Vector<double, 3>;
+public type double4 = Vector<double, 4>;
+
+public type half2x2 = Matrix<half, 2, 2>;
+public type half2x3 = Matrix<half, 2, 3>;
+public type half2x4 = Matrix<half, 2, 4>;
+public type half3x2 = Matrix<half, 3, 2>;
+public type half3x3 = Matrix<half, 3, 3>;
+public type half3x4 = Matrix<half, 3, 4>;
+public type half4x2 = Matrix<half, 4, 2>;
+public type half4x3 = Matrix<half, 4, 3>;
+public type half4x4 = Matrix<half, 4, 4>;
+
+public type float2x2 = Matrix<float, 2, 2>;
+public type float2x3 = Matrix<float, 2, 3>;
+public type float2x4 = Matrix<float, 2, 4>;
+public type float3x2 = Matrix<float, 3, 2>;
+public type float3x3 = Matrix<float, 3, 3>;
+public type float3x4 = Matrix<float, 3, 4>;
+public type float4x2 = Matrix<float, 4, 2>;
+public type float4x3 = Matrix<float, 4, 3>;
+public type float4x4 = Matrix<float, 4, 4>;
+
+public type double2x2 = Matrix<double, 2, 2>;
+public type double2x3 = Matrix<double, 2, 3>;
+public type double2x4 = Matrix<double, 2, 4>;
+public type double3x2 = Matrix<double, 3, 2>;
+public type double3x3 = Matrix<double, 3, 3>;
+public type double3x4 = Matrix<double, 3, 4>;
+public type double4x2 = Matrix<double, 4, 2>;
+public type double4x3 = Matrix<double, 4, 3>;
+public type double4x4 = Matrix<double, 4, 4>;
+
+public type int2x2 = Matrix<int, 2, 2>;
+public type int2x3 = Matrix<int, 2, 3>;
+public type int2x4 = Matrix<int, 2, 4>;
+public type int3x2 = Matrix<int, 3, 2>;
+public type int3x3 = Matrix<int, 3, 3>;
+public type int3x4 = Matrix<int, 3, 4>;
+public type int4x2 = Matrix<int, 4, 2>;
+public type int4x3 = Matrix<int, 4, 3>;
+public type int4x4 = Matrix<int, 4, 4>;
+
+public type uint2x2 = Matrix<uint, 2, 2>;
+public type uint2x3 = Matrix<uint, 2, 3>;
+public type uint2x4 = Matrix<uint, 2, 4>;
+public type uint3x2 = Matrix<uint, 3, 2>;
+public type uint3x3 = Matrix<uint, 3, 3>;
+public type uint3x4 = Matrix<uint, 3, 4>;
+public type uint4x2 = Matrix<uint, 4, 2>;
+public type uint4x3 = Matrix<uint, 4, 3>;
+public type uint4x4 = Matrix<uint, 4, 4>;

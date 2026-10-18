@@ -1,0 +1,59 @@
+// What only a GPU has: barriers, wave operations (0004 §12.2), uniformity (§10.3) and debug
+// output (§12.5). Each group is a struct of static members, like C#'s `Math`.
+namespace Marlin;
+
+public struct Barrier
+{
+    /// Waits for the whole group; its groupshared writes before are seen after. Every thread of
+    /// the group must reach it (0004 §12.2).
+    [Intrinsic("barrier.group")] public static void Group();
+
+    /// Waits for the whole group; its buffer and groupshared writes before are seen after.
+    [Intrinsic("barrier.device")] public static void Device();
+
+    /// Buffer writes before are seen by other groups before writes after; does not wait.
+    [Intrinsic("barrier.memory")] public static void Memory();
+}
+
+/// Operations across the lanes of a wave that run them together.
+public struct Wave
+{
+    [Intrinsic("wave.lane_index")] public static uint LaneIndex { get; }
+    [Intrinsic("wave.lane_count")] public static uint LaneCount { get; }
+    /// The lowest active lane.
+    [Intrinsic("wave.is_first")] public static bool IsFirstLane { get; }
+
+    [Intrinsic("wave.reduce.sum")] public static T Sum<T>(T v) where T : IArithmetic<T>;
+    [Intrinsic("wave.reduce.product")] public static T Product<T>(T v) where T : IArithmetic<T>;
+    [Intrinsic("wave.reduce.min")] public static T Min<T>(T v) where T : IArithmetic<T>;
+    [Intrinsic("wave.reduce.max")] public static T Max<T>(T v) where T : IArithmetic<T>;
+    [Intrinsic("wave.reduce.and")] public static T BitAnd<T>(T v) where T : IInteger<T>;
+    [Intrinsic("wave.reduce.or")] public static T BitOr<T>(T v) where T : IInteger<T>;
+    [Intrinsic("wave.reduce.xor")] public static T BitXor<T>(T v) where T : IInteger<T>;
+
+    /// The sum over the lanes below this one.
+    [Intrinsic("wave.scan.sum.exclusive")]
+    public static T PrefixSum<T>(T v) where T : IArithmetic<T>;
+
+    [Intrinsic("wave.vote.any")] public static bool AnyTrue(bool c);
+    [Intrinsic("wave.vote.all")] public static bool AllTrue(bool c);
+    [Intrinsic("wave.vote.equal")] public static bool AllEqual<T>(T v);
+
+    /// One bit per lane where `c` holds.
+    [Intrinsic("wave.ballot")] public static uint4 Ballot(bool c);
+
+    /// `v` of lane `lane`; the same lane for every lane.
+    [Intrinsic("wave.broadcast")] public static T ReadLane<T>(T v, uint lane);
+    /// `v` of lane `lane`, which may differ between lanes.
+    [Intrinsic("wave.shuffle")] public static T Shuffle<T>(T v, uint lane);
+}
+
+/// Development builds only: Shipping builds remove these calls (0004 §12.5).
+public struct Debug
+{
+    /// Writes an interpolated string (`$"n = {n}"`) to the debug output.
+    [Intrinsic("debug.print")] public static void Print(String message);
+}
+
+/// `x`, taken as different in every lane (0004 §10.3).
+[Intrinsic("assume.nonuniform")] public T NonUniform<T>(T x);

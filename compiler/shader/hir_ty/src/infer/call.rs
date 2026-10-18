@@ -9,7 +9,7 @@ use super::{Callee, InferCtx, InferLoc, Lit};
 use crate::builtins::BuiltinKind;
 use crate::item::ItemTypesQuery;
 use crate::subst::Subst;
-use crate::ty::{GenericArgTy, Ty};
+use crate::ty::{ConstTy, GenericArgTy, Ty};
 
 /// One overload as the selection sees it: the type each argument goes to.
 #[derive(Clone, Debug)]
@@ -161,9 +161,15 @@ impl InferCtx<'_, '_> {
                 None => subst = subst.with_unknowns(item, generics),
             }
         }
-        // Infer from the arguments whose types are known.
+        // Infer from the arguments whose types are known. A parameter whose type is known
+        // already (`T` of `Buffer<uint>`, or fixed by an earlier argument) takes its argument
+        // by conversion, checked when choosing: `b.AtomicAdd(0, 1)` passes the `int` literal
+        // as `uint`.
         for (p, slot) in slots.iter().enumerate() {
             let Some(a) = slot else { continue };
+            if !mentions_params_of(&subst.ty(&params[p].ty), item) {
+                continue;
+            }
             if let Some(ty) = &args[*a].ty {
                 let natural = self.natural_for_inference(ty, args[*a].lit);
                 if !subst.unify(&params[p].ty, &natural) {
@@ -467,5 +473,23 @@ impl InferCtx<'_, '_> {
                 )
             })
             .collect())
+    }
+}
+
+/// Whether `ty` still names a generic parameter of `owner` (one inference has not fixed).
+fn mentions_params_of(ty: &Ty, owner: ItemId) -> bool {
+    match ty {
+        Ty::Param { owner: o, .. } => *o == owner,
+        Ty::Adt { args, .. } => args.iter().any(|a| match a {
+            GenericArgTy::Type(t) => mentions_params_of(t, owner),
+            GenericArgTy::Const(c) => matches!(c, ConstTy::Param { owner: o, .. } if *o == owner),
+        }),
+        Ty::Array { element, len } => {
+            mentions_params_of(element, owner)
+                || matches!(len, ConstTy::Param { owner: o, .. } if *o == owner)
+        }
+        Ty::Tuple(items) => items.iter().any(|t| mentions_params_of(t, owner)),
+        Ty::Assoc { base, .. } => mentions_params_of(base, owner),
+        Ty::Error | Ty::Void => false,
     }
 }

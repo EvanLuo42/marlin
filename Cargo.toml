@@ -81,6 +81,7 @@ marlin-shaderc-syntax = { path = "compiler/shader/syntax" }
 marlin-shaderc-hir-ty = { path = "compiler/shader/hir_ty" }
 marlin-shaderc-lower = { path = "compiler/shader/lower" }
 marlin-shaderc-backend-spirv = { path = "compiler/shader/backend_spirv" }
+marlin-shaderc-core = { path = "compiler/shader/core" }
 marlin-shaderc-ir = { path = "compiler/shader/ir" }
 marlin-shaderc-opt = { path = "compiler/shader/opt" }
 marlin-shaderc-reflect = { path = "compiler/shader/reflect" }

@@ -908,6 +908,7 @@ dependencies = [
  "marlin-lang-span",
  "marlin-shader",
  "marlin-shaderc-backend-spirv",
+ "marlin-shaderc-core",
  "marlin-shaderc-hir-ty",
  "marlin-shaderc-ir",
  "marlin-shaderc-lower",
@@ -926,6 +927,21 @@ dependencies = [
  "marlin-shaderc-opt",
  "marlin-shaderc-target",
  "marlin-shaderc-testgen",
+ "marlin-test-support",
+]
+
+[[package]]
+name = "marlin-shaderc-core"
+version = "0.1.0"
+dependencies = [
+ "marlin-front-hir-def",
+ "marlin-lang-diag",
+ "marlin-lang-query",
+ "marlin-lang-span",
+ "marlin-shaderc-hir-ty",
+ "marlin-shaderc-ir",
+ "marlin-shaderc-lower",
+ "marlin-shaderc-opt",
  "marlin-test-support",
 ]
 

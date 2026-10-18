@@ -13,6 +13,7 @@ marlin-lang-query.workspace = true
 marlin-lang-span.workspace = true
 marlin-shader.workspace = true
 marlin-shaderc-backend-spirv.workspace = true
+marlin-shaderc-core.workspace = true
 marlin-shaderc-hir-ty.workspace = true
 marlin-shaderc-ir.workspace = true
 marlin-shaderc-lower.workspace = true
@@ -24,6 +25,7 @@ marlin-shaderc-target.workspace = true
 marlin-hash.workspace = true
 
 [dev-dependencies]
+marlin-shaderc-core.workspace = true
 marlin-shader.workspace = true
 marlin-test-support.workspace = true
 
