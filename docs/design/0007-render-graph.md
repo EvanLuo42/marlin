@@ -484,7 +484,7 @@ graph 的误用一律 panic，并给出 pass 名和资源名。RHI 本身返回�
 - **验收**：
   1. `samples/basic` 的画面和迁移前逐字节一致（用 `Offscreen` 读回比对）；
   2. 加一条后处理链：HDR 场景目标 → bloom 降采样/升采样链（多个瞬态纹理，别名可以发生）→ 异步计算的亮度直方图与自动曝光 → tonemap 到 swapchain。
-- 后处理链的 shader 用 Marlin shader 编写，所以第 2 步在编译器能产出 DXIL 之后做。graph 本身和第 1 步不依赖新 shader。
+- 后处理链的 shader 用 Marlin shader 编写，编译器已经能产出 SPIR-V（0005 §11 第 10 步），第 2 步不再需要等。graph 本身和第 1 步不依赖新 shader。
 
 ### 11.3 RHI 需要的改动（已完成）
 
@@ -498,6 +498,31 @@ graph 的误用一律 panic，并给出 pass 名和资源名。RHI 本身返回�
   - AS 的 bindless 槽位（`AccelerationStructure::index`），以及 `Stage`/`Access` 里的 AS 构建、拷贝、postbuild 和读取；
   - 实例描述 `AccelerationStructureInstance`（64 字节，对齐 `INSTANCE_ALIGNMENT`）和 BLAS 引用值 `AccelerationStructure::instance_address`。
 - **全局内存 barrier** `CommandList::memory_barrier(before, after)`（§9.4）：不指名资源，两边都是 `BufferState`（stage + access）。它不改 layout 或状态，所以 access 只能是 `MEMORY_BARRIER_ACCESS` 里的（UAV、AS 读、AS 写）或 `NONE`，别的冒险仍然用 buffer/texture barrier。D3D12 enhanced 是 global barrier，legacy 是不指名资源的 UAV barrier；Copy 队列不能用。
+
+### 11.4 实现顺序
+
+R1（0008 §8）的前七步就是本文，每步单独提交、带测试：
+
+| 步 | 内容 |
+|---|---|
+| R1a | 单队列的核心：声明、句柄版本、剔除、依赖边、usage 推导、barrier 推导、瞬态别名、拓扑键和编译缓存；用录制后端做 CPU 测试 |
+| R1b | `FrameContext`（§7）：执行 plan、物理资源、上传 ring、退休队列；导入 swapchain、`present`、`readback`；跨帧状态表（§2.3） |
+| R1c | 历史资源和持久资源（§8） |
+| R1d | 异步计算和 Copy 队列（§4.3、§4.4） |
+| R1e | 并行录制（§6）、计时和标记、图导出、资源捕获（§10） |
+| R1f | §11.2 的第 1 条验收：迁移前向渲染器和 framework |
+| R1g | §11.2 的第 2 条验收：后处理链 |
+
+R1a 做完时（2026-10-18）定下的细节：
+- **后端是泛型参数**：`RenderGraph<'g, B: Backend = Rhi>`。`Backend` 只给出导入对象的类型、它们的描述，以及 placed 资源的大小和对齐。CPU 测试用 `recording::Recording`：导入对象只是描述，内存大小按固定公式算。执行闭包的类型是 `FnOnce(&mut PassContext<'_, B>)`；`PassContext` 在 R1b 补上内容。
+- 图的所有分配都在帧 arena（`&Arena` 是 `Allocator`）里，包括执行闭包的 `Box`。
+- **写返回整个资源的新版本句柄**：`hzb = b.write_texture(hzb.mip(i), ..)` 之后，`hzb` 仍然覆盖所有 mip。版本按资源计，写任何一个子资源都会让旧句柄失效。读返回传进来的句柄。
+- **剔除**比"写导入资源的 pass 都是根"更精确：导入资源（非只读）的内容在帧末算作被读取，再从后往前按子资源传播"之后还有人读"。所以被后面的整体覆盖（clear、DontCare）盖掉的写会被剔除，这同样不改变可观察结果。
+- **访问的三种效果**：只读；读改写（storage 写、`CopyDst`、`Clear`、load 为 `Load` 的附件）；整体覆盖（load 为 `Clear` 或 `DontCare` 的附件）。整体覆盖和瞬态资源的第一次使用丢弃旧内容，before 是 `Undefined`，stage 取上一次使用的 stage。
+- **连续读**：layout 相同的连续读合成一个状态；读的 stage 已经被覆盖时（例如 `ALL_SHADING` 覆盖 compute）不加 barrier。合并时加宽这一组开头的 barrier 的 after。
+- **瞬态资源第一次使用**：before 的 stage 是这块内存之前的占用者最后一次使用的 stage（别名的执行依赖）；没有占用者的 buffer 不加 barrier。`undefined_from` 取这个资源在 plan 末尾的 layout，因为同一份 plan 再执行时，这个 placed 纹理就停在那里；新建的 placed 纹理在 `Common`，由执行方替换（R1b）。
+- buffer 的 barrier 总是整个 buffer（RHI 的 buffer barrier 没有范围）；`buf.range` 只决定视图。
+- Development 校验另外加了：读一个还没被写过的瞬态资源；导入资源的访问超出它创建时的 usage；pass 类型不允许的访问（compute pass 里的 `PixelRead` 等）；同一 pass 里两次读需要不同的 layout。
 
 ## 12. 测试
 

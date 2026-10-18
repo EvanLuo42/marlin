@@ -354,7 +354,7 @@ UiRenderer.add_passes(HUD, external = { main view })   // HUD 以主视图为底
 | U1–U3 | UIRenderer（0012 §13），和 R 系列并行 | editor 的窗口、面板和视口都用它画 |
 
 - 主机后端在私有仓库里跟进，每个阶段的验收在已有的平台上都要过。
-- 光照、几何的 shader 都用 Marlin shader 编写，所以 R1 开始依赖编译器能产出 DXIL。
+- 光照、几何的 shader 都用 Marlin shader 编写，桌面上产出 SPIR-V（0016），编译器已经具备（0005 §11 第 10 步）；DXIL 只在 Xbox 需要时再做。
 
 ## 9. 待定
 

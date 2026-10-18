@@ -851,6 +851,12 @@ dependencies = [
 [[package]]
 name = "marlin-render-graph"
 version = "0.1.0"
+dependencies = [
+ "marlin-containers",
+ "marlin-hash",
+ "marlin-rhi",
+ "marlin-std",
+]
 
 [[package]]
 name = "marlin-rhi"
