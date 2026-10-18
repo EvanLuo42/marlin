@@ -792,7 +792,7 @@ else { ... }
 
 - 编译器从函数体推断出每个函数需要哪些 capability，并沿调用图向上传播。
   - 来源：用到的类型（`half`、`short`、`ushort` → `Native16Bit`；`long`、`ulong` → `Int64`；`double` → `Float64`），64 位整数上的原子操作（buffer 和 groupshared 上 → `Int64Atomics`，存储纹理上 → `Int64TextureAtomics`；2026-10-18），以及核心库里标了 `[Requires(...)]` 的内建函数和类型（wave、mesh、ray query……）。
-    - 原子操作的 capability 看调用处的元素类型。泛型代码里的 `T` 要等实例化才知道，类型检查阶段推断不出来；这种情况由后端照样写出 64 位原子，target 检查漏掉它（待做：在 IR 上补查）。
+    - 类型检查阶段看源码里的类型，原子操作看调用处的元素类型。泛型代码里的 `T` 要等实例化才知道，这一步推断不出来。所以编译入口时还在降低后的 IR 上补查一遍（2026-10-18 做了）：入口和它调用的函数里用到的标量类型，加上 `atomic.*` 和 `tex.atomic.*` 的元素是不是 64 位整数。查到的并进入口需要的 capability，一起和 target 对照、写进反射。
   - 推断和 `[Requires]` 契约检查在类型检查阶段做；和具体 target 对照、`const if` 裁掉的分支不检查，要等 target 描述（0005 §11 第 9 步）。
 - public 函数可以标 `[Requires(...)]` 作为契约，推断结果超出声明就报错。
 - 当 target 不满足入口需要的 capability 时报错，并给出调用链。

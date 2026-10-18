@@ -5,6 +5,7 @@
 //! - E1505 the backend cannot write the entry; E1506 a compiler bug (a module that does not
 //!   verify, code the backend's validator rejects).
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use marlin_front_hir_def::{
@@ -19,7 +20,7 @@ use marlin_shaderc_hir_ty::{
     Builtins, BuiltinsQuery, CapabilitiesQuery, FileTyDiagnostics, GenericArgTy,
     ItemAttributesQuery, ItemTypesQuery, KnownAttr, Stage, Subst, Ty, display_ty,
 };
-use marlin_shaderc_ir::{Module, Space, TypeData};
+use marlin_shaderc_ir::{FuncId, Module, Op, Scalar, Space, Type, TypeData};
 use marlin_shaderc_lower::{Evaluated, LowerError, Lowering};
 use marlin_shaderc_opt::{Options, PassError, pipeline};
 use marlin_shaderc_reflect::Front;
@@ -106,10 +107,13 @@ fn run(s: &Session<'_>, cx: &Cx<'_>, req: &EntryRequest<'_>) -> Result<Outcome, 
     let module = lowered.module;
     let func = lowered.func;
 
-    // What the entry needs of the target.
-    let caps = cx.get::<CapabilitiesQuery>(&entry)?;
-    let missing: Vec<Diagnostic> = caps
-        .required
+    // What the entry needs of the target: what the front end infers, and what only the
+    // lowered code shows (a generic `T` made `ulong`).
+    let mut required = cx.get::<CapabilitiesQuery>(&entry)?.required.clone();
+    for (cap, why) in lowered_capabilities(&module, func) {
+        required.entry(cap.into()).or_insert(why);
+    }
+    let missing: Vec<Diagnostic> = required
         .iter()
         .filter(|(c, _)| !target.has(c))
         .map(|(c, why)| {
@@ -205,7 +209,7 @@ fn run(s: &Session<'_>, cx: &Cx<'_>, req: &EntryRequest<'_>) -> Result<Outcome, 
         push_fields: lowered.push_fields,
         static_params: lowered.static_params,
         exports: lowered.exports,
-        capabilities: caps.required.keys().map(|c| c.to_string()).collect(),
+        capabilities: required.keys().map(|c| c.to_string()).collect(),
         target_constants: Vec::new(),
         sources,
     };
@@ -220,6 +224,97 @@ fn run(s: &Session<'_>, cx: &Cx<'_>, req: &EntryRequest<'_>) -> Result<Outcome, 
         diagnostics: warnings,
         used_sources,
     }))
+}
+
+/// The capabilities the code lowered for `func` and what it calls needs: its scalar types
+/// (`Native16Bit`, `Int64`, `Float64`) and its 64-bit atomics (`Int64Atomics` on buffers and
+/// groupshared memory, `Int64TextureAtomics` on storage textures; 0004 §12.3). The front end
+/// infers these from the source, which misses a type known only once generic code is
+/// instantiated (a `Buffer<T>` atomic with `T = ulong`); the lowered code has every type.
+fn lowered_capabilities(module: &Module, func: FuncId) -> Vec<(&'static str, String)> {
+    let wide = |t: Type| module.element_scalar(t) == Some(Scalar::I64);
+    let mut out = Vec::new();
+    let mut types = HashSet::new();
+    let mut seen = HashSet::from([func]);
+    let mut stack = vec![func];
+    while let Some(id) = stack.pop() {
+        let Some(f) = module.funcs.get(id) else {
+            continue;
+        };
+        for (_, v) in f.values.iter() {
+            scalar_capabilities(module, v.ty, &mut types, &mut out);
+        }
+        let why = || format!("uses a 64-bit atomic in `{}`", f.name);
+        for &block in &f.layout {
+            for inst in f.insts(block) {
+                let ops = f.operands(inst);
+                match &f.insts[inst].op {
+                    Op::Call(c) => {
+                        if seen.insert(*c) {
+                            stack.push(*c);
+                        }
+                    }
+                    Op::Atomic { .. } => {
+                        if let TypeData::Ptr { pointee, .. } = module.data(f.ty(ops[0]))
+                            && wide(*pointee)
+                        {
+                            out.push(("Int64Atomics", why()));
+                        }
+                    }
+                    Op::TexAtomic { .. } => {
+                        if let TypeData::Res(kind) | TypeData::Handle(kind) =
+                            module.data(f.ty(ops[0]))
+                            && kind.element.is_some_and(wide)
+                        {
+                            out.push(("Int64TextureAtomics", why()));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The capabilities the scalars in `t` (through pointers, arrays, structs and resources) need.
+fn scalar_capabilities(
+    module: &Module,
+    t: Type,
+    seen: &mut HashSet<Type>,
+    out: &mut Vec<(&'static str, String)>,
+) {
+    if !seen.insert(t) {
+        return;
+    }
+    let scalar = |s: Scalar| match s {
+        Scalar::I16 | Scalar::F16 => Some(("Native16Bit", "16-bit scalars")),
+        Scalar::I64 => Some(("Int64", "64-bit integers")),
+        Scalar::F64 => Some(("Float64", "`double`")),
+        _ => None,
+    };
+    match module.data(t) {
+        TypeData::Scalar(s) | TypeData::Vector(s, _) | TypeData::Matrix { element: s, .. } => {
+            if let Some((cap, what)) = scalar(*s) {
+                out.push((cap, format!("uses {what}")));
+            }
+        }
+        TypeData::Array(element, _)
+        | TypeData::Ptr {
+            pointee: element, ..
+        } => scalar_capabilities(module, *element, seen, out),
+        TypeData::Struct(id) => {
+            for &(_, field) in &module.structs[*id].fields {
+                scalar_capabilities(module, field, seen, out);
+            }
+        }
+        TypeData::Res(kind) | TypeData::Handle(kind) => {
+            if let Some(element) = kind.element {
+                scalar_capabilities(module, element, seen, out);
+            }
+        }
+        TypeData::RayQuery => {}
+    }
 }
 
 /// The entry lowered, with what the reflection needs from the front end.

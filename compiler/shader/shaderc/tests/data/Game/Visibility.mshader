@@ -64,3 +64,21 @@ public void Counting([DispatchThreadId] uint3 id, [Push] in CountingArgs a)
     uint before = a.Counts.AtomicAdd((int2)id.xy, 1);
     a.Totals[id.x] = (ulong)before << 40;
 }
+
+public struct GenericWideArgs<T>
+{
+    public Buffer<T> Words;
+    public StorageTexture2D<T> Vis;
+}
+
+/// The atomic's element type is `T`, known only once the entry is instantiated.
+public void Raise<T>(Buffer<T> b, uint i, T v) => b.AtomicMax(i, v);
+
+/// With `T = ulong` this needs `Int64Atomics` and `Int64TextureAtomics`; with `T = uint`,
+/// nothing.
+[Compute(8, 8, 1)]
+public void GenericRaise<T>([DispatchThreadId] uint3 id, [Push] in GenericWideArgs<T> a)
+{
+    Raise(a.Words, id.x, a.Words[0]);
+    a.Vis.AtomicMax((int2)id.xy, a.Words[1]);
+}

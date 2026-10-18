@@ -501,7 +501,7 @@ Development 下的 `Debug.Print` 第 10f 步在 SPIR-V 上实现了，用 `NonSe
   - SPIR-V 用 `OpDPdxCoarse` 这一类，需要 `DerivativeControl`。
 - 64 位整数：
   - `vulkan-1.4` target 加了可选的 `Int64`、`Int64Atomics`、`Int64TextureAtomics`（target 版本升到 2）。和 `RayQuery` 一样，设备没有就跳过，RHI 在 `Features` 里报告（0016 §3）。
-  - capability 推断：64 位整数上的原子操作，在 buffer 和 groupshared 上要 `Int64Atomics`，在存储纹理上要 `Int64TextureAtomics`。
+  - capability 推断：64 位整数上的原子操作，在 buffer 和 groupshared 上要 `Int64Atomics`，在存储纹理上要 `Int64TextureAtomics`。泛型代码实例化后才知道的类型，由 shaderc 在降低后的 IR 上补查（0004 §12.3）。
   - SPIR-V：64 位原子操作声明 `Int64Atomics`。64 位存储纹理的图像类型写明格式 `R64ui`/`R64i`（不能无格式读写），需要 `Int64ImageEXT` 和 `SPV_EXT_shader_image_int64`。
 - 纹理原子操作：
   - 核心库：存储纹理上的 `Atomic*` 方法，对应 IR 的 `tex.atomic.<op>`（0006 §8.6）。

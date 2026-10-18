@@ -447,6 +447,27 @@ fn wide_atomics_need_their_capabilities() {
     assert!(caps("Game.Slopes").is_empty());
 }
 
+/// A 64-bit atomic reached only through generic code is found in the lowered code.
+#[test]
+fn generic_wide_atomics_need_their_capabilities() {
+    let (sources, targets) = (Memory::new(), default_targets());
+    let s = session(&sources, &targets);
+    let caps = |arg: &str| {
+        let mut req = request("Game.GenericRaise", &[]);
+        let args = [arg];
+        req.type_args = &args;
+        s.compile(&req)
+            .unwrap_or_else(|e| panic!("{arg}: {}", errors(&s, &e)))
+            .reflection
+            .capabilities
+    };
+    assert_eq!(
+        caps("Marlin.ULong"),
+        ["Int64", "Int64Atomics", "Int64TextureAtomics"]
+    );
+    assert!(caps("Marlin.UInt").is_empty());
+}
+
 /// Khronos' spirv-val on `bytes`, when `MARLIN_SPIRV_VAL` names it (0014 §6.1).
 fn external_check(bytes: &[u8], what: &str) {
     let Ok(tool) = std::env::var("MARLIN_SPIRV_VAL") else {
