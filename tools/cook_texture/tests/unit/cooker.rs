@@ -163,7 +163,11 @@ fn usage_picks_the_format() {
     p.texture("h", "h.exr", "Usage = Hdr");
     let units = p.cook(&cookers()).unwrap();
     let format = |name: &str| {
-        let unit = &units.iter().find(|u| u.path == name).unwrap().bytes;
+        let unit = &units
+            .iter()
+            .find(|u| u.path == format!("/Game/{name}"))
+            .unwrap()
+            .bytes;
         let (view, blobs) = texture(unit);
         (view.format, level(&view, &blobs, 0, 0))
     };
@@ -191,7 +195,11 @@ fn max_size_drops_levels() {
         assert_eq!((view.header.width, view.header.height), (128, 64));
     }
     let mips = |name: &str| {
-        let unit = &units.iter().find(|u| u.path == name).unwrap().bytes;
+        let unit = &units
+            .iter()
+            .find(|u| u.path == format!("/Game/{name}"))
+            .unwrap()
+            .bytes;
         texture(unit).0.header.mip_levels
     };
     assert_eq!((mips("a"), mips("b")), (8, 1));

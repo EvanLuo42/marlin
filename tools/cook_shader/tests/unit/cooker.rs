@@ -2,7 +2,7 @@
 //! out, found by the package's name.
 
 use marlin_asset::cooked::{Encoding, UnitView, unit_id};
-use marlin_asset_db::AssetDb;
+use marlin_asset_db::{Content, ENGINE_MOUNT};
 use marlin_cook_core::{
     CookOptions, Cookers, Ddc, LocalDdc, Platform, Profile, cook_all, named_objects, unit_key,
 };
@@ -113,17 +113,20 @@ fn a_package_cooks_into_a_library_of_its_public_entry_points() {
 fn the_library_is_found_by_the_package_name() {
     let p = Project::new("names");
     lib(&p);
-    let db = p.db();
+    let db = p.content();
     let (report, manifest) = cook_all(&db, &cookers(), &p.ddc("ddc"), &CookOptions::default());
     assert!(report.errors.is_empty(), "{:?}", report.errors);
     assert_eq!(manifest.names, [("Lib".to_string(), uuid(1))]);
     assert_eq!(manifest.named("Lib"), Some(uuid(1)));
-    assert_eq!(manifest.unit_of(uuid(1)), Some(unit_id("shaders/package")));
+    assert_eq!(
+        manifest.unit_of(uuid(1)),
+        Some(unit_id("/Game/shaders/package"))
+    );
 
     // A second package of the same name: neither is in the table, and the build fails.
     p.write("other/Other.mshader", "namespace Other;\n");
     package(&p, "other", "Lib", 2, &["other/Other.mshader"]);
-    let db = p.db();
+    let db = p.content();
     let (names, errors) = named_objects(&db, &cookers());
     assert!(names.is_empty(), "{names:?}");
     assert_eq!(errors.len(), 1);
@@ -198,7 +201,10 @@ fn a_package_compiles_against_its_dependencies() {
     lib(&p);
     game(&p);
     let units = p.cook(&cookers()).unwrap();
-    let game = units.iter().find(|u| u.path == "game/package").unwrap();
+    let game = units
+        .iter()
+        .find(|u| u.path == "/Game/game/package")
+        .unwrap();
     assert!(game.warnings.is_empty(), "{:?}", game.warnings);
     let lib = library(&game.bytes, 2);
     assert_eq!(lib.package, "Game");
@@ -247,12 +253,15 @@ fn dependencies_are_transitive_and_in_the_key() {
     );
     let cookers = cookers();
     let key = |p: &Project, path: &str| {
-        let db = p.db();
-        let file = db.file(path).unwrap();
+        let db = p.content();
+        let file = db.file(&format!("/Game/{path}")).unwrap();
         unit_key(&db, &cookers, file, Platform::host(), Profile::Development).unwrap()
     };
     let units = p.cook(&cookers).unwrap();
-    let top = units.iter().find(|u| u.path == "top/package").unwrap();
+    let top = units
+        .iter()
+        .find(|u| u.path == "/Game/top/package")
+        .unwrap();
     let shade = library(&top.bytes, 3);
     let packages: Vec<&str> = shade.entries[0]
         .reflection
@@ -352,11 +361,11 @@ fn the_key_follows_the_sources_the_profile_and_the_target() {
     lib(&p);
     let cookers = cookers();
     let host = Platform::host();
-    let key = |db: &AssetDb, platform: &Platform, profile| {
-        let file = db.file("shaders/package.masset").unwrap();
+    let key = |db: &Content, platform: &Platform, profile| {
+        let file = db.file("/Game/shaders/package.masset").unwrap();
         unit_key(db, &cookers, file, platform, profile).unwrap()
     };
-    let db = p.db();
+    let db = p.content();
     let dev = key(&db, host, Profile::Development);
     assert_eq!(key(&db, host, Profile::Development), dev);
     assert_ne!(key(&db, host, Profile::Shipping), dev);
@@ -385,14 +394,14 @@ fn the_key_follows_the_sources_the_profile_and_the_target() {
 
     // Editing a listed source changes the key.
     p.write("shaders/Args.mshader", format!("{ARGS}// edited\n"));
-    assert_ne!(key(&p.db(), host, Profile::Development), dev);
+    assert_ne!(key(&p.content(), host, Profile::Development), dev);
 }
 
 #[test]
 fn shipping_and_development_cook_the_same_entries() {
     let p = Project::new("profiles");
     lib(&p);
-    let db = p.db();
+    let db = p.content();
     let cookers = cookers();
     let ddc = p.ddc("ddc");
     let mut libraries = Vec::new();
@@ -413,7 +422,7 @@ fn shipping_and_development_cook_the_same_entries() {
 fn cooking_is_deterministic() {
     let p = Project::new("determinism");
     lib(&p);
-    let db = p.db();
+    let db = p.content();
     let cookers = cookers();
     let (one, two) = (p.ddc("one"), p.ddc("two"));
     let (r1, _) = cook_all(&db, &cookers, &one, &CookOptions::default());
@@ -431,7 +440,8 @@ fn the_engine_package_cooks() {
     for file in ["shaders/package.masset", "shaders/Forward.mshader"] {
         p.write(file, std::fs::read(content.join(file)).unwrap());
     }
-    let db = p.db();
+    // As the engine's mount: only it may name packages `Marlin.…`.
+    let db = p.content_as(ENGINE_MOUNT);
     let ddc = p.ddc("ddc");
     let (report, manifest) = cook_all(&db, &cookers(), &ddc, &CookOptions::default());
     assert!(report.errors.is_empty(), "{:?}", report.errors);
@@ -453,4 +463,38 @@ fn the_engine_package_cooks() {
     // The forward pass's push constants: four 32-bit words (0002).
     let vs = lib.entry("Marlin.Engine.ForwardVs").unwrap();
     assert_eq!(vs.reflection.push.as_ref().unwrap().size, 16);
+}
+
+/// `Marlin` and `Marlin.…` are the engine's package names, and the engine uses no others: a
+/// game's names can never clash with the engine's (0003 §4.5).
+#[test]
+fn marlin_names_belong_to_the_engine_mount() {
+    let p = Project::new("reserved");
+    p.write("shaders/Mine.mshader", "namespace Marlin.Mine;\n");
+    package(&p, "shaders", "Marlin.Mine", 1, &["shaders/Mine.mshader"]);
+    let errors = p.cook(&cookers()).unwrap_err();
+    assert!(errors[0].contains("belong to the engine"), "{}", errors[0]);
+
+    // In the engine's mount the same package cooks, and an unprefixed one does not.
+    let ddc = p.ddc("engine");
+    let (report, _) = cook_all(
+        &p.content_as(ENGINE_MOUNT),
+        &cookers(),
+        &ddc,
+        &CookOptions::default(),
+    );
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    package(&p, "shaders", "Mine", 1, &["shaders/Mine.mshader"]);
+    let (report, _) = cook_all(
+        &p.content_as(ENGINE_MOUNT),
+        &cookers(),
+        &ddc,
+        &CookOptions::default(),
+    );
+    assert_eq!(report.errors.len(), 1, "{:?}", report.errors);
+    assert!(
+        report.errors[0].to_string().contains("named `Marlin.…`"),
+        "{}",
+        report.errors[0]
+    );
 }

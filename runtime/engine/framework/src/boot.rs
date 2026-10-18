@@ -5,10 +5,9 @@
 //!
 //! | cvar              | meaning                                                          |
 //! |-------------------|------------------------------------------------------------------|
-//! | `content.engine`  | the engine's package(s) (`content/engine`), mounted first, below |
-//! |                   | the game's; paths as for `content.package`                       |
-//! | `content.package` | package(s) to mount, `;`-separated, relative to the boot file;   |
-//! |                   | `{platform}` in a path stands for `game.platform`                |
+//! | `content.package` | package(s) to mount in order, `;`-separated, relative to the boot  |
+//! |                   | file (the build, then patches); `{platform}` stands for            |
+//! |                   | `game.platform`                                                  |
 //! | `content.cookd`   | cook service address; mounted above the packages (dev streaming)  |
 //! | `game.level`      | UUID of the entry level                                          |
 //! | `game.platform`   | the platform cookd cooks for; defaults to the build's platform   |
@@ -16,7 +15,8 @@
 //!
 //! There is no load-by-path: the entry level is named by UUID, and everything else is reached
 //! through its links, except the few objects code asks for by name (the engine's shader package,
-//! `Marlin.Engine`).
+//! `Marlin.Engine`). A build holds the engine's content with the game's (0003 §4.5): the base
+//! package has both, and there is no separate engine package to mount.
 
 use alloc::format;
 use alloc::string::String;
@@ -29,11 +29,6 @@ use marlin_asset::{DevSource, Package, Uuid, Vfs};
 use marlin_config::{CvarBool, CvarI64, CvarString, Source};
 use marlin_sync::Once;
 
-pub static CONTENT_ENGINE: CvarString = CvarString::new(
-    "content.engine",
-    "",
-    "The engine's packages (its shaders), ';'-separated, relative to the boot file; mounted first.",
-);
 pub static CONTENT_PACKAGE: CvarString = CvarString::new(
     "content.package",
     "",
@@ -62,7 +57,6 @@ static REGISTER: Once = Once::new();
 pub fn register_cvars() {
     REGISTER.call_once(|| {
         let _ = marlin_config::register_all(&[
-            &CONTENT_ENGINE,
             &CONTENT_PACKAGE,
             &CONTENT_COOKD,
             &GAME_LEVEL,
@@ -130,7 +124,8 @@ pub fn boot<'a>(
 /// Where content comes from: what the cvars say, as plain data.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ContentSettings {
-    /// Package paths, mounted in order: the engine's (`content.engine`), then the game's.
+    /// Package paths, mounted in order: the build (engine and game content together), then
+    /// patches above it.
     pub packages: Vec<String>,
     /// The cook service, mounted above the packages.
     pub cookd: Option<SocketAddr>,
@@ -147,8 +142,8 @@ impl ContentSettings {
             .parse()
             .map_err(|_| BootError::Level(level.clone()))?;
         let platform = GAME_PLATFORM.get();
-        let packages = [CONTENT_ENGINE.get(), CONTENT_PACKAGE.get()]
-            .join(";")
+        let packages = CONTENT_PACKAGE
+            .get()
             .split(';')
             .map(str::trim)
             .filter(|p| !p.is_empty())

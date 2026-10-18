@@ -6,7 +6,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use marlin_asset::Uuid;
-use marlin_asset_db::{AssetDb, Options};
+use marlin_asset_db::{AssetDb, Content, Options};
 use marlin_cook_core::{CookOptions, cook_all};
 use marlin_cooker::{engine_cookers, open_ddc};
 use marlin_store::{Server, Store};
@@ -34,15 +34,17 @@ fn project(root: &Path) {
 }
 
 fn cook(root: &Path, store: SocketAddr) -> (usize, usize, Vec<u128>) {
-    let db = AssetDb::build(
-        root,
-        Options {
-            journal: false,
-            ..Options::default()
-        },
-    )
-    .unwrap();
-    let ddc = open_ddc(root, Some(store)).unwrap();
+    let db = Content::single(
+        AssetDb::build(
+            root,
+            Options {
+                journal: false,
+                ..Options::default()
+            },
+        )
+        .unwrap(),
+    );
+    let ddc = open_ddc(&root.join(".marlin/ddc"), Some(store)).unwrap();
     let (report, _) = cook_all(
         &db,
         &engine_cookers(),
@@ -80,7 +82,7 @@ fn the_second_machine_cooks_nothing() {
     assert_eq!((cooked, cached), (0, 2), "the second finds it in the store");
     // Nothing was copied yet: the store answered `contains`. Reading pulls it into the local
     // cache, after which the store is not needed for it.
-    let layered = open_ddc(&two, Some(addr)).unwrap();
+    let layered = open_ddc(&two.join(".marlin/ddc"), Some(addr)).unwrap();
     for &k in &keys {
         assert!(layered.get(k).unwrap().is_some());
     }

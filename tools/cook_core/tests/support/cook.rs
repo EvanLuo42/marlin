@@ -25,9 +25,9 @@ impl Project {
     /// Indexes and cooks everything into `.marlin/ddc`; returns the units sorted by path, or the
     /// errors.
     pub fn cook(&self, cookers: &Cookers) -> Result<Vec<CookedUnit>, Vec<String>> {
-        let db = self.db();
+        let content = self.content();
         let ddc = self.ddc("ddc");
-        let (report, _) = cook_all(&db, cookers, &ddc, &CookOptions::default());
+        let (report, _) = cook_all(&content, cookers, &ddc, &CookOptions::default());
         if !report.errors.is_empty() {
             return Err(report.errors.iter().map(|e| e.to_string()).collect());
         }

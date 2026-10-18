@@ -1,12 +1,12 @@
 //! Cooking units: keys, assembly and the parallel driver.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use marlin_asset::Uuid;
 use marlin_asset::cooked::{platform_id, unit_id, write};
-use marlin_asset_db::{AssetDb, FileId, MASSET_EXT, ObjectId};
+use marlin_asset_db::{Content, ContentFile, ContentObject, MASSET_EXT, MountId};
 use marlin_hash::xxh3_128;
 use marlin_masset::{DocumentLinks, Severity, parse};
 
@@ -102,20 +102,25 @@ impl KeyWriter {
     }
 }
 
-/// The unit of the object with `uuid`, from the index.
-fn unit_of(db: &AssetDb, uuid: Uuid) -> Option<u64> {
-    let object = db.object(uuid)?;
-    Some(unit_id(&db.asset_path(db.object_info(object).file)))
+/// The unit of the object with `uuid` as `mount` sees it, from the index.
+fn unit_of(content: &Content, mount: MountId, uuid: Uuid) -> Option<u64> {
+    let object = content.visible_object(mount, uuid)?;
+    Some(unit_id(&content.path(content.object_file(object))))
 }
 
 /// The objects `object` is built from (0003 §4.1): the targets of its links whose type its
-/// cooker declares as build dependencies, transitively, without `object` itself.
-fn build_closure(db: &AssetDb, cookers: &Cookers, object: ObjectId) -> Vec<ObjectId> {
+/// cooker declares as build dependencies, transitively, without `object` itself. They may be
+/// in the mounts below `object`'s (0003 §4.5).
+fn build_closure(
+    content: &Content,
+    cookers: &Cookers,
+    object: ContentObject,
+) -> Vec<ContentObject> {
     let mut seen = HashSet::from([object]);
     let mut queue = vec![object];
     let mut out = Vec::new();
     while let Some(o) = queue.pop() {
-        for target in build_dependencies(db, cookers, o) {
+        for target in build_dependencies(content, cookers, o) {
             if seen.insert(target) {
                 out.push(target);
                 queue.push(target);
@@ -127,15 +132,16 @@ fn build_closure(db: &AssetDb, cookers: &Cookers, object: ObjectId) -> Vec<Objec
 
 /// The direct build dependencies of `object` (see [`build_closure`]).
 fn build_dependencies<'a>(
-    db: &'a AssetDb,
+    content: &'a Content,
     cookers: &'a Cookers,
-    object: ObjectId,
-) -> impl Iterator<Item = ObjectId> + 'a {
-    let from = db.object_info(object).type_name;
-    db.links(object).filter_map(move |link| {
-        let target = db.link_target(object, link)?;
+    object: ContentObject,
+) -> impl Iterator<Item = ContentObject> + 'a {
+    let db = content.db(object.mount);
+    let from = db.object_info(object.object).type_name;
+    db.links(object.object).filter_map(move |link| {
+        let target = content.link_target(object, link)?;
         cookers
-            .is_build_dependency(from, db.object_info(target).type_name)
+            .is_build_dependency(from, content.object_info(target).type_name)
             .then_some(target)
     })
 }
@@ -144,28 +150,28 @@ fn build_dependencies<'a>(
 /// (reported once, by the unit the cook asked for, rather than wrapped by every unit on it).
 enum KeyError {
     Unit(CookError),
-    Cycle(Vec<FileId>),
+    Cycle(Vec<ContentFile>),
 }
 
 /// Computes cook keys, each unit's once: a build dependency's key is part of every key of the
 /// units built from it, so a cook that asks for many keys shares them.
 struct Keys<'a> {
-    db: &'a AssetDb,
+    content: &'a Content,
     cookers: &'a Cookers,
     platform: &'a Platform,
     profile: Profile,
-    done: Mutex<HashMap<FileId, u128>>,
+    done: Mutex<HashMap<ContentFile, u128>>,
 }
 
 impl<'a> Keys<'a> {
     fn new(
-        db: &'a AssetDb,
+        content: &'a Content,
         cookers: &'a Cookers,
         platform: &'a Platform,
         profile: Profile,
     ) -> Self {
         Self {
-            db,
+            content,
             cookers,
             platform,
             profile,
@@ -173,16 +179,16 @@ impl<'a> Keys<'a> {
         }
     }
 
-    fn key(&self, file: FileId) -> Result<u128, CookError> {
+    fn key(&self, file: ContentFile) -> Result<u128, CookError> {
         self.key_on(file, &mut Vec::new()).map_err(|e| match e {
             KeyError::Unit(e) => e,
             KeyError::Cycle(files) => CookError::Unit {
-                path: self.db.file_info(file).path,
+                path: self.content.file_path(file),
                 message: format!(
                     "its build dependencies form a cycle: {}",
                     files
                         .iter()
-                        .map(|&f| self.db.file_info(f).path)
+                        .map(|&f| self.content.file_path(f))
                         .collect::<Vec<_>>()
                         .join(" → ")
                 ),
@@ -191,7 +197,7 @@ impl<'a> Keys<'a> {
     }
 
     /// `file`'s key, with `stack` the units whose keys wait for it.
-    fn key_on(&self, file: FileId, stack: &mut Vec<FileId>) -> Result<u128, KeyError> {
+    fn key_on(&self, file: ContentFile, stack: &mut Vec<ContentFile>) -> Result<u128, KeyError> {
         if let Some(&key) = self.lock().get(&file) {
             return Ok(key);
         }
@@ -208,18 +214,18 @@ impl<'a> Keys<'a> {
         Ok(key)
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<FileId, u128>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<ContentFile, u128>> {
         // The map only caches finished keys: a panic elsewhere leaves it valid.
         self.done.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    fn compute(&self, file: FileId, stack: &mut Vec<FileId>) -> Result<u128, KeyError> {
-        let (db, cookers) = (self.db, self.cookers);
-        let info = db.file_info(file);
-        let asset_path = db.asset_path(file);
+    fn compute(&self, file: ContentFile, stack: &mut Vec<ContentFile>) -> Result<u128, KeyError> {
+        let (content, cookers) = (self.content, self.cookers);
+        let db = content.db(file.mount);
+        let info = db.file_info(file.file);
         let fail = |message: String| {
             KeyError::Unit(CookError::Unit {
-                path: info.path.clone(),
+                path: content.file_path(file),
                 message,
             })
         };
@@ -235,9 +241,10 @@ impl<'a> Keys<'a> {
             key.bytes(family.name().as_bytes());
         }
         key.bytes(self.platform.texture_layout.name().as_bytes());
-        key.u64(unit_id(&asset_path));
+        // The qualified path: the mount is part of the unit.
+        key.u64(unit_id(&content.path(file)));
         key.u128(info.hash);
-        for object in db.objects_in(file) {
+        for object in db.objects_in(file.file) {
             let o = db.object_info(object);
             let registered = cookers
                 .get(o.type_name)
@@ -257,18 +264,23 @@ impl<'a> Keys<'a> {
                     }
                 }
             }
+            let from = ContentObject {
+                mount: file.mount,
+                object,
+            };
             for link in db.links(object) {
-                let Some(target) = db.link_target(object, link) else {
+                let Some(target) = content.link_target(from, link) else {
                     continue;
                 };
-                let t = db.object_info(target);
+                let t = content.object_info(target);
+                let target_file = content.object_file(target);
                 key.u128(t.uuid.as_u128());
                 if cookers.is_build_dependency(o.type_name, t.type_name) {
                     // Built from: all of the target's unit's inputs. One in this unit is in
                     // this key already.
                     key.bytes(b"build");
-                    if t.file != file {
-                        let dependency = self.key_on(t.file, stack).map_err(|e| match e {
+                    if target_file != file {
+                        let dependency = self.key_on(target_file, stack).map_err(|e| match e {
                             KeyError::Unit(e) => {
                                 fail(format!("{}: its build dependency {e}", o.name))
                             }
@@ -277,7 +289,7 @@ impl<'a> Keys<'a> {
                         key.u128(dependency);
                     }
                 } else {
-                    key.u64(unit_id(&db.asset_path(t.file)));
+                    key.u64(unit_id(&content.path(target_file)));
                 }
             }
         }
@@ -288,21 +300,23 @@ impl<'a> Keys<'a> {
 /// The cook key of `file`: a hash over every input of its cooked unit.
 ///
 /// Inputs: the format version; the platform's name and the texture description cookers read;
-/// the unit id; the source text; per object its type, the type's fingerprint (structure and
-/// cooker version) and its cooker's own key for the platform and profile; every source file it
-/// links to, by content; the unit of every object it references (which the import table
-/// records); and the key of every unit holding a build dependency (0003 §4.1), which covers
-/// that unit's inputs and, recursively, its own build dependencies. A runtime reference's
-/// target content is not an input: links are resolved at load time. Build dependencies that
-/// form a cycle between units are an error.
+/// the unit id (of the qualified path, so the mount is in it); the source text; per object its
+/// type, the type's fingerprint (structure and cooker version) and its cooker's own key for the
+/// platform and profile; every source file it links to, by content; the unit of every object it
+/// references (which the import table records); and the key of every unit holding a build
+/// dependency (0003 §4.1), which covers that unit's inputs and, recursively, its own build
+/// dependencies, in whichever mount. A runtime reference's target content is not an input:
+/// links are resolved at load time. Build dependencies that form a cycle between units are an
+/// error. Nothing machine-specific is an input: the same engine content has the same keys in
+/// every project.
 pub fn unit_key(
-    db: &AssetDb,
+    content: &Content,
     cookers: &Cookers,
-    file: FileId,
+    file: ContentFile,
     platform: &Platform,
     profile: Profile,
 ) -> Result<u128, CookError> {
-    Keys::new(db, cookers, platform, profile).key(file)
+    Keys::new(content, cookers, platform, profile).key(file)
 }
 
 struct CookedObject {
@@ -336,16 +350,19 @@ fn assemble(
 
 /// Cooks one unit (no cache involved).
 pub fn cook_unit(
-    db: &AssetDb,
+    content: &Content,
     cookers: &Cookers,
-    file: FileId,
+    file: ContentFile,
     platform: &Platform,
     profile: Profile,
 ) -> Result<(Vec<u8>, Vec<String>), CookError> {
-    let info = db.file_info(file);
-    let asset_path = db.asset_path(file);
-    let path = info.path.clone();
-    let full = db.root().join(&path);
+    let mount = file.mount;
+    let db = content.db(mount);
+    let info = db.file_info(file.file);
+    // Links inside the mount are written relative to it.
+    let own_path = db.asset_path(file.file);
+    let path = content.file_path(file);
+    let full = db.root().join(&info.path);
     let text = std::fs::read_to_string(&full).map_err(|source| CookError::Io {
         path: path.clone(),
         source,
@@ -362,10 +379,10 @@ pub fn cook_unit(
     })?;
     let links = DocumentLinks {
         document: &doc,
-        path: &asset_path,
-        fallback: db,
+        path: &own_path,
+        fallback: &content.links(mount),
     };
-    let unit = unit_id(&asset_path);
+    let unit = unit_id(&content.path(file));
     let mut warnings = Vec::new();
     let mut objects = Vec::new();
     let mut imports = BTreeMap::new();
@@ -395,23 +412,25 @@ pub fn cook_unit(
                 .iter()
                 .map(|d| format!("{}: {}", object.name, d.display(&text))),
         );
-        let indexed = db.object(object.uuid);
+        let indexed = db
+            .object(object.uuid)
+            .map(|object| ContentObject { mount, object });
         // Built from, not loaded with: not imports.
         let built_from: HashSet<Uuid> = indexed
             .map(|o| {
-                build_dependencies(db, cookers, o)
-                    .map(|t| db.object_info(t).uuid)
+                build_dependencies(content, cookers, o)
+                    .map(|t| content.object_info(t).uuid)
                     .collect()
             })
             .unwrap_or_default();
         let closure = indexed
-            .map(|o| build_closure(db, cookers, o))
+            .map(|o| build_closure(content, cookers, o))
             .unwrap_or_default();
         for link in &read.links {
             if local.contains(&link.target) || built_from.contains(&link.target) {
                 continue;
             }
-            let target = unit_of(db, link.target).ok_or_else(|| {
+            let target = unit_of(content, mount, link.target).ok_or_else(|| {
                 object_error(format!(
                     "links to {}, which no indexed file defines",
                     link.target
@@ -419,27 +438,35 @@ pub fn cook_unit(
             })?;
             imports.insert(link.target, target);
         }
-        // The object's and its build dependencies', with the hashes the keys used:
-        // `read_source` checks the bytes it reads against them.
-        let sources: HashMap<String, u128> = indexed
+        // The object's and its build dependencies', by qualified path, with the files and the
+        // hashes the keys used: `read_source` checks the bytes it reads against them.
+        let sources: HashMap<String, (PathBuf, u128)> = indexed
             .into_iter()
             .chain(closure.iter().copied())
-            .flat_map(|o| db.source_links(o))
-            .filter_map(|s| Some((s.path.to_owned(), db.file_info(db.file(s.path)?).hash)))
+            .flat_map(|o| {
+                let m = content.mount(o.mount);
+                m.db.source_links(o.object).filter_map(move |s| {
+                    let f = m.db.file(s.path)?;
+                    Some((
+                        format!("/{}/{}", m.name, s.path),
+                        (m.db.root().join(s.path), m.db.file_info(f).hash),
+                    ))
+                })
+            })
             .collect();
         let mut ctx = CookContext {
             platform,
             profile,
-            root: db.root(),
+            mount: &content.mount(mount).name,
             sources: &sources,
             build: BuildInputs {
-                db,
+                content,
                 cookers,
                 // With the object itself, which a cycle in this unit leads back to.
                 allowed: indexed
                     .into_iter()
                     .chain(closure.iter().copied())
-                    .map(|o| db.object_info(o).uuid)
+                    .map(|o| (content.object_info(o).uuid, o))
                     .collect(),
                 read: HashMap::new(),
             },
@@ -472,23 +499,24 @@ pub fn cook_unit(
     Ok((assemble(unit, platform, objects, imports), warnings))
 }
 
-/// Every `.masset` file of the index.
-pub fn source_units(db: &AssetDb) -> Vec<FileId> {
-    let mut files: Vec<FileId> = db
+/// Every `.masset` file of every mount, by qualified path.
+pub fn source_units(content: &Content) -> Vec<ContentFile> {
+    let ext = format!(".{MASSET_EXT}");
+    let mut files: Vec<ContentFile> = content
         .files()
-        .filter(|&f| db.file_info(f).path.ends_with(&format!(".{MASSET_EXT}")))
+        .filter(|&f| content.db(f.mount).file_info(f.file).path.ends_with(&ext))
         .collect();
-    files.sort_by_cached_key(|&f| db.file_info(f).path);
+    files.sort_by_cached_key(|&f| content.path(f));
     files
 }
 
 /// Cooks `units` that are not in `ddc` yet, in parallel, and stores the results.
 pub fn cook(
-    db: &AssetDb,
+    content: &Content,
     cookers: &Cookers,
     ddc: &dyn Ddc,
     options: &CookOptions,
-    units: &[FileId],
+    units: &[ContentFile],
 ) -> CookReport {
     let threads = match options.threads {
         0 => std::thread::available_parallelism().map_or(4, |n| n.get()),
@@ -496,7 +524,7 @@ pub fn cook(
     }
     .clamp(1, units.len().max(1));
     let chunk = units.len().div_ceil(threads).max(1);
-    let keys = &Keys::new(db, cookers, options.platform, options.profile);
+    let keys = &Keys::new(content, cookers, options.platform, options.profile);
     let results: Vec<Result<UnitOutcome, CookError>> = std::thread::scope(|s| {
         let handles: Vec<_> = units
             .chunks(chunk)
@@ -524,9 +552,10 @@ pub fn cook(
     report
 }
 
-fn cook_one(keys: &Keys<'_>, ddc: &dyn Ddc, file: FileId) -> Result<UnitOutcome, CookError> {
-    let (db, cookers, platform, profile) = (keys.db, keys.cookers, keys.platform, keys.profile);
-    let path = db.asset_path(file);
+fn cook_one(keys: &Keys<'_>, ddc: &dyn Ddc, file: ContentFile) -> Result<UnitOutcome, CookError> {
+    let (content, cookers, platform, profile) =
+        (keys.content, keys.cookers, keys.platform, keys.profile);
+    let path = content.path(file);
     let key = keys.key(file)?;
     let unit = unit_id(&path);
     if ddc.contains(key) {
@@ -539,9 +568,9 @@ fn cook_one(keys: &Keys<'_>, ddc: &dyn Ddc, file: FileId) -> Result<UnitOutcome,
             warnings: Vec::new(),
         });
     }
-    let (bytes, warnings) = cook_unit(db, cookers, file, platform, profile)?;
+    let (bytes, warnings) = cook_unit(content, cookers, file, platform, profile)?;
     ddc.put(key, &bytes).map_err(|source| CookError::Io {
-        path: db.file_info(file).path,
+        path: content.file_path(file),
         source,
     })?;
     Ok(UnitOutcome {
@@ -554,14 +583,15 @@ fn cook_one(keys: &Keys<'_>, ddc: &dyn Ddc, file: FileId) -> Result<UnitOutcome,
     })
 }
 
-/// Cooks every unit of the project and returns the build manifest of the successful ones.
+/// Cooks every unit of every mount and returns the build manifest of the successful ones: one
+/// build holds the engine's content and the project's (0003 §4.5).
 pub fn cook_all(
-    db: &AssetDb,
+    content: &Content,
     cookers: &Cookers,
     ddc: &dyn Ddc,
     options: &CookOptions,
 ) -> (CookReport, Manifest) {
-    let mut report = cook(db, cookers, ddc, options, &source_units(db));
+    let mut report = cook(content, cookers, ddc, options, &source_units(content));
     let mut units: Vec<ManifestUnit> = report
         .units
         .iter()
@@ -573,17 +603,19 @@ pub fn cook_all(
         .collect();
     units.sort_by_key(|u| u.unit);
     let cooked: HashSet<u64> = units.iter().map(|u| u.unit).collect();
-    let mut objects: Vec<(Uuid, u64)> = db
+    // Bottom mount first and a stable sort: a UUID two mounts use stays with the lower one, as
+    // links resolve it.
+    let mut objects: Vec<(Uuid, u64)> = content
         .objects()
         .map(|o| {
-            let info = db.object_info(o);
-            (info.uuid, unit_id(&db.asset_path(info.file)))
+            let uuid = content.object_info(o).uuid;
+            (uuid, unit_id(&content.path(content.object_file(o))))
         })
         .filter(|(_, unit)| cooked.contains(unit))
         .collect();
-    objects.sort_unstable();
+    objects.sort_by_key(|o| o.0);
     objects.dedup_by_key(|(uuid, _)| *uuid);
-    let (mut names, errors) = named_objects(db, cookers);
+    let (mut names, errors) = named_objects(content, cookers);
     report.errors.extend(errors);
     names.retain(|(_, uuid)| objects.binary_search_by_key(uuid, |o| o.0).is_ok());
     let manifest = Manifest {
@@ -595,55 +627,59 @@ pub fn cook_all(
     (report, manifest)
 }
 
-/// Writes `manifest` to `<root>/.marlin/build/<platform>.manifest` and into `ddc` (under its own
-/// key, so a whole build is addressed by one key).
-pub fn publish_manifest(root: &Path, ddc: &dyn Ddc, manifest: &Manifest) -> std::io::Result<u128> {
+/// Writes `manifest` to `<build>/<platform>.manifest` (a project's `Project::build_dir`) and into
+/// `ddc` (under its own key, so a whole build is addressed by one key).
+pub fn publish_manifest(build: &Path, ddc: &dyn Ddc, manifest: &Manifest) -> std::io::Result<u128> {
     let bytes = manifest.to_bytes();
     let key = manifest.key();
     ddc.put(key, &bytes)?;
-    let dir = root.join(".marlin").join("build");
-    std::fs::create_dir_all(&dir)?;
-    std::fs::write(dir.join(format!("{}.manifest", manifest.platform)), &bytes)?;
+    std::fs::create_dir_all(build)?;
+    std::fs::write(
+        build.join(format!("{}.manifest", manifest.platform)),
+        &bytes,
+    )?;
     Ok(key)
 }
 
 /// One unit's cooked bytes: from `ddc` when its key is there, else cooked now and stored.
 /// Returns the key, the bytes, whether they were cached, and the cook's warnings.
 pub fn fetch_unit(
-    db: &AssetDb,
+    content: &Content,
     cookers: &Cookers,
     ddc: &dyn Ddc,
     platform: &Platform,
     profile: Profile,
-    file: FileId,
+    file: ContentFile,
 ) -> Result<(u128, Vec<u8>, bool, Vec<String>), CookError> {
-    let key = unit_key(db, cookers, file, platform, profile)?;
+    let key = unit_key(content, cookers, file, platform, profile)?;
     let io = |source| CookError::Io {
-        path: db.file_info(file).path,
+        path: content.file_path(file),
         source,
     };
     if let Some(bytes) = ddc.get(key).map_err(io)? {
         return Ok((key, bytes, true, Vec::new()));
     }
-    let (bytes, warnings) = cook_unit(db, cookers, file, platform, profile)?;
+    let (bytes, warnings) = cook_unit(content, cookers, file, platform, profile)?;
     ddc.put(key, &bytes).map_err(io)?;
     Ok((key, bytes, false, warnings))
 }
 
 /// The build's name table (0003 §4.4): every object of a type registered as named, by `!Name`,
 /// sorted by name. Names given twice (or whose hashes collide, which the runtime's tables could
-/// not tell apart) are errors, and none of the objects involved is in the table.
-pub fn named_objects(db: &AssetDb, cookers: &Cookers) -> (Vec<(String, Uuid)>, Vec<CookError>) {
-    let mut named: Vec<(String, Uuid, String)> = db
+/// not tell apart) are errors, and none of the objects involved is in the table. The table spans
+/// every mount: a game's names and the engine's share it.
+pub fn named_objects(
+    content: &Content,
+    cookers: &Cookers,
+) -> (Vec<(String, Uuid)>, Vec<CookError>) {
+    let mut named: Vec<(String, Uuid, String)> = content
         .objects()
-        .map(|o| db.object_info(o))
-        .filter(|info| cookers.is_named(info.type_name))
-        .map(|info| {
-            (
-                info.name.to_owned(),
-                info.uuid,
-                db.file_info(info.file).path,
-            )
+        .filter_map(|o| {
+            let info = content.object_info(o);
+            cookers.is_named(info.type_name).then(|| {
+                let path = content.file_path(content.object_file(o));
+                (info.name.to_owned(), info.uuid, path)
+            })
         })
         .collect();
     named.sort_by(|a, b| (&a.0, a.1).cmp(&(&b.0, b.1)));

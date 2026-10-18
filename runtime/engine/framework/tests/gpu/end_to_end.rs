@@ -1,13 +1,12 @@
 //! The whole pipeline on real hardware: `samples/basic` cooked, packaged, booted, rendered with
-//! the engine's cooked shaders (`content/engine`, its own package) and read back; the same
-//! through a live cook service; and an edit hot-reloading into the picture.
+//! the engine's cooked shaders (`content/engine`, cooked into the sample's build) and read back;
+//! the same through a live cook service; and an edit hot-reloading into the picture.
 
 use std::path::Path;
-use std::sync::OnceLock;
 use std::time::Duration;
 
 use marlin_asset::Uuid;
-use marlin_asset_db::{AssetDb, Options};
+use marlin_asset_db::{Options, Project};
 use marlin_cook_core::{CookOptions, PackageOptions, cook_all, publish_manifest, write_package};
 use marlin_cookd::{Cookd, CookdOptions, bind};
 use marlin_cooker::{engine_cookers, open_ddc};
@@ -50,45 +49,34 @@ fn sample(name: &str) -> TempDir {
     root
 }
 
-/// Cooks and packages `root`; returns the package path.
+/// The project at `root`, with this repository's engine (the copy is outside it).
+fn project(root: &Path) -> Project {
+    let engine = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+    Project::open_with(root, Some(&engine)).unwrap()
+}
+
+/// Cooks and packages the project at `root`, the engine's content with it; returns the package
+/// path.
 fn package(root: &Path) -> String {
-    let db = AssetDb::build(
-        root,
-        Options {
+    let project = project(root);
+    let content = project
+        .build_content(&Options {
             journal: false,
             ..Options::default()
-        },
-    )
-    .unwrap();
-    let ddc = open_ddc(root, None).unwrap();
+        })
+        .unwrap();
+    let ddc = open_ddc(&project.ddc_dir(), None).unwrap();
     let (report, manifest) = cook_all(
-        &db,
+        &content,
         &engine_cookers(),
         ddc.as_ref(),
         &CookOptions::default(),
     );
     assert!(report.errors.is_empty(), "{:?}", report.errors);
-    publish_manifest(root, ddc.as_ref(), &manifest).unwrap();
+    publish_manifest(&project.build_dir(), ddc.as_ref(), &manifest).unwrap();
     let out = root.join("content.mpak");
     write_package(&manifest, ddc.as_ref(), &PackageOptions::default(), &out).unwrap();
     out.to_string_lossy().into_owned()
-}
-
-/// The engine's content (`content/engine`) cooked and packaged once per test binary, as a game
-/// mounts it below its own (`content.engine`).
-fn engine_package() -> String {
-    static PACKAGE: OnceLock<String> = OnceLock::new();
-    PACKAGE
-        .get_or_init(|| {
-            let root = TempDir::new("e2e-engine");
-            let content = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../content/engine");
-            copy_dir(&content, &root);
-            let path = package(&root);
-            // Kept for the binary's life: the package is read while tests run.
-            std::mem::forget(root);
-            path
-        })
-        .clone()
 }
 
 struct Viewer {
@@ -188,13 +176,14 @@ fn check_sample(pixels: &[u32]) {
 fn start_cookd(root: &Path) -> BackgroundService {
     let root = root.to_owned();
     BackgroundService::spawn(move |ready, stop| {
-        let (db, _) = AssetDb::open(&root, Options::default()).unwrap();
-        let ddc = open_ddc(&root, None).unwrap();
+        let project = project(&root);
+        let (content, _) = project.open_content(&Options::default()).unwrap();
+        let ddc = open_ddc(&project.ddc_dir(), None).unwrap();
         let options = CookdOptions {
             workers: 2,
             watch_interval: Duration::from_millis(30),
         };
-        let mut cookd = Cookd::new(db, engine_cookers(), ddc, &options);
+        let mut cookd = Cookd::new(content, engine_cookers(), ddc, &options);
         let mut server = bind("127.0.0.1:0".parse().unwrap()).unwrap();
         ready.listening(server.local_addr());
         cookd.serve(&mut server, stop).unwrap();
@@ -208,7 +197,7 @@ fn the_sample_cooks_packages_and_renders_the_same_from_cookd() {
     let level: Uuid = LEVEL.parse().unwrap();
 
     let boot = mount(&ContentSettings {
-        packages: vec![engine_package(), package],
+        packages: vec![package],
         cookd: None,
         platform: marlin_rt::PLATFORM.into(),
         level,
@@ -227,11 +216,11 @@ fn the_sample_cooks_packages_and_renders_the_same_from_cookd() {
         &Image::from_words(WIDTH, HEIGHT, &packaged)
     );
 
-    // The same content streamed from a cook service (the engine's still from its package): the
+    // The same content streamed from a cook service (the engine's with it): the
     // same picture, pixel for pixel.
     let cookd = start_cookd(&root);
     let boot = mount(&ContentSettings {
-        packages: vec![engine_package()],
+        packages: Vec::new(),
         cookd: Some(cookd.addr()),
         platform: marlin_rt::PLATFORM.into(),
         level,
@@ -251,7 +240,7 @@ fn editing_the_level_changes_the_picture_live() {
     let cookd = start_cookd(&root);
     let level: Uuid = LEVEL.parse().unwrap();
     let boot = mount(&ContentSettings {
-        packages: vec![engine_package()],
+        packages: Vec::new(),
         cookd: Some(cookd.addr()),
         platform: marlin_rt::PLATFORM.into(),
         level,
@@ -261,7 +250,7 @@ fn editing_the_level_changes_the_picture_live() {
     check_sample(&before);
 
     // The sphere turns green in the text; the running game follows.
-    let path = root.join("levels/main.masset");
+    let path = root.join("content/levels/main.masset");
     let text = std::fs::read_to_string(&path).unwrap();
     let edited = text.replace(
         "Color = (0.9, 0.55, 0.2, 1.0)",

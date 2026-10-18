@@ -119,8 +119,13 @@ fn kitchen(p: &Project) {
 }
 
 fn key(p: &Project, path: &str) -> u128 {
-    let db = p.db();
-    let file = db.file(path).unwrap();
+    let db = p.content();
+    // Relative to the project's mount, or qualified as reports name units.
+    let path = match path.strip_prefix('/') {
+        Some(_) => path.to_owned(),
+        None => format!("/Game/{path}"),
+    };
+    let file = db.file(&path).unwrap();
     unit_key(
         &db,
         &cookers(),
@@ -136,7 +141,7 @@ fn a_cooker_reads_its_build_dependencies_and_their_sources() {
     let p = Project::new("build-read");
     kitchen(&p);
     let units = p.cook(&cookers()).unwrap();
-    let soup = units.iter().find(|u| u.path == "soup").unwrap();
+    let soup = units.iter().find(|u| u.path == "/Game/soup").unwrap();
     let view = UnitView::new(&soup.bytes).unwrap();
     let (_, entry) = view.find(SOUP).unwrap();
     let dish: Dish = marlin_serial::from_bytes(view.payload(&entry)).unwrap();
@@ -179,7 +184,7 @@ fn a_dependency_s_inputs_are_in_its_dependents_keys() {
     assert_eq!(key(&p, "soup.masset"), soup);
 
     // The whole cook computes the same keys, sharing the dependencies'.
-    let db = p.db();
+    let db = p.content();
     let (report, _) = cook_all(&db, &cookers(), &p.ddc("ddc"), &CookOptions::default());
     assert!(report.errors.is_empty(), "{:?}", report.errors);
     for unit in &report.units {
@@ -205,10 +210,10 @@ fn build_dependency_cycles_between_units_are_errors() {
     }
     let toast = errors
         .iter()
-        .find(|e| e.starts_with("toast.masset"))
+        .find(|e| e.starts_with("/Game/toast.masset"))
         .unwrap();
     assert!(
-        toast.contains("egg.masset → hen.masset → egg.masset"),
+        toast.contains("/Game/egg.masset → /Game/hen.masset → /Game/egg.masset"),
         "{toast}"
     );
 }
@@ -247,7 +252,7 @@ fn a_build_dependency_that_does_not_cook_fails_its_dependents() {
     assert_eq!(errors.len(), 3, "salt, stock and soup: {errors:?}");
     let soup = errors
         .iter()
-        .find(|e| e.starts_with("soup.masset"))
+        .find(|e| e.starts_with("/Game/soup.masset"))
         .unwrap();
     assert!(soup.contains("its build dependency"), "{soup}");
     assert!(soup.contains("gone.txt"), "{soup}");

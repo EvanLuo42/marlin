@@ -3,9 +3,11 @@
 
 use marlin_asset::Uuid;
 use marlin_asset::cooked::{Encoding, UnitView};
-use marlin_cook_core::{Cookers, Platform, Profile, unit_key};
+use marlin_asset_db::{Content, ENGINE_MOUNT, GAME_MOUNT, Mount};
+use marlin_cook_core::{CookOptions, Cookers, Ddc, Platform, Profile, cook_all, unit_key};
 use marlin_cook_shader::{ShaderCooker, ShaderPackageCooker};
 use marlin_reflect::type_info;
+use marlin_serial::cooked::CookedBuffer;
 use marlin_shader::asset::{Shader, ShaderLibrary, ShaderPackage};
 use marlin_shader::reflect::{ConstValue, Stage};
 
@@ -107,7 +109,7 @@ fn a_shader_cooks_into_a_library_of_its_one_entry() {
         ],
     );
     let units = p.cook(&cookers()).unwrap();
-    let unit = units.iter().find(|u| u.path == "shaders").unwrap();
+    let unit = units.iter().find(|u| u.path == "/Game/shaders").unwrap();
     assert!(unit.warnings.is_empty(), "{:?}", unit.warnings);
 
     let plain = library(&unit.bytes, 10);
@@ -134,7 +136,10 @@ fn a_shader_cooks_into_a_library_of_its_one_entry() {
     assert_eq!(view.import_count(), 0);
 
     // The package's own library has no generic entries; it is still a valid library.
-    let kit = units.iter().find(|u| u.path == "kit/package").unwrap();
+    let kit = units
+        .iter()
+        .find(|u| u.path == "/Game/kit/package")
+        .unwrap();
     let kit = library(&kit.bytes, 1);
     assert!(kit.entries.is_empty());
 }
@@ -157,7 +162,7 @@ fn the_package_is_the_compile_s_context() {
         )],
     );
     let units = p.cook(&cookers()).unwrap();
-    let unit = units.iter().find(|u| u.path == "shaders").unwrap();
+    let unit = units.iter().find(|u| u.path == "/Game/shaders").unwrap();
     let lib = library(&unit.bytes, 10);
     assert_eq!(lib.package, "Game");
     let packages: Vec<&str> = lib.entries[0]
@@ -196,16 +201,16 @@ fn the_key_follows_the_package_and_its_dependencies() {
     );
     let cookers = cookers();
     let key = |p: &Project| {
-        let db = p.db();
-        let file = db.file("shaders.masset").unwrap();
+        let db = p.content();
+        let file = db.file("/Game/shaders.masset").unwrap();
         unit_key(&db, &cookers, file, Platform::host(), Profile::Development).unwrap()
     };
     let before = key(&p);
     assert_ne!(
         unit_key(
-            &p.db(),
+            &p.content(),
             &cookers,
-            p.db().file("shaders.masset").unwrap(),
+            p.content().file("/Game/shaders.masset").unwrap(),
             Platform::host(),
             Profile::Shipping
         )
@@ -242,4 +247,122 @@ fn bad_permutations_are_errors() {
         assert_eq!(errors.len(), 1, "{body}: {errors:?}");
         assert!(errors[0].contains(expected), "{body}: {}", errors[0]);
     }
+}
+
+/// A game's permutation of an engine entry point (0003 §4.5): the engine's package is a build
+/// dependency in the mount below, read from there, sources and all, and its library still
+/// cooks in the engine's mount.
+#[test]
+fn a_game_shader_builds_from_an_engine_package() {
+    let engine = Project::new("permutation-engine");
+    engine.write(
+        "kit/Kit.mshader",
+        KIT.replace("namespace Kit;", "namespace Marlin.Kit;"),
+    );
+    engine.write(
+        "kit/package.masset",
+        format!(
+            "!Version 1\nShaderPackage {{ !Uuid = \"{KIT_ID}\" !Name = \"Marlin.Kit\" \
+             Sources = [`source:kit/Kit.mshader`] }}\n"
+        ),
+    );
+    let game = Project::new("permutation-game");
+    game.write(
+        "game/Game.mshader",
+        GAME.replace("Kit.IOp", "Marlin.Kit.IOp"),
+    );
+    game.write(
+        "game/package.masset",
+        format!(
+            "!Version 1\nShaderPackage {{ !Uuid = \"{GAME_ID}\" !Name = \"Game\" \
+             Sources = [`source:game/Game.mshader`] \
+             Dependencies = [</Engine/kit/package:Marlin.Kit #{KIT_ID}>] }}\n"
+        ),
+    );
+    shaders(
+        &game,
+        &[
+            (
+                10,
+                "Double",
+                &format!(
+                    "Package = </Engine/kit/package:Marlin.Kit #{KIT_ID}> \
+                     Entry = \"Marlin.Kit.Map\" TypeArgs = [\"Marlin.Kit.Doubler\"]"
+                ),
+            ),
+            (
+                11,
+                "Triple",
+                &format!(
+                    "Package = <game/package:Game #{GAME_ID}> Entry = \"Marlin.Kit.Map\" \
+                     TypeArgs = [\"Game.Tripler\"]"
+                ),
+            ),
+        ],
+    );
+    let content = Content::new(vec![
+        Mount {
+            name: ENGINE_MOUNT.into(),
+            db: engine.db(),
+        },
+        Mount {
+            name: GAME_MOUNT.into(),
+            db: game.db(),
+        },
+    ]);
+    let ddc = game.ddc("ddc");
+    let (report, manifest) = cook_all(&content, &cookers(), &ddc, &CookOptions::default());
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert_eq!(manifest.named("Marlin.Kit"), Some(KIT_ID));
+    let unit = report
+        .units
+        .iter()
+        .find(|u| u.path == "/Game/shaders")
+        .unwrap();
+    let bytes = CookedBuffer::copy_from(&ddc.get(unit.key).unwrap().unwrap(), 4096);
+    for (id, package) in [(10, "Marlin.Kit"), (11, "Game")] {
+        let lib = library(&bytes, id);
+        assert_eq!(lib.package, package);
+        let entry = lib.entry("Marlin.Kit.Map").unwrap();
+        assert_eq!(entry.code[..4], SPIRV_MAGIC);
+        // The engine's file is an input, by the path within its package.
+        assert!(
+            entry
+                .reflection
+                .sources
+                .iter()
+                .any(|s| s.package == "Marlin.Kit" && s.path == "kit/Kit.mshader"),
+            "{:?}",
+            entry.reflection.sources
+        );
+    }
+
+    // Editing the engine's source changes the game's permutations.
+    let before = unit.key;
+    engine.write(
+        "kit/Kit.mshader",
+        format!(
+            "{}// edited\n",
+            KIT.replace("namespace Kit;", "namespace Marlin.Kit;")
+        ),
+    );
+    let content = Content::new(vec![
+        Mount {
+            name: ENGINE_MOUNT.into(),
+            db: engine.db(),
+        },
+        Mount {
+            name: GAME_MOUNT.into(),
+            db: game.db(),
+        },
+    ]);
+    let file = content.file("/Game/shaders.masset").unwrap();
+    let after = unit_key(
+        &content,
+        &cookers(),
+        file,
+        Platform::host(),
+        Profile::Development,
+    );
+    assert_ne!(after.unwrap(), before);
 }

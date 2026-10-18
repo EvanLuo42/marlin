@@ -25,7 +25,8 @@
 | 压缩 | 每个 chunk 可选 codec；zstd、LZ4、GDeflate **全部自研**，先把 API 定死并实现功能，之后再优化；主机硬件解压走 ext |
 | 包与挂载 | 分层挂载并按优先级覆盖（base < patch < DLC < dev）；包布局对平台的二进制差分补丁友好 |
 | 主循环 | 模拟与渲染重叠：渲染数据抽取成快照，两侧都以 job 图运行 |
-| Shader | `ShaderPackage`（`!Name` 即包名）cook 成整包的库，含全部 public 入口；运行时按包名查名字表，再按入口全名取；引擎 shader 在 `content/engine`，独立的引擎包；包依赖和 `Shader` 变体都是构建依赖（§4.1、§4.4，2026-10-18） |
+| Shader | `ShaderPackage`（`!Name` 即包名）cook 成整包的库，含全部 public 入口；运行时按包名查名字表，再按入口全名取；`Marlin.*` 包名留给引擎；材质 shader 只经链接取；包依赖和 `Shader` 变体都是构建依赖，可以跨挂载（§4.1、§4.4、§4.5，2026-10-18） |
+| 工程与挂载 | `<Name>.mproject` 工程文件，内容在 `content/`；引擎内容 `/Engine` 和工程内容 `/Game` 是同一构建的两个挂载，引擎随工程一起从源码 cook 进同一个包；发行版 editor 只读地带着引擎内容的源文件（§4.5，2026-10-18） |
 | 世界数据 | 用同一种文本格式：entity 是对象，component 是嵌套块，prefab、关卡、流式 cell 都通过链接组织 |
 | 第三方 | 核心算法自研：压缩、BCn 编码、网格优化、meshlet；外部格式的解析用成熟 crate（png/jpeg/exr/glTF） |
 | 首批导入格式 | glTF 2.0，PNG/TGA/JPEG，EXR/HDR |
@@ -214,7 +215,9 @@ bulk        GPU 数据（顶点、纹理 mip），对齐到 4 KiB，直接上传
     - 包索引（MPK v2 的 `NameRecord`：xxh3-64 名字哈希加 UUID）；
     - cookd 的对象表。
   - 重名或哈希相撞在 cook 时报错，涉及的对象都不进名字表。
-  - `Vfs::named("Marlin.Engine")` 从上层往下查，所以上层可以覆盖引擎的包。
+  - 名字表跨所有挂载（§4.5）：引擎和游戏的名字在同一张表里，所以必须全局唯一。
+  - `Marlin` 和 `Marlin.…` 只给引擎挂载的包用，引擎的包也只能叫这些；违反时 cook 报错。这样游戏的名字永远不会和引擎（包括以后版本的引擎）撞上。0011 里 cook 生成的包（`Marlin.Generated.Closures`）不是写出来的 `ShaderPackage` 对象，不受这条约束。
+  - `Vfs::named` 从上层往下查，补丁层可以替换基础包里的库；同一个构建里不能靠重名来覆盖。
   - 引擎先按包名加载库，再用全名取入口（`Marlin.Engine.ForwardVs`）。代码里不出现 shader 的路径或 UUID。
 - **target**：写在 `platforms/<p>/platform.toml` 的 `[cook] shader-target`，Windows 和 Linux 是 `vulkan-1.4`。macOS 写的是 `metal-3`，还没有后端，cook 时报错。
 - **cook 键**：
@@ -222,10 +225,11 @@ bulk        GPU 数据（顶点、纹理 mip），对齐到 4 KiB，直接上传
   - 包的全部 `Sources` 按内容进键。
   - `CompileOutput::used_sources` 只写进反射的 `sources`。按入口、按实际用到的文件缓存（0005 §8 的 manifest 模式）还没做，见待做。
 - **profile**：`CookOptions::profile`，取 Development 或 Shipping，`marlin-cook cook --shipping` 选 Shipping。只有读它的 cooker 把它放进 `key`，所以纹理和网格不会因为 profile 不同而重 cook。cookd 总是用 Development。
-- **引擎内容**：
-  - `content/engine/` 是独立的资产根，单独 cook 和打包，`samples/basic/boot.toml` 用新 cvar `content.engine` 先挂上它，游戏包挂在它上面。
-  - cookd 只服务游戏内容，引擎包总是从包里来。
-  - 用户对这一项没有偏好，按推荐做。
+- **引擎内容**：`content/engine/` 是引擎的资产根，作为 `/Engine` 挂载进每个工程，和工程内容一起 cook 进同一个构建（§4.5）。最初把它做成单独 cook、单独打包、运行时用 `content.engine` 先挂的独立包，2026-10-18 改掉了，原因见 §4.5。
+- **两类 shader 怎么找**：
+  - 引擎的和游戏自己的全局 shader（pass 用的）：按包名查名字表，再按入口全名取。代码里只出现包名和入口名。
+  - 材质 shader：不按名字找。材质链接到 `Shader` 变体对象，变体对象经 `Package` 链接到包（可以是 `/Engine/…` 里的包），cook 结果是单入口的库，随材质的链接加载。
+  - 构建依赖可以跨挂载：游戏的 `Shader` 或 `ShaderPackage` 可以从引擎的包构建。每个包的源文件都从它自己的挂载读（`Dependency::mount`，`read_source` 接受 `/Engine/…` 这样的全路径）。
 - **包依赖**（2026-10-18）：
   - `ShaderPackage.Dependencies` 和 `Shader.Package` 都是构建依赖（§4.1），两个 cooker 的 `build_dependency_types` 都是 `ShaderPackage`。
   - cooker 经 `CookContext::dependency` 沿 `Dependencies` 递归读出整个闭包，按依赖在前的顺序加进 session，每个包都依赖核心库和它直接列出的包。
@@ -246,6 +250,57 @@ bulk        GPU 数据（顶点、纹理 mip），对齐到 4 KiB，直接上传
   - `Shader` 用 `register` 登记，不进名字表：材质靠链接找到它。
   - 键与包的 cooker 相同：target、profile 和编译器指纹，再加上包闭包里各单元的键。
 - **还没做**：同一个包的大量变体各建一个 session，前端分析不共享（见待做）。
+
+### 4.5 工程、挂载与发行
+
+2026-10-18 定下来的（照 AAA 引擎的做法，用户要求）。要支持两种开发方式：工程和引擎在同一个目录树里（UE 的源码版加 native 工程，本仓库的 `samples/`）；工程独立存放，用发行版 editor 打开工程文件。
+
+- **原先的问题**：引擎内容是单独 cook、单独打包的另一个资产根，运行时再挂一层。
+  - 引擎包和游戏包可能出自不同版本的编译器，或用了不同的 profile。
+  - 两份索引互不相通，游戏内容链接不到引擎资产，以后材质要链接引擎的 shader 包也做不了。
+  - cookd 不服务引擎内容，改了引擎 shader 只能手动重新打包。
+  - 发行版 editor 只能附带预先 cook 好的引擎包，可它每换一个平台、profile 或编译器版本就要重做。
+- **工程文件**：`<Name>.mproject`（TOML），格式如下：
+  ```toml
+  [project]
+  name = "Basic"
+  # engine = "../MarlinEngine"   可选，相对于这个文件
+  ```
+  ```text
+  MyGame/
+    MyGame.mproject
+    boot.toml
+    content/          /Game 挂载
+    .marlin/          只在本机：index/<挂载>/、ddc/、build/<platform>.{manifest,mpak}
+  ```
+  `marlin_asset_db::Project::open` 接受目录或文件。工具的命令行都接受工程（`marlin-cook cook samples/basic`）。
+- **引擎在哪**：按下面的顺序找，"引擎根"指含有 `content/engine/` 的目录。
+  1. 工程文件里的 `engine`。
+  2. 工程目录往上最近的一个引擎根，对应同目录开发（UE 的 native 工程）。
+  3. 当前运行的工具所属的引擎：从 exe 所在目录往上找，对应独立工程用发行版 editor 打开。
+  4. 工具和测试可以用 `Project::open_with` 直接给出引擎。
+- **挂载**（`marlin_asset_db::Content`）：每个挂载是一个资产根，各有一份 `AssetDb`，自下而上依次是 `Engine`（`<引擎>/content/engine`）、以后的插件、`Game`（`<工程>/content`）。
+  - 每个挂载只看得见自己和它下面的挂载：游戏可以链接引擎，引擎链接不到游戏。
+  - 挂载内的链接和源文件路径照旧相对于挂载根。跨挂载的链接写全路径：`</Engine/shaders/package:Marlin.Engine #…>`。工具自动修正这类路径，`validate` 也报告过期的全路径。
+  - 单元按全路径命名（`unit_id("/Engine/shaders/package")`），所以不同挂载的单元 ID 不会相同。
+  - UUID 被两个挂载同时使用时，链接解析到下层那个，`validate` 报 `DuplicateUuidBelow`。
+- **一个工程、一个平台只有一个构建**：`cook_all` cook 所有挂载的所有单元，清单和 `.mpak` 里同时有引擎和游戏的单元。
+  - 运行时只挂一个基础包，补丁和 DLC 再往上挂。`content.engine` 已删除。
+  - 引擎内容目前整体 cook。它有一部分是按名字找的（shader 包），不在任何链接闭包里。按可达性只 cook 用到的部分（UE 的 always-cook 加引用闭包）在待做里。
+- **索引和缓存都不写进引擎目录**：
+  - 每个挂载的索引放在 `<工程>/.marlin/index/<挂载>`，因为发行版的引擎目录可能是只读的，几个工程也可能共用一个引擎。
+  - cook 键里没有任何本机信息，路径都是全路径。所以同一份引擎内容在每个工程里的键都相同，共享 store 能在工程之间复用 cook 结果。
+- **cookd** 服务所有挂载：引擎 shader 改了，也会经 dev 协议推送失效通知（库重载后重建 pipeline 还没做）。
+- **发行版 editor 的布局**：
+  ```text
+  <安装目录>/            只读，相当于 UE 的 UE_5.x/Engine
+    bin/                 marlin-editor、marlin-cook、marlin-cookd、marlin-store
+    bin/<platform>/<config>/marlin-game   预编译好；所有游戏共用这一个可执行文件（0001 §6.3）
+    content/engine/      引擎内容的源文件：.masset、.mshader
+  ```
+  - shader 编译器链接在 cook 工具里，平台描述在构建时编进去（`platforms/*/platform.toml`）。所以发行版不带任何 cook 好的引擎数据，引擎 shader 按工程的平台和 profile 从源码 cook。
+  - 主机平台的 cooker 插件随对应平台仓库编进工具。
+  - 发布一个游戏的流程：`marlin-cook cook <工程> --platform p --shipping`，再 `package`，然后把 `.mpak` 和预编译的 `marlin-game`、`boot.toml` 放到一起。
 
 ## 5. 缓存
 
@@ -309,12 +364,12 @@ bulk        GPU 数据（顶点、纹理 mip），对齐到 4 KiB，直接上传
 | `runtime/engine/asset` (`marlin-asset`) | L3 | 句柄、包、VFS、加载流水线、dev source |
 | `runtime/engine/framework` | L3 | 主循环与帧流水线 |
 | `tools/masset` | std | `.masset` 的词法、语法、writer、reflect 绑定和快速 extract |
-| `tools/asset_db` | std | 索引 |
+| `tools/asset_db` | std | 索引；挂载（`Content`）与工程文件（`Project`，§4.5） |
 | `tools/vcs` | std | VCS trait 与 Git 后端 |
 | `tools/cook_core` | std | 依赖图、cook 键、DDC、cooked 单元写出、打包 |
 | `tools/cook_texture`、`tools/cook_mesh` | std | 导入与编码 |
 | `tools/cook_shader` | std | shader 包 → 库（`marlin-shaderc`） |
-| `content/engine` | 内容 | 引擎自己的资产根：`shaders/`（`Marlin.Engine` 包） |
+| `content/engine` | 内容 | 引擎自己的资产根，作为 `/Engine` 挂进每个工程：`shaders/`（`Marlin.Engine` 包） |
 | `tools/store` | std | 共享缓存服务器（库加二进制） |
 | `tools/cookd` | std | cook 服务 |
 | `tools/cooker` | std | CLI：cook、打包、校验、查询 |
@@ -483,9 +538,30 @@ bulk        GPU 数据（顶点、纹理 mip），对齐到 4 KiB，直接上传
     - cook_core：读传递依赖及其源文件、只能读构建依赖、依赖变化改变下游的键而运行时引用不改变、全量 cook 的键与逐个算的相同、单元间的环、坏依赖使下游失败、悬空链接；
     - cook_shader：包按依赖编译（库里只有自己的入口，不 import 依赖）、传递依赖进键、同单元和跨单元的环、缺失的依赖；`Shader` 的单入口库（类型实参、静态参数、不 import 包）、Package 作为上下文、键跟随包闭包和 profile、错误（缺 Package、缺 Entry、不存在的入口、参数类型不对）；
     - shaderc：类型实参所在的包进入编译（`used_sources`、反射和诊断）。
+- **工程与挂载完成**（§4.5，2026-10-18）：
+  - `marlin_asset_db`：`Content`（多挂载、按挂载可见性解析链接、`MountLinks`、跨挂载校验和 `DuplicateUuidBelow`）；`Project`（`.mproject`、找引擎、每个挂载的索引放在工程的 `.marlin/index/<挂载>`）。
+  - cook_core 的 `unit_key`、`cook_unit`、`cook`、`cook_all`、`fetch_unit`、`named_objects` 都改成接受 `Content`，单元按全路径命名；`CookContext::mount`；`publish_manifest` 接受构建目录。
+  - 构建依赖可以跨挂载：闭包按挂载可见性解析；源文件按全路径登记，每个文件从它自己的挂载读；`Dependency::mount` 和 `Dependency::source` 由此而来。
+  - shader cooker：`Marlin` / `Marlin.…` 包名只给引擎挂载用；每个包的源文件从它自己的挂载读。
+  - `marlin-cook` 和 `marlin-cookd` 都接受工程；`open_ddc` 接受缓存目录。
+  - framework 删除了 `content.engine`。`samples/basic` 改成工程布局：`Basic.mproject` 加 `content/`。
+  - 测试：
+    - 跨挂载解析和校验；
+    - 工程文件、找引擎和错误报告；
+    - 引擎加游戏的一次构建（跨挂载 import，游戏改动不影响引擎的键）；
+    - 保留包名；
+    - CLI 构建包含引擎单元；
+    - 端到端 GPU 测试改为只挂一个包，cookd 同时服务引擎 shader，golden 不变。
+    - 游戏的 `Shader` 变体从引擎的包构建（跨挂载读源文件）。
 - **待做**：
   - Linux 和 macOS 的变更源（fanotify、FSEvents）。
   - 共享缓存中的 extract；store 的 LRU 与容量上限；store 的鉴权与 TLS（目前只适合可信局域网）。
+  - 工程：
+    - 按引擎版本关联已安装的引擎（UE 的 EngineAssociation，查每个用户自己的已安装引擎表），现在只能写路径或靠目录查找；
+    - 发行版自带的只读 DDC 层（预先 cook 好的引擎内容，相当于 UE 的 DDP），以及用户目录下多个工程共用的引擎缓存；
+    - 按可达性 cook：入口关卡和按名字找的对象加上引用闭包，引擎内容不再整体 cook；
+    - 插件挂载；
+    - staging：把包、预编译的 game 和 `boot.toml` 放到一起。
   - shader：
     - 按入口、按实际用到的源文件缓存（0005 §8 的 manifest 模式，cooker 需要能访问 DDC）；现在改一个文件，整个包都重编；
     - 变体共享前端：同一个包闭包的大量 `Shader` 变体现在各建一个 session，各做一遍前端分析。3A 规模（成千上万个材质变体）要在 cooker 里按闭包的键缓存长期存活的 session，cookd 也保留它（0005 §5 的 Session 本来就是为长期存活设计的）；

@@ -1,11 +1,9 @@
 # The sample's boot configuration (see marlin_framework::boot).
-# Cook and package the engine's content and the sample first:
-#   marlin-cook cook content/engine  then  marlin-cook package content/engine
-#   marlin-cook cook samples/basic   then  marlin-cook package samples/basic
-# Or stream the sample from a running cook service instead: +content.cookd 127.0.0.1:47200
+# Cook and package the project first; its build holds the engine's content too:
+#   marlin-cook cook samples/basic  then  marlin-cook package samples/basic
+# Or stream it from a running cook service instead: +content.package "" +content.cookd 127.0.0.1:47200
 
 [content]
-engine = "../../content/engine/.marlin/build/{platform}.mpak"
 package = ".marlin/build/{platform}.mpak"
 
 [game]

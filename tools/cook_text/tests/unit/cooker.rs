@@ -51,7 +51,7 @@ fn samples_cook_load_and_format() {
     p.copy_sample("strings_ru.masset");
     let units = p.cook(&cookers()).unwrap();
     assert_eq!(units.len(), 2);
-    assert_eq!(units[0].path, "strings/strings_en");
+    assert_eq!(units[0].path, "/Game/strings/strings_en");
     assert!(units.iter().all(|u| u.warnings.is_empty()), "no warnings");
     let en = StringTable::new(payload(&units[0])).unwrap();
     let ru = StringTable::new(payload(&units[1])).unwrap();

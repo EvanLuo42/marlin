@@ -10,6 +10,8 @@ use marlin_cook_core::{
 use marlin_reflect::{Reflect, type_info};
 use marlin_test_support::panic_message;
 
+use marlin_asset_db::{Content, ENGINE_MOUNT, GAME_MOUNT, Mount};
+
 use crate::support::{Project, uuid};
 
 #[derive(Clone, PartialEq, Debug, Default, Reflect)]
@@ -117,7 +119,7 @@ fn key_of(report: &marlin_cook_core::CookReport, path: &str) -> u128 {
 fn cooks_everything_once_then_hits_the_cache() {
     let p = Project::new("cache");
     standard(&p);
-    let db = p.db();
+    let db = p.content();
     let cookers = cookers();
     let ddc = p.ddc("ddc");
     let options = CookOptions::default();
@@ -131,9 +133,9 @@ fn cooks_everything_once_then_hits_the_cache() {
     assert_eq!(manifest, manifest2, "same inputs, same build");
 
     // The unit's layout and contents.
-    let bytes = ddc.get(key_of(&report, "a")).unwrap().unwrap();
+    let bytes = ddc.get(key_of(&report, "/Game/a")).unwrap().unwrap();
     let unit = UnitView::new(&bytes).unwrap();
-    assert_eq!(unit.header().unit, unit_id("a"));
+    assert_eq!(unit.header().unit, unit_id("/Game/a"));
     assert_eq!(unit.object_count(), 2);
     assert!(
         unit.object(0).unwrap().uuid < unit.object(1).unwrap().uuid,
@@ -157,9 +159,9 @@ fn cooks_everything_once_then_hits_the_cache() {
         "the link to B leaves the unit; A2's link to A does not"
     );
     let import = unit.import(0).unwrap();
-    assert_eq!((import.uuid, import.unit), (B1, unit_id("b")));
+    assert_eq!((import.uuid, import.unit), (B1, unit_id("/Game/b")));
 
-    let bytes = ddc.get(key_of(&report, "img")).unwrap().unwrap();
+    let bytes = ddc.get(key_of(&report, "/Game/img")).unwrap().unwrap();
     let unit = UnitView::new(&bytes).unwrap();
     let (_, picture) = unit.find(I1).unwrap();
     let cooked: CookedImage = marlin_serial::from_bytes(unit.payload(&picture)).unwrap();
@@ -178,9 +180,12 @@ fn cooks_everything_once_then_hits_the_cache() {
 
     // The manifest knows every unit and object.
     assert_eq!(manifest.units.len(), 3);
-    assert_eq!(manifest.unit_of(C1), Some(unit_id("a")));
-    assert_eq!(manifest.unit_key(unit_id("b")), Some(key_of(&report, "b")));
-    let key = publish_manifest(&p.root, &ddc, &manifest).unwrap();
+    assert_eq!(manifest.unit_of(C1), Some(unit_id("/Game/a")));
+    assert_eq!(
+        manifest.unit_key(unit_id("/Game/b")),
+        Some(key_of(&report, "/Game/b"))
+    );
+    let key = publish_manifest(&p.root.join(".marlin/build"), &ddc, &manifest).unwrap();
     let stored = Manifest::from_bytes(&ddc.get(key).unwrap().unwrap()).unwrap();
     assert_eq!(stored, manifest);
     assert!(
@@ -197,7 +202,7 @@ fn only_changed_inputs_cook_again() {
     let cookers = cookers();
     let ddc = p.ddc("ddc");
     let options = CookOptions::default();
-    let mut db = p.db();
+    let mut db = p.content();
     let (first, _) = cook_all(&db, &cookers, &ddc, &options);
 
     // A source file changes: only the unit using it.
@@ -205,8 +210,8 @@ fn only_changed_inputs_cook_again() {
     db.update().unwrap();
     let (r, _) = cook_all(&db, &cookers, &ddc, &options);
     assert_eq!(r.cooked(), 1);
-    assert_ne!(key_of(&r, "img"), key_of(&first, "img"));
-    assert_eq!(key_of(&r, "a"), key_of(&first, "a"));
+    assert_ne!(key_of(&r, "/Game/img"), key_of(&first, "/Game/img"));
+    assert_eq!(key_of(&r, "/Game/a"), key_of(&first, "/Game/a"));
 
     // B moves to another file: a's text is unchanged, but its import table is not.
     p.write("b.masset", "!Version 1\n");
@@ -217,10 +222,10 @@ fn only_changed_inputs_cook_again() {
     db.update().unwrap();
     let (r, _) = cook_all(&db, &cookers, &ddc, &options);
     assert!(r.errors.is_empty(), "{:?}", r.errors);
-    assert_ne!(key_of(&r, "a"), key_of(&first, "a"));
-    let bytes = ddc.get(key_of(&r, "a")).unwrap().unwrap();
+    assert_ne!(key_of(&r, "/Game/a"), key_of(&first, "/Game/a"));
+    let bytes = ddc.get(key_of(&r, "/Game/a")).unwrap().unwrap();
     let unit = UnitView::new(&bytes).unwrap();
-    assert_eq!(unit.import(0).unwrap().unit, unit_id("c"));
+    assert_eq!(unit.import(0).unwrap().unit, unit_id("/Game/c"));
     // a, b (now empty) and the new c cooked; img cached.
     assert_eq!((r.cooked(), r.cached()), (3, 1), "{:?}", r.units);
 }
@@ -229,7 +234,7 @@ fn only_changed_inputs_cook_again() {
 fn cooking_is_deterministic() {
     let p = Project::new("determinism");
     standard(&p);
-    let db = p.db();
+    let db = p.content();
     let cookers = cookers();
     let (one, two) = (p.ddc("one"), p.ddc("two"));
     let options = CookOptions {
@@ -277,7 +282,7 @@ fn cooking_is_deterministic() {
                 ..CookOptions::default()
             },
         );
-        assert_ne!(key_of(&other.0, "a"), key_of(&r1, "a"));
+        assert_ne!(key_of(&other.0, "/Game/a"), key_of(&r1, "/Game/a"));
     }
 }
 
@@ -321,7 +326,7 @@ fn errors_stay_with_their_unit() {
             uuid(0x104)
         ),
     );
-    let db = p.db();
+    let db = p.content();
     let ddc = p.ddc("ddc");
     let (report, manifest) = cook_all(&db, &cookers(), &ddc, &CookOptions::default());
     let messages: Vec<String> = report.errors.iter().map(|e| e.to_string()).collect();
@@ -356,7 +361,7 @@ fn errors_stay_with_their_unit() {
 fn a_source_saved_after_indexing_is_not_cached_under_the_old_key() {
     let p = Project::new("stale-source");
     standard(&p);
-    let db = p.db();
+    let db = p.content();
     // Saved after the index read it: the key covers the old bytes, the cooker would read new.
     p.write("pic.bin", "new pixels");
     let ddc = p.ddc("ddc");
@@ -367,7 +372,7 @@ fn a_source_saved_after_indexing_is_not_cached_under_the_old_key() {
         messages[0].contains("img.masset: Picture: `pic.bin` changed since it was indexed"),
         "{messages:#?}"
     );
-    assert!(report.units.iter().all(|u| u.path != "img"));
+    assert!(report.units.iter().all(|u| u.path != "/Game/img"));
     assert_eq!(ddc.len(), 2, "nothing stored for the image");
     assert_eq!(manifest.units.len(), 2);
 }
@@ -401,7 +406,7 @@ fn a_cooker_panic_is_not_swallowed() {
             uuid(0x200)
         ),
     );
-    let db = p.db();
+    let db = p.content();
     let mut cookers = cookers();
     cookers.register::<Bomb>(BombCooker).unwrap();
     let ddc = p.ddc("ddc");
@@ -414,4 +419,69 @@ fn a_cooker_panic_is_not_swallowed() {
         cook_all(&db, &cookers, &ddc, &options);
     });
     assert_eq!(message, "cooker bug");
+}
+
+/// One build of two mounts (0003 §4.5): the game links into the engine by qualified path, the
+/// units of both are in it, named by their qualified paths, and a game edit leaves the engine's
+/// keys alone. The engine does not see the game.
+#[test]
+fn a_build_spans_the_engine_and_the_game() {
+    let engine = Project::new("mount-engine");
+    engine.write(
+        "core.masset",
+        format!("!Version 1\nThing {{ !Uuid = \"{B1}\" !Name = \"Core\" Value = 7 }}\nThing {{ !Uuid = \"{C1}\" !Name = \"Up\" Other = <a:A #{A1}> }}\n"),
+    );
+    let game = Project::new("mount-game");
+    game.write(
+        "a.masset",
+        format!("!Version 1\nThing {{ !Uuid = \"{A1}\" !Name = \"A\" Other = </Engine/core:Core #{B1}> }}\n"),
+    );
+    let content = || {
+        Content::new(vec![
+            Mount {
+                name: ENGINE_MOUNT.into(),
+                db: engine.db(),
+            },
+            Mount {
+                name: GAME_MOUNT.into(),
+                db: game.db(),
+            },
+        ])
+    };
+    let ddc = game.ddc("ddc");
+    let (report, manifest) = cook_all(&content(), &cookers(), &ddc, &CookOptions::default());
+    // The engine's `Up` links up into the game, which it cannot see.
+    assert_eq!(report.errors.len(), 1, "{:?}", report.errors);
+    assert!(
+        report.errors[0]
+            .to_string()
+            .starts_with("/Engine/core.masset: Up:"),
+        "{}",
+        report.errors[0]
+    );
+    let game_unit = unit_id("/Game/a");
+    assert_eq!(manifest.unit_of(A1), Some(game_unit));
+    let bytes = ddc.get(key_of(&report, "/Game/a")).unwrap().unwrap();
+    let bytes = marlin_serial::cooked::CookedBuffer::copy_from(&bytes, 4096);
+    let unit = UnitView::new(&bytes).unwrap();
+    let import = unit.import(0).unwrap();
+    assert_eq!((import.uuid, import.unit), (B1, unit_id("/Engine/core")));
+
+    // Without the upward link the engine cooks; editing the game does not touch its key.
+    engine.write(
+        "core.masset",
+        format!("!Version 1\nThing {{ !Uuid = \"{B1}\" !Name = \"Core\" Value = 7 }}\n"),
+    );
+    let (first, _) = cook_all(&content(), &cookers(), &ddc, &CookOptions::default());
+    assert!(first.errors.is_empty(), "{:?}", first.errors);
+    game.write(
+        "a.masset",
+        format!("!Version 1\nThing {{ !Uuid = \"{A1}\" !Name = \"A\" Value = 3 Other = </Engine/core:Core #{B1}> }}\n"),
+    );
+    let (second, _) = cook_all(&content(), &cookers(), &ddc, &CookOptions::default());
+    assert_eq!(
+        key_of(&second, "/Engine/core"),
+        key_of(&first, "/Engine/core")
+    );
+    assert_ne!(key_of(&second, "/Game/a"), key_of(&first, "/Game/a"));
 }

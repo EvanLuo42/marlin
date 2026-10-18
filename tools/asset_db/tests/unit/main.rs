@@ -6,7 +6,9 @@
 #[path = "../support/mod.rs"]
 mod support;
 
+mod content;
 mod index;
+mod project;
 mod submit;
 mod validate;
 

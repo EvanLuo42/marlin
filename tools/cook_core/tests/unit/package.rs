@@ -136,7 +136,7 @@ fn cooked(p: &Project) -> (LocalDdc, Manifest) {
     );
     p.write("pic.bin", pattern());
     p.write("noise.bin", noise());
-    let db = p.db();
+    let db = p.content();
     let mut cookers = Cookers::new();
     cookers.register_generic::<Thing>().unwrap();
     cookers.register::<Image>(ImageCooker).unwrap();
@@ -281,13 +281,13 @@ fn a_patch_layer_overrides_the_package() {
     write_package(&manifest, &ddc, &PackageOptions::default(), &out).unwrap();
     // The patch: unit b again, with B = 20.
     let original = ddc
-        .get(manifest.unit_key(unit_id("b")).unwrap())
+        .get(manifest.unit_key(unit_id("/Game/b")).unwrap())
         .unwrap()
         .unwrap();
     let view = UnitView::new(&original).unwrap();
     let entry = view.object(0).unwrap();
     let patched = marlin_asset::cooked::write::unit(
-        unit_id("b"),
+        unit_id("/Game/b"),
         view.header().platform,
         vec![marlin_asset::cooked::write::UnitObject {
             uuid: entry.uuid,
@@ -326,14 +326,14 @@ fn damage_is_detected() {
     drop(package);
 
     // A flipped byte in unit a's data: that unit fails, the rest loads.
-    let record = index.unit(unit_id("a")).unwrap();
+    let record = index.unit(unit_id("/Game/a")).unwrap();
     let chunk = index.chunks[record.first_chunk as usize];
     let mut bad = good.clone();
     bad[chunk.file_offset as usize + 1] ^= 0x40;
     fs::write(&out, &bad).unwrap();
     let package = Package::open(out.to_str().unwrap()).unwrap();
     assert!(matches!(
-        package.read_unit(unit_id("a")),
+        package.read_unit(unit_id("/Game/a")),
         Err(SourceError::Package(PackageError::ChunkChecksum { .. }))
     ));
     let mut vfs = Vfs::new();
@@ -367,7 +367,7 @@ fn damage_is_detected() {
 fn named_objects_are_found_by_name_in_the_package() {
     let p = Project::new("names");
     cooked(&p);
-    let db = p.db();
+    let db = p.content();
     // The same project with images registered as named: their `!Name`s make the name table.
     let mut cookers = Cookers::new();
     cookers.register_generic::<Thing>().unwrap();

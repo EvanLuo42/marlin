@@ -21,25 +21,26 @@ use marlin_asset::cooked::unit_id;
 use marlin_asset::dev::*;
 use marlin_asset::wire::{Frame, Reader, Writer};
 use marlin_asset::{Uuid, name_hash};
-use marlin_asset_db::{AssetDb, FileId};
+use marlin_asset_db::{Content, ContentFile};
 use marlin_cook_core::{
     Cookers, Ddc, Platform, Profile, fetch_unit, named_objects, source_units, unit_key,
 };
 use marlin_store::{ConnId, Outbox, Server, ServerError, Service};
 
-/// The project as the service sees it.
+/// The project as the service sees it: every mount, the engine's included, so engine content
+/// (its shaders) is served and reloaded like the game's.
 struct Project {
-    db: AssetDb,
+    content: Content,
     /// Unit id → its `.masset` file.
-    units: HashMap<u64, FileId>,
+    units: HashMap<u64, ContentFile>,
     /// Every object and its unit, and the named objects.
     table: ObjectTable,
 }
 
 impl Project {
-    fn new(db: AssetDb, cookers: &Cookers) -> Self {
+    fn new(content: Content, cookers: &Cookers) -> Self {
         let mut p = Self {
-            db,
+            content,
             units: HashMap::new(),
             table: ObjectTable::default(),
         };
@@ -48,22 +49,23 @@ impl Project {
     }
 
     fn reindex(&mut self, cookers: &Cookers) {
-        self.units = source_units(&self.db)
+        let content = &self.content;
+        self.units = source_units(content)
             .into_iter()
-            .map(|f| (unit_id(&self.db.asset_path(f)), f))
+            .map(|f| (unit_id(&content.path(f)), f))
             .collect();
-        let mut objects: Vec<(Uuid, u64)> = self
-            .db
+        // Bottom mount first, sorted stably: a UUID two mounts use stays with the lower one.
+        let mut objects: Vec<(Uuid, u64)> = content
             .objects()
             .map(|o| {
-                let info = self.db.object_info(o);
-                (info.uuid, unit_id(&self.db.asset_path(info.file)))
+                let uuid = content.object_info(o).uuid;
+                (uuid, unit_id(&content.path(content.object_file(o))))
             })
             .collect();
-        objects.sort_unstable();
+        objects.sort_by_key(|o| o.0);
         objects.dedup_by_key(|o| o.0);
         // A name given twice names nothing (the cook reports it); the rest are served.
-        let mut names: Vec<(u64, Uuid)> = named_objects(&self.db, cookers)
+        let mut names: Vec<(u64, Uuid)> = named_objects(&self.content, cookers)
             .0
             .into_iter()
             .map(|(name, uuid)| (name_hash(&name), uuid))
@@ -131,7 +133,7 @@ pub struct Cookd {
     /// A second index of the project, owned by the network thread: the watch updates it outside
     /// any lock and swaps it in only when it changed (see [`watch`](Self::watch)). `None` when
     /// it could not be opened; the watch then updates the served index in place.
-    spare: Option<AssetDb>,
+    spare: Option<Content>,
     /// The spare saw changes the served index has not: swap at the next check regardless.
     spare_ahead: bool,
     watch_interval: Duration,
@@ -139,12 +141,15 @@ pub struct Cookd {
 }
 
 impl Cookd {
-    pub fn new(db: AssetDb, cookers: Cookers, ddc: Box<dyn Ddc>, options: &CookdOptions) -> Self {
-        let spare = AssetDb::open(db.root(), db.options().clone())
-            .ok()
-            .map(|(spare, _)| spare);
+    pub fn new(
+        content: Content,
+        cookers: Cookers,
+        ddc: Box<dyn Ddc>,
+        options: &CookdOptions,
+    ) -> Self {
+        let spare = content.reopen().ok();
         let shared = Arc::new(Shared {
-            project: RwLock::new(Project::new(db, &cookers)),
+            project: RwLock::new(Project::new(content, &cookers)),
             cookers,
             ddc,
         });
@@ -219,14 +224,14 @@ impl Cookd {
                 let moved = next.table != project.table;
                 std::mem::swap(&mut *project, &mut next);
                 drop(project);
-                let mut old = next.db;
+                let mut old = next.content;
                 let _ = old.update();
                 let project = self
                     .shared
                     .project
                     .read()
                     .unwrap_or_else(|e| e.into_inner());
-                self.spare_ahead = !same_files(&old, &project.db);
+                self.spare_ahead = !same_files(&old, &project.content);
                 drop(project);
                 self.spare = Some(old);
                 moved
@@ -237,7 +242,7 @@ impl Cookd {
                     .project
                     .write()
                     .unwrap_or_else(|e| e.into_inner());
-                if !changed(project.db.update()) {
+                if !changed(project.content.update()) {
                     return;
                 }
                 let old = std::mem::take(&mut project.table);
@@ -257,7 +262,7 @@ impl Cookd {
             let mut stale = Vec::new();
             for (&unit, &key) in &client.served {
                 let now = project.units.get(&unit).and_then(|&f| {
-                    unit_key(&project.db, &self.shared.cookers, f, platform, PROFILE).ok()
+                    unit_key(&project.content, &self.shared.cookers, f, platform, PROFILE).ok()
                 });
                 if now != key {
                     stale.push((unit, now));
@@ -280,14 +285,17 @@ impl Cookd {
     }
 }
 
-/// Whether two indexes of a project saw the same files, by path and contents.
-fn same_files(a: &AssetDb, b: &AssetDb) -> bool {
-    a.files().count() == b.files().count()
-        && a.files().all(|f| {
-            let info = a.file_info(f);
-            b.file(&info.path)
-                .is_some_and(|g| b.file_info(g).hash == info.hash)
-        })
+/// Whether two copies of a project's indexes saw the same files, by path and contents.
+fn same_files(a: &Content, b: &Content) -> bool {
+    a.mount_ids().all(|m| {
+        let (a, b) = (a.db(m), b.db(m));
+        a.files().count() == b.files().count()
+            && a.files().all(|f| {
+                let info = a.file_info(f);
+                b.file(&info.path)
+                    .is_some_and(|g| b.file_info(g).hash == info.hash)
+            })
+    })
 }
 
 fn worker(shared: &Shared, jobs: &Mutex<Receiver<Job>>, done: &Sender<Done>) {
@@ -301,7 +309,7 @@ fn worker(shared: &Shared, jobs: &Mutex<Receiver<Job>>, done: &Sender<Done>) {
             match project.units.get(&job.unit) {
                 None => Err((format!("no unit {:#018x} in the project", job.unit), None)),
                 Some(&file) => fetch_unit(
-                    &project.db,
+                    &project.content,
                     &shared.cookers,
                     shared.ddc.as_ref(),
                     job.platform,
@@ -310,8 +318,14 @@ fn worker(shared: &Shared, jobs: &Mutex<Receiver<Job>>, done: &Sender<Done>) {
                 )
                 .map(|(key, bytes, _, _)| (key, bytes))
                 .map_err(|e| {
-                    let key =
-                        unit_key(&project.db, &shared.cookers, file, job.platform, PROFILE).ok();
+                    let key = unit_key(
+                        &project.content,
+                        &shared.cookers,
+                        file,
+                        job.platform,
+                        PROFILE,
+                    )
+                    .ok();
                     (e.to_string(), key)
                 }),
             }

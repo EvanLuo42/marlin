@@ -3,7 +3,23 @@
 use marlin_asset::{SourceFile, Uuid};
 use marlin_masset::SOURCE_SCHEME;
 
-use crate::{AssetDb, FileId, ObjectId};
+use crate::{AssetDb, FileId, LinkInfo, ObjectId};
+
+/// Resolves the links an index does not: into other mounts (`crate::content`).
+pub(crate) trait Outside {
+    /// The target of `link` elsewhere: its UUID, the path links from here write for it and its
+    /// name.
+    fn find(&self, link: LinkInfo<'_>) -> Option<(Uuid, String, String)>;
+}
+
+/// Nothing outside the index.
+pub(crate) struct Alone;
+
+impl Outside for Alone {
+    fn find(&self, _: LinkInfo<'_>) -> Option<(Uuid, String, String)> {
+        None
+    }
+}
 
 /// A problem in the content.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -20,6 +36,9 @@ pub enum IssueKind {
     ParseError { message: String },
     /// Another object already has this UUID (`first` is the one links resolve to).
     DuplicateUuid { uuid: Uuid, first: ObjectId },
+    /// A mount below already has an object with this UUID (`first`, as `/<mount>/<path>:<name>`),
+    /// and links resolve to that one.
+    DuplicateUuidBelow { uuid: Uuid, first: String },
     /// Link `link` of the object points at no known object.
     DanglingLink {
         link: usize,
@@ -73,6 +92,9 @@ impl Issue {
                     first.name
                 )
             }
+            IssueKind::DuplicateUuidBelow { uuid, first } => {
+                format!("UUID {uuid} is also used by {first}")
+            }
             IssueKind::DanglingLink {
                 target, path, name, ..
             } => match target {
@@ -103,7 +125,7 @@ impl Issue {
     }
 }
 
-pub(crate) fn run(db: &mut AssetDb) -> Vec<Issue> {
+pub(crate) fn run(db: &mut AssetDb, outside: &dyn Outside) -> Vec<Issue> {
     let mut issues = Vec::new();
     for (uuid, rows) in db.db.duplicate_rows() {
         let Some(first) = db.db.by_uuid.get(uuid).map(ObjectId) else {
@@ -146,28 +168,33 @@ pub(crate) fn run(db: &mut AssetDb) -> Vec<Issue> {
                 } else {
                     link.path.to_owned()
                 };
-                match db.link_target(object, link) {
+                let found = match db.link_target(object, link) {
+                    Some(target) => {
+                        let info = db.object_info(target);
+                        Some((info.uuid, db.asset_path(info.file), info.name.to_owned()))
+                    }
+                    None => outside.find(link),
+                };
+                match found {
                     None => issues.push(issue(IssueKind::DanglingLink {
                         link: index,
                         target: link.target,
                         path: link.path.to_owned(),
                         name: link.name.to_owned(),
                     })),
-                    Some(target) => {
-                        let info = db.object_info(target);
+                    Some((uuid, path, name)) => {
                         if link.target.is_none() {
                             issues.push(issue(IssueKind::MissingUuid {
                                 link: index,
-                                resolved: info.uuid,
+                                resolved: uuid,
                             }));
                             continue;
                         }
-                        let actual = (db.asset_path(info.file), info.name.to_owned());
-                        if actual.0 != written_path || actual.1 != link.name {
+                        if path != written_path || name != link.name {
                             issues.push(issue(IssueKind::StaleLink {
                                 link: index,
                                 written: (written_path, link.name.to_owned()),
-                                actual,
+                                actual: (path, name),
                             }));
                         }
                     }
@@ -205,6 +232,7 @@ fn workspace_prefix(workspace: &std::path::Path, root: &std::path::Path) -> Opti
 pub(crate) fn run_submit(
     db: &mut AssetDb,
     vcs: &dyn marlin_vcs::Vcs,
+    outside: &dyn Outside,
 ) -> marlin_vcs::Result<Vec<Issue>> {
     use std::collections::HashSet;
 
@@ -242,7 +270,7 @@ pub(crate) fn run_submit(
     }
 
     // Errors in what is being submitted.
-    let mut issues: Vec<Issue> = run(db)
+    let mut issues: Vec<Issue> = run(db, outside)
         .into_iter()
         .filter(|i| i.kind.is_error() && submitted.contains(&db.file_info(i.file).path))
         .collect();

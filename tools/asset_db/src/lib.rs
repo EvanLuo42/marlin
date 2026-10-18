@@ -17,8 +17,10 @@
 //! Row ids ([`FileId`], [`ObjectId`]) are valid until the next `update` or `save`.
 
 mod column;
+mod content;
 mod db;
 mod journal;
+mod project;
 mod scan;
 mod snapshot;
 mod strings;
@@ -39,7 +41,12 @@ use crate::journal::{
 use crate::scan::{Stat, Walk, WalkOptions};
 use crate::strings::NONE;
 
+pub use content::{
+    Content, ContentFile, ContentIssue, ContentObject, ENGINE_MOUNT, GAME_MOUNT, Mount, MountId,
+    MountLinks, split_qualified,
+};
 pub use db::{FileId, ObjectId};
+pub use project::{PROJECT_EXT, Project, ProjectError};
 pub use validate::{Issue, IssueKind};
 
 /// Extension of source text files.
@@ -763,7 +770,7 @@ impl AssetDb {
 
     /// Problems in the indexed content: see [`IssueKind`].
     pub fn validate(&mut self) -> Vec<Issue> {
-        validate::run(self)
+        validate::run(self, &validate::Alone)
     }
 }
 
@@ -789,6 +796,6 @@ impl AssetDb {
     /// they use that would not reach anyone else (neither tracked nor submitted), and links into
     /// files the submit deletes. The index should be up to date first ([`update`](Self::update)).
     pub fn validate_submit(&mut self, vcs: &dyn marlin_vcs::Vcs) -> marlin_vcs::Result<Vec<Issue>> {
-        validate::run_submit(self, vcs)
+        validate::run_submit(self, vcs, &validate::Alone)
     }
 }

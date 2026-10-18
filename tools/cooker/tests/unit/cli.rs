@@ -7,6 +7,18 @@ use marlin_asset::Uuid;
 use marlin_cook_core::Platform;
 use marlin_test_support::{TempDir, test_uuid};
 
+/// An empty project (its engine is the one these tools belong to: this repository's).
+fn project(name: &str) -> TempDir {
+    let root = TempDir::new(name);
+    root.write(
+        "Test.mproject",
+        "[project]
+name = \"Test\"
+",
+    );
+    root
+}
+
 fn run(args: &[&str]) -> (bool, String) {
     let out = Command::new(env!("CARGO_BIN_EXE_marlin-cook"))
         .args(args)
@@ -19,15 +31,15 @@ fn run(args: &[&str]) -> (bool, String) {
 
 #[test]
 fn cooks_then_hits_the_cache_then_reports_failures() {
-    let root = TempDir::new("cook-cli");
+    let root = project("cook-cli");
     let image = image::RgbaImage::from_fn(64, 64, |x, y| {
         image::Rgba([x as u8 * 4, y as u8 * 4, 0, 255])
     });
     let mut png = Cursor::new(Vec::new());
     image.write_to(&mut png, image::ImageFormat::Png).unwrap();
-    root.write("tex/ramp.png", png.into_inner());
+    root.write("content/tex/ramp.png", png.into_inner());
     root.write(
-        "tex/ramp.masset",
+        "content/tex/ramp.masset",
         format!(
             "!Version 1\nTexture {{ !Uuid = \"{}\" !Name = \"Ramp\" Source = `source:tex/ramp.png` }}\n",
             Uuid::from_u128(test_uuid(1))
@@ -41,27 +53,28 @@ fn cooks_then_hits_the_cache_then_reports_failures() {
     let (ok, text) = run(&["cook", r]);
     assert!(ok, "{text}");
     assert!(
-        text.contains("1 units (1 cooked, 0 cached), 0 failed"),
+        text.contains("2 units (2 cooked, 0 cached), 0 failed"),
         "{text}"
     );
     assert!(manifest_path.is_file());
 
     let (ok, text) = run(&["cook", r, "--threads", "2"]);
     assert!(ok, "{text}");
-    assert!(text.contains("(0 cooked, 1 cached)"), "{text}");
+    assert!(text.contains("(0 cooked, 2 cached)"), "{text}");
 
     let (ok, text) = run(&["package", r, "--bulk-codec", "gdeflate"]);
     assert!(ok, "{text}");
-    assert!(text.contains("1 units"), "{text}");
+    assert!(text.contains("2 units"), "{text}");
     let package_path = build.join(format!("{}.mpak", Platform::host().name));
     let package = marlin_asset::Package::open(package_path.to_str().unwrap()).unwrap();
-    assert_eq!(package.index().units.len(), 1);
+    // The engine's content is in the build with the project's.
+    assert_eq!(package.index().units.len(), 2);
     let (ok, text) = run(&["package", r, "--bulk-codec", "brotli"]);
     assert!(!ok && text.contains("usage"), "{text}");
 
     let manifest = std::fs::read(&manifest_path).unwrap();
     root.write(
-        "tex/broken.masset",
+        "content/tex/broken.masset",
         format!(
             "!Version 1\nTexture {{ !Uuid = \"{}\" !Name = \"Broken\" Source = `source:tex/missing.png` }}\n",
             Uuid::from_u128(test_uuid(2))
@@ -70,7 +83,7 @@ fn cooks_then_hits_the_cache_then_reports_failures() {
     let (ok, text) = run(&["cook", r]);
     assert!(!ok, "{text}");
     assert!(
-        text.contains("error: tex/broken") && text.contains("missing.png"),
+        text.contains("error: /Game/tex/broken") && text.contains("missing.png"),
         "{text}"
     );
     assert!(text.contains("1 failed; manifest not published"), "{text}");
@@ -91,14 +104,14 @@ fn cooks_then_hits_the_cache_then_reports_failures() {
 
 #[test]
 fn shader_packages_cook_for_both_profiles_and_names_are_validated() {
-    let root = TempDir::new("cook-cli-shaders");
+    let root = project("cook-cli-shaders");
     let package = |dir: &str, id: u64| {
         root.write(
-            format!("{dir}/Lib.mshader"),
+            format!("content/{dir}/Lib.mshader"),
             "namespace Lib;\n[Compute(1, 1, 1)] public void Clear() {}\n",
         );
         root.write(
-            format!("{dir}/package.masset"),
+            format!("content/{dir}/package.masset"),
             format!(
                 "!Version 1\nShaderPackage {{ !Uuid = \"{}\" !Name = \"Lib\" Sources = [`source:{dir}/Lib.mshader`] }}\n",
                 Uuid::from_u128(test_uuid(id))
@@ -110,14 +123,14 @@ fn shader_packages_cook_for_both_profiles_and_names_are_validated() {
 
     let (ok, text) = run(&["cook", r]);
     assert!(ok, "{text}");
-    assert!(text.contains("(1 cooked, 0 cached)"), "{text}");
+    assert!(text.contains("(2 cooked, 0 cached)"), "{text}");
     // A shipping build is another key for shaders.
     let (ok, text) = run(&["cook", r, "--shipping"]);
     assert!(ok, "{text}");
-    assert!(text.contains("(1 cooked, 0 cached)"), "{text}");
+    assert!(text.contains("(2 cooked, 0 cached)"), "{text}");
     let (ok, text) = run(&["cook", r, "--shipping", "--threads", "1"]);
     assert!(ok, "{text}");
-    assert!(text.contains("(0 cooked, 1 cached)"), "{text}");
+    assert!(text.contains("(0 cooked, 2 cached)"), "{text}");
 
     let (ok, text) = run(&["validate", r]);
     assert!(ok, "{text}");

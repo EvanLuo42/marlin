@@ -1,21 +1,25 @@
 //! Command-line asset cooker (`docs/design/0003-asset-pipeline.md`).
 //!
-//! - `marlin-cook cook <root> [--platform <name>] [--threads <n>] [--store <addr>] [--shipping]`:
-//!   brings the index up to date, cooks every unit whose inputs changed (the rest come from the
-//!   local cache in `<root>/.marlin/ddc`) and publishes the build manifest to
-//!   `<root>/.marlin/build/<platform>.manifest`. Fails if any unit fails. `--shipping` cooks
+//! `<project>` is a project directory or its `.mproject` file (0003 §4.5); its content is the
+//! engine's (`/Engine`) and its own (`/Game`), and one build holds both.
+//!
+//! - `marlin-cook cook <project> [--platform <name>] [--threads <n>] [--store <addr>] [--shipping]`:
+//!   brings the indexes up to date, cooks every unit whose inputs changed (the rest come from the
+//!   local cache in `<project>/.marlin/ddc`) and publishes the build manifest to
+//!   `<project>/.marlin/build/<platform>.manifest`. Fails if any unit fails. `--shipping` cooks
 //!   for a shipping build (shaders without `Debug.*` and debug information).
-//! - `marlin-cook package <root> [--platform <name>] [--store <addr>] [--out <file>] [--head-codec <codec>]
+//! - `marlin-cook package <project> [--platform <name>] [--store <addr>] [--out <file>] [--head-codec <codec>]
 //!   [--bulk-codec <codec>] [--level <1-9>]`: packs the last cooked build of the platform into a
-//!   `.mpak` (default `<root>/.marlin/build/<platform>.mpak`). Codecs: none, lz4, zstd,
+//!   `.mpak` (default `<project>/.marlin/build/<platform>.mpak`). Codecs: none, lz4, zstd,
 //!   gdeflate.
-//! - `marlin-cook index <root>`: brings the asset index of `root` up to date and saves it.
-//! - `marlin-cook validate <root>`: the same, then reports content problems (dangling and stale
+//! - `marlin-cook index <project>`: brings the asset index of every mount up to date and saves it.
+//! - `marlin-cook validate <project>`: the same, then reports content problems (dangling and stale
 //!   links, UUID collisions, parse errors, missing source files, shader package names given
-//!   twice). Fails on errors.
-//! - `marlin-cook validate <root> --pre-submit`: only what the version control submit would
-//!   contain, plus links into files left out of it or deleted by it.
-//! - `marlin-cook install-hook <root>`: runs the pre-submit validation before every commit.
+//!   twice), links across mounts included. Fails on errors.
+//! - `marlin-cook validate <project> --pre-submit`: only what the version control submit would
+//!   contain, plus links into files left out of it or deleted by it; for every mount under
+//!   version control (an installed engine is not).
+//! - `marlin-cook install-hook <project>`: runs the pre-submit validation before every commit.
 //! - `marlin-cook check <path>...`: parses `.masset` files without an index, for a quick look
 //!   at a few files.
 
@@ -24,7 +28,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
 
-use marlin_asset_db::{AssetDb, Options};
+use marlin_asset_db::{Content, GAME_MOUNT, Options, Project, UpdateReport};
 use marlin_cook_core::{
     CookOptions, Manifest, PackageOptions, Platform, Profile, cook_all, named_objects,
     publish_manifest, write_package,
@@ -32,7 +36,7 @@ use marlin_cook_core::{
 use marlin_cooker::{engine_cookers, open_ddc};
 use marlin_masset::{NodeKind, parse};
 
-const USAGE: &str = "usage:\n  marlin-cook cook <root> [--platform <name>] [--threads <n>] [--store <addr>]\n  marlin-cook package <root> [--platform <name>] [--store <addr>] [--out <file>] [--head-codec <codec>] [--bulk-codec <codec>] [--level <1-9>]\n  marlin-cook index <root>\n  marlin-cook validate <root> [--pre-submit]\n  marlin-cook install-hook <root>\n  marlin-cook check <file-or-directory>...";
+const USAGE: &str = "usage:\n  marlin-cook cook <project> [--platform <name>] [--threads <n>] [--store <addr>] [--shipping]\n  marlin-cook package <project> [--platform <name>] [--store <addr>] [--out <file>] [--head-codec <codec>] [--bulk-codec <codec>] [--level <1-9>]\n  marlin-cook index <project>\n  marlin-cook validate <project> [--pre-submit]\n  marlin-cook install-hook <project>\n  marlin-cook check <file-or-directory>...";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -61,23 +65,34 @@ enum Validate {
     Submit,
 }
 
-fn index(root: &str, validate: Validate) -> ExitCode {
-    let start = Instant::now();
-    let (mut db, report) = match AssetDb::open(root, Options::default()) {
-        Ok(opened) => opened,
-        Err(e) => {
-            eprintln!("{root}: {}", marlin_error_chain(&e));
-            return ExitCode::FAILURE;
-        }
-    };
-    if let Err(e) = db.save() {
+/// The project at `path` and its content, indexes brought up to date and saved.
+fn open(path: &str) -> Result<(Project, Content, UpdateReport), ExitCode> {
+    let project = Project::open(path).map_err(|e| {
+        eprintln!("{}", marlin_error_chain(&e));
+        ExitCode::FAILURE
+    })?;
+    let (mut content, report) = project.open_content(&Options::default()).map_err(|e| {
+        eprintln!("{}", marlin_error_chain(&e));
+        ExitCode::FAILURE
+    })?;
+    if let Err(e) = content.save() {
         eprintln!("saving the index: {}", marlin_error_chain(&e));
-        return ExitCode::FAILURE;
+        return Err(ExitCode::FAILURE);
     }
+    Ok((project, content, report))
+}
+
+fn index(path: &str, validate: Validate) -> ExitCode {
+    let start = Instant::now();
+    let (project, mut content, report) = match open(path) {
+        Ok(opened) => opened,
+        Err(code) => return code,
+    };
     println!(
-        "{} files, {} objects; {:?}: {} checked, {} read (+{} ~{} -{}) in {:.2?}",
-        db.file_count(),
-        db.object_count(),
+        "{}: {} files, {} objects; {:?}: {} checked, {} read (+{} ~{} -{}) in {:.2?}",
+        project.name,
+        content.file_count(),
+        content.object_count(),
         report.mode,
         report.checked,
         report.read,
@@ -88,32 +103,47 @@ fn index(root: &str, validate: Validate) -> ExitCode {
     );
     let issues = match validate {
         Validate::No => return ExitCode::SUCCESS,
-        Validate::All => db.validate(),
+        Validate::All => content.validate(),
         Validate::Submit => {
-            match marlin_vcs::open(root).and_then(|vcs| db.validate_submit(vcs.as_ref())) {
-                Ok(issues) => issues,
-                Err(e) => {
-                    eprintln!("{root}: {}", marlin_error_chain(&e));
-                    return ExitCode::FAILURE;
+            let mut issues = Vec::new();
+            for mount in content.mount_ids() {
+                let root = content.root(mount).to_path_buf();
+                let vcs = match marlin_vcs::open(&root) {
+                    Ok(vcs) => vcs,
+                    // An installed engine is not under version control: nothing is submitted
+                    // there. The project's own content always is.
+                    Err(_) if content.mount(mount).name != GAME_MOUNT => continue,
+                    Err(e) => {
+                        eprintln!("{}: {}", root.display(), marlin_error_chain(&e));
+                        return ExitCode::FAILURE;
+                    }
+                };
+                match content.validate_submit(mount, vcs.as_ref()) {
+                    Ok(found) => issues.extend(found),
+                    Err(e) => {
+                        eprintln!("{}: {}", root.display(), marlin_error_chain(&e));
+                        return ExitCode::FAILURE;
+                    }
                 }
             }
+            issues
         }
     };
     let mut errors = 0;
-    // Names code looks objects up by (shader packages) must be unique across the project.
-    let (_, clashes) = named_objects(&db, &engine_cookers());
+    // Names code looks objects up by (shader packages) must be unique across the build.
+    let (_, clashes) = named_objects(&content, &engine_cookers());
     for clash in &clashes {
         errors += 1;
         eprintln!("error: {clash}");
     }
     for issue in &issues {
-        let kind = if issue.kind.is_error() {
+        let kind = if issue.issue.kind.is_error() {
             errors += 1;
             "error"
         } else {
             "fixable"
         };
-        eprintln!("{kind}: {}", issue.describe(&db));
+        eprintln!("{kind}: {}", content.describe(issue));
     }
     println!(
         "{} issue(s), {errors} error(s)",
@@ -222,12 +252,20 @@ fn check(paths: &[String]) -> ExitCode {
 }
 
 /// Makes every commit in `root`'s workspace run `validate --pre-submit` first.
-fn install_hook(root: &str) -> ExitCode {
-    let paths = std::env::current_exe().and_then(|exe| Ok((exe, std::fs::canonicalize(root)?)));
+fn install_hook(path: &str) -> ExitCode {
+    let project = match Project::open(path) {
+        Ok(project) => project,
+        Err(e) => {
+            eprintln!("{}", marlin_error_chain(&e));
+            return ExitCode::FAILURE;
+        }
+    };
+    let root = &project.dir;
+    let paths = std::env::current_exe().map(|exe| (exe, root.clone()));
     let (exe, root_abs) = match paths {
         Ok(paths) => paths,
         Err(e) => {
-            eprintln!("{root}: {e}");
+            eprintln!("{}: {e}", root.display());
             return ExitCode::FAILURE;
         }
     };
@@ -247,7 +285,7 @@ fn install_hook(root: &str) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(e) => {
-            eprintln!("{root}: {}", marlin_error_chain(&e));
+            eprintln!("{}: {}", root.display(), marlin_error_chain(&e));
             ExitCode::FAILURE
         }
     }
@@ -292,18 +330,11 @@ fn cook(args: &[String]) -> ExitCode {
         }
     }
     let start = Instant::now();
-    let (mut db, _) = match AssetDb::open(root, Options::default()) {
+    let (project, content, _) = match open(root) {
         Ok(opened) => opened,
-        Err(e) => {
-            eprintln!("{root}: {}", marlin_error_chain(&e));
-            return ExitCode::FAILURE;
-        }
+        Err(code) => return code,
     };
-    if let Err(e) = db.save() {
-        eprintln!("saving the index: {}", marlin_error_chain(&e));
-        return ExitCode::FAILURE;
-    }
-    let ddc = match open_ddc(Path::new(root), store) {
+    let ddc = match open_ddc(&project.ddc_dir(), store) {
         Ok(ddc) => ddc,
         Err(e) => {
             eprintln!("opening the cache: {e}");
@@ -311,7 +342,7 @@ fn cook(args: &[String]) -> ExitCode {
         }
     };
     let cookers = engine_cookers();
-    let (report, manifest) = cook_all(&db, &cookers, ddc.as_ref(), &options);
+    let (report, manifest) = cook_all(&content, &cookers, ddc.as_ref(), &options);
     for unit in &report.units {
         for warning in &unit.warnings {
             eprintln!("warning: {}: {warning}", unit.path);
@@ -333,7 +364,7 @@ fn cook(args: &[String]) -> ExitCode {
         println!("{summary}; manifest not published; {:.2?}", start.elapsed());
         return ExitCode::FAILURE;
     }
-    let key = match publish_manifest(Path::new(root), ddc.as_ref(), &manifest) {
+    let key = match publish_manifest(&project.build_dir(), ddc.as_ref(), &manifest) {
         Ok(key) => key,
         Err(e) => {
             eprintln!("publishing the manifest: {e}");
@@ -351,7 +382,14 @@ fn codec(name: &str) -> Option<marlin_compress::Codec> {
 }
 
 fn package(args: &[String]) -> ExitCode {
-    let root = Path::new(&args[0]);
+    // Packing reads the published build and the cache: no index needed.
+    let project = match Project::open(&args[0]) {
+        Ok(project) => project,
+        Err(e) => {
+            eprintln!("{}", marlin_error_chain(&e));
+            return ExitCode::FAILURE;
+        }
+    };
     let mut platform = Platform::host();
     let mut out: Option<PathBuf> = None;
     // Codecs default to the platform's, which is known only after every flag.
@@ -394,7 +432,7 @@ fn package(args: &[String]) -> ExitCode {
     options.bulk_codec = bulk_codec.unwrap_or(options.bulk_codec);
     options.level = level.unwrap_or(options.level);
     let platform = platform.name;
-    let build = root.join(".marlin").join("build");
+    let build = project.build_dir();
     let manifest_path = build.join(format!("{platform}.manifest"));
     let manifest = match std::fs::read(&manifest_path).map(|b| Manifest::from_bytes(&b)) {
         Ok(Ok(m)) => m,
@@ -410,7 +448,7 @@ fn package(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let ddc = match open_ddc(root, store) {
+    let ddc = match open_ddc(&project.ddc_dir(), store) {
         Ok(ddc) => ddc,
         Err(e) => {
             eprintln!("opening the cache: {e}");

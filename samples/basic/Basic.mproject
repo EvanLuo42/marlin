@@ -1,0 +1,4 @@
+# The sample's project file (docs/design/0003-asset-pipeline.md §4.5). Its content is in
+# content/; the engine is found above it (this repository), so `engine` is not needed.
+[project]
+name = "Basic"

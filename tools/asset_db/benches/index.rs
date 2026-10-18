@@ -4,9 +4,9 @@
 #[path = "../tests/support/mod.rs"]
 mod support;
 
-use support::Project;
 use marlin_asset_db::AssetDb;
 use marlin_bench::{Bench, Duration};
+use support::Project;
 
 const DIRS: usize = 250;
 const FILES_PER_DIR: usize = 200;

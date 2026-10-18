@@ -8,7 +8,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use marlin_asset::Uuid;
-use marlin_asset_db::{AssetDb, Options};
+use marlin_asset_db::{AssetDb, Content, GAME_MOUNT, Mount, Options};
 use marlin_test_support::{TempDir, test_uuid};
 
 /// Test object id `n`: `01990000-0000-7000-8000-<n as 12 hex digits>` in source text.
@@ -63,5 +63,18 @@ impl Project {
     /// A full-scan index of the project as it is now.
     pub fn db(&self) -> AssetDb {
         AssetDb::build(&self.root, self.options()).unwrap()
+    }
+
+    /// The project as the only mount of some content, `Game`.
+    pub fn content(&self) -> Content {
+        self.content_as(GAME_MOUNT)
+    }
+
+    /// The project as the only mount of some content, named `mount`.
+    pub fn content_as(&self, mount: &str) -> Content {
+        Content::new(vec![Mount {
+            name: mount.into(),
+            db: self.db(),
+        }])
     }
 }

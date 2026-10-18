@@ -7,7 +7,6 @@ fn boot_file_and_command_line() {
     register_cvars();
     let config = r#"
 [content]
-engine = "../engine/{platform}.mpak"
 package = "build/game.mpak; dlc/extra.mpak; build/{platform}.mpak"
 
 [game]
@@ -21,8 +20,6 @@ level = "01992d00-0000-7000-8000-000000000001"
     assert_eq!(
         settings.packages,
         [
-            // The engine's package first, below the game's.
-            format!("C:/games/sample/../engine/{}.mpak", marlin_rt::PLATFORM),
             "C:/games/sample/build/game.mpak".to_owned(),
             "C:/games/sample/dlc/extra.mpak".to_owned(),
             format!("C:/games/sample/build/{}.mpak", marlin_rt::PLATFORM),
@@ -35,11 +32,10 @@ level = "01992d00-0000-7000-8000-000000000001"
         "01992d00-0000-7000-8000-000000000001".parse().unwrap()
     );
 
-    // Mounting a package that is not there names it (the engine's comes first).
+    // Mounting a package that is not there names it (the first one).
     match boot("", "C:/games/sample", ["+content.cookd", ""]) {
         Err(BootError::Package { path, .. }) => {
-            let engine = format!("engine/{}.mpak", marlin_rt::PLATFORM);
-            assert!(path.ends_with(&engine), "{path}")
+            assert!(path.ends_with("build/game.mpak"), "{path}")
         }
         Err(other) => panic!("{other}"),
         Ok(_) => panic!("mounted a missing package"),

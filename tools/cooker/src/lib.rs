@@ -37,10 +37,10 @@ pub fn engine_cookers() -> Cookers {
     cookers
 }
 
-/// The cache of the project at `root`: its local cache (`<root>/.marlin/ddc`), in front of the
-/// shared store at `store` if given.
-pub fn open_ddc(root: &Path, store: Option<SocketAddr>) -> io::Result<Box<dyn Ddc>> {
-    let local = LocalDdc::open(root.join(".marlin").join("ddc"))?;
+/// A cache: the local one in `dir` (a project's `Project::ddc_dir`), in front of the shared store
+/// at `store` if given.
+pub fn open_ddc(dir: &Path, store: Option<SocketAddr>) -> io::Result<Box<dyn Ddc>> {
+    let local = LocalDdc::open(dir)?;
     Ok(match store {
         None => Box::new(local),
         Some(addr) => {

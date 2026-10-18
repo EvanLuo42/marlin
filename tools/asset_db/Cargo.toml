@@ -11,6 +11,8 @@ marlin-error.workspace = true
 marlin-hash.workspace = true
 marlin-masset.workspace = true
 marlin-vcs.workspace = true
+# Project files (`.mproject`).
+toml = { workspace = true, features = ["parse"] }
 memmap2.workspace = true
 
 # The NTFS change journal, for finding changed files without scanning.

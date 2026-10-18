@@ -5,19 +5,24 @@
 //! package declares ([`Session::entries`]) for the platform's `shader-target` with
 //! `marlin-shaderc`, and stores each entry's code with its reflection. The package's name is the
 //! object's `!Name`; the type is registered as named, so the runtime finds the library by it.
+//! `Marlin` and `Marlin.…` name the engine's packages (the `Engine` mount, 0003 §4.5) and no
+//! others.
 //!
 //! [`ShaderCooker`] cooks a [`Shader`] permutation (an entry with type arguments or static
 //! parameters) into a library of that one entry.
 //!
 //! Both build from packages: `ShaderPackage.Dependencies` and `Shader.Package` are build
 //! dependencies (0003 §4.1), read through the cook context with their sources, so the session
-//! of a compile holds the package and, before it, every package it depends on.
+//! of a compile holds the package and, before it, every package it depends on. A package
+//! may build from packages in the mounts below its own (a game's from the engine's): each
+//! package's sources are read from its own mount.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use marlin_asset::Uuid;
 use marlin_asset::cooked::Encoding;
+use marlin_asset_db::ENGINE_MOUNT;
 use marlin_cook_core::{CookContext, Cooked, Cooker, Platform, Profile, SourceObject};
 use marlin_reflect::type_info;
 use marlin_shader::asset::{LibraryEntry, Shader, ShaderLibrary, ShaderPackage};
@@ -141,8 +146,23 @@ impl Cooker for ShaderPackageCooker {
             .downcast::<ShaderPackage>()
             .ok_or("not a ShaderPackage")?;
         let name = object.name;
+        // The engine's packages are `Marlin.…` (the core library is `Marlin`), and only they are:
+        // a game's names can never clash with the engine's, now or in a later engine (0003 §4.5).
+        let reserved = name == CORE || name.starts_with("Marlin.");
+        let engine = ctx.mount() == ENGINE_MOUNT;
+        if reserved && !engine {
+            return Err(format!(
+                "`{name}`: package names `{CORE}` and `{CORE}.…` belong to the engine; name the \n                 package after the project"
+            ));
+        }
+        if engine && !reserved {
+            return Err(format!(
+                "`{name}`: the engine's packages are named `{CORE}.…`"
+            ));
+        }
         let target = self.compiler.target(ctx)?;
-        let packages = Packages::read(object.uuid, name, package, ctx)?;
+        let mount = ctx.mount();
+        let packages = Packages::read(object.uuid, name, mount, package, ctx)?;
         let session = packages.session(&self.compiler.targets)?;
         let entries = session.entries(name).map_err(|e| e.message)?;
         if entries.is_empty() {
@@ -228,7 +248,7 @@ impl Cooker for ShaderCooker {
         let target = self.compiler.target(ctx)?;
         let root = ctx.dependency(shader.package.target)?;
         let package = as_package(&root.value, &root.name, &root.type_name)?;
-        let packages = Packages::read(root.uuid, &root.name, package, ctx)?;
+        let packages = Packages::read(root.uuid, &root.name, &root.mount, package, ctx)?;
         let session = packages.session(&self.compiler.targets)?;
 
         let type_args: Vec<&str> = shader.type_args.iter().map(String::as_str).collect();
@@ -285,15 +305,16 @@ struct Packages {
 }
 
 impl Packages {
-    /// `package` (object `uuid`, named `name`) and its dependencies, transitively.
+    /// `package` (object `uuid`, named `name`, in `mount`) and its dependencies, transitively.
     fn read(
         uuid: Uuid,
         name: &str,
+        mount: &str,
         package: &ShaderPackage,
         ctx: &mut CookContext<'_>,
     ) -> Result<Packages, String> {
         let mut packages = Packages::default();
-        packages.visit(uuid, name, package, ctx, &mut Vec::new())?;
+        packages.visit(uuid, name, mount, package, ctx, &mut Vec::new())?;
         packages.files.0.sort_by(|a, b| a.0.path().cmp(b.0.path()));
         Ok(packages)
     }
@@ -303,6 +324,7 @@ impl Packages {
         &mut self,
         uuid: Uuid,
         name: &str,
+        mount: &str,
         package: &ShaderPackage,
         ctx: &mut CookContext<'_>,
         path: &mut Vec<(Uuid, String)>,
@@ -326,7 +348,14 @@ impl Packages {
             }
             let dependency = ctx.dependency(link.target)?;
             let inner = as_package(&dependency.value, &dependency.name, &dependency.type_name)?;
-            self.visit(dependency.uuid, &dependency.name, inner, ctx, path)?;
+            self.visit(
+                dependency.uuid,
+                &dependency.name,
+                &dependency.mount,
+                inner,
+                ctx,
+                path,
+            )?;
             if !uses.contains(&dependency.name) {
                 uses.push(dependency.name.clone());
             }
@@ -345,7 +374,8 @@ impl Packages {
         }
         // The package's files, as the compiler sees them: `<package>/<asset path>`.
         for source in &package.sources {
-            let bytes = ctx.read_source(&source.path)?;
+            // Qualified: the package may be in another mount than the object being cooked.
+            let bytes = ctx.read_source(&format!("/{mount}/{}", source.path))?;
             let text = String::from_utf8(bytes)
                 .map_err(|_| format!("`{}` is not UTF-8", source.path))?
                 // Line endings as `\n`, so a checkout's settings do not change the code.

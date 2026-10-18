@@ -8,7 +8,7 @@ use marlin_asset::{
     AssetError, AssetRef, AssetServer, DevSource, Handle, Link, LoadState, Loaders, SourceError,
     SourceFile, Uuid, Vfs,
 };
-use marlin_asset_db::{AssetDb, Options};
+use marlin_asset_db::{AssetDb, Content, Options};
 use marlin_cook_core::{CookContext, Cooked, Cooker, Cookers, LocalDdc, Platform, SourceObject};
 use marlin_cookd::{Cookd, CookdOptions, bind};
 use marlin_reflect::{Reflect, type_info};
@@ -189,6 +189,7 @@ impl Running {
         let r = root.to_path_buf();
         let service = BackgroundService::spawn(move |ready, stop| {
             let (db, _) = AssetDb::open(&r, Options::default()).unwrap();
+            let db = Content::single(db);
             let mut cookers = Cookers::new();
             cookers.register_generic::<Thing>().unwrap();
             // Named, so the service also serves a name table.

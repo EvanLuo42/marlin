@@ -1,13 +1,13 @@
 //! Cookers: what turns a source object into runtime data.
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use marlin_asset::Uuid;
 use marlin_asset::cooked::{BulkKind, Encoding};
-use marlin_asset_db::AssetDb;
+use marlin_asset_db::{Content, ContentObject};
 use marlin_hash::{xxh3_64, xxh3_128};
 use marlin_masset::{DocumentLinks, Schema, SchemaError, Severity, parse};
 use marlin_reflect::{Reflect, TypeId, TypeInfo, TypeKind, Value, type_info};
@@ -26,9 +26,19 @@ pub struct SourceObject<'a> {
 /// file: what [`CookContext::dependency`] gives.
 pub struct Dependency {
     pub uuid: Uuid,
+    /// The mount it is in (0003 §4.5); its source paths are relative to that mount.
+    pub mount: String,
     pub name: String,
     pub type_name: String,
     pub value: Value,
+}
+
+impl Dependency {
+    /// One of its source paths as [`CookContext::read_source`] takes it from any mount:
+    /// qualified, `/Engine/shaders/Forward.mshader`.
+    pub fn source(&self, path: &str) -> String {
+        format!("/{}/{path}", self.mount)
+    }
 }
 
 /// What a cooker produced for one object.
@@ -43,10 +53,12 @@ pub struct Cooked {
 pub struct CookContext<'a> {
     pub(crate) platform: &'a Platform,
     pub(crate) profile: Profile,
-    pub(crate) root: &'a Path,
+    /// The mount the object is in (`Engine`, `Game`).
+    pub(crate) mount: &'a str,
     /// Source files the object or one of its build dependencies links to (the only files it
-    /// may read), each with the content hash the cook key was computed from.
-    pub(crate) sources: &'a HashMap<String, u128>,
+    /// may read), by qualified path, each with its file on disk and the content hash the cook
+    /// key was computed from.
+    pub(crate) sources: &'a HashMap<String, (PathBuf, u128)>,
     pub(crate) build: BuildInputs<'a>,
     pub(crate) bulk: Vec<(BulkKind, Vec<u8>)>,
     pub(crate) warnings: Vec<String>,
@@ -54,9 +66,10 @@ pub struct CookContext<'a> {
 
 /// The objects a cook may read besides its own: its build dependencies, transitively.
 pub(crate) struct BuildInputs<'a> {
-    pub(crate) db: &'a AssetDb,
+    pub(crate) content: &'a Content,
     pub(crate) cookers: &'a Cookers,
-    pub(crate) allowed: HashSet<Uuid>,
+    /// By UUID, each where the cooking object's links resolve it.
+    pub(crate) allowed: HashMap<Uuid, ContentObject>,
     pub(crate) read: HashMap<Uuid, Rc<Dependency>>,
 }
 
@@ -65,20 +78,24 @@ impl BuildInputs<'_> {
         if let Some(d) = self.read.get(&uuid) {
             return Ok(d.clone());
         }
-        let db = self.db;
-        let object = db
-            .object(uuid)
-            .ok_or_else(|| format!("links to {uuid}, which no indexed file defines"))?;
-        if !self.allowed.contains(&uuid) {
-            return Err(format!(
-                "{uuid} is not a build dependency of this object (the cooker's \
-                 `build_dependency_types` decide which links are)"
-            ));
-        }
-        let file = db.object_info(object).file;
-        let info = db.file_info(file);
-        let text = std::fs::read_to_string(db.root().join(&info.path))
-            .map_err(|e| format!("reading `{}`: {e}", info.path))?;
+        let content = self.content;
+        let Some(&object) = self.allowed.get(&uuid) else {
+            return Err(match content.object(uuid) {
+                None => format!("links to {uuid}, which no indexed file defines"),
+                Some(_) => format!(
+                    "{uuid} is not a build dependency of this object (the cooker's \
+                     `build_dependency_types` decide which links are)"
+                ),
+            });
+        };
+        let db = content.db(object.mount);
+        let file = db.object_info(object.object).file;
+        let mut info = db.file_info(file);
+        let full = db.root().join(&info.path);
+        // Messages name it by qualified path.
+        info.path = content.file_path(content.object_file(object));
+        let text =
+            std::fs::read_to_string(full).map_err(|e| format!("reading `{}`: {e}", info.path))?;
         // As for the unit's own text: the bytes must be the ones its key hashed.
         if xxh3_128(text.as_bytes()) != info.hash {
             return Err(format!(
@@ -97,7 +114,7 @@ impl BuildInputs<'_> {
         let links = DocumentLinks {
             document: &doc,
             path: &asset_path,
-            fallback: db,
+            fallback: &content.links(object.mount),
         };
         let read = self
             .cookers
@@ -113,6 +130,7 @@ impl BuildInputs<'_> {
         }
         let dependency = Rc::new(Dependency {
             uuid,
+            mount: content.mount(object.mount).name.clone(),
             name: source.name.clone(),
             type_name: source.type_name.clone(),
             value: read.value,
@@ -133,6 +151,11 @@ impl<'a> CookContext<'a> {
         self.profile
     }
 
+    /// The mount the object is in (0003 §4.5): `Engine` for the engine's content.
+    pub fn mount(&self) -> &'a str {
+        self.mount
+    }
+
     /// A build dependency of the object (0003 §4.1): an object it links to whose type is one
     /// of the cooker's [`build_dependency_types`], or a build dependency of one of those, read
     /// from its source. Its unit's cook key is part of this unit's, so whatever the cooker
@@ -146,19 +169,26 @@ impl<'a> CookContext<'a> {
     }
 
     /// The contents of a source file the object or one of its build dependencies links to
-    /// (`` `source:path` ``). Files reached any other way would be invisible to dependency
-    /// tracking and the cook key ("string magic"), so they are refused.
+    /// (`` `source:path` ``). `path` is relative to the object's mount, or qualified
+    /// (`/Engine/…`, [`Dependency::source`]) for a build dependency's file in another one. Files
+    /// reached any other way would be invisible to dependency tracking and the cook key
+    /// ("string magic"), so they are refused.
     ///
     /// The bytes must be the ones the cook key hashed: a file saved after it was indexed would
     /// otherwise be cooked into a result stored under the stale key, so that is refused too.
     pub fn read_source(&mut self, path: &str) -> Result<Vec<u8>, String> {
-        let Some(&indexed) = self.sources.get(path) else {
+        let qualified = if path.starts_with('/') {
+            path.to_owned()
+        } else {
+            format!("/{}/{path}", self.mount)
+        };
+        let Some((full, indexed)) = self.sources.get(&qualified) else {
             return Err(format!(
                 "`{path}` is not a source file this object links to; add a `source:` link"
             ));
         };
-        let bytes =
-            std::fs::read(self.root.join(path)).map_err(|e| format!("reading `{path}`: {e}"))?;
+        let indexed = *indexed;
+        let bytes = std::fs::read(full).map_err(|e| format!("reading `{path}`: {e}"))?;
         if xxh3_128(&bytes) != indexed {
             return Err(format!(
                 "`{path}` changed since it was indexed; update the index first"
