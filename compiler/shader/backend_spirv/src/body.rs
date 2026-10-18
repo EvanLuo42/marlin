@@ -11,8 +11,8 @@ use std::collections::{HashMap, HashSet};
 
 use marlin_shaderc_ir::{
     AccessStep, AtomicOp, BinaryOp, Block, Builtin, ConvertOp, FloatCmp, Function, Inst, IntCmp,
-    MathOp, MemOrder, Op, QuadOp, ReduceOp, Scalar, Scope, Space, Type, TypeData, UnaryOp, Value,
-    ValueDef, VoteOp, WaveOp,
+    MathOp, MemOrder, Op, QuadOp, ReduceOp, Scalar, Scope, Space, Stage, Type, TypeData, UnaryOp,
+    Value, ValueDef, VoteOp, WaveOp,
 };
 
 use crate::spirv::{builtin, capability as cap, glsl, group_operation, op, scope, semantics};
@@ -903,6 +903,17 @@ impl<'w, 'm> Body<'w, 'm> {
             operands.extend([0x2, n]);
         }
         let loaded = self.value(laid, op::Load, &operands);
+        // `[InstanceId]` starts at 0 on every backend (0002 §3): Vulkan's instance index
+        // includes the draw's first instance.
+        if let ValueDef::Global(g) = f.values[p].def
+            && self.w.m.globals[g].binding
+                == marlin_shaderc_ir::Binding::Builtin(Builtin::InstanceId)
+        {
+            let base_var = self.w.builtin_input(builtin::BaseInstance);
+            let u32t = self.w.uint_ty(32);
+            let base = self.value(u32t, op::Load, &[base_var]);
+            return Ok(self.value(u32t, op::ISub, &[loaded, base]));
+        }
         let _ = f;
         Ok(if laid != plain {
             self.value(plain, op::CopyLogical, &[loaded])
@@ -1194,13 +1205,22 @@ fn reduce(r: ReduceOp, is_bool: bool) -> u32 {
     }
 }
 
-/// Built-ins a module variable can be bound to.
-pub(crate) fn builtin_of(b: Builtin) -> R<u32> {
+/// The SPIR-V built-in a module variable bound to `b` is, in `space` of an entry of `stage`.
+pub(crate) fn builtin_of(b: Builtin, stage: Stage, space: Space) -> R<u32> {
     Ok(match b {
         Builtin::DispatchThreadId => builtin::GlobalInvocationId,
         Builtin::GroupId => builtin::WorkgroupId,
         Builtin::GroupThreadId => builtin::LocalInvocationId,
         Builtin::GroupIndex => builtin::LocalInvocationIndex,
+        Builtin::VertexId => builtin::VertexIndex,
+        // Less the base instance where it is loaded.
+        Builtin::InstanceId => builtin::InstanceIndex,
+        // A pixel's position is its window coordinate.
+        Builtin::Position if stage == Stage::Pixel && space == Space::Input => builtin::FragCoord,
+        Builtin::Position => builtin::Position,
+        Builtin::IsFrontFace => builtin::FrontFacing,
+        Builtin::SampleIndex => builtin::SampleId,
+        Builtin::Depth => builtin::FragDepth,
         other => return unsupported(format!("the built-in `{}`", other.name())),
     })
 }

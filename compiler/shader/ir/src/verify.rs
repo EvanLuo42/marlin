@@ -418,8 +418,12 @@ impl<'a> Verifier<'a> {
                 Binding::Location(_) if !io => {
                     problems.push("a location is for `input` and `output`".into());
                 }
-                Binding::Target(_) if space != Space::Output => {
+                Binding::Target(..) if space != Space::Output => {
                     problems.push("a render target is an `output`".into());
+                }
+                // Dual-source blending has two sources, of target 0 (0004 §11.5).
+                Binding::Target(t, s) if s > 1 || (s == 1 && t != 0) => {
+                    problems.push("a second blend source is of target 0, and the only one".into());
                 }
                 _ => {}
             }

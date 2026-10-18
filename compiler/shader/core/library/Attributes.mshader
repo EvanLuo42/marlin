@@ -63,9 +63,11 @@ public struct SampleIndexAttribute : IAttribute { }
 public struct DepthAttribute : IAttribute { }
 public struct CoverageAttribute : IAttribute { }
 
-/// The render target a pixel output goes to, 0 to 7 (0004 §11.5).
+/// The render target a pixel output goes to, 0 to 7 (0004 §11.5); `Source = 1` is target 0's
+/// second source for dual-source blending.
 public struct TargetAttribute : IAttribute
 {
+    public int Source;
     public TargetAttribute(int index) { }
 }
 

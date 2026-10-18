@@ -45,6 +45,23 @@ ShaderReflection {
             ],
         },
     ),
+    inputs: [
+        StageVariable {
+            name: "id",
+            ty: "i32x3",
+            binding: SystemValue(
+                "DispatchThreadId",
+            ),
+        },
+        StageVariable {
+            name: "gi",
+            ty: "i32",
+            binding: SystemValue(
+                "GroupIndex",
+            ),
+        },
+    ],
+    outputs: [],
     static_params: [
         NamedValue {
             name: "Game.Rock.Factor",
@@ -121,6 +138,11 @@ ShaderReflection {
         SourceHash {
             package: "Marlin",
             path: "Vectors.mshader",
+            hash: 0,
+        },
+        SourceHash {
+            package: "Game",
+            path: "Graphics.mshader",
             hash: 0,
         },
         SourceHash {

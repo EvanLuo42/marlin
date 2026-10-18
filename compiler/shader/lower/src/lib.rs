@@ -51,8 +51,12 @@
 //! `umin`; E1309 when a kind has none); `const.zero`/`const.one`; `Uniform.Value` and byte
 //! buffers' `Load`/`Store`.
 //!
-//! Not lowered yet: vertex, pixel, mesh and amplification entries and their stage I/O (step
-//! 10); auto-properties.
+//! Step 10a: vertex and pixel entries. Each field of a stage I/O struct parameter or result
+//! becomes a module variable (a system value, a render target with its blend source, or the
+//! next location in declaration order, integers `[Flat]`); a pixel entry returning a scalar or
+//! vector writes target 0.
+//!
+//! Not lowered yet: mesh and amplification entries (step 10c); auto-properties.
 
 mod closures;
 mod ctfe;

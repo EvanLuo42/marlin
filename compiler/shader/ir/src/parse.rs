@@ -587,7 +587,15 @@ impl Parser {
                 self.expect_punct(')')?;
             } else if self.eat_word("target") {
                 self.expect_punct('(')?;
-                global.binding = Binding::Target(self.u32()?);
+                let index = self.u32()?;
+                let mut source = 0;
+                if self.eat_punct(',') {
+                    if !self.eat_word("source") {
+                        return self.error("expected `source` in `target(i, source s)`");
+                    }
+                    source = self.u32()?;
+                }
+                global.binding = Binding::Target(index, source);
                 self.expect_punct(')')?;
             } else if self.at_word("interp") {
                 let w = self.paren_word("interp")?;

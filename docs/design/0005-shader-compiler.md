@@ -433,7 +433,7 @@ public const ClosureInfo Flatten<M>() where M : IMaterial { ... }
 | 7 | `lower`：7a 是非泛型代码降低成 SSA IR（表达式、语句、结构化控制流、调用、内建函数）；7b 是实例收集、泛型、接口调用、lambda；7c 是入口（系统值、push、资源）和 CTFE（const 字段、静态参数、数组长度、const 函数） | 泛型入口能单态化，`const` 函数能在编译期求值 |
 | 8 | `opt`：8a 是 pass manager、控制流分析、结构保持的 CFG 化简、DCE、SCCP 和差分测试（随机生成的结构化函数，用解释器比较 pass 前后）；8b 是阶段 0–1 的 pass（1.4、1.5 只有 DXIL 需要，随 DXIL 后端一起做）；8c 是 uniformity 分析和 verifier 的 convergence 检查（0006 §5.3），并核对 verifier 的 break 规则和 SPIR-V 一致（break 只能去最内层 loop 或 switch 的 merge；现在的 verifier 接受任何一层外面的 loop） | 第一个 compute 入口能走完整条流水线 |
 | 9 | 9a 是 `target`（target 描述、`Backend` 接口、注册表）和 `backend_spirv` 的 compute 部分（SPIR-V 1.6、原生 descriptor heap，0002 §6）；9b 是我们自己的 SPIR-V 验证器；9c 是 `reflect` 和 facade `Session`；9d 是真正的核心库；9e 是第一个 compute shader 在真实 GPU 上跑通，和解释器比较 | 第一个 compute shader 生成的 SPIR-V 通过我们自己的验证器；Vulkan RHI 就绪后在真实 GPU 上跑通 |
-| 10 | 补齐其余 stage、资源、wave、纹理；cook 和 build.rs 接入；随 Vulkan RHI 替换占位 shader | |
+| 10 | 补齐其余 stage、资源、wave、纹理，替换占位 shader。10a 是 vertex 和 pixel 入口及其 stage I/O；10b 是纹理和采样器；10c 是 mesh 和 amplification；10d 是 ray query；10e 是测试运行时编译 shader 的工具、把全部占位 HLSL 换成 Marlin shader（2026-10-17 定：先补齐功能，再一次换完），并在真实 GPU 上跑通 | RHI 和其他 crate 的 GPU 测试全部用 Marlin shader 通过；仓库里没有 HLSL、DXIL 和 dxc 编出的 SPIR-V |
 | 11 | 阶段 2–5 的其余 pass、自动微分、调试信息（NonSemantic.Shader.DebugInfo）、其他后端：DXIL（Xbox 等需要 D3D12 的平台）、Metal、主机 | |
 
 第 9d 步的核心库（`compiler/shader/core`）覆盖 compute 用得到的部分：
@@ -452,4 +452,4 @@ Development 下的 `Debug.Print` 在 SPIR-V 上还写不出来，等调试 buffe
 
 第 5c 步留到后面的：`[StructLayout]`/`[FieldOffset]`（0004 §16）；mesh 的 `MeshOutput`、`[Payload]` 和 `Mesh.Dispatch` 的检查（§11.6）；长度由 `const` 字段给出的数组，布局要等第 7 步的编译期求值；capability 和具体 target 的对照、`const if` 的裁剪，等第 9 步的 target 描述。
 
-第 7c 步留到后面的：vertex、pixel、mesh 和 amplification 入口以及 stage I/O（第 10 步，location 怎么分配到时再定）；`[Export]` 和局部 `const` 的编译期求值（第 9 步，和反射一起）；`const` 函数不能访问资源、groupshared 和系统值的检查（verifier）；auto-property。
+第 7c 步留到后面的：vertex、pixel、mesh 和 amplification 入口以及 stage I/O（第 10 步；location 按声明顺序分配，0004 §11.2）；`[Export]` 和局部 `const` 的编译期求值（第 9 步，和反射一起）；`const` 函数不能访问资源、groupshared 和系统值的检查（verifier）；auto-property。

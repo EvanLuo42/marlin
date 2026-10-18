@@ -9,8 +9,8 @@
 use std::collections::{BTreeSet, HashMap};
 
 use marlin_shaderc_ir::{
-    Const, ConstValue, GlobalId, Module, ResKind, ResourceKind, Scalar, Space, StructId, Type,
-    TypeData, scalar_field_offset, scalar_layout,
+    Binding, Builtin, Const, ConstValue, GlobalId, Interp, Module, ResKind, ResourceKind, Scalar,
+    Space, Stage, StructId, Type, TypeData, scalar_field_offset, scalar_layout,
 };
 use marlin_shaderc_target::BackendError;
 
@@ -100,12 +100,18 @@ pub(crate) struct Writer<'m> {
     heap: Option<u32>,
     slot: Option<u32>,
     builtins: HashMap<u32, u32>,
+    /// The stage of the entry point being written.
+    pub stage: Stage,
+    /// The entry writes `FragDepth`.
+    depth: bool,
 }
 
 impl<'m> Writer<'m> {
-    pub fn new(m: &'m Module) -> Writer<'m> {
+    pub fn new(m: &'m Module, stage: Stage) -> Writer<'m> {
         let mut w = Writer {
             m,
+            stage,
+            depth: false,
             next: 1,
             capabilities: BTreeSet::new(),
             extensions: BTreeSet::new(),
@@ -492,9 +498,41 @@ impl<'m> Writer<'m> {
                 }
                 self.globals.extend(inst(op::Variable, &ops));
                 self.name(var, &data.name);
-                if let marlin_shaderc_ir::Binding::Builtin(b) = data.binding {
-                    let builtin = crate::body::builtin_of(b)?;
-                    self.decorate(var, decoration::BuiltIn, &[builtin]);
+                match data.binding {
+                    Binding::Builtin(b) => {
+                        let builtin = crate::body::builtin_of(b, self.stage, space)?;
+                        self.decorate(var, decoration::BuiltIn, &[builtin]);
+                        match b {
+                            Builtin::InstanceId => self.capability(cap::DrawParameters),
+                            Builtin::SampleIndex => self.capability(cap::SampleRateShading),
+                            Builtin::Depth => self.depth = true,
+                            _ => {}
+                        }
+                    }
+                    Binding::Location(l) => self.decorate(var, decoration::Location, &[l]),
+                    // Dual-source blending: target 0's second source is location 0, index 1.
+                    Binding::Target(t, source) => {
+                        self.decorate(var, decoration::Location, &[t]);
+                        if source != 0 {
+                            self.decorate(var, decoration::Index, &[source]);
+                        }
+                    }
+                    Binding::None => {}
+                }
+                if let Some(i) = data.interp {
+                    let d = match i {
+                        Interp::Perspective => None,
+                        Interp::NoPerspective => Some(decoration::NoPerspective),
+                        Interp::Flat => Some(decoration::Flat),
+                        Interp::Centroid => Some(decoration::Centroid),
+                        Interp::Sample => {
+                            self.capability(cap::SampleRateShading);
+                            Some(decoration::Sample)
+                        }
+                    };
+                    if let Some(d) = d {
+                        self.decorate(var, d, &[]);
+                    }
                 }
                 Global::Var(var)
             }
@@ -611,13 +649,7 @@ impl<'m> Writer<'m> {
     }
 
     /// The whole module: header and sections, around the entry point's code.
-    pub fn finish(
-        mut self,
-        entry: u32,
-        local_size: [u32; 3],
-        name: &str,
-        code: Vec<u32>,
-    ) -> Vec<u32> {
+    pub fn finish(mut self, entry: u32, name: &str, code: Vec<u32>) -> Vec<u32> {
         let glsl = self.glsl;
         let mut out = vec![
             crate::spirv::MAGIC,
@@ -638,13 +670,31 @@ impl<'m> Writer<'m> {
             out.extend(inst(op::ExtInstImport, &ops));
         }
         out.extend(inst(op::MemoryModel, &[0, 1]));
-        let mut ops = vec![crate::spirv::execution_model::GLCompute, entry];
+        use crate::spirv::{execution_mode as mode, execution_model as model};
+        let execution_model = match self.stage {
+            Stage::Vertex => model::Vertex,
+            Stage::Pixel => model::Fragment,
+            _ => model::GLCompute,
+        };
+        let mut ops = vec![execution_model, entry];
         ops.extend(string("main"));
         ops.extend(&self.interface);
         out.extend(inst(op::EntryPoint, &ops));
-        let mut ops = vec![entry, crate::spirv::execution_mode::LocalSize];
-        ops.extend(local_size);
-        out.extend(inst(op::ExecutionMode, &ops));
+        match self.stage {
+            Stage::Compute(size) => {
+                let mut ops = vec![entry, mode::LocalSize];
+                ops.extend(size);
+                out.extend(inst(op::ExecutionMode, &ops));
+            }
+            Stage::Pixel => {
+                // Window coordinates from the top left (0002 §4).
+                out.extend(inst(op::ExecutionMode, &[entry, mode::OriginUpperLeft]));
+                if self.depth {
+                    out.extend(inst(op::ExecutionMode, &[entry, mode::DepthReplacing]));
+                }
+            }
+            _ => {}
+        }
         self.name(entry, name);
         out.extend(&self.names);
         out.extend(&self.annotations);

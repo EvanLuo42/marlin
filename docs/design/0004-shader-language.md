@@ -505,9 +505,14 @@ float4 r0 = m.Row(0);
 | `Raw` | `ReadOnlyByteBuffer` | `ByteBuffer` |
 | `D2` | `Texture2D<T>` | `StorageTexture2D<T>` |
 | `D2Array` | `Texture2DArray<T>` | `StorageTexture2DArray<T>` |
+| `D3` | `Texture3D<T>` | `StorageTexture3D<T>` |
 | `Cube` | `TextureCube<T>` | — |
+| `CubeArray` | `TextureCubeArray<T>` | — |
+| 多重采样纹理的 `D2` / `D2Array` | `Texture2DMS<T>` / `Texture2DMSArray<T>` | — |
 | `Sampler` | `Sampler`、`ComparisonSampler` | — |
 | 加速结构视图（0007 §9） | `AccelerationStructure` | — |
+
+- 3D、cube 数组和多重采样的类型照 RHI 的视图种类补齐，名字和上面的一致；多重采样沿用 HLSL 的 `MS`（2026-10-17 定）。
 
 ```csharp
 public struct RockParams
@@ -561,6 +566,7 @@ uint mips = t.MipCount;
 ```
 
 - `lod`、`grad` 和 `bias` 三者互斥，同时写两个就报错。
+- 数组的层、cube 数组的层、多重采样的采样号都用命名实参，坐标只写位置或方向：`t.Load(px, layer: l, mip: m)`、`cubes.Sample(s, dir, layer: l, lod: 0)`、`ms.Load(px, sample: i)`（2026-10-17 定）。
 - 纹理和采样器**保持分离**，各自是一个 4 字节的下标，采样时传入采样器。这样采样器可以在 cook 时单独去重。
 - 存储纹理用索引器读写：`dst[px] = c;`。
 - `Buffer<T>` 的元素是变量，和数组元素一样（照 `Span<T>` 的规则，不照返回值的索引器）：`b[i].Pos.y += dt` 只写这一个分量。用户类型的索引器仍然返回值，不能这样给它的一部分赋值（2026-10-17 定）。
@@ -607,7 +613,7 @@ public VsOut Vs([VertexId] uint vid, [InstanceId] uint iid, [Push] in DrawArgs a
 public void Blur([DispatchThreadId] uint3 id, [GroupIndex] uint gi, [Push] in BlurArgs args) { ... }
 ```
 
-- 没有标系统值的 stage I/O 字段，由编译器按字段名分配 location。
+- 没有标系统值的 stage I/O 字段，location 按声明顺序分配：第 k 个这样的字段就是 location k。vertex 输出和 pixel 输入通常共用同一个 I/O struct；不共用时，两边的字段要按同样的顺序声明。反射里会列出各个 location（2026-10-17 定，替换原来的"按字段名"）。
 - `[Flat]`、`[NoPerspective]` 等插值修饰也写成 attribute。
 - 0002 §3 的约定照旧：`[VertexId]` 包含 base vertex，`[InstanceId]` 从 0 开始。
 - 系统值的完整清单（类型在括号里），编译器按 stage 和方向检查：
@@ -674,6 +680,7 @@ public PsOut Ps(in VsOut i, [IsFrontFace] bool front) { ... }
 ```
 
 - 只有一个渲染目标时，直接返回 `float4`，它就是 target 0。
+- dual-source blending 的第二个源写 `[Target(0, Source = 1)]`，`[Target(0)]` 是第一个源（0002 §2.4，2026-10-17 定）。
 - 有多个渲染目标时，返回一个 struct，字段标 `[Target(i)]`。要写深度时，字段标 `[Depth]`。
 - 这和 stage I/O 用的是同一套 attribute 写法。
 

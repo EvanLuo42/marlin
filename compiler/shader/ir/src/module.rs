@@ -61,8 +61,8 @@ pub enum Binding {
     None,
     Builtin(Builtin),
     Location(u32),
-    /// A render target.
-    Target(u32),
+    /// A render target, and which source of dual-source blending (0 or 1) it is.
+    Target(u32, u32),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

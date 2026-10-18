@@ -124,6 +124,7 @@ fn an_entry_compiles_to_spirv_with_its_reflection() {
     assert_eq!(
         out.used_sources[core.len()..],
         [
+            SourcePath::new("Game", "Graphics.mshader"),
             SourcePath::new("Game", "Kernel.mshader"),
             SourcePath::new("Game", "Main.mshader"),
             SourcePath::new("Game", "Wide.mshader"),
@@ -365,7 +366,18 @@ fn the_core_library_compiles_for_vulkan() {
     let (sources, targets) = (Memory::new(), default_targets());
     let s = session(&sources, &targets);
     // Shipping: `Debug.Print` is not written for SPIR-V until the debug buffer exists.
-    for entry in ["Game.Mirror", "Game.Kernel"] {
+    for entry in [
+        "Game.Mirror",
+        "Game.Kernel",
+        "Game.SolidVs",
+        "Game.SolidPs",
+        "Game.SolidDual",
+        "Game.SolidCoord",
+        "Game.ColumnsVs",
+        "Game.ColumnsPs",
+        "Game.Instanced",
+        "Game.InstancedPs",
+    ] {
         let mut req = request(entry, &[]);
         req.profile = Profile::Shipping;
         let out = s
@@ -373,4 +385,64 @@ fn the_core_library_compiles_for_vulkan() {
             .unwrap_or_else(|e| panic!("{entry}: {}", errors(&s, &e)));
         external_check(&out.code.bytes, entry);
     }
+}
+
+#[test]
+fn stage_io_takes_locations_in_declaration_order() {
+    use marlin_shader::reflect::StageBinding;
+    let (sources, targets) = (Memory::new(), default_targets());
+    let s = session(&sources, &targets);
+    let io = |entry: &str| {
+        let r = s
+            .compile(&request(entry, &[]))
+            .unwrap_or_else(|e| panic!("{entry}: {}", errors(&s, &e)))
+            .reflection;
+        let show = |vars: &[marlin_shader::reflect::StageVariable]| -> Vec<(String, StageBinding)> {
+            vars.iter()
+                .map(|v| (v.name.clone(), v.binding.clone()))
+                .collect()
+        };
+        (show(&r.inputs), show(&r.outputs))
+    };
+    let sv = |n: &str| StageBinding::SystemValue(n.into());
+    // The vertex outputs and the pixel inputs of one struct agree.
+    let (_, vs_out) = io("Game.Instanced");
+    let (ps_in, ps_out) = io("Game.InstancedPs");
+    let want = vec![
+        ("Pos".to_string(), sv("Position")),
+        ("Instance".to_string(), StageBinding::Location(0)),
+        ("Uv".to_string(), StageBinding::Location(1)),
+    ];
+    assert_eq!(vs_out, want);
+    assert_eq!(ps_in, want);
+    assert_eq!(
+        ps_out,
+        [(
+            "target".to_string(),
+            StageBinding::Target {
+                index: 0,
+                source: 0
+            }
+        )]
+    );
+    let (_, dual) = io("Game.SolidDual");
+    assert_eq!(
+        dual,
+        [
+            (
+                "Color0".to_string(),
+                StageBinding::Target {
+                    index: 0,
+                    source: 0
+                }
+            ),
+            (
+                "Color1".to_string(),
+                StageBinding::Target {
+                    index: 0,
+                    source: 1
+                }
+            ),
+        ]
+    );
 }

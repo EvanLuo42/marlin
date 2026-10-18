@@ -46,8 +46,11 @@ pub fn print_module(m: &Module) -> String {
             Binding::Location(l) => {
                 let _ = write!(out, " location({l})");
             }
-            Binding::Target(t) => {
+            Binding::Target(t, 0) => {
                 let _ = write!(out, " target({t})");
+            }
+            Binding::Target(t, s) => {
+                let _ = write!(out, " target({t}, source {s})");
             }
         }
         if let Some(interp) = g.interp {

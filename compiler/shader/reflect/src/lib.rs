@@ -7,11 +7,12 @@
 //! types as the source writes them, attributes, compile-time values, capabilities and files.
 
 use marlin_shader::reflect::{
-    Attribute, EntryInfo, FieldLayout, NamedValue, ShaderReflection, SourceHash, Stage, Stats,
-    StructLayout,
+    Attribute, EntryInfo, FieldLayout, NamedValue, ShaderReflection, SourceHash, Stage,
+    StageBinding, StageVariable, Stats, StructLayout,
 };
 use marlin_shaderc_ir::{
-    FuncId, Module, Space, Stage as IrStage, TypeData, scalar_field_offset, scalar_layout,
+    Binding, FuncId, Module, Space, Stage as IrStage, TypeData, scalar_field_offset, scalar_layout,
+    type_name,
 };
 
 /// What the front end knows about an entry point.
@@ -62,6 +63,8 @@ pub fn reflect(
             group_size,
         },
         push,
+        inputs: stage_variables(lowered, entry, Space::Input),
+        outputs: stage_variables(lowered, entry, Space::Output),
         static_params: front.static_params,
         exports: front.exports,
         capabilities,
@@ -146,4 +149,44 @@ fn stats(m: &Module, entry: FuncId, code_bytes: usize) -> Stats {
         groupshared_bytes: groupshared_bytes as u32,
         code_bytes: code_bytes as u32,
     }
+}
+
+/// The entry's module variables in `space` (stage inputs or outputs), named by the parameter
+/// or field they come from.
+fn stage_variables(m: &Module, entry: FuncId, space: Space) -> Vec<StageVariable> {
+    let Some(e) = m.entry_of(entry) else {
+        return Vec::new();
+    };
+    let prefix = format!("{}.", m.funcs[entry].name);
+    let mut out = Vec::new();
+    for &g in &e.uses {
+        let data = &m.globals[g];
+        let TypeData::Ptr {
+            space: s, pointee, ..
+        } = m.data(data.ty)
+        else {
+            continue;
+        };
+        if *s != space {
+            continue;
+        }
+        let binding = match data.binding {
+            Binding::Builtin(b) => StageBinding::SystemValue(b.name().to_string()),
+            Binding::Location(l) => StageBinding::Location(l),
+            Binding::Target(index, source) => StageBinding::Target { index, source },
+            Binding::None => continue,
+        };
+        // `Game.Vs.out.Uv` -> `Uv`, `Game.Vs.vertex` -> `vertex`.
+        let name = data
+            .name
+            .strip_prefix(prefix.as_str())
+            .unwrap_or(&data.name);
+        let name = name.rsplit('.').next().unwrap_or(name).to_string();
+        out.push(StageVariable {
+            name,
+            ty: type_name(m, *pointee),
+            binding,
+        });
+    }
+    out
 }

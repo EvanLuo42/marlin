@@ -78,10 +78,10 @@ table! {
 table! {
     capability {
         Matrix = 0, Shader = 1, Float16 = 9, Float64 = 10, Int64 = 11, Int64Atomics = 12,
-        Int16 = 22, GroupNonUniform = 61, GroupNonUniformVote = 62,
+        Int16 = 22, SampleRateShading = 35, GroupNonUniform = 61, GroupNonUniformVote = 62,
         GroupNonUniformArithmetic = 63, GroupNonUniformBallot = 64,
         GroupNonUniformShuffle = 65, GroupNonUniformClustered = 67, GroupNonUniformQuad = 68,
-        StorageBuffer16BitAccess = 4433, StoragePushConstant16 = 4435,
+        DrawParameters = 4427, StorageBuffer16BitAccess = 4433, StoragePushConstant16 = 4435,
         UntypedPointersKHR = 4473, DescriptorHeapEXT = 5128,
     }
 }
@@ -89,14 +89,18 @@ table! {
 table! {
     decoration {
         Block = 2, ColMajor = 5, ArrayStride = 6, MatrixStride = 7, BuiltIn = 11,
-        NonWritable = 24, NonReadable = 25, Offset = 35, ArrayStrideIdEXT = 5124,
+        NoPerspective = 13, Flat = 14, Centroid = 16, Sample = 17, NonWritable = 24,
+        NonReadable = 25, Location = 30, Index = 32, Offset = 35, ArrayStrideIdEXT = 5124,
     }
 }
 
 table! {
     builtin {
-        WorkgroupId = 26, LocalInvocationId = 27, GlobalInvocationId = 28,
-        LocalInvocationIndex = 29, SubgroupSize = 36, SubgroupLocalInvocationId = 41,
+        Position = 0, ClipDistance = 3, PrimitiveId = 7, FragCoord = 15, FrontFacing = 17,
+        SampleId = 18, SampleMask = 20, FragDepth = 22, WorkgroupId = 26,
+        LocalInvocationId = 27, GlobalInvocationId = 28, LocalInvocationIndex = 29,
+        SubgroupSize = 36, SubgroupLocalInvocationId = 41, VertexIndex = 42, InstanceIndex = 43,
+        BaseInstance = 4425,
         SamplerHeapEXT = 5122, ResourceHeapEXT = 5123,
     }
 }
@@ -120,11 +124,11 @@ table! {
 }
 
 table! {
-    execution_model { GLCompute = 5 }
+    execution_model { Vertex = 0, Fragment = 4, GLCompute = 5 }
 }
 
 table! {
-    execution_mode { LocalSize = 17 }
+    execution_mode { OriginUpperLeft = 7, DepthReplacing = 12, LocalSize = 17 }
 }
 
 table! {

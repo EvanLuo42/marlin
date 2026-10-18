@@ -182,6 +182,8 @@ entry compute(8, 8, 1) @Blur uses(@args, @tid) { ... }
 
 - 每个入口用 `uses(...)` 列出它用到的变量。
 - 系统值用 `builtin(...)` 标注，插值方式用 `interp(...)` 标注。
+- dual-source blending 的第二个源是 `target(0, source 1)`（0004 §11.5）。
+- 降低时，stage I/O struct 的每个字段都成为一个变量：系统值字段用 `builtin`，`[Target(i)]` 字段用 `target`，其余字段按声明顺序取 `location(0)`、`location(1)`……（0004 §11.2）。
 - SROA、DSE 和 load 去重都可以直接用在这些变量上。
 - 降低（第 7c 步）：入口函数本身照普通实例降低，系统值和 `[Push]` 是它的参数；IR 的入口是一个没有参数的函数，从各自的模块级变量 `load` 出参数再 `call` 它，之后由 inline 消掉。
 - groupshared 变量和 buffer 元素是内存里的位置，读写只经过指针访问用到的那一部分（`access`、`buffer.elem`），不整体读出再写回：别的 lane 可能同时在写其他部分。
@@ -401,7 +403,7 @@ block0:
 module    := item*
 item      := 'format' N '=' string
            | 'struct' @name '{' (field ':' type),* '}'
-           | 'global' @name ':' ptr-type attr* ('=' lit)?      attr: builtin(X) location(n) target(n) interp(x)
+           | 'global' @name ':' ptr-type attr* ('=' lit)?      attr: builtin(X) location(n) target(n) target(n, source s) interp(x)
            | 'func' @name '(' (%v ':' type),* ')' ('->' type | '->' '(' type,* ')')? body
            | 'entry' stage @name 'uses' '(' @global,* ')' body  stage: compute(x, y, z) vertex pixel mesh(...) amplification(...)
 body      := '{' (label | inst)* '}'

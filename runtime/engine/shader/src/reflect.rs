@@ -18,6 +18,10 @@ pub struct ShaderReflection {
     pub entry: EntryInfo,
     /// The entry's `[Push]` parameter; `None` when it takes none.
     pub push: Option<StructLayout>,
+    /// The stage inputs and outputs (0004 §11.2): system values, locations in declaration
+    /// order, render targets.
+    pub inputs: Vec<StageVariable>,
+    pub outputs: Vec<StageVariable>,
     /// The static parameters the code uses (`const` fields of structs, 0004 §13.3), with
     /// their values for this compile, by path.
     pub static_params: Vec<NamedValue>,
@@ -53,6 +57,36 @@ pub enum Stage {
     Pixel,
     Mesh,
     Amplification,
+}
+
+/// One stage input or output.
+#[derive(Clone, PartialEq, Debug, Default, Reflect)]
+#[reflect(default)]
+pub struct StageVariable {
+    /// The parameter, or the stage I/O struct's field (`Uv`).
+    pub name: String,
+    /// The compiler's type (`f32x2`).
+    pub ty: String,
+    pub binding: StageBinding,
+}
+
+/// How a stage variable connects to the pipeline.
+#[derive(Clone, PartialEq, Eq, Debug, Reflect)]
+pub enum StageBinding {
+    /// A system value, by the attribute's name (`Position`).
+    SystemValue(String),
+    Location(u32),
+    /// A render target, and which dual-source blending source it is.
+    Target {
+        index: u32,
+        source: u32,
+    },
+}
+
+impl Default for StageBinding {
+    fn default() -> Self {
+        StageBinding::Location(0)
+    }
 }
 
 /// A struct as the shader lays it out.

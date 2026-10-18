@@ -12,6 +12,14 @@
 //! - What SPIR-V leaves undefined is made defined, as the IR has it: shift counts are taken
 //!   modulo the width, float-to-integer conversions saturate (NaN to 0).
 //!
+//! Step 10a: vertex and fragment entry points: `Input`/`Output` variables with `BuiltIn`,
+//! `Location` (and `Index` for target 0's second blend source) and interpolation decorations;
+//! `OriginUpperLeft`, and `DepthReplacing` when the depth is written; `[Position]` is
+//! `FragCoord` as a pixel input; `[InstanceId]` is `InstanceIndex - BaseInstance`, from 0 as on
+//! every backend (0002 §3). The validator checks those built-ins, a `Location` on every other
+//! stage variable, and `Flat` integer fragment inputs. Clip distances, primitive ids and
+//! coverage come later.
+//!
 //! Step 9d: uniforms (a `Uniform` block reached through `OpBufferPointerEXT`) and byte
 //! buffers (blocks of 32-bit words, addressed by byte offset / 4; their length in bytes).
 //!
@@ -54,9 +62,9 @@ pub fn write_module(m: &Module, entry: FuncId) -> Result<Vec<u32>, BackendError>
     let e = m.entry_of(entry).ok_or_else(|| BackendError {
         message: "not an entry point".into(),
     })?;
-    let Stage::Compute(size) = e.stage else {
+    if !matches!(e.stage, Stage::Compute(_) | Stage::Vertex | Stage::Pixel) {
         return write::unsupported(format!("a {} entry point", e.stage.name()));
-    };
+    }
     for (id, _) in m.funcs.iter() {
         if id != entry {
             return write::unsupported(
@@ -65,10 +73,10 @@ pub fn write_module(m: &Module, entry: FuncId) -> Result<Vec<u32>, BackendError>
         }
     }
     let f = &m.funcs[entry];
-    let mut w = write::Writer::new(m);
+    let mut w = write::Writer::new(m, e.stage);
     let id = w.id();
     let code = body::Body::new(&mut w, f).function(id)?;
-    Ok(w.finish(id, size, &f.name, code))
+    Ok(w.finish(id, &f.name, code))
 }
 
 /// Little-endian bytes of SPIR-V words.

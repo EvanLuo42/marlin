@@ -121,6 +121,7 @@ impl Validator {
         self.entry_points();
         self.layout_rules();
         self.builtins();
+        self.stage_io();
         func::functions(self);
     }
 
@@ -521,6 +522,15 @@ impl Validator {
                 self.error(format!("entry point `{name}`: %{f} is not a function"));
                 continue;
             }
+            if e.ops[0] == crate::spirv::execution_model::Fragment
+                && !modes.iter().any(|m| {
+                    m.ops[0] == f && m.ops[1] == crate::spirv::execution_mode::OriginUpperLeft
+                })
+            {
+                self.error(format!(
+                    "entry point `{name}`: a fragment entry point needs `OriginUpperLeft` (Vulkan)"
+                ));
+            }
             if e.ops[0] == crate::spirv::execution_model::GLCompute
                 && !modes
                     .iter()
@@ -618,6 +628,15 @@ impl Validator {
                     }
                     _ => false,
                 };
+                let float = |v: &Self, t: Option<u32>, n: u32| match t.and_then(|t| v.types.get(t))
+                {
+                    Some(Ty::Float { width: 32 }) => n == 1,
+                    Some(Ty::Vector { component, count }) => {
+                        *count == n
+                            && matches!(v.types.get(*component), Some(Ty::Float { width: 32 }))
+                    }
+                    _ => false,
+                };
                 let ok = match b {
                     builtin::GlobalInvocationId
                     | builtin::LocalInvocationId
@@ -630,6 +649,21 @@ impl Validator {
                     builtin::ResourceHeapEXT | builtin::SamplerHeapEXT => {
                         class == sc::UniformConstant
                             && matches!(self.types.get(ptr), Some(Ty::Untyped { .. }))
+                    }
+                    builtin::VertexIndex | builtin::InstanceIndex | builtin::BaseInstance => {
+                        self.needs_capability(b == builtin::BaseInstance, cap::DrawParameters, id);
+                        class == sc::Input && uint(self, pointee, 1)
+                    }
+                    builtin::SampleId => {
+                        self.needs_capability(true, cap::SampleRateShading, id);
+                        class == sc::Input && uint(self, pointee, 1)
+                    }
+                    builtin::Position => class == sc::Output && float(self, pointee, 4),
+                    builtin::FragCoord => class == sc::Input && float(self, pointee, 4),
+                    builtin::FragDepth => class == sc::Output && float(self, pointee, 1),
+                    builtin::FrontFacing => {
+                        class == sc::Input
+                            && matches!(pointee.and_then(|t| self.types.get(t)), Some(Ty::Bool))
                     }
                     _ => {
                         self.error(format!(
@@ -644,6 +678,51 @@ impl Validator {
                         "%{id}: `{n}` is not on a variable of the type it needs"
                     ));
                 }
+            }
+        }
+    }
+
+    fn needs_capability(&mut self, when: bool, c: u32, id: u32) {
+        if when && !self.capabilities.contains(&c) {
+            let n = cap::name(c).unwrap_or("?");
+            self.error(format!("%{id}: its built-in needs the `{n}` capability"));
+        }
+    }
+
+    /// Vulkan's rules for stage I/O: every `Input`/`Output` variable that is not a built-in has
+    /// a `Location`; a fragment shader's integer inputs are `Flat`.
+    fn stage_io(&mut self) {
+        let fragment = self.insts.iter().any(|i| {
+            i.opcode == op::EntryPoint
+                && i.ops.first() == Some(&crate::spirv::execution_model::Fragment)
+        });
+        let globals: Vec<(u32, u32, u32)> = self
+            .globals
+            .iter()
+            .map(|(&id, &(class, ptr))| (id, class, ptr))
+            .collect();
+        for (id, class, ptr) in globals {
+            if class != sc::Input && class != sc::Output {
+                continue;
+            }
+            let has = |v: &Self, d: u32| v.decorated(id, d).is_some();
+            if has(self, decoration::BuiltIn) {
+                continue;
+            }
+            if !has(self, decoration::Location) {
+                self.error(format!("%{id}: a stage input or output has no `Location`"));
+            }
+            let pointee = match self.types.get(ptr) {
+                Some(Ty::Pointer { pointee, .. }) => Some(*pointee),
+                _ => None,
+            };
+            let int = pointee
+                .and_then(|t| self.types.component(t))
+                .is_some_and(|(_, c)| matches!(c, Ty::Int { .. }));
+            if fragment && class == sc::Input && int && !has(self, decoration::Flat) {
+                self.error(format!(
+                    "%{id}: an integer input of a fragment shader is not `Flat`"
+                ));
             }
         }
     }

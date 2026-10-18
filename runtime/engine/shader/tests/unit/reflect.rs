@@ -1,6 +1,7 @@
 use marlin_shader::reflect::{
     Attribute, ConstValue, EntryInfo, Extension, FieldLayout, FieldValue, NamedValue,
-    ShaderReflection, SourceHash, Stage, Stats, StructLayout, register,
+    ShaderReflection, SourceHash, Stage, StageBinding, StageVariable, Stats, StructLayout,
+    register,
 };
 
 fn sample() -> ShaderReflection {
@@ -10,6 +11,19 @@ fn sample() -> ShaderReflection {
             stage: Stage::Compute,
             group_size: [64, 1, 1],
         },
+        inputs: vec![StageVariable {
+            name: "id".into(),
+            ty: "i32x3".into(),
+            binding: StageBinding::SystemValue("DispatchThreadId".into()),
+        }],
+        outputs: vec![StageVariable {
+            name: "Color1".into(),
+            ty: "f32x4".into(),
+            binding: StageBinding::Target {
+                index: 0,
+                source: 1,
+            },
+        }],
         push: Some(StructLayout {
             name: "Game.Args".into(),
             size: 16,
