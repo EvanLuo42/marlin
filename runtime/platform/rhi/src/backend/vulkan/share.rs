@@ -8,7 +8,6 @@
 //! owned by the [`SharedHandle`].
 
 use core::ffi::c_void;
-use core::ptr;
 
 use super::Backend;
 use super::device::{Device, Shared};
@@ -217,7 +216,7 @@ fn export_memory(s: &Shared, memory: Option<&Memory>) -> Result<SharedHandle> {
             handleType: MEMORY_HANDLE as VkExternalMemoryHandleTypeFlagBits,
             ..Default::default()
         };
-        let mut raw = ptr::null_mut();
+        let mut raw = core::ptr::null_mut();
         // SAFETY: memory allocated with this handle type exportable; a valid out pointer.
         let r = unsafe { get(s.raw, &info, &mut raw) };
         s.lost.result(r)?;
@@ -253,7 +252,7 @@ fn export_semaphore(s: &Shared, fence: &Fence) -> Result<SharedHandle> {
             handleType: SEMAPHORE_HANDLE as VkExternalSemaphoreHandleTypeFlagBits,
             ..Default::default()
         };
-        let mut raw = ptr::null_mut();
+        let mut raw = core::ptr::null_mut();
         // SAFETY: a semaphore created exportable as this handle type; a valid out pointer.
         s.lost.result(unsafe { get(s.raw, &info, &mut raw) })?;
         Ok(SharedHandle { raw })

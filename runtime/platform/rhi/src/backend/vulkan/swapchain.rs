@@ -537,15 +537,9 @@ impl Swapchain {
         let supported = self.surface.present_modes(physical);
         let mode = resolve(self.present_mode, &supported);
         let caps = self.surface.caps(physical, mode, &self.features)?;
-        let color_space = vk_color_space(self.color_space);
-        if !self
-            .surface
-            .formats(physical)
-            .iter()
-            .any(|f| f.format == self.vk_format && f.colorSpace == color_space)
-        {
-            return Err(unsupported());
-        }
+        let color_space = self
+            .surface_color_space(self.color_space)
+            .ok_or_else(unsupported)?;
 
         // The modes this swapchain can switch to per present, and an image count all allow.
         let c = &caps.caps;
@@ -1137,14 +1131,30 @@ impl Swapchain {
     }
 
     pub(crate) fn supports_color_space(&self, color_space: ColorSpace) -> bool {
-        if color_space != ColorSpace::Srgb && !self.shared.instance.ext.swapchain_colorspace {
-            return false;
+        self.surface_color_space(color_space).is_some()
+    }
+
+    /// The surface color space that shows `color_space` from this format, if the surface offers
+    /// one. SDR from 16-bit float images falls back to the linear extended sRGB space (how
+    /// Windows composes float images anyway) where the surface pairs that format with no other.
+    fn surface_color_space(&self, color_space: ColorSpace) -> Option<VkColorSpaceKHR> {
+        let extended = self.shared.instance.ext.swapchain_colorspace;
+        if color_space != ColorSpace::Srgb && !extended {
+            return None;
         }
+        let formats = self.surface.formats(self.shared.physical);
+        let offers = |cs| {
+            formats
+                .iter()
+                .any(|f| f.format == self.vk_format && f.colorSpace == cs)
+        };
         let wanted = vk_color_space(color_space);
-        self.surface
-            .formats(self.shared.physical)
-            .iter()
-            .any(|f| f.format == self.vk_format && f.colorSpace == wanted)
+        if offers(wanted) {
+            return Some(wanted);
+        }
+        let linear = VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT;
+        let float_sdr = color_space == ColorSpace::Srgb && self.format == Format::Rgba16Float;
+        (float_sdr && extended && offers(linear)).then_some(linear)
     }
 
     pub(crate) fn set_color_space(&mut self, color_space: ColorSpace) -> Result<()> {
