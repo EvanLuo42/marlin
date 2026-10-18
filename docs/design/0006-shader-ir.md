@@ -276,6 +276,13 @@ tex.store %st, %coord, %v
 - 纹理种类有：`Texture2D`、`Texture2DArray`、`Texture3D`、`TextureCube`、`TextureCubeArray`、`Texture2DMS`、`Texture2DMSArray`、`StorageTexture2D`、`StorageTexture2DArray`、`StorageTexture3D`。verifier 按种类检查坐标的维数、需要的参数（数组要 `layer`，多重采样要 `sample`），以及哪些操作可以做：cube 只能采样，storage 只能按纹素读写，没有 `lod`/`grad` 的采样只能在 pixel 入口里。
 - 只有隐式 LOD 的采样是 convergent 的。
 - `offset` 在 legalize 的 5.6 之后必须是常量。
+- 第 10 步补全时（2026-10-18）加了这些：
+  - 操作数包末尾加了 `offset` 和 `compare`，顺序是 `…, sample, offset, compare`。
+  - `offset` 是整数向量常量，降低时检查（−8 到 7）；cube 纹理不能用，`tex.store` 也不能用。
+  - `compare` 是 `f32`，用于采样和 gather。带它的时候，采样器必须是 `ComparisonSampler`，纹理必须是 `f32` 纹理；采样结果是一个 `f32`，gather 的结果是 `f32x4`。
+  - `tex.gather.r` 到 `tex.gather.a` 取一个通道，结果是四个该通道的值。带 `compare` 时只能写 `.r`。gather 不能用 `lod`、`bias`、`grad`，也不能用于 3D 纹理。
+  - 查询：`tex.size %t[, %mip]` 返回 `i32x2` 或 `i32x3`，cube 是一个面的尺寸；`mip` 只用于有 mip 的纹理。`tex.layers`、`tex.mips`、`tex.samples` 分别要求数组纹理、有 mip 的纹理和多重采样纹理。
+  - 有符号整数纹理写成 `res<Texture2D<signed i32>>`。IR 的整数不带符号，但图像类型带，所以由纹理类型来记录。
 
 ### 8.7 wave
 
@@ -325,6 +332,8 @@ mesh.dispatch %x, %y, %z          // amplification；payload 是 @payload 变量
 
 - `debug.print fmt_id, (args)` 和 `debug.assert %c, fmt_id, (args)`，只在 Development profile 里出现（0005 §4.4 的 0.4 会把它们降低成写调试 buffer）。
 - 格式字符串存在 module 的格式表里，产物的反射里有这张表。
+- 格式里的每个插值位置写成 `{u}`、`{i}`、`{f}` 或 `{b}`，字面的花括号写成 `{{`、`}}`（2026-10-18）。IR 的整数不带符号，所以由降低这一步写明是有符号还是无符号；SPIR-V 后端据此转成 `%u`、`%d`、`%f`（向量是 `%vN…`）。
+- `Debug.Assert` 在降低时就变成 `if (!c) debug.print(...)`，所以后端只需要处理 print。`debug.assert` 这个 op 仍然保留在 IR 里。
 
 ## 9. 编码与 target op
 

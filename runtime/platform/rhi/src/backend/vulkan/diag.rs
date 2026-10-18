@@ -33,11 +33,12 @@ impl Validation {
         self.errors.load(Ordering::Relaxed)
     }
 
-    /// A messenger that logs warnings and errors and counts errors into `self`, which must
-    /// outlive it.
+    /// A messenger that logs warnings and errors, counts errors into `self` (which must outlive
+    /// it), and logs what shaders print (`Debug.Print`, at info severity).
     pub(crate) fn messenger_info(&self) -> VkDebugUtilsMessengerCreateInfoEXT {
         VkDebugUtilsMessengerCreateInfoEXT {
-            messageSeverity: VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT
+            messageSeverity: VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT
+                | VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT
                 | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
             messageType: VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT
                 | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT
@@ -66,14 +67,23 @@ unsafe extern "system" fn messenger(
         }
     };
     let message = text(data.pMessage);
-    if severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT != 0 {
+    if text(data.pMessageIdName).contains("DEBUG-PRINTF") {
+        // The layer says where the work came from (`vkQueueSubmit2(): ... DebugPrintf:` and a
+        // line break), then what the shader wrote.
+        let printed = message
+            .split_once("DebugPrintf:")
+            .map_or(message, |(_, m)| m.trim_start());
+        marlin_diag::info!("shader: {printed}");
+    } else if severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT != 0 {
         // SAFETY: the user data is the `Validation` that outlives the messenger.
         let validation = unsafe { &*user.cast::<Validation>() };
         validation.errors.fetch_add(1, Ordering::Relaxed);
         marlin_diag::error!("Vulkan: {message}");
-    } else if types & VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT == 0 {
-        // Performance hints, and the loader's notes about implicit layers (overlays, switchable
-        // graphics) that the application does not control.
+    } else if types & VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT == 0
+        || severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT == 0
+    {
+        // Performance hints, the loader's notes about implicit layers (overlays, switchable
+        // graphics) that the application does not control, and the layer's other information.
         marlin_diag::debug!("Vulkan: {message}");
     } else {
         marlin_diag::warn!("Vulkan: {message}");

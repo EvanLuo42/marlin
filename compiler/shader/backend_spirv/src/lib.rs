@@ -46,8 +46,11 @@
 //! Step 9b, the validator ([`validate`], also [`Backend::validate`]): our own check of the
 //! SPIR-V rules the code above relies on, with no outside tools (0005 §4.6).
 //!
-//! Still to come: `debug.*` (with the RHI's debug buffer), ray tracing pipelines, and the
-//! texture operations no shader uses yet (comparison, gather, offsets, size queries).
+//! Step 10f: `debug.print` as `NonSemantic.DebugPrintf` (holes as printf conversions, bools as
+//! 0 or 1); signed integer images (bitcast to and from the IR's signless integers); `Dref`
+//! sampling and gathers, `ConstOffset`, and `OpImageQuery*` with the `ImageQuery` capability.
+//!
+//! Still to come: ray tracing pipelines, gathers of integer textures, texture atomics.
 
 mod body;
 mod dis;

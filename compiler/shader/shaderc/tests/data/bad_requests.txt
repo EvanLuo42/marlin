@@ -50,3 +50,38 @@ error[E1308]: this mesh entry's topology writes `Lines`
 == a mesh output before SetCounts
 error[E1308]: `Game.WriteBeforeCounts(i32)` writes a mesh output before `SetCounts`
 
+== a format specifier in debug output
+error[E1309]: debug output takes no alignment or format specifiers
+ --> Game/Debug.mshader:5:79
+  |
+5 | public void FormattedPrint([DispatchThreadId] uint3 id) => Debug.Print($"x = {id.x:X}");
+  |                                                                               ^^^^
+
+== a matrix in debug output
+error[E1309]: debug output prints scalars and vectors, not `float2x2`
+  --> Game/Debug.mshader:13:71
+   |
+13 | public void MatrixPrint([Push] in MatrixArgs a) => Debug.Print($"m = {a.M}");
+   |                                                                       ^^^
+
+== a texture offset known at run time
+error[E1309]: a texture offset is a constant with each component in -8..7
+   --> Game/Textures.mshader:160:30
+    |
+160 |     a.Output.Store(0, AsUInt(a.Texture.Load(int2(0, 0), offset: int2((int)a.X, 0))));
+    |                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+== a texture offset out of range
+error[E1309]: a texture offset is a constant with each component in -8..7
+   --> Game/Textures.mshader:164:30
+    |
+164 |     a.Output.Store(0, AsUInt(a.Texture.Load(int2(0, 0), offset: int2(9, 0))));
+    |                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+== a gather channel known at run time
+error[E1309]: a gather's channel is a constant
+   --> Game/Textures.mshader:176:31
+    |
+176 |     a.Output.Store4(0, AsUInt(a.Texture.Gather(a.Sampler, float2(0.5, 0.5), a.Which)));
+    |                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+

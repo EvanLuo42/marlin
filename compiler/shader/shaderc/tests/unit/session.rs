@@ -124,6 +124,7 @@ fn an_entry_compiles_to_spirv_with_its_reflection() {
     assert_eq!(
         out.used_sources[core.len()..],
         [
+            SourcePath::new("Game", "Debug.mshader"),
             SourcePath::new("Game", "Graphics.mshader"),
             SourcePath::new("Game", "Kernel.mshader"),
             SourcePath::new("Game", "Main.mshader"),
@@ -232,6 +233,23 @@ fn bad_requests_are_diagnostics() {
         (
             "a mesh output before SetCounts",
             request("Game.WriteBeforeCounts", &[]),
+        ),
+        (
+            "a format specifier in debug output",
+            request("Game.FormattedPrint", &[]),
+        ),
+        ("a matrix in debug output", request("Game.MatrixPrint", &[])),
+        (
+            "a texture offset known at run time",
+            request("Game.RuntimeOffset", &[]),
+        ),
+        (
+            "a texture offset out of range",
+            request("Game.FarOffset", &[]),
+        ),
+        (
+            "a gather channel known at run time",
+            request("Game.RuntimeChannel", &[]),
         ),
     ];
     let mut text = String::new();

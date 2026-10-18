@@ -217,6 +217,9 @@ impl ResourceKind {
 pub struct ResKind {
     pub kind: ResourceKind,
     pub element: Option<Type>,
+    /// A texture of signed integers (`Texture2D<signed i32>`): the IR's integers are
+    /// signless, image types are not.
+    pub signed: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

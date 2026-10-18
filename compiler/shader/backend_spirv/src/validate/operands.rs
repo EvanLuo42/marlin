@@ -42,6 +42,12 @@ pub fn layout(opcode: u32) -> Option<&'static str> {
         | op::ImageFetch
         | op::ImageRead => "triil?i*",
         op::ImageWrite => "iiil?i*",
+        op::ImageSampleDrefImplicitLod
+        | op::ImageSampleDrefExplicitLod
+        | op::ImageGather
+        | op::ImageDrefGather => "triiil?i*",
+        op::ImageQuerySizeLod => "trii",
+        op::ImageQuerySize | op::ImageQueryLevels | op::ImageQuerySamples => "tri",
         op::TypeArray => "rii",
         op::TypeRuntimeArray => "ri",
         op::TypeStruct => "ri*",

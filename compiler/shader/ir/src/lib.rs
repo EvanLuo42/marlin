@@ -82,7 +82,7 @@ pub use module::{
 };
 pub use op::{
     AccessStep, AtomicOp, Axis, BinaryOp, ConvertOp, FloatCmp, IntCmp, MathOp, MemOrder, Op,
-    QuadOp, ReduceOp, RqField, Scope, SwitchCase, TexArg, UnaryOp, VoteOp, WaveOp,
+    QuadOp, ReduceOp, RqField, Scope, SwitchCase, TexArg, TexQuery, UnaryOp, VoteOp, WaveOp,
 };
 pub use parse::{ParseError, parse_module};
 pub use print::{FuncText, block_order, const_lit, print_function, print_module, type_name};

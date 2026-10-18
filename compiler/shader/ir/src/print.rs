@@ -295,7 +295,12 @@ pub fn type_name(m: &Module, t: Type) -> String {
                 "handle"
             };
             match k.element {
-                Some(e) => format!("{outer}<{}<{}>>", k.kind.name(), type_name(m, e)),
+                Some(e) => format!(
+                    "{outer}<{}<{}{}>>",
+                    k.kind.name(),
+                    if k.signed { "signed " } else { "" },
+                    type_name(m, e)
+                ),
                 None => format!("{outer}<{}>", k.kind.name()),
             }
         }
@@ -627,6 +632,12 @@ impl<'a> FuncText<'a> {
             Op::MeshDispatch => format!("mesh.dispatch {}", self.values(ops)),
             Op::TexLoad(a) => format!("tex.load {}", self.tex(ops, 2, a)),
             Op::TexStore(a) => format!("tex.store {}", self.tex(ops, 3, a)),
+            Op::TexGather { channel, args } => format!(
+                "tex.gather.{} {}",
+                ["r", "g", "b", "a"][*channel as usize & 3],
+                self.tex(ops, 3, args)
+            ),
+            Op::TexQuery(q) => format!("tex.{} {}", q.name(), self.values(ops)),
             Op::BufferByte => format!("buffer.byte {}", self.values(ops)),
             Op::UniformPtr => format!("uniform.ptr {}", self.values(ops)),
             Op::BufferLength => format!("buffer.length {}", self.values(ops)),

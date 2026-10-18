@@ -217,14 +217,29 @@ impl Instance {
             .filter(|_| ext.debug_utils)
             .map(|v| v.messenger_info());
 
-        let gpuav: VkBool32 = VK_TRUE;
-        let settings = [VkLayerSettingEXT {
+        let (on, off): (VkBool32, VkBool32) = (VK_TRUE, VK_FALSE);
+        let setting = |name: &'static CStr, value: &VkBool32| VkLayerSettingEXT {
             pLayerName: VALIDATION_LAYER.as_ptr(),
-            pSettingName: c"gpuav_enable".as_ptr(),
+            pSettingName: name.as_ptr(),
             r#type: VK_LAYER_SETTING_TYPE_BOOL32_EXT,
             valueCount: 1,
-            pValues: (&raw const gpuav).cast(),
-        }];
+            pValues: (value as *const VkBool32).cast(),
+        };
+        // Shaders' `Debug.Print` (`NonSemantic.DebugPrintf`, 0005 §4.4) comes back through the
+        // messenger rather than stdout; GPU-AV only when asked for.
+        let mut settings = alloc::vec![
+            setting(c"printf_enable", &on),
+            setting(c"printf_to_stdout", &off),
+        ];
+        let gpu_validation = validation_layer && desc.gpu_validation && ext.layer_settings;
+        if gpu_validation {
+            settings.push(setting(c"gpuav_enable", &on));
+        }
+        if validation_layer && desc.gpu_validation && !ext.layer_settings {
+            marlin_diag::warn!(
+                "Vulkan GPU-assisted validation unavailable (no VK_EXT_layer_settings)"
+            );
+        }
         let settings_info = VkLayerSettingsCreateInfoEXT {
             pNext: messenger_info.as_ref().map_or(ptr::null(), |m| {
                 (m as *const VkDebugUtilsMessengerCreateInfoEXT).cast()
@@ -233,13 +248,7 @@ impl Instance {
             pSettings: settings.as_ptr(),
             ..Default::default()
         };
-        let gpu_validation = validation_layer && desc.gpu_validation && ext.layer_settings;
-        if validation_layer && desc.gpu_validation && !ext.layer_settings {
-            marlin_diag::warn!(
-                "Vulkan GPU-assisted validation unavailable (no VK_EXT_layer_settings)"
-            );
-        }
-        let next: *const core::ffi::c_void = if gpu_validation {
+        let next: *const core::ffi::c_void = if validation_layer && ext.layer_settings {
             (&raw const settings_info).cast()
         } else {
             settings_info.pNext

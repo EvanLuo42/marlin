@@ -55,6 +55,11 @@ runtime recursion: @Ping -> @Pong -> @Ping (recursion must unroll at compile tim
 @Textures: `%wrongcoord = tex.load %albedo, f32x2 (0.0, 0.0)`: the coordinate is `i32x2`
 @Textures: `%sampled = tex.sample %store, %s, f32x2 (0.5, 0.5) { lod: f32 0.0 }`: storage and multisampled textures are not sampled
 @Textures: `tex.store %albedo, i32x2 (0, 0), f32x4 zero`: only storage textures are written
+@Textures: `%plaincompare = tex.sample %albedo, %s, f32x2 (0.5, 0.5) { lod: f32 0.0, compare: f32 0.5 }`: `compare` reads depth: an `f32` texture
+@Textures: `%gatherlod = tex.gather.r %albedo, %s, f32x2 (0.5, 0.5) { lod: f32 0.0 }`: a gather reads mip 0
+@Textures: `%nolayers = tex.layers %albedo`: only array textures have layers
+@Textures: `%nosamples = tex.samples %albedo`: only multisampled textures have samples
+@Textures: `tex.store %store, i32x2 (0, 0), f32x4 zero { offset: i32x2 (1, 0) }`: `offset` is for reading 2D and 3D textures
 @Textures: `@Textures` uses a pixel-only operation, reached from a compute entry point
 == mesh operations outside their stages
 @MeshInCompute: `@MeshInCompute` uses `mesh.set_counts`, reached from a compute entry point

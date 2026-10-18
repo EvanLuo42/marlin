@@ -17,7 +17,7 @@ use crate::module::{
 use crate::num::f32_to_f16;
 use crate::op::{
     AccessStep, AtomicOp, Axis, BinaryOp, ConvertOp, FloatCmp, IntCmp, MathOp, MemOrder, Op,
-    QuadOp, ReduceOp, RqField, Scope, SwitchCase, TexArg, UnaryOp, VoteOp, WaveOp,
+    QuadOp, ReduceOp, RqField, Scope, SwitchCase, TexArg, TexQuery, UnaryOp, VoteOp, WaveOp,
 };
 use crate::ty::{ResKind, ResourceKind, Scalar, Space, StructId, Type, TypeData};
 
@@ -766,16 +766,21 @@ impl Parser {
                         let Some(kind) = ResourceKind::from_name(&kind) else {
                             return self.error(format!("unknown resource kind `{kind}`"));
                         };
-                        let element = if kind.has_element() {
+                        let (element, signed) = if kind.has_element() {
                             self.expect_punct('<')?;
+                            let signed = self.eat_word("signed");
                             let e = self.ty()?;
                             self.expect_punct('>')?;
-                            Some(e)
+                            (Some(e), signed)
                         } else {
-                            None
+                            (None, false)
                         };
                         self.expect_punct('>')?;
-                        let k = ResKind { kind, element };
+                        let k = ResKind {
+                            kind,
+                            element,
+                            signed,
+                        };
                         Ok(self.m.ty(if w == "res" {
                             TypeData::Res(k)
                         } else {
@@ -1414,6 +1419,32 @@ impl Parser {
                 }
                 "mesh.dispatch" => (Op::MeshDispatch, self.operands(b, line, 3)?, None),
                 "tex.load" => self.tex(b, line, 2, Op::TexLoad)?,
+                // `tex.gather.r` .. `tex.gather.a`.
+                name if name.starts_with("tex.gather.") => {
+                    let Some(channel) = ["r", "g", "b", "a"]
+                        .iter()
+                        .position(|c| name.strip_prefix("tex.gather.") == Some(*c))
+                    else {
+                        return self.error(format!("unknown gather channel in `{name}`"));
+                    };
+                    let channel = channel as u8;
+                    self.tex(b, line, 3, move |args| Op::TexGather { channel, args })?
+                }
+                name if name
+                    .strip_prefix("tex.")
+                    .and_then(TexQuery::from_name)
+                    .is_some() =>
+                {
+                    let q = name
+                        .strip_prefix("tex.")
+                        .and_then(TexQuery::from_name)
+                        .expect("matched above");
+                    let mut operands = self.operands(b, line, 1)?;
+                    if self.eat_punct(',') {
+                        operands.push(self.operand(b, line)?);
+                    }
+                    (Op::TexQuery(q), operands, None)
+                }
                 "tex.store" => self.tex(b, line, 3, Op::TexStore)?,
                 "buffer.byte" => (Op::BufferByte, self.operands(b, line, 2)?, None),
                 "uniform.ptr" => (Op::UniformPtr, self.operands(b, line, 1)?, None),
@@ -1641,7 +1672,7 @@ impl Parser {
         b: &mut Body,
         line: u32,
         n: usize,
-        make: fn(Vec<TexArg>) -> Op,
+        make: impl FnOnce(Vec<TexArg>) -> Op,
     ) -> R<(Op, Vec<Value>, Option<Type>)> {
         let mut operands = self.operands(b, line, n)?;
         let mut args = Vec::new();

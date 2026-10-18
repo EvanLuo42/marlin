@@ -32,4 +32,5 @@ public void Kernel([DispatchThreadId] uint3 id, [GroupIndex] uint gi, [Push] in 
     if (Wave.IsFirstLane) a.Counters.AtomicAdd(3, total);
     a.Counters.AtomicAdd(4, Wave.LaneIndex < Wave.LaneCount ? 1u : 0u);
     if (id.x == 0) Debug.Print($"length = {a.Out.Length}");
+    Debug.Assert(id.x < 63, $"lane {id.x}, {(int)id.x - 64}");
 }

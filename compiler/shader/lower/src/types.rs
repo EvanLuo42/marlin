@@ -192,18 +192,16 @@ impl Lowering<'_, '_> {
                         }
                         (false, _) => None,
                     };
-                    // Integer texels are read as unsigned (SPIR-V's image types carry the
-                    // sign, which the IR's signless integers do not).
-                    if kind.texture().is_some()
-                        && let Some(GenericArgTy::Type(e)) = args.first()
-                        && matches!(self.num(e)?, Some(Num::Signed(_)))
-                    {
-                        return Err(LowerError::new(
-                            "E1301",
-                            "textures of signed integers are not lowered yet; use `uint`",
-                        ));
-                    }
-                    return Ok(self.module.res(ResKind { kind, element }));
+                    // Image types carry the sign of integer texels, which the IR's signless
+                    // integers do not: the texture type says it.
+                    let signed = kind.texture().is_some()
+                        && matches!(args.first(), Some(GenericArgTy::Type(e))
+                            if matches!(self.num(e)?, Some(Num::Signed(_))));
+                    return Ok(self.module.res(ResKind {
+                        kind,
+                        element,
+                        signed,
+                    }));
                 }
                 // A mesh entry's outputs are module variables; these values name them.
                 if matches!(

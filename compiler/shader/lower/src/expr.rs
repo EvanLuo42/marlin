@@ -2,8 +2,7 @@
 //! constructors, indexing. C#'s order of evaluation: left to right, receiver before arguments.
 
 use marlin_front_hir_def::store::{
-    Arg, BinaryOp, BindingId, BindingKind, Expr, ExprId, FieldInit, InterpolationPart, Literal,
-    RefKind, UnaryOp,
+    Arg, BinaryOp, BindingId, BindingKind, Expr, ExprId, FieldInit, Literal, RefKind, UnaryOp,
 };
 use marlin_front_hir_def::{BodyOwner, BodyPart, ItemKind, ItemSignature, ItemTreeQuery};
 use marlin_shaderc_hir_ty::{
@@ -1542,31 +1541,20 @@ impl FnCx<'_, '_, '_> {
     ) -> R<Option<Value>> {
         let picked = self.by_kind(name, args)?;
         let name = picked.unwrap_or(name);
-        if matches!(name, "tex.sample" | "tex.load" | "tex.texel") {
+        if matches!(name, "tex.sample" | "tex.load" | "tex.texel" | "tex.gather")
+            || name
+                .strip_prefix("tex.")
+                .and_then(marlin_shaderc_ir::TexQuery::from_name)
+                .is_some()
+        {
             return self.texture_op(e, name, item, receiver, args, None);
         }
         if name.starts_with("mesh.") {
             return self.mesh_op(e, name, item, subst, args);
         }
-        // `Debug.Print($"...")`: the format goes to the module's table.
-        if name == "debug.print"
-            && let [arg] = args
-            && let Expr::Interpolated(parts) = self.body.store.exprs[arg.expr].clone()
-        {
-            let mut format = String::new();
-            let mut values = Vec::new();
-            for part in parts {
-                match part {
-                    InterpolationPart::Text(t) => format.push_str(&t),
-                    InterpolationPart::Hole { expr, .. } => {
-                        format.push_str("{}");
-                        values.push(self.value(expr)?);
-                    }
-                }
-            }
-            let index = self.l.module.formats.len() as u32;
-            self.l.module.formats.push(format.into());
-            self.emit(Op::DebugPrint(index), values, None)?;
+        // `Debug.Print($"...")` and `Debug.Assert`: the format goes to the module's table.
+        if name == "debug.print" || name == "debug.assert" {
+            self.debug_op(e, name, args)?;
             return Ok(None);
         }
         if let Some(op) = name.strip_prefix("atomic.") {

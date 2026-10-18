@@ -163,10 +163,19 @@ words! {
 
 words! {
     /// The operands of a texture operation after its coordinate (§8.6), always in this order;
-    /// `grad` is two operands (the derivatives along x and y).
+    /// `grad` is two operands (the derivatives along x and y). `offset` is a constant integer
+    /// vector; `compare` the depth reference of a comparison sampler.
     TexArg {
         Lod = "lod", Bias = "bias", Grad = "grad", Layer = "layer", Mip = "mip",
-        Sample = "sample",
+        Sample = "sample", Offset = "offset", Compare = "compare",
+    }
+}
+
+words! {
+    /// What `tex.query` asks of a texture (§8.6): the size of mip 0 (or of a `mip` operand),
+    /// the layers (cubes, for cube arrays), the mips, the samples.
+    TexQuery {
+        Size = "size", Layers = "layers", Mips = "mips", Samples = "samples",
     }
 }
 
@@ -323,6 +332,16 @@ pub enum Op {
     TexLoad(Vec<TexArg>),
     /// Operands: the storage texture, the integer coordinate, the value, then `layer`.
     TexStore(Vec<TexArg>),
+    /// Operands: the texture, the sampler, the coordinate, then `layer`, `offset` and
+    /// `compare`. Result: one channel (0 to 3, red to alpha) of the four texels a bilinear
+    /// sample would use; with `compare`, their comparison results (channel 0).
+    TexGather {
+        channel: u8,
+        args: Vec<TexArg>,
+    },
+    /// Operands: the texture, then (for `size` of a sampled texture) the mip. Result: `u32`,
+    /// or `u32x2`/`u32x3` for the size.
+    TexQuery(TexQuery),
 
     // ---- ray queries (§8.9) ----
     /// Operands: the query (a pointer to a `rayquery` variable), the acceleration structure,

@@ -1,0 +1,13 @@
+namespace Game;
+
+// Errors: debug output takes no format specifiers, and prints scalars and vectors only.
+[Compute(1, 1, 1)]
+public void FormattedPrint([DispatchThreadId] uint3 id) => Debug.Print($"x = {id.x:X}");
+
+public struct MatrixArgs
+{
+    public float2x2 M;
+}
+
+[Compute(1, 1, 1)]
+public void MatrixPrint([Push] in MatrixArgs a) => Debug.Print($"m = {a.M}");

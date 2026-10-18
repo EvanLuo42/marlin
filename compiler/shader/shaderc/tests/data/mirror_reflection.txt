@@ -157,6 +157,11 @@ ShaderReflection {
         },
         SourceHash {
             package: "Game",
+            path: "Debug.mshader",
+            hash: 0,
+        },
+        SourceHash {
+            package: "Game",
             path: "Graphics.mshader",
             hash: 0,
         },

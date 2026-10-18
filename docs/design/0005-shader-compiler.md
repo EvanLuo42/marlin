@@ -164,7 +164,7 @@ DXC **故意关掉**了以下几项：
 | 0.1 | 按实例降低 | — | 每个实例从 HIR 直接降低成 SSA：用 Braun 等人的"简单高效的 SSA 构造"，局部变量不经过 alloca + mem2reg 绕一圈；降低时代入类型实参、解析接口调用、求出 const 表达式的值（0006 §2、§11） |
 | 0.2 | 除零检查插入 | 新增 | 0004 §9.6：除数不是常量时，插入 `d == 0 ? 0 : n / d`。放在优化之前，值域分析可以把多余的检查消掉 |
 | 0.3 | 自动微分 | 新增（参考实现） | 前向模式：对 `ForwardDiff` 的调用点生成导数函数；对 `Derivatives.Seed` 出发的数据流，生成 x、y 两个方向的切向量（0004 §15.3）。只为确实用到的导数生成代码。反向模式以后在这里加。放在优化之前，生成的导数代码可以和原代码一起被优化 |
-| 0.4 | `Debug.*` 删除或降低 | 新增 | Shipping 构建删除；Development 构建保留 IR 里的 `debug.print`/`debug.assert`，由各后端降低（2026-10-17 定）：SPIR-V 直接用 `NonSemantic.DebugPrintf`（由验证层输出，第 9 步），DXIL 和 Metal 没有对应的东西，写调试 buffer（0004 §12.5），buffer 的格式和绑定随 RHI 一起定 |
+| 0.4 | `Debug.*` 删除或降低 | 新增 | Shipping 构建删除；Development 构建保留 IR 里的 `debug.print`/`debug.assert`，由各后端降低（2026-10-17 定）：SPIR-V 直接用 `NonSemantic.DebugPrintf`（由验证层输出，第 10f 步实现），DXIL 和 Metal 没有对应的东西，写调试 buffer（0004 §12.5），buffer 的格式和绑定随 RHI 一起定 |
 
 **阶段 1：规范化**
 
@@ -434,7 +434,7 @@ public const ClosureInfo Flatten<M>() where M : IMaterial { ... }
 | 7 | `lower`：7a 是非泛型代码降低成 SSA IR（表达式、语句、结构化控制流、调用、内建函数）；7b 是实例收集、泛型、接口调用、lambda；7c 是入口（系统值、push、资源）和 CTFE（const 字段、静态参数、数组长度、const 函数） | 泛型入口能单态化，`const` 函数能在编译期求值 |
 | 8 | `opt`：8a 是 pass manager、控制流分析、结构保持的 CFG 化简、DCE、SCCP 和差分测试（随机生成的结构化函数，用解释器比较 pass 前后）；8b 是阶段 0–1 的 pass（1.4、1.5 只有 DXIL 需要，随 DXIL 后端一起做）；8c 是 uniformity 分析和 verifier 的 convergence 检查（0006 §5.3），并核对 verifier 的 break 规则和 SPIR-V 一致（break 只能去最内层 loop 或 switch 的 merge；现在的 verifier 接受任何一层外面的 loop） | 第一个 compute 入口能走完整条流水线 |
 | 9 | 9a 是 `target`（target 描述、`Backend` 接口、注册表）和 `backend_spirv` 的 compute 部分（SPIR-V 1.6、原生 descriptor heap，0002 §6）；9b 是我们自己的 SPIR-V 验证器；9c 是 `reflect` 和 facade `Session`；9d 是真正的核心库；9e 是第一个 compute shader 在真实 GPU 上跑通，和解释器比较 | 第一个 compute shader 生成的 SPIR-V 通过我们自己的验证器；Vulkan RHI 就绪后在真实 GPU 上跑通 |
-| 10 | 补齐其余 stage、资源、wave、纹理，替换占位 shader。10a 是 vertex 和 pixel 入口及其 stage I/O；10b 是纹理和采样器；10c 是 mesh 和 amplification；10d 是 ray query；10e 是测试运行时编译 shader 的工具、把全部占位 HLSL 换成 Marlin shader（2026-10-17 定：先补齐功能，再一次换完），并在真实 GPU 上跑通 | RHI 和其他 crate 的 GPU 测试全部用 Marlin shader 通过；仓库里没有 HLSL、DXIL 和 dxc 编出的 SPIR-V |
+| 10 | 补齐其余 stage、资源、wave、纹理，替换占位 shader。10a 是 vertex 和 pixel 入口及其 stage I/O；10b 是纹理和采样器；10c 是 mesh 和 amplification；10d 是 ray query；10e 是测试运行时编译 shader 的工具、把全部占位 HLSL 换成 Marlin shader（2026-10-17 定：先补齐功能，再一次换完），并在真实 GPU 上跑通；10f 补上调试输出、有符号纹理、比较采样、gather、偏移和尺寸查询 | RHI 和其他 crate 的 GPU 测试全部用 Marlin shader 通过；仓库里没有 HLSL、DXIL 和 dxc 编出的 SPIR-V |
 | 11 | 阶段 2–5 的其余 pass、自动微分、调试信息（NonSemantic.Shader.DebugInfo）、其他后端：DXIL（Xbox 等需要 D3D12 的平台）、Metal、主机 | |
 
 第 9d 步的核心库（`compiler/shader/core`）覆盖 compute 用得到的部分：
@@ -449,7 +449,7 @@ public const ClosureInfo Flatten<M>() where M : IMaterial { ... }
 - 降低：通过类型读的静态属性（`Wave.LaneIndex`、`T.Zero`）；按种类选 op 的 intrinsic；`Uniform.Value` 和字节 buffer 的读写。
 - SPIR-V 后端：uniform 和字节 buffer。
 
-Development 下的 `Debug.Print` 在 SPIR-V 上还写不出来，等调试 buffer 和 RHI 一起做。
+Development 下的 `Debug.Print` 第 10f 步在 SPIR-V 上实现了，用 `NonSemantic.DebugPrintf`。
 
 第 10b 步加了纹理和采样器：
 - 核心库：`Textures.mshader` 里的十种纹理和两种采样器；`AsUInt`、`AsInt`、`AsFloat`；字节 buffer 的 `Load2`–`Load4`、`Store2`–`Store4`。
@@ -478,6 +478,21 @@ Development 下的 `Debug.Print` 在 SPIR-V 上还写不出来，等调试 buffe
   - RHI 要启用 `VK_KHR_shader_untyped_pointers`；
   - RHI 的槽宽改成正好等于 shader 算出的值，不对齐的 device 不支持；
   - 加速结构改经 set 0 binding 0 读取，因为从 `ResourceHeapEXT` 直接 load 出来的，在 NVIDIA 驱动上做 ray query 什么也找不到（0016 §4.2）。
+
+第 10f 步补上了第 10 步漏下的部分（2026-10-18，决定记在 0004 §10.4、§12.5）：
+- `Debug.Print` 和 `Debug.Assert`：
+  - 格式里的插值位置写明类型（0006 §8.10）；
+  - Assert 在降低时变成 `if` 加 print；
+  - SPIR-V 用 `NonSemantic.DebugPrintf`；
+  - RHI 打开验证层的 `printf_enable`，把输出以 `shader: ...` 记到日志。
+  - 在 RTX 5060 上实测，descriptor heap 下也能用。
+- 有符号整数纹理：图像类型是有符号的，读写时用 bitcast 转换。
+- 纹理查询：`Size`、`MipSize`、`MipCount`、`LayerCount`、`SampleCount`，对应 `OpImageQuery*`，需要 `ImageQuery` capability。
+- `SampleCompare`、`Gather`、`GatherCompare`，以及常量 `offset:`（−8 到 7，SPIR-V 用 `ConstOffset`）。这一版的 gather 只用于浮点纹理。
+- 测试：
+  - GPU 测试覆盖打印和断言、有符号纹理、gather、偏移、比较采样和尺寸查询；
+  - `bad_requests` 里加了错误用例；
+  - verifier 的错误清单里加了新规则。
 
 第 5c 步留到后面的：`[StructLayout]`/`[FieldOffset]`（0004 §16）；mesh 的 `MeshOutput`、`[Payload]` 和 `Mesh.Dispatch` 的检查（§11.6）；长度由 `const` 字段给出的数组，布局要等第 7 步的编译期求值；capability 和具体 target 的对照、`const if` 的裁剪，等第 9 步的 target 描述。
 

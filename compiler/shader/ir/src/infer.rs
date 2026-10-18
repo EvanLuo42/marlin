@@ -7,7 +7,7 @@
 //! for the verifier, one that only finds the types already there ([`Existing`]).
 
 use crate::module::Module;
-use crate::op::{AccessStep, MathOp, Op, WaveOp};
+use crate::op::{AccessStep, MathOp, Op, TexArg, TexQuery, WaveOp};
 use crate::ty::{ResourceKind, Scalar, Space, Type, TypeData};
 
 /// Where inference finds types.
@@ -259,10 +259,31 @@ pub fn result_types_in(
                 _ => one(scalar(t, Scalar::I32)),
             }
         }
-        Op::TexSample(_) | Op::TexLoad(_) => match data(t, arg(0)?) {
+        // A comparison is one `f32`; a gather four of the texel's scalar (or comparisons).
+        Op::TexSample(a) if a.contains(&TexArg::Compare) => one(scalar(t, Scalar::F32)),
+        Op::TexGather { args, .. } if args.contains(&TexArg::Compare) => {
+            one(vector(t, Scalar::F32, 4))
+        }
+        Op::TexSample(_) | Op::TexLoad(_) | Op::TexGather { .. } => match data(t, arg(0)?) {
             TypeData::Handle(kind) if kind.kind.texture().is_some() => match kind.element {
+                Some(e) if matches!(op, Op::TexGather { .. }) => match data(t, e) {
+                    TypeData::Scalar(s) | TypeData::Vector(s, _) => one(vector(t, s, 4)),
+                    _ => Err("a texel that is not a scalar or vector".into()),
+                },
                 Some(e) => one(Ok(e)),
                 None => Err("a texture without a texel type".into()),
+            },
+            _ => Err("expected a texture handle".into()),
+        },
+        Op::TexQuery(q) => match data(t, arg(0)?) {
+            TypeData::Handle(kind) => match (q, kind.kind.texture()) {
+                // A cube's size is a face's.
+                (TexQuery::Size, Some(shape)) => {
+                    let n = if shape.cube { 2 } else { shape.dims };
+                    one(vector(t, Scalar::I32, n))
+                }
+                (_, Some(_)) => one(scalar(t, Scalar::I32)),
+                _ => Err("expected a texture handle".into()),
             },
             _ => Err("expected a texture handle".into()),
         },

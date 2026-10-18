@@ -21,7 +21,14 @@ const ENTRIES: &[(&str, &str)] = &[
     ("SampleCube", "Compute"),
     ("VolumeWrite", "Compute"),
     ("VolumeRead", "Compute"),
+    ("SignedWrite", "Compute"),
+    ("SignedRead", "Compute"),
+    ("GatherRed", "Compute"),
+    ("SampleOffsets", "Compute"),
+    ("CompareDepth", "Compute"),
+    ("Queries", "Compute"),
     ("TraceRays", "Compute"),
+    ("Prints", "Compute"),
 ];
 
 /// Every entry of the engine's package, with its stage.
@@ -95,4 +102,13 @@ fn compiled_shaders_are_kept() {
 #[should_panic(expected = "test shader `Test.Nothing` does not compile")]
 fn an_unknown_entry_panics_with_the_diagnostics() {
     Shader::new("Nothing").module();
+}
+
+#[test]
+fn zz_dump_tmp() {
+    if let Ok(dir) = std::env::var("ZZ_DUMP") {
+        for e in ["SignedWrite", "SignedRead"] {
+            std::fs::write(format!("{dir}/{e}.spv"), Shader::new(e).module().code).unwrap();
+        }
+    }
 }

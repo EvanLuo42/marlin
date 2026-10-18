@@ -140,7 +140,7 @@ impl FnCx<'_, '_, '_> {
     }
 
     /// Continues in `b` if anything jumps there; otherwise the code after is dead.
-    fn continue_in(&mut self, b: Block) {
+    pub(crate) fn continue_in(&mut self, b: Block) {
         self.seal(b);
         let preds = self.ssa.preds.get(&b).map_or(0, Vec::len);
         self.block = if preds == 0 { None } else { Some(b) };

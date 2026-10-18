@@ -210,6 +210,89 @@ fn volume_textures_are_written_read_and_copied() {
     }
 }
 
+// --- Signed integer textures ---
+
+/// An R32Sint texture written through a storage view and read through a sampled one: the
+/// shaders' image types are signed, the values keep their sign.
+#[test]
+fn signed_integer_textures_keep_their_sign() {
+    const SIZE: u32 = 4;
+    for device in devices() {
+        let texture = device
+            .create_texture(&TextureDesc::new_2d(
+                SIZE,
+                SIZE,
+                Format::R32Sint,
+                TextureUsage::STORAGE | TextureUsage::SAMPLED,
+            ))
+            .unwrap();
+        let write_view = device
+            .create_texture_view(
+                &texture,
+                &TextureViewDesc {
+                    writable: true,
+                    ..TextureViewDesc::SAMPLED
+                },
+            )
+            .unwrap();
+        let read_view = device
+            .create_texture_view(&texture, &TextureViewDesc::SAMPLED)
+            .unwrap();
+        let count = (SIZE * SIZE) as u64;
+        let out = buffer(
+            device,
+            count * 4,
+            BufferUsage::SHADER_WRITE | BufferUsage::COPY_SRC,
+            MemoryLocation::GpuOnly,
+        );
+        let out_view = device
+            .create_buffer_view(&out, &BufferViewDesc::whole(BufferViewKind::Raw, true))
+            .unwrap();
+        let rb = readback(device, count * 4);
+        let pipeline = |name| {
+            device
+                .create_compute_pipeline(&ComputePipelineDesc {
+                    shader: shader(name),
+                    cache: None,
+                })
+                .unwrap()
+        };
+        let (write, read) = (pipeline("SignedWrite"), pipeline("SignedRead"));
+        run(device, |list| {
+            barrier(
+                list,
+                &texture,
+                TextureState::UNDEFINED,
+                TextureState::COMPUTE_WRITE,
+            );
+            list.set_compute_pipeline(&write);
+            list.push_constants(0, &[write_view.index(), SIZE]);
+            list.dispatch(1, 1, 1);
+            barrier(
+                list,
+                &texture,
+                TextureState::COMPUTE_WRITE,
+                TextureState::SHADER_READ,
+            );
+            list.set_compute_pipeline(&read);
+            list.push_constants(0, &[read_view.index(), out_view.index(), SIZE]);
+            list.dispatch(1, 1, 1);
+            list.buffer_barriers(&[BufferBarrier {
+                buffer: &out,
+                before: BufferState::COMPUTE_WRITE,
+                after: BufferState::COPY_SRC,
+            }]);
+            list.copy_buffer(&out, 0, &rb, 0, count * 4);
+        });
+        let words = read_words(&rb, 0, count as usize);
+        for (i, &w) in words.iter().enumerate() {
+            let written = -(i as i32) - 1;
+            assert_eq!(w as i32, written >> 1, "texel {i}");
+        }
+        assert_eq!(device.validation_errors(), 0);
+    }
+}
+
 #[test]
 fn volume_mips_round_trip() {
     for device in devices() {

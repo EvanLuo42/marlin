@@ -24,6 +24,7 @@ pub fn compute_entry(m: &mut Module, f: FuncId) -> FuncId {
     let out_ty = m.res(ResKind {
         kind: ResourceKind::Buffer,
         element: Some(int),
+        signed: false,
     });
     let args = m.add_struct(
         "Inputs",

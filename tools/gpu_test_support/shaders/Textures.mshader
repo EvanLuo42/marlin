@@ -94,3 +94,91 @@ public void VolumeRead([DispatchThreadId] uint3 id, [Push] in VolumeReadArgs a)
     if (All(id < size))
         a.Output.Store(((id.z * size + id.y) * size + id.x) * 4, a.Volume[(int3)id]);
 }
+
+public struct SignedWriteArgs
+{
+    public StorageTexture2D<int> Texture;
+    public uint Size;
+}
+
+/// Texel (x, y) of an R32Sint texture = -(x + 4 * y) - 1.
+[Compute(4, 4, 1)]
+public void SignedWrite([DispatchThreadId] uint3 id, [Push] in SignedWriteArgs a)
+{
+    if (All(id.xy < a.Size))
+        a.Texture[(int2)id.xy] = -(int)(id.x + 4 * id.y) - 1;
+}
+
+public struct SignedReadArgs
+{
+    public Texture2D<int> Texture;
+    public ByteBuffer Output;
+    public uint Size;
+}
+
+/// Every texel halved with an arithmetic shift (so the sign must survive), x fastest.
+[Compute(4, 4, 1)]
+public void SignedRead([DispatchThreadId] uint3 id, [Push] in SignedReadArgs a)
+{
+    if (All(id.xy < a.Size))
+        a.Output.Store((id.y * a.Size + id.x) * 4, (uint)(a.Texture[(int2)id.xy] >> 1));
+}
+
+/// The red of the four texels around (U, V): words 0 to 3.
+[Compute(1, 1, 1)]
+public void GatherRed([Push] in SampleArgs a) =>
+    a.Output.Store4(0, AsUInt(a.Texture.Gather(a.Sampler, float2(a.U, a.V))));
+
+/// A sample at (U, V) one texel to the right, and texel (0, 1) loaded as (0, 0) one row down.
+[Compute(1, 1, 1)]
+public void SampleOffsets([Push] in SampleArgs a)
+{
+    a.Output.Store(0, AsUInt(a.Texture.Sample(a.Sampler, float2(a.U, a.V), lod: 0, offset: int2(1, 0))));
+    a.Output.Store(4, AsUInt(a.Texture.Load(int2(0, 0), offset: int2(0, 1))));
+}
+
+public struct CompareArgs
+{
+    public Texture2D<float> Depth;
+    public ComparisonSampler Sampler;
+    public ByteBuffer Output;
+    public uint X;
+    /// The reference depth.
+    public float U;
+    public float V;
+}
+
+/// The comparison of U with the depth at (0.5, 0.5): word 0 one sample, words 1 to 4 a gather.
+[Compute(1, 1, 1)]
+public void CompareDepth([Push] in CompareArgs a)
+{
+    float2 uv = float2(0.5, 0.5);
+    a.Output.Store(0, AsUInt(a.Depth.SampleCompare(a.Sampler, uv, a.U, lod: 0)));
+    a.Output.Store4(4, AsUInt(a.Depth.GatherCompare(a.Sampler, uv, a.U)));
+}
+
+public struct QueryArgs
+{
+    public Texture2DArray<float4> Array;
+    public Texture2DMS<float4> Multisampled;
+    public TextureCubeArray<float4> Cubes;
+    public Texture3D<float4> Volume;
+    public ByteBuffer Output;
+}
+
+/// Sizes and counts, in this order: the array's size, mip 1 size, mips and layers; the
+/// multisampled texture's size and samples; the cube array's face size and cubes; the
+/// volume's size.
+[Compute(1, 1, 1)]
+public void Queries([Push] in QueryArgs a)
+{
+    a.Output.Store2(0, a.Array.Size);
+    a.Output.Store2(8, a.Array.MipSize(1));
+    a.Output.Store(16, a.Array.MipCount);
+    a.Output.Store(20, a.Array.LayerCount);
+    a.Output.Store2(24, a.Multisampled.Size);
+    a.Output.Store(32, a.Multisampled.SampleCount);
+    a.Output.Store2(36, a.Cubes.Size);
+    a.Output.Store(44, a.Cubes.LayerCount);
+    a.Output.Store3(48, a.Volume.Size);
+}

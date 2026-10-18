@@ -264,5 +264,9 @@ fn resources_barriers_atomics_and_waves_run() {
         words(&res.buffers[4]),
         [64, 63, 5, (0..64).sum::<u32>(), 64]
     );
-    assert_eq!(prints, ["length = 64"]);
+    // Lane 63 fails its assertion; `{u}` and `{i}` holes print unsigned and signed.
+    assert_eq!(
+        prints,
+        ["length = 64", "assertion failed: id.x < 63: lane 63, -1"]
+    );
 }

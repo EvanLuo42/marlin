@@ -29,7 +29,7 @@ use crate::infer::{Existing, result_types_in};
 use crate::module::{Binding, Builtin, Const, ConstValue, Module, Stage};
 use crate::op::{
     AccessStep, AtomicOp, BinaryOp, ConvertOp, IntCmp, MathOp, MemOrder, Op, QuadOp, ReduceOp,
-    Scope, TexArg, UnaryOp, VoteOp, WaveOp,
+    Scope, TexArg, TexQuery, UnaryOp, VoteOp, WaveOp,
 };
 use crate::print::{FuncText, type_name};
 use crate::ty::{ResourceKind, Scalar, Space, Type, TypeData};
@@ -1386,7 +1386,10 @@ impl<'v, 'a> FunctionVerifier<'v, 'a> {
                 (!index_ok(args[1])).then(|| "the index is an integer scalar".into())
             }
             Op::UniformPtr | Op::BufferLength | Op::DescGet { .. } => count(1),
-            Op::TexSample(a) | Op::TexLoad(a) | Op::TexStore(a) => tex_problem(v, op, a, args),
+            Op::TexSample(a) | Op::TexLoad(a) | Op::TexStore(a) | Op::TexGather { args: a, .. } => {
+                tex_problem(v, op, a, args)
+            }
+            Op::TexQuery(q) => query_problem(v, *q, args),
             Op::RqInit | Op::RqProceed | Op::RqGet { .. } | Op::RqCommitTriangle => {
                 let n = if matches!(op, Op::RqInit) { 8 } else { 1 };
                 if let Some(p) = count(n) {
@@ -1966,6 +1969,11 @@ fn tex_problem(v: &Verifier<'_>, op: &Op, a: &[TexArg], args: &[Type]) -> Option
                 g(args[k]) && g(args[k + 1])
             }
             TexArg::Layer | TexArg::Mip | TexArg::Sample => int_scalar(args[k]),
+            // A constant (checked when lowering, needed by backends), one per dimension.
+            TexArg::Offset => v
+                .shape(args[k])
+                .is_some_and(|(s, n)| s.is_int() && s != Scalar::I1 && n == shape.dims),
+            TexArg::Compare => float_scalar(args[k]),
         };
         if !ok {
             return Some(format!("`{}` has the wrong type", x.name()));
@@ -1979,13 +1987,48 @@ fn tex_problem(v: &Verifier<'_>, op: &Op, a: &[TexArg], args: &[Type]) -> Option
             "`layer` is for array textures".into()
         });
     }
+    if has(TexArg::Offset) && (shape.cube || matches!(op, Op::TexStore(_))) {
+        return Some("`offset` is for reading 2D and 3D textures".into());
+    }
+    let compare = has(TexArg::Compare);
+    if compare {
+        if !matches!(op, Op::TexSample(_) | Op::TexGather { .. }) {
+            return Some("`compare` is for sampling and gathering".into());
+        }
+        if kind
+            .element
+            .is_none_or(|e| v.shape(e) != Some((Scalar::F32, 1)))
+        {
+            return Some("`compare` reads depth: an `f32` texture".into());
+        }
+    }
     match op {
-        Op::TexSample(_) => {
+        Op::TexSample(_) | Op::TexGather { .. } => {
             if shape.storage || shape.multisampled {
                 return Some("storage and multisampled textures are not sampled".into());
             }
-            if !matches!(v.data(args[1]), TypeData::Handle(s) if s.kind == ResourceKind::Sampler) {
-                return Some("the second operand is a sampler handle".into());
+            let sampler = if compare {
+                ResourceKind::ComparisonSampler
+            } else {
+                ResourceKind::Sampler
+            };
+            if !matches!(v.data(args[1]), TypeData::Handle(s) if s.kind == sampler) {
+                return Some(if compare {
+                    "the second operand is a comparison sampler handle".into()
+                } else {
+                    "the second operand is a sampler handle".into()
+                });
+            }
+            if let Op::TexGather { channel, .. } = op {
+                if shape.dims == 3 && !shape.cube {
+                    return Some("3D textures are not gathered".into());
+                }
+                if *channel > 3 || (compare && *channel != 0) {
+                    return Some("the channel is 0 to 3 (0 with `compare`)".into());
+                }
+                if has(TexArg::Lod) || has(TexArg::Bias) || has(TexArg::Grad) {
+                    return Some("a gather reads mip 0".into());
+                }
             }
             if v.shape(args[2]) != Some((Scalar::F32, shape.dims)) {
                 return Some(format!("the coordinate is `f32x{}`", shape.dims));
@@ -2031,6 +2074,43 @@ fn tex_problem(v: &Verifier<'_>, op: &Op, a: &[TexArg], args: &[Type]) -> Option
         _ => {}
     }
     None
+}
+
+/// What is wrong with a `tex.query` (0006 §8.6), if anything.
+fn query_problem(v: &Verifier<'_>, q: TexQuery, args: &[Type]) -> Option<String> {
+    let shape = match args.first().map(|&t| v.data(t)) {
+        Some(TypeData::Handle(kind)) => kind.kind.texture(),
+        _ => None,
+    };
+    let Some(shape) = shape else {
+        return Some("the first operand is a texture handle".into());
+    };
+    let mipped = !shape.storage && !shape.multisampled;
+    let want = match q {
+        TexQuery::Size if mipped => 1..=2,
+        _ => 1..=1,
+    };
+    if !want.contains(&args.len()) {
+        return Some(match q {
+            TexQuery::Size if mipped => "takes the texture and a mip".into(),
+            _ => "takes the texture".into(),
+        });
+    }
+    if let Some(&mip) = args.get(1)
+        && !v
+            .shape(mip)
+            .is_some_and(|(s, n)| s.is_int() && s != Scalar::I1 && n == 1)
+    {
+        return Some("the mip is an integer scalar".into());
+    }
+    match q {
+        TexQuery::Layers if !shape.array => Some("only array textures have layers".into()),
+        TexQuery::Mips if !mipped => Some("storage and multisampled textures have one mip".into()),
+        TexQuery::Samples if !shape.multisampled => {
+            Some("only multisampled textures have samples".into())
+        }
+        _ => None,
+    }
 }
 
 /// The functions that write a mesh output before (not dominated by) their `mesh.set_counts`

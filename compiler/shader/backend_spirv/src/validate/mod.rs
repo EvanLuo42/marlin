@@ -420,6 +420,10 @@ impl Validator {
                     cap::StorageImageWriteWithoutFormat,
                     "writing storage images without a format",
                 ),
+                op::ImageQuerySizeLod
+                | op::ImageQuerySize
+                | op::ImageQueryLevels
+                | op::ImageQuerySamples => req(cap::ImageQuery, "image queries"),
                 op::EntryPoint
                     if matches!(
                         i.ops[0],
@@ -557,10 +561,12 @@ impl Validator {
             // Implicit levels come from derivatives, which only fragments have (Vulkan; the
             // modules here hold one entry point).
             if e.ops[0] != crate::spirv::execution_model::Fragment
-                && self
-                    .insts
-                    .iter()
-                    .any(|i| i.opcode == op::ImageSampleImplicitLod)
+                && self.insts.iter().any(|i| {
+                    matches!(
+                        i.opcode,
+                        op::ImageSampleImplicitLod | op::ImageSampleDrefImplicitLod
+                    )
+                })
             {
                 self.error(format!(
                     "entry point `{name}`: an implicit-level sample outside a fragment entry point"

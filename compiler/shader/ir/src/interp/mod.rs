@@ -105,13 +105,21 @@ impl Val {
 
     /// The value as the text format writes constants of type `t` (for debug output).
     pub fn show(&self, m: &Module, t: Type) -> String {
+        self.show_as(m, t, false)
+    }
+
+    /// As [`show`](Self::show), with integers unsigned when `unsigned` (a `{u}` hole).
+    pub fn show_as(&self, m: &Module, t: Type, unsigned: bool) -> String {
         match (self, m.data(t)) {
-            (Val::Bits(b), TypeData::Scalar(s)) => show_scalar(*b, *s),
+            (Val::Bits(b), TypeData::Scalar(s)) => show_scalar(*b, *s, unsigned),
             (Val::Bits(b), TypeData::Res(_)) => b.to_string(),
             (Val::Agg(items), TypeData::Vector(s, _)) => {
                 let parts: Vec<String> = items
                     .iter()
-                    .map(|i| i.bits().map_or("?".into(), |b| show_scalar(b, *s)))
+                    .map(|i| {
+                        i.bits()
+                            .map_or("?".into(), |b| show_scalar(b, *s, unsigned))
+                    })
                     .collect();
                 format!("({})", parts.join(", "))
             }
@@ -124,9 +132,12 @@ impl Val {
     }
 }
 
-fn show_scalar(b: u64, s: Scalar) -> String {
+fn show_scalar(b: u64, s: Scalar, unsigned: bool) -> String {
     match s {
         Scalar::I1 => (b != 0).to_string(),
+        Scalar::I16 if unsigned => (b as u16).to_string(),
+        Scalar::I32 if unsigned => (b as u32).to_string(),
+        Scalar::I64 if unsigned => b.to_string(),
         Scalar::I16 => (b as u16 as i16).to_string(),
         Scalar::I32 => (b as u32 as i32).to_string(),
         Scalar::I64 => (b as i64).to_string(),

@@ -53,6 +53,12 @@ public struct Debug
 {
     /// Writes an interpolated string (`$"n = {n}"`) to the debug output.
     [Intrinsic("debug.print")] public static void Print(String message);
+
+    /// When `condition` is false, writes "assertion failed: " with the condition as written and
+    /// the message; the shader carries on (2026-10-18).
+    [Intrinsic("debug.assert")] public static void Assert(bool condition, String message);
+
+    [Intrinsic("debug.assert")] public static void Assert(bool condition);
 }
 
 /// `x`, taken as different in every lane (0004 §10.3).

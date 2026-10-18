@@ -516,7 +516,11 @@ impl<'m, 'r> Machine<'m, 'r> {
             Op::Discard | Op::IsHelper | Op::Deriv { .. } => {
                 return Err(self.error(fr, Some(inst), "pixel operations are not interpreted yet"));
             }
-            Op::TexSample(_) | Op::TexLoad(_) | Op::TexStore(_) => {
+            Op::TexSample(_)
+            | Op::TexLoad(_)
+            | Op::TexStore(_)
+            | Op::TexGather { .. }
+            | Op::TexQuery(_) => {
                 return Err(self.error(fr, Some(inst), "textures are not interpreted yet"));
             }
             Op::RqInit | Op::RqProceed | Op::RqGet { .. } | Op::RqCommitTriangle => {
@@ -687,13 +691,16 @@ impl<'m, 'r> Machine<'m, 'r> {
                     out.push('}');
                 }
                 '{' => {
+                    // The hole's kind (`{u}`, `{i}`, `{f}`, `{b}`): only `u` changes the text.
+                    let mut kind = String::new();
                     for c in chars.by_ref() {
                         if c == '}' {
                             break;
                         }
+                        kind.push(c);
                     }
                     match (values.get(next), tys.get(next)) {
-                        (Some(v), Some(&t)) => out.push_str(&v.show(self.m, t)),
+                        (Some(v), Some(&t)) => out.push_str(&v.show_as(self.m, t, kind == "u")),
                         _ => out.push('?'),
                     }
                     next += 1;

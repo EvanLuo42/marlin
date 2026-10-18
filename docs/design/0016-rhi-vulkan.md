@@ -152,6 +152,7 @@ buffer 成员的 offset 由 shader 自己声明（SPIR-V 的 `Offset` 装饰）�
 ## 8. 诊断
 
 - `InstanceDesc::validation`：启用 `VK_LAYER_KHRONOS_validation` + debug utils messenger，消息进 `marlin_diag`，错误计数给 `Device::validation_errors`。没装 layer 就跳过并 warn。
+- 开启验证时也打开验证层的 debug printf（`printf_enable`，`printf_to_stdout` 关闭）。着色器用 `Debug.Print`、`Debug.Assert` 写的内容（`NonSemantic.DebugPrintf`）以 info 级、`shader: ...` 的形式进入 `marlin_diag`，不算验证错误；其余 info 级消息只记为 debug（2026-10-18）。
 - `gpu_validation`：用 `VK_EXT_layer_settings` 打开 GPU-AV。
 - `crash_diagnostics`：`VK_EXT_device_fault`（故障地址、厂商信息）+ checkpoint / buffer marker 面包屑；第一次报告 `DeviceLost` 时写日志。
 - `set_name` → `vkSetDebugUtilsObjectNameEXT`。

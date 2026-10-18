@@ -90,6 +90,10 @@ pub(crate) struct Writer<'m> {
     capabilities: BTreeSet<u32>,
     extensions: BTreeSet<&'static str>,
     glsl: Option<u32>,
+    /// The `NonSemantic.DebugPrintf` import, once something prints.
+    printf: Option<u32>,
+    /// `OpString`s (the debug section, before the names).
+    strings: Vec<u32>,
     pub names: Vec<u32>,
     pub annotations: Vec<u32>,
     /// Types, constants and module-level variables, each after what it refers to.
@@ -120,6 +124,8 @@ impl<'m> Writer<'m> {
             capabilities: BTreeSet::new(),
             extensions: BTreeSet::new(),
             glsl: None,
+            printf: None,
+            strings: Vec::new(),
             names: Vec::new(),
             annotations: Vec::new(),
             globals: Vec::new(),
@@ -157,6 +163,26 @@ impl<'m> Writer<'m> {
         }
         let id = self.id();
         self.glsl = Some(id);
+        id
+    }
+
+    /// The `NonSemantic.DebugPrintf` instruction set, for Development `debug.print` (0005 §4.4).
+    pub fn printf(&mut self) -> u32 {
+        if let Some(id) = self.printf {
+            return id;
+        }
+        self.extension("SPV_KHR_non_semantic_info");
+        let id = self.id();
+        self.printf = Some(id);
+        id
+    }
+
+    /// An `OpString`.
+    pub fn op_string(&mut self, s: &str) -> u32 {
+        let id = self.id();
+        let mut ops = vec![id];
+        ops.extend(string(s));
+        self.strings.extend(inst(op::String, &ops));
         id
     }
 
@@ -695,19 +721,36 @@ impl<'m> Writer<'m> {
         Ok(id)
     }
 
-    /// The image type of a texture kind (0006 §8.6): its texel's scalar (integers unsigned),
-    /// dimension, array and multisample bits; storage textures without a format.
-    pub fn image_ty(&mut self, kind: &ResKind) -> R<u32> {
-        let shape = kind.kind.texture().ok_or_else(|| BackendError {
-            message: format!("`{:?}` is not a texture", kind.kind),
-        })?;
+    /// The scalar type images of `kind` hold: a signed integer for `signed` textures, the IR's
+    /// (unsigned) one otherwise.
+    fn image_scalar(&mut self, kind: &ResKind) -> R<u32> {
         let texel = kind.element.ok_or_else(|| BackendError {
             message: "a texture without a texel type".into(),
         })?;
         let s = self.m.element_scalar(texel).ok_or_else(|| BackendError {
             message: "a texel that is not a scalar or vector".into(),
         })?;
-        let sampled_type = self.scalar(s);
+        Ok(if kind.signed {
+            let bits = s.bits();
+            self.once("", op::TypeInt, vec![bits, 1])
+        } else {
+            self.scalar(s)
+        })
+    }
+
+    /// Four components of what images of `kind` hold: what reads return and writes take.
+    pub fn image_texel4(&mut self, kind: &ResKind) -> R<u32> {
+        let s = self.image_scalar(kind)?;
+        Ok(self.once("", op::TypeVector, vec![s, 4]))
+    }
+
+    /// The image type of a texture kind (0006 §8.6): its texel's scalar (signed for `signed`
+    /// textures), dimension, array and multisample bits; storage textures without a format.
+    pub fn image_ty(&mut self, kind: &ResKind) -> R<u32> {
+        let shape = kind.kind.texture().ok_or_else(|| BackendError {
+            message: format!("`{:?}` is not a texture", kind.kind),
+        })?;
+        let sampled_type = self.image_scalar(kind)?;
         let dim = match (shape.cube, shape.dims) {
             (true, _) => 3,
             (false, 3) => 2,
@@ -794,6 +837,11 @@ impl<'m> Writer<'m> {
             ops.extend(string("GLSL.std.450"));
             out.extend(inst(op::ExtInstImport, &ops));
         }
+        if let Some(p) = self.printf {
+            let mut ops = vec![p];
+            ops.extend(string("NonSemantic.DebugPrintf"));
+            out.extend(inst(op::ExtInstImport, &ops));
+        }
         out.extend(inst(op::MemoryModel, &[0, 1]));
         use crate::spirv::{execution_mode as mode, execution_model as model};
         let execution_model = match self.stage {
@@ -857,6 +905,7 @@ impl<'m> Writer<'m> {
             _ => {}
         }
         self.name(entry, name);
+        out.extend(&self.strings);
         out.extend(&self.names);
         out.extend(&self.annotations);
         out.extend(&self.globals);

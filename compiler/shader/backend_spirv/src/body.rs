@@ -660,6 +660,8 @@ impl<'w, 'm> Body<'w, 'm> {
                 Some(v)
             }
             Op::TexSample(targs) => Some(self.tex_sample(&ops, targs, rt)?),
+            Op::TexGather { channel, args } => Some(self.tex_gather(&ops, *channel, args)?),
+            Op::TexQuery(q) => Some(self.tex_query(&ops, *q, rt)?),
             Op::RqInit => {
                 // IR: query, accel, origin, t-min, direction, t-max, flags, mask; SPIR-V puts
                 // the flags and mask before the ray.
@@ -791,6 +793,10 @@ impl<'w, 'm> Body<'w, 'm> {
                         return Ok(());
                     }
                 }
+            }
+            Op::DebugPrint(fmt) => {
+                self.debug_print(*fmt, &ops)?;
+                None
             }
             other => return unsupported(format!("`{other:?}`")),
         };
@@ -1353,6 +1359,7 @@ mod image_operands {
     pub const BIAS: u32 = 0x1;
     pub const LOD: u32 = 0x2;
     pub const GRAD: u32 = 0x4;
+    pub const CONST_OFFSET: u32 = 0x8;
     pub const SAMPLE: u32 = 0x40;
 }
 
@@ -1410,6 +1417,16 @@ impl Body<'_, '_> {
         Ok(self.value(t, op::CompositeConstruct, &[coord, layer]))
     }
 
+    /// Four components read from an image of `kind` as the IR's type (`s`): a signed texture's
+    /// integers become the IR's signless ones.
+    fn image_to_ir(&mut self, r4: u32, kind: &marlin_shaderc_ir::ResKind, s: Scalar) -> u32 {
+        if !kind.signed {
+            return r4;
+        }
+        let v4 = self.w.vec_ty(s, 4);
+        self.value(v4, op::Bitcast, &[r4])
+    }
+
     /// A four-component texel narrowed to the texel type `rt` (`n` components).
     fn narrow(&mut self, v4: u32, n: u8, rt: u32) -> u32 {
         match n {
@@ -1436,8 +1453,34 @@ impl Body<'_, '_> {
         }
     }
 
-    fn tex_sample(&mut self, ops: &[Value], targs: &[TexArg], rt: Option<u32>) -> R<u32> {
-        use image_operands::*;
+    /// Image operands in SPIR-V's order (by mask bit): the mask, then each one's operands.
+    fn image_operands(parts: &[(u32, Vec<u32>)]) -> Vec<u32> {
+        let mut parts: Vec<&(u32, Vec<u32>)> = parts.iter().collect();
+        parts.sort_by_key(|(bit, _)| *bit);
+        let mask = parts.iter().fold(0, |m, (bit, _)| m | bit);
+        if mask == 0 {
+            return Vec::new();
+        }
+        let mut out = vec![mask];
+        for (_, ids) in parts {
+            out.extend(ids);
+        }
+        out
+    }
+
+    /// For a sample or gather: the sampled image (texture and sampler operands), the
+    /// coordinate with its layer, the texture's kind, and the extra operands by argument.
+    #[allow(clippy::type_complexity)]
+    fn sampling(
+        &mut self,
+        ops: &[Value],
+        targs: &[TexArg],
+    ) -> R<(
+        u32,
+        u32,
+        marlin_shaderc_ir::ResKind,
+        Vec<(TexArg, Vec<u32>)>,
+    )> {
         let kind = self.texture_kind(ops[0])?;
         let image = self.val(ops[0])?;
         let sampler = self.val(ops[1])?;
@@ -1445,36 +1488,132 @@ impl Body<'_, '_> {
         let si_t = self.w.sampled_image_ty(image_t);
         let si = self.value(si_t, op::SampledImage, &[image, sampler]);
         let args = self.tex_args(ops, 3, targs)?;
+        let layer = args
+            .iter()
+            .find(|(a, _)| *a == TexArg::Layer)
+            .map(|(_, ids)| ids[0]);
+        let coord = self.val(ops[2])?;
+        let coord = self.with_layer(coord, self.f.ty(ops[2]), layer, true)?;
+        Ok((si, coord, kind, args))
+    }
+
+    fn tex_sample(&mut self, ops: &[Value], targs: &[TexArg], rt: Option<u32>) -> R<u32> {
+        use image_operands::*;
+        let (si, coord, kind, args) = self.sampling(ops, targs)?;
         let get = |t: TexArg| {
             args.iter()
                 .find(|(a, _)| *a == t)
                 .map(|(_, ids)| ids.clone())
         };
-        let coord = self.val(ops[2])?;
-        let coord = self.with_layer(
-            coord,
-            self.f.ty(ops[2]),
-            get(TexArg::Layer).map(|v| v[0]),
-            true,
-        )?;
-        let (s, n) = self.texel_shape(&kind)?;
-        let v4 = self.w.vec_ty(s, 4);
-        let (opcode, mask, extra) = if let Some(l) = get(TexArg::Lod) {
-            (op::ImageSampleExplicitLod, Some(LOD), l)
-        } else if let Some(g) = get(TexArg::Grad) {
-            (op::ImageSampleExplicitLod, Some(GRAD), g)
-        } else if let Some(b) = get(TexArg::Bias) {
-            (op::ImageSampleImplicitLod, Some(BIAS), b)
-        } else {
-            (op::ImageSampleImplicitLod, None, Vec::new())
-        };
-        let mut operands = vec![si, coord];
-        if let Some(m) = mask {
-            operands.push(m);
-            operands.extend(extra);
+        let mut parts = Vec::new();
+        let explicit = get(TexArg::Lod).is_some() || get(TexArg::Grad).is_some();
+        for (t, bit) in [
+            (TexArg::Bias, BIAS),
+            (TexArg::Lod, LOD),
+            (TexArg::Grad, GRAD),
+            (TexArg::Offset, CONST_OFFSET),
+        ] {
+            if let Some(ids) = get(t) {
+                parts.push((bit, ids));
+            }
         }
-        let r4 = self.value(v4, opcode, &operands);
+        let operands = Self::image_operands(&parts);
+        // A comparison: one float, the reference (`Dref`) before the image operands.
+        if let Some(reference) = get(TexArg::Compare) {
+            let opcode = if explicit {
+                op::ImageSampleDrefExplicitLod
+            } else {
+                op::ImageSampleDrefImplicitLod
+            };
+            let f32t = self.w.scalar(Scalar::F32);
+            let mut all = vec![si, coord, reference[0]];
+            all.extend(operands);
+            return Ok(self.value(f32t, opcode, &all));
+        }
+        let opcode = if explicit {
+            op::ImageSampleExplicitLod
+        } else {
+            op::ImageSampleImplicitLod
+        };
+        let (s, n) = self.texel_shape(&kind)?;
+        let v4 = self.w.image_texel4(&kind)?;
+        let mut all = vec![si, coord];
+        all.extend(operands);
+        let r4 = self.value(v4, opcode, &all);
+        let r4 = self.image_to_ir(r4, &kind, s);
         Ok(self.narrow(r4, n, rt.unwrap_or(0)))
+    }
+
+    /// `tex.gather`: one channel of four texels, or (with `compare`) four comparisons.
+    fn tex_gather(&mut self, ops: &[Value], channel: u8, targs: &[TexArg]) -> R<u32> {
+        use image_operands::*;
+        let (si, coord, kind, args) = self.sampling(ops, targs)?;
+        let get = |t: TexArg| {
+            args.iter()
+                .find(|(a, _)| *a == t)
+                .map(|(_, ids)| ids.clone())
+        };
+        let parts: Vec<(u32, Vec<u32>)> = get(TexArg::Offset)
+            .map(|o| (CONST_OFFSET, o))
+            .into_iter()
+            .collect();
+        let operands = Self::image_operands(&parts);
+        if let Some(reference) = get(TexArg::Compare) {
+            let v4 = self.w.vec_ty(Scalar::F32, 4);
+            let mut all = vec![si, coord, reference[0]];
+            all.extend(operands);
+            return Ok(self.value(v4, op::ImageDrefGather, &all));
+        }
+        let (s, _) = self.texel_shape(&kind)?;
+        let v4 = self.w.image_texel4(&kind)?;
+        let component = self.w.uint(channel as u32);
+        let mut all = vec![si, coord, component];
+        all.extend(operands);
+        let r4 = self.value(v4, op::ImageGather, &all);
+        Ok(self.image_to_ir(r4, &kind, s))
+    }
+
+    /// `tex.size`, `tex.layers`, `tex.mips` and `tex.samples`.
+    fn tex_query(
+        &mut self,
+        ops: &[Value],
+        q: marlin_shaderc_ir::TexQuery,
+        rt: Option<u32>,
+    ) -> R<u32> {
+        use marlin_shaderc_ir::TexQuery;
+        self.w.capability(cap::ImageQuery);
+        let kind = self.texture_kind(ops[0])?;
+        let shape = kind.kind.texture().expect("a texture");
+        let image = self.val(ops[0])?;
+        let u32t = self.w.scalar(Scalar::I32);
+        match q {
+            TexQuery::Mips => return Ok(self.value(u32t, op::ImageQueryLevels, &[image])),
+            TexQuery::Samples => return Ok(self.value(u32t, op::ImageQuerySamples, &[image])),
+            TexQuery::Size | TexQuery::Layers => {}
+        }
+        // The size of a level, with the layer count last (for a cube array, its cubes).
+        let dims = if shape.cube { 2 } else { shape.dims };
+        let n = dims + shape.array as u8;
+        let all_t = self.w.vec_ty(Scalar::I32, n);
+        let all = if shape.storage || shape.multisampled {
+            self.value(all_t, op::ImageQuerySize, &[image])
+        } else {
+            let mip = match ops.get(1) {
+                Some(&m) => self.val(m)?,
+                None => self.w.uint(0),
+            };
+            self.value(all_t, op::ImageQuerySizeLod, &[image, mip])
+        };
+        let rt = rt.unwrap_or(0);
+        Ok(match q {
+            TexQuery::Layers => self.value(rt, op::CompositeExtract, &[all, dims as u32]),
+            _ if !shape.array => all,
+            _ => {
+                let mut ops = vec![all, all];
+                ops.extend(0..dims as u32);
+                self.value(rt, op::VectorShuffle, &ops)
+            }
+        })
     }
 
     fn tex_load(&mut self, ops: &[Value], targs: &[TexArg], rt: Option<u32>) -> R<u32> {
@@ -1487,17 +1626,27 @@ impl Body<'_, '_> {
         let coord = self.val(ops[1])?;
         let coord = self.with_layer(coord, self.f.ty(ops[1]), get(TexArg::Layer), false)?;
         let (s, n) = self.texel_shape(&kind)?;
-        let v4 = self.w.vec_ty(s, 4);
+        let v4 = self.w.image_texel4(&kind)?;
+        let mut parts = Vec::new();
+        if let Some(o) = get(TexArg::Offset) {
+            parts.push((CONST_OFFSET, vec![o]));
+        }
         let r4 = if shape.storage {
             self.w.capability(cap::StorageImageReadWithoutFormat);
             self.value(v4, op::ImageRead, &[image, coord])
-        } else if shape.multisampled {
-            let sample = get(TexArg::Sample).unwrap_or_else(|| self.w.uint(0));
-            self.value(v4, op::ImageFetch, &[image, coord, SAMPLE, sample])
         } else {
-            let mip = get(TexArg::Mip).unwrap_or_else(|| self.w.uint(0));
-            self.value(v4, op::ImageFetch, &[image, coord, LOD, mip])
+            if shape.multisampled {
+                let sample = get(TexArg::Sample).unwrap_or_else(|| self.w.uint(0));
+                parts.push((SAMPLE, vec![sample]));
+            } else {
+                let mip = get(TexArg::Mip).unwrap_or_else(|| self.w.uint(0));
+                parts.push((LOD, vec![mip]));
+            }
+            let mut all = vec![image, coord];
+            all.extend(Self::image_operands(&parts));
+            self.value(v4, op::ImageFetch, &all)
         };
+        let r4 = self.image_to_ir(r4, &kind, s);
         Ok(self.narrow(r4, n, rt.unwrap_or(0)))
     }
 
@@ -1520,6 +1669,10 @@ impl Body<'_, '_> {
             let mut parts = vec![texel];
             parts.extend(std::iter::repeat_n(zero, 4 - n as usize));
             texel = self.value(v4, op::CompositeConstruct, &parts);
+        }
+        if kind.signed {
+            let image_v4 = self.w.image_texel4(&kind)?;
+            texel = self.value(image_v4, op::Bitcast, &[texel]);
         }
         self.w.capability(cap::StorageImageWriteWithoutFormat);
         self.emit(op::ImageWrite, &[image, coord, texel]);
@@ -1560,5 +1713,78 @@ impl Body<'_, '_> {
             FrontFace => op::RayQueryGetIntersectionFrontFaceKHR,
         };
         Ok(self.value(rt, opcode, &[q, which]))
+    }
+}
+
+impl Body<'_, '_> {
+    /// `debug.print`: `NonSemantic.DebugPrintf` with the format in printf's terms. Each hole of
+    /// the format (`{u}`, `{i}`, `{f}`, `{b}`, 0006 §8.10) becomes `%u`, `%d`, `%f` (`%vN…` for
+    /// vectors, `%l…` for 64 bits); bools print as 0 or 1.
+    fn debug_print(&mut self, fmt: u32, ops: &[Value]) -> R<()> {
+        let f = self.f;
+        let format = self.w.m.formats.get(fmt as usize).cloned().ok_or_else(|| {
+            marlin_shaderc_target::BackendError {
+                message: format!("no format {fmt}"),
+            }
+        })?;
+        let mut text = String::new();
+        let mut args = Vec::new();
+        let mut next = ops.iter();
+        let mut chars = format.chars().peekable();
+        while let Some(c) = chars.next() {
+            match c {
+                '{' if chars.peek() == Some(&'{') => {
+                    chars.next();
+                    text.push('{');
+                }
+                '}' if chars.peek() == Some(&'}') => {
+                    chars.next();
+                    text.push('}');
+                }
+                '%' => text.push_str("%%"),
+                '{' => {
+                    let kind = chars.next();
+                    chars.next(); // `}`
+                    let Some(&v) = next.next() else {
+                        return unsupported("a format with more holes than values");
+                    };
+                    let t = f.ty(v);
+                    let (s, n) = match self.w.m.data(t) {
+                        TypeData::Scalar(s) => (*s, 1),
+                        TypeData::Vector(s, n) => (*s, *n),
+                        _ => return unsupported("printing something not a scalar or vector"),
+                    };
+                    let mut id = self.val(v)?;
+                    if s == Scalar::I1 {
+                        let ut = self.w.vec_ty(Scalar::I32, n);
+                        let (one, zero) =
+                            (self.w.lit(Scalar::I32, n, 1), self.w.lit(Scalar::I32, n, 0));
+                        id = self.value(ut, op::Select, &[id, one, zero]);
+                    }
+                    if n > 1 {
+                        text.push_str(&format!("%v{n}"));
+                    } else {
+                        text.push('%');
+                    }
+                    if matches!(s, Scalar::I64 | Scalar::F64) {
+                        text.push('l');
+                    }
+                    text.push(match kind {
+                        Some('i') => 'd',
+                        Some('f') => 'f',
+                        _ => 'u',
+                    });
+                    args.push(id);
+                }
+                c => text.push(c),
+            }
+        }
+        let set = self.w.printf();
+        let string = self.w.op_string(&text);
+        let void = self.w.void();
+        let mut operands = vec![set, 1, string];
+        operands.extend(args);
+        self.value(void, op::ExtInst, &operands);
+        Ok(())
     }
 }

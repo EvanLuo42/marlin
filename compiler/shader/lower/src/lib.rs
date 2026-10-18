@@ -72,10 +72,15 @@
 //! trivial phis), so a query read in a loop stays one pointer. Intrinsic results take the
 //! member's declared type, not the expression's.
 //!
+//! Step 10f: `Debug.Print` and `Debug.Assert` (`debug.rs`: typed format holes, an assertion as
+//! `if (!c) print`); signed integer textures; `SampleCompare`, `Gather`, `GatherCompare`,
+//! constant offsets (E1309 otherwise) and the size queries (`texture.rs`).
+//!
 //! Not lowered yet: auto-properties.
 
 mod closures;
 mod ctfe;
+mod debug;
 mod dispatch;
 mod entry;
 mod error;

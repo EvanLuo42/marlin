@@ -164,6 +164,11 @@ block0:
     %wrongcoord = tex.load %albedo, f32x2 (0.0, 0.0)
     %sampled = tex.sample %store, %s, f32x2 (0.5, 0.5) { lod: f32 0.0 }
     tex.store %albedo, i32x2 (0, 0), f32x4 zero
+    %plaincompare = tex.sample %albedo, %s, f32x2 (0.5, 0.5) { lod: f32 0.0, compare: f32 0.5 }
+    %gatherlod = tex.gather.r %albedo, %s, f32x2 (0.5, 0.5) { lod: f32 0.0 }
+    %nolayers = tex.layers %albedo
+    %nosamples = tex.samples %albedo
+    tex.store %store, i32x2 (0, 0), f32x4 zero { offset: i32x2 (1, 0) }
     return
 }
 

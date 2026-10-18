@@ -1,0 +1,19 @@
+namespace Test;
+
+// Debug output (Development builds, 0004 §12.5): lane 0 prints every kind of value, lane 1 fails
+// an assertion.
+
+public struct PrintArgs
+{
+    public uint Value;
+    public int Signed;
+    public float Scale;
+}
+
+[Compute(2, 1, 1)]
+public void Prints([DispatchThreadId] uint3 id, [Push] in PrintArgs a)
+{
+    if (id.x == 0)
+        Debug.Print($"marlin-print {a.Value} {a.Signed} {a.Scale} {id.xy} {a.Value > 1} 100%");
+    Debug.Assert(id.x != 1, $"marlin-assert lane {id.x}");
+}

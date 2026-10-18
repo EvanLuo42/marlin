@@ -570,6 +570,15 @@ uint mips = t.MipCount;
 - 数组的层、cube 数组的层、多重采样的采样号都用命名实参，坐标只写位置或方向：`t.Load(px, layer: l, mip: m)`、`cubes.Sample(s, dir, layer: l, lod: 0)`、`ms.Load(px, sample: i)`（2026-10-17 定）。
 - 纹理和采样器**保持分离**，各自是一个 4 字节的下标，采样时传入采样器。这样采样器可以在 cook 时单独去重。
 - 存储纹理用索引器读写：`dst[px] = c;`。
+- 尺寸用属性和方法查（2026-10-18 定）：
+  - 每种纹理都有 `Size`，是 mip 0 的尺寸（`uint2`；3D 纹理是 `uint3`；cube 是一个面的尺寸）；
+  - 有 mip 的纹理还有 `MipCount` 和 `MipSize(mip)`；
+  - 数组纹理有 `LayerCount`，cube 数组的 `LayerCount` 是 cube 的个数；
+  - 多重采样纹理有 `SampleCount`。
+- `offset:` 必须是编译期常量，每个分量在 −8 到 7 之间，否则报错（2026-10-18 定）。所有设备都支持这个范围，SPIR-V 用 `ConstOffset`。
+- `Gather(s, uv, Channel.G)` 取双线性采样会用到的四个纹素的某一个通道，`channel` 默认是 `Channel.R`，必须是常量。`GatherCompare(cs, uv, reference)` 返回这四个纹素和 `reference` 比较的结果，形式和 `SampleCompare` 一样（2026-10-18 定）。这一版的 gather 只用于浮点纹理，返回 `float4`。
+- `SampleCompare` 的级别参数和 `Sample` 一样：不写 `lod`、`grad` 时用隐式级别，只能在 pixel 入口里用。
+- 整数纹素的纹理可以是有符号的（`Texture2D<int>`），读写时保持符号（2026-10-18）。
 - `Buffer<T>` 的元素是变量，和数组元素一样（照 `Span<T>` 的规则，不照返回值的索引器）：`b[i].Pos.y += dt` 只写这一个分量。用户类型的索引器仍然返回值，不能这样给它的一部分赋值（2026-10-17 定）。
 
 ## 11. 入口与 stage
@@ -814,6 +823,9 @@ if (id.x == 0) Debug.Print($"count = {n}");
 - 只在 Development 构建里生效：输出写进一个调试 buffer，引擎读回后通过 marlin-diag 输出。Shipping 构建里整条语句被删掉。
 - 格式用 C# 的插值字符串 `$"..."`。这是字符串在语言里除了 attribute 实参和 `nameof` 以外唯一的用处（§1）。
 - 字符串在编译期变成格式 id，GPU 上只写参数。
+- 插值的位置只能放标量或向量（整数、浮点、bool），不支持对齐和格式说明符（`{x:X}` 会报错）。
+- `Debug.Assert(cond, $"...")` 在 `cond` 为假时输出一行：`assertion failed: `，后面跟条件的源码原文，再跟消息。之后着色器照常往下执行，不会停下来（2026-10-18 定）。
+- 在 Vulkan 上，这些输出由验证层的 debug printf 打印，RHI 把它们以 `shader: ...` 的形式记到 marlin-diag 日志里（0005 §4.4 的 0.4、0016 §8）。
 
 ## 13. 编译期
 

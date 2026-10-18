@@ -1,7 +1,9 @@
 // Textures and samplers (0004 §10, §10.4): each a 32-bit bindless index. Textures and samplers
 // stay apart; a sample takes the sampler. The level is `lod:`, `bias:` or `grad: (dx, dy)` (at
 // most one); with none, it comes from the pixel's derivatives (pixel entries only). An array's
-// layer, a multisampled texture's sample and a load's mip are named arguments too.
+// layer, a multisampled texture's sample and a load's mip are named arguments too; `offset:` is
+// a constant with each component in -8..7. Sizes are of mip 0 (`MipSize(m)` for others); a cube
+// array's layers are its cubes.
 namespace Marlin;
 
 /// Filtering and addressing for samples, from the sampler table.
@@ -12,17 +14,41 @@ public readonly struct Sampler { }
 [Builtin("comparison_sampler")]
 public readonly struct ComparisonSampler { }
 
+/// The channel a gather reads.
+public enum Channel { R, G, B, A }
+
 [Builtin("texture2d")]
 public readonly struct Texture2D<T>
 {
     [Intrinsic("tex.sample")]
-    public T Sample(Sampler s, float2 uv, float lod = 0, float bias = 0, (float2, float2) grad = default);
+    public T Sample(
+        Sampler s, float2 uv, float lod = 0, float bias = 0, (float2, float2) grad = default,
+        int2 offset = default);
+
+    /// The comparison of `reference` with the depth at `uv` (filtered): 0 to 1.
+    [Intrinsic("tex.sample")]
+    public float SampleCompare(
+        ComparisonSampler s, float2 uv, float reference, float lod = 0, float bias = 0,
+        (float2, float2) grad = default, int2 offset = default);
+
+    /// One channel of the four texels a bilinear sample of mip 0 would use.
+    [Intrinsic("tex.gather")]
+    public float4 Gather(Sampler s, float2 uv, Channel channel = Channel.R, int2 offset = default);
+
+    /// The comparisons of `reference` with the four depths a bilinear sample would use.
+    [Intrinsic("tex.gather")]
+    public float4 GatherCompare(
+        ComparisonSampler s, float2 uv, float reference, int2 offset = default);
 
     /// The texel at `px` of mip `mip`.
-    [Intrinsic("tex.load")] public T Load(int2 px, int mip = 0);
+    [Intrinsic("tex.load")] public T Load(int2 px, int mip = 0, int2 offset = default);
 
     /// The texel at `px` of mip 0.
     [Intrinsic("tex.load")] public T this[int2 px] { get; }
+
+    [Intrinsic("tex.size")] public uint2 Size { get; }
+    [Intrinsic("tex.size")] public uint2 MipSize(int mip);
+    [Intrinsic("tex.mips")] public uint MipCount { get; }
 }
 
 [Builtin("texture2d_array")]
@@ -31,19 +57,44 @@ public readonly struct Texture2DArray<T>
     [Intrinsic("tex.sample")]
     public T Sample(
         Sampler s, float2 uv, int layer, float lod = 0, float bias = 0,
-        (float2, float2) grad = default);
+        (float2, float2) grad = default, int2 offset = default);
 
-    [Intrinsic("tex.load")] public T Load(int2 px, int layer, int mip = 0);
+    [Intrinsic("tex.sample")]
+    public float SampleCompare(
+        ComparisonSampler s, float2 uv, float reference, int layer, float lod = 0,
+        float bias = 0, (float2, float2) grad = default, int2 offset = default);
+
+    [Intrinsic("tex.gather")]
+    public float4 Gather(
+        Sampler s, float2 uv, int layer, Channel channel = Channel.R, int2 offset = default);
+
+    [Intrinsic("tex.gather")]
+    public float4 GatherCompare(
+        ComparisonSampler s, float2 uv, float reference, int layer, int2 offset = default);
+
+    [Intrinsic("tex.load")]
+    public T Load(int2 px, int layer, int mip = 0, int2 offset = default);
+
+    [Intrinsic("tex.size")] public uint2 Size { get; }
+    [Intrinsic("tex.size")] public uint2 MipSize(int mip);
+    [Intrinsic("tex.mips")] public uint MipCount { get; }
+    [Intrinsic("tex.layers")] public uint LayerCount { get; }
 }
 
 [Builtin("texture3d")]
 public readonly struct Texture3D<T>
 {
     [Intrinsic("tex.sample")]
-    public T Sample(Sampler s, float3 uvw, float lod = 0, float bias = 0, (float3, float3) grad = default);
+    public T Sample(
+        Sampler s, float3 uvw, float lod = 0, float bias = 0, (float3, float3) grad = default,
+        int3 offset = default);
 
-    [Intrinsic("tex.load")] public T Load(int3 p, int mip = 0);
+    [Intrinsic("tex.load")] public T Load(int3 p, int mip = 0, int3 offset = default);
     [Intrinsic("tex.load")] public T this[int3 p] { get; }
+
+    [Intrinsic("tex.size")] public uint3 Size { get; }
+    [Intrinsic("tex.size")] public uint3 MipSize(int mip);
+    [Intrinsic("tex.mips")] public uint MipCount { get; }
 }
 
 [Builtin("texture_cube")]
@@ -52,6 +103,22 @@ public readonly struct TextureCube<T>
     /// `dir` need not be of unit length.
     [Intrinsic("tex.sample")]
     public T Sample(Sampler s, float3 dir, float lod = 0, float bias = 0, (float3, float3) grad = default);
+
+    [Intrinsic("tex.sample")]
+    public float SampleCompare(
+        ComparisonSampler s, float3 dir, float reference, float lod = 0, float bias = 0,
+        (float3, float3) grad = default);
+
+    [Intrinsic("tex.gather")]
+    public float4 Gather(Sampler s, float3 dir, Channel channel = Channel.R);
+
+    [Intrinsic("tex.gather")]
+    public float4 GatherCompare(ComparisonSampler s, float3 dir, float reference);
+
+    /// A face's size.
+    [Intrinsic("tex.size")] public uint2 Size { get; }
+    [Intrinsic("tex.size")] public uint2 MipSize(int mip);
+    [Intrinsic("tex.mips")] public uint MipCount { get; }
 }
 
 [Builtin("texture_cube_array")]
@@ -61,6 +128,23 @@ public readonly struct TextureCubeArray<T>
     public T Sample(
         Sampler s, float3 dir, int layer, float lod = 0, float bias = 0,
         (float3, float3) grad = default);
+
+    [Intrinsic("tex.sample")]
+    public float SampleCompare(
+        ComparisonSampler s, float3 dir, float reference, int layer, float lod = 0,
+        float bias = 0, (float3, float3) grad = default);
+
+    [Intrinsic("tex.gather")]
+    public float4 Gather(Sampler s, float3 dir, int layer, Channel channel = Channel.R);
+
+    [Intrinsic("tex.gather")]
+    public float4 GatherCompare(ComparisonSampler s, float3 dir, float reference, int layer);
+
+    [Intrinsic("tex.size")] public uint2 Size { get; }
+    [Intrinsic("tex.size")] public uint2 MipSize(int mip);
+    [Intrinsic("tex.mips")] public uint MipCount { get; }
+    /// The cubes.
+    [Intrinsic("tex.layers")] public uint LayerCount { get; }
 }
 
 /// A multisampled texture, read one sample at a time.
@@ -68,12 +152,19 @@ public readonly struct TextureCubeArray<T>
 public readonly struct Texture2DMS<T>
 {
     [Intrinsic("tex.load")] public T Load(int2 px, int sample);
+
+    [Intrinsic("tex.size")] public uint2 Size { get; }
+    [Intrinsic("tex.samples")] public uint SampleCount { get; }
 }
 
 [Builtin("texture2d_ms_array")]
 public readonly struct Texture2DMSArray<T>
 {
     [Intrinsic("tex.load")] public T Load(int2 px, int layer, int sample);
+
+    [Intrinsic("tex.size")] public uint2 Size { get; }
+    [Intrinsic("tex.layers")] public uint LayerCount { get; }
+    [Intrinsic("tex.samples")] public uint SampleCount { get; }
 }
 
 /// One mip of a 2D texture, read and written by texel (0004 §10.2).
@@ -81,12 +172,17 @@ public readonly struct Texture2DMSArray<T>
 public readonly struct StorageTexture2D<T>
 {
     [Intrinsic("tex.texel")] public T this[int2 px] { get; set; }
+
+    [Intrinsic("tex.size")] public uint2 Size { get; }
 }
 
 [Builtin("storage_texture2d_array")]
 public readonly struct StorageTexture2DArray<T>
 {
     [Intrinsic("tex.texel")] public T this[int2 px, int layer] { get; set; }
+
+    [Intrinsic("tex.size")] public uint2 Size { get; }
+    [Intrinsic("tex.layers")] public uint LayerCount { get; }
 }
 
 /// One mip of a volume texture, every slice.
@@ -94,4 +190,6 @@ public readonly struct StorageTexture2DArray<T>
 public readonly struct StorageTexture3D<T>
 {
     [Intrinsic("tex.texel")] public T this[int3 p] { get; set; }
+
+    [Intrinsic("tex.size")] public uint3 Size { get; }
 }
