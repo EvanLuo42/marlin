@@ -18,6 +18,17 @@
 //!   parameters, that nothing live reads.
 //! - [`Sccp`] (2.1): sparse conditional constant propagation; values and branches it proves
 //!   constant become constants, for [`SimplifyCfg`] to fold.
+//!
+//! Step 8b, stages 0 and 1:
+//! - [`DivGuard`] (0.2): integer division and remainder by 0 give 0 (0004 §9.6).
+//! - [`StripDebug`] (0.4): `Debug.*` goes in Shipping builds; Development builds keep it for
+//!   each backend.
+//! - [`Inline`] (1.1): every call, with `return`s turned into breaks out of a loop that runs
+//!   once (through a flag from inside the callee's loops and switches).
+//! - [`Sroa`] (1.2) and [`Mem2Reg`] (1.3): variables split into parts and made SSA values.
+//! - [`PrecisePropagate`] (1.6), [`HoistConstArrays`] (1.7), [`GlobalDce`] (1.8).
+//!
+//! Passes 1.4 and 1.5 come with the DXIL backend, the only one that needs them (0005 §11).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -27,12 +38,28 @@ use marlin_shaderc_ir::{FuncId, Function, Module, VerifyError, verify_module};
 
 mod dce;
 mod edit;
+mod global_dce;
+mod guard;
+mod hoist;
+mod inline;
+mod mem2reg;
+mod precise;
 mod sccp;
 mod simplify_cfg;
+mod sroa;
+mod strip_debug;
 
 pub use dce::Dce;
+pub use global_dce::GlobalDce;
+pub use guard::DivGuard;
+pub use hoist::HoistConstArrays;
+pub use inline::Inline;
+pub use mem2reg::Mem2Reg;
+pub use precise::PrecisePropagate;
 pub use sccp::Sccp;
 pub use simplify_cfg::SimplifyCfg;
+pub use sroa::{MAX_ELEMENTS, Sroa};
+pub use strip_debug::StripDebug;
 
 /// The two builds (0005 §5.4): both fully optimized; they differ in `Debug.*` and debug
 /// information.
@@ -176,6 +203,11 @@ impl PassManager {
         self
     }
 
+    pub fn add_boxed(&mut self, pass: Box<dyn Pass>) -> &mut Self {
+        self.passes.push(pass);
+        self
+    }
+
     pub fn names(&self) -> Vec<&'static str> {
         self.passes.iter().map(|p| p.name()).collect()
     }
@@ -211,6 +243,20 @@ fn check(m: &Module, pass: &'static str) -> Result<(), PassError> {
 /// The pipeline for `options` (0005 §4.4; the passes there so far).
 pub fn pipeline(options: &Options) -> PassManager {
     let mut pm = PassManager::new(options.verify_each);
+    // Stage 0.
+    pm.add(DivGuard);
+    if options.profile == Profile::Shipping {
+        pm.add(StripDebug);
+    }
+    // Stage 1.
+    pm.add(Inline)
+        .add(SimplifyCfg)
+        .add(Sroa)
+        .add(Mem2Reg)
+        .add(PrecisePropagate)
+        .add(HoistConstArrays)
+        .add(GlobalDce);
+    // Stage 2, so far.
     pm.add(SimplifyCfg)
         .add(Sccp)
         .add(SimplifyCfg)

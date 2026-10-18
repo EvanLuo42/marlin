@@ -168,14 +168,14 @@ DXC **故意关掉**了以下几项：
 
 | # | pass | 来源 | 说明 |
 |---|---|---|---|
-| 1.1 | 全量 inline | DXC Inliner | 默认全部内联。只有 target 支持函数调用、并且体积超过阈值时，才保留调用 |
+| 1.1 | 全量 inline | DXC Inliner | 默认全部内联。只有 target 支持函数调用、并且体积超过阈值时，才保留调用。被调函数放进一个只跑一次的 loop 里，`return` 变成跳出这个 loop；`return` 在被调函数的 loop 或 switch 里时，先存返回值、置一个标志，跳到最内层那一层的 merge，在每一层 merge 处检查标志、继续往外跳，所以 break 永远只出最内层（第 8b 步） |
 | 1.2 | SROA | DXC SROA、ScalarReplAggregatesHLSL、SROA_Parameter_HLSL | 拆开 struct、元组和下标为常量的数组 |
 | 1.3 | mem2reg | DXC DxilConditionalMem2Reg | 处理 SROA 拆出来的局部变量 |
 | 1.4 | 动态下标的向量 → 数组 | DXC DynamicIndexingVectorToArray | 只有 DXIL 需要（SPIR-V 有动态下标的向量操作），随 DXIL 后端一起做 |
 | 1.5 | 多维数组 → 一维数组 | DXC MultiDimArrayToOneDimArray | 同上 |
 | 1.6 | precise 传播 | DXC DxilPrecisePropagate | 把 `[Precise]` 从值传播到产生它的整条计算链 |
 | 1.7 | 局部常量数组提升 | DXC HoistConstantArray、DxilFixConstArrayInitializer | 只读的局部常量数组变成模块级常量 |
-| 1.8 | 死函数和死全局变量删除 | DXC GlobalDCE、HLDeadFunctionElimination | |
+| 1.8 | 死函数和死全局变量删除 | DXC GlobalDCE、HLDeadFunctionElimination | 有入口的 module 删掉入口调用不到的函数；没有入口的 module（函数库，测试里这样用）保留所有函数；没被用到的模块级变量都删 |
 
 **阶段 2：标量优化（这一组跑两轮）**
 
@@ -424,7 +424,7 @@ public const ClosureInfo Flatten<M>() where M : IMaterial { ... }
 | 5 | `shader/hir_ty`：5a 是类型表示、内建类型（0004 §17）、类型降低和签名；5b 是表达式的类型推断、转换、运算符、成员查找和重载；5c 是其余语义检查（确定赋值、readonly、穷尽、接口实现、入口和系统值、push 大小、scalar 布局、capability 推断和 `[Requires]` 契约） | 0004 的类型规则都有诊断 |
 | 6 | `ir`：6a 是类型、指令集、函数和 module 的表示、builder、文本打印和解析；6b 是 verifier；6c 是解释器 | 文本能往返；解释器能跑 compute 语义 |
 | 7 | `lower`：7a 是非泛型代码降低成 SSA IR（表达式、语句、结构化控制流、调用、内建函数）；7b 是实例收集、泛型、接口调用、lambda；7c 是入口（系统值、push、资源）和 CTFE（const 字段、静态参数、数组长度、const 函数） | 泛型入口能单态化，`const` 函数能在编译期求值 |
-| 8 | `opt`：8a 是 pass manager、控制流分析、结构保持的 CFG 化简、DCE、SCCP 和差分测试（随机生成的结构化函数，用解释器比较 pass 前后）；8b 是阶段 0–1 的 pass（1.4、1.5 只有 DXIL 需要，随 DXIL 后端一起做）；8c 是 uniformity 分析和 verifier 的 convergence 检查（0006 §5.3） | 第一个 compute 入口能走完整条流水线 |
+| 8 | `opt`：8a 是 pass manager、控制流分析、结构保持的 CFG 化简、DCE、SCCP 和差分测试（随机生成的结构化函数，用解释器比较 pass 前后）；8b 是阶段 0–1 的 pass（1.4、1.5 只有 DXIL 需要，随 DXIL 后端一起做）；8c 是 uniformity 分析和 verifier 的 convergence 检查（0006 §5.3），并核对 verifier 的 break 规则和 SPIR-V 一致（break 只能去最内层 loop 或 switch 的 merge；现在的 verifier 接受任何一层外面的 loop） | 第一个 compute 入口能走完整条流水线 |
 | 9 | `target`、`backend_spirv`（SPIR-V 1.6 / Vulkan 1.3 环境）、`reflect`、facade `Session`、真正的核心库 | 第一个 compute shader 生成的 SPIR-V 通过我们自己的验证器；Vulkan RHI 就绪后在真实 GPU 上跑通 |
 | 10 | 补齐其余 stage、资源、wave、纹理；cook 和 build.rs 接入；随 Vulkan RHI 替换占位 shader | |
 | 11 | 阶段 2–5 的其余 pass、自动微分、调试信息（NonSemantic.Shader.DebugInfo）、其他后端：DXIL（Xbox 等需要 D3D12 的平台）、Metal、主机 | |

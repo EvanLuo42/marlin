@@ -16,6 +16,7 @@ marlin-shaderc-ir.workspace = true
 [dev-dependencies]
 marlin-lang-span.workspace = true
 marlin-math.workspace = true
+marlin-shaderc-opt.workspace = true
 marlin-test-support.workspace = true
 
 [lints]

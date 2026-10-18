@@ -1,0 +1,59 @@
+struct @P { x: i32, y: i32 }
+
+// A struct written field by field in both arms of an `if`, then read whole: SROA splits it,
+// and mem2reg makes a block parameter where the arms meet.
+func @fields(%a: i32) -> i32 {
+block0:
+    %r = var function : @P
+    %c = icmp slt %a, i32 0
+    cond_br %c, block1, block2 merge block3
+block1:
+    %x = access %r, .x
+    store %x, i32 1
+    br block3
+block2:
+    %x2 = access %r, .x
+    store %x2, %a
+    br block3
+block3:
+    %y = access %r, .y
+    store %y, i32 5
+    %whole = load %r
+    %fx = extract.field %whole, .x
+    %fy = extract.field %whole, .y
+    %s = add %fx, %fy
+    return %s
+}
+
+// A counter in a variable: a parameter of the loop header.
+func @counter(%n: i32) -> i32 {
+block0:
+    %k = var function : i32
+    store %k, i32 0
+    loop header block1 continue block3 merge block4
+block1:
+    %v = load %k
+    %done = icmp sge %v, %n
+    cond_br %done, block4, block2 merge block2
+block2:
+    br block3
+block3:
+    %v2 = load %k
+    %v3 = add %v2, i32 1
+    store %k, %v3
+    br block1
+block4:
+    %r = load %k
+    return %r
+}
+
+// A constant table read with a value: module data.
+func @table(%i: i32) -> i32 {
+block0:
+    %t = var function : [i32; 4]
+    %k = and %i, i32 3
+    store %t, [i32; 4] (10, 20, 30, 40)
+    %p = access %t, [%k]
+    %v = load %p
+    return %v
+}

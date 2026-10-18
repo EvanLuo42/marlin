@@ -133,3 +133,41 @@ fn fuzz_finds_stay_fixed() {
         },
     );
 }
+
+fn chain(passes: Vec<Box<dyn marlin_shaderc_opt::Pass>>) -> PassManager {
+    let mut pm = PassManager::new(true);
+    for p in passes {
+        pm.add_boxed(p);
+    }
+    pm
+}
+
+#[test]
+fn inline_turns_returns_into_breaks_out_of_regions() {
+    check("inline", &chain(vec![Box::new(marlin_shaderc_opt::Inline)]));
+}
+
+#[test]
+fn sroa_mem2reg_and_hoisting_take_variables_out_of_memory() {
+    check(
+        "memory",
+        &chain(vec![
+            Box::new(marlin_shaderc_opt::Sroa),
+            Box::new(marlin_shaderc_opt::Mem2Reg),
+            Box::new(marlin_shaderc_opt::HoistConstArrays),
+            Box::new(marlin_shaderc_opt::GlobalDce),
+        ]),
+    );
+}
+
+#[test]
+fn stage_0_guards_divisions_strips_debug_and_spreads_precise() {
+    check(
+        "stage0",
+        &chain(vec![
+            Box::new(marlin_shaderc_opt::DivGuard),
+            Box::new(marlin_shaderc_opt::StripDebug),
+            Box::new(marlin_shaderc_opt::PrecisePropagate),
+        ]),
+    );
+}

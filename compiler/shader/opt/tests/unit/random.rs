@@ -5,8 +5,8 @@
 
 use marlin_math::Rng;
 use marlin_shaderc_ir::{
-    BinaryOp, Block, ConvertOp, FloatCmp, FuncBuilder, FuncId, IntCmp, Module, Op, Scalar,
-    SwitchCase, Type, UnaryOp, Value,
+    AccessStep, BinaryOp, Block, ConstValue, ConvertOp, FloatCmp, FuncBuilder, FuncId, IntCmp,
+    Module, Op, Scalar, Space, SwitchCase, Type, TypeData, UnaryOp, Value,
 };
 
 const VARS: usize = 3;
@@ -33,6 +33,12 @@ struct Gen<'m> {
     budget: usize,
     /// Enclosing loops and switches, innermost last.
     targets: Vec<Target>,
+    /// Functions this one may call (`(int, int, int) -> int`).
+    callees: Vec<FuncId>,
+    /// Variables made at the start: a `{ int x, y }` and an `int[4]`.
+    record: Value,
+    array: Value,
+    array_ty: Type,
 }
 
 /// Whether the block ended (a jump out, or `return`) or code may follow.
@@ -53,12 +59,37 @@ pub fn arg(rng: &mut Rng) -> i32 {
     }
 }
 
-/// A module with one generated function, `@f`.
+/// A module of generated functions: helpers, each of which may call the ones before it, and
+/// `@f`, which may call them all.
 pub fn function(seed: u64, size: usize) -> (Module, FuncId) {
     let mut m = Module::new();
+    let mut rng = Rng::new(seed);
+    let helpers = rng.below(3);
+    let mut callees = Vec::new();
+    for k in 0..helpers {
+        let s = rng.next_u64();
+        let id = one(&mut m, &format!("h{k}"), s, 4 + size / 3, callees.clone());
+        callees.push(id);
+    }
+    let id = one(&mut m, "f", rng.next_u64(), size, callees);
+    (m, id)
+}
+
+fn one(m: &mut Module, name: &str, seed: u64, size: usize, callees: Vec<FuncId>) -> FuncId {
     let int = m.scalar(Scalar::I32);
     let float = m.scalar(Scalar::F32);
-    let mut b = FuncBuilder::new(&mut m, "f", vec![int]);
+    let found = m
+        .structs
+        .iter()
+        .find(|(_, s)| &*s.name == "R")
+        .map(|(id, _)| id);
+    let record =
+        found.unwrap_or_else(|| m.add_struct("R", vec![("x".into(), int), ("y".into(), int)]));
+    let record_ty = m.struct_ty(record);
+    let array_ty = m.ty(TypeData::Array(int, 4));
+    let record_ptr = m.ptr(Space::Function, false, record_ty);
+    let array_ptr = m.ptr(Space::Function, false, array_ty);
+    let mut b = FuncBuilder::new(m, name, vec![int]);
     let entry = b.add_block();
     let mut vars = Vec::new();
     for i in 0..VARS {
@@ -66,6 +97,8 @@ pub fn function(seed: u64, size: usize) -> (Module, FuncId) {
         vars.push(b.param(entry, int, Some(&name)));
     }
     b.switch_to(entry);
+    let record = var(&mut b, record_ptr);
+    let array = var(&mut b, array_ptr);
     let mut g = Gen {
         b,
         rng: Rng::new(seed),
@@ -73,13 +106,21 @@ pub fn function(seed: u64, size: usize) -> (Module, FuncId) {
         float,
         budget: size,
         targets: Vec::new(),
+        callees,
+        record,
+        array,
+        array_ty,
     };
     if g.stmts(&mut vars, 0) == Flow::Open {
         let v = g.combine(&vars);
         g.b.ret(vec![v]);
     }
-    let id = g.b.func;
-    (m, id)
+    g.b.func
+}
+
+fn var(b: &mut FuncBuilder<'_>, ptr: Type) -> Value {
+    let inst = b.ins_with(Op::Var, Vec::new(), Some(ptr)).expect("a var");
+    b.f().result(inst)
 }
 
 impl Gen<'_> {
@@ -100,6 +141,11 @@ impl Gen<'_> {
                 let v = INTERESTING[self.rng.below(INTERESTING.len())];
                 self.int(v)
             };
+        }
+        if !self.callees.is_empty() && self.rng.chance(0.15) {
+            let callee = self.callees[self.rng.below(self.callees.len())];
+            let args = (0..VARS).map(|_| self.expr(vars, depth - 1)).collect();
+            return self.b.value(Op::Call(callee), args);
         }
         match self.rng.below(10) {
             0..=5 => {
@@ -189,7 +235,11 @@ impl Gen<'_> {
 
     fn stmt(&mut self, vars: &mut Vec<Value>, depth: u32) -> Flow {
         let nested = depth < 4;
-        match self.rng.below(12) {
+        match self.rng.below(16) {
+            11..=14 => {
+                self.memory(vars);
+                Flow::Open
+            }
             0..=4 => {
                 let i = self.rng.below(VARS);
                 vars[i] = self.expr(vars, 3);
@@ -385,5 +435,101 @@ impl Gen<'_> {
         self.b.switch_to(merge);
         *vars = params;
         Flow::Open
+    }
+}
+
+impl Gen<'_> {
+    /// An index into the array: a constant, or a value masked into range.
+    fn index(&mut self, vars: &[Value]) -> Value {
+        if self.rng.bool() {
+            let k = self.rng.below(4) as i32;
+            self.int(k)
+        } else {
+            let e = self.expr(vars, 1);
+            let three = self.int(3);
+            self.b.binary(BinaryOp::And, e, three)
+        }
+    }
+
+    fn load(&mut self, ptr: Value) -> Value {
+        self.b.value(Op::Load { aligned: None }, vec![ptr])
+    }
+
+    fn store(&mut self, ptr: Value, v: Value) {
+        self.b.ins(Op::Store { aligned: None }, vec![ptr, v]);
+    }
+
+    /// Reads and writes of the record and the array, and a lookup in a constant table.
+    fn memory(&mut self, vars: &mut [Value]) {
+        let i = self.rng.below(VARS);
+        match self.rng.below(6) {
+            0 => {
+                let field = self.rng.below(2) as u32;
+                let p = self.b.value(
+                    Op::Access(vec![AccessStep::Field(field)]),
+                    vec![self.record],
+                );
+                let v = self.expr(vars, 2);
+                self.store(p, v);
+            }
+            1 => {
+                let field = self.rng.below(2) as u32;
+                let p = self.b.value(
+                    Op::Access(vec![AccessStep::Field(field)]),
+                    vec![self.record],
+                );
+                vars[i] = self.load(p);
+            }
+            2 => {
+                let k = self.index(vars);
+                let p = self
+                    .b
+                    .value(Op::Access(vec![AccessStep::Index]), vec![self.array, k]);
+                let v = self.expr(vars, 2);
+                self.store(p, v);
+            }
+            3 => {
+                let k = self.index(vars);
+                let p = self
+                    .b
+                    .value(Op::Access(vec![AccessStep::Index]), vec![self.array, k]);
+                vars[i] = self.load(p);
+            }
+            4 => {
+                let whole = self.load(self.record);
+                let field = self.rng.below(2) as u32;
+                vars[i] = self.b.value(Op::ExtractField(field), vec![whole]);
+            }
+            _ => {
+                let int = self.int;
+                let items: Vec<_> = (0..4)
+                    .map(|_| {
+                        let v = INTERESTING[self.rng.below(INTERESTING.len())];
+                        self.b.module.int(int, v as i64)
+                    })
+                    .collect();
+                let table = self
+                    .b
+                    .module
+                    .constant(self.array_ty, ConstValue::Composite(items));
+                let ptr_ty = self.b.module.ptr(Space::Function, false, self.array_ty);
+                // Variables are made in the entry block.
+                let f = self.b.f();
+                let inst = f.create_inst(Op::Var, Vec::new(), &[ptr_ty]);
+                let entry = f.layout[0];
+                let first = f
+                    .first_inst(entry)
+                    .expect("the record and array come first");
+                f.insert_before(first, inst);
+                let local = f.result(inst);
+                let table = self.b.konst(table);
+                self.store(local, table);
+                let k = self.index(vars);
+                let p = self
+                    .b
+                    .value(Op::Access(vec![AccessStep::Index]), vec![local, k]);
+                vars[i] = self.load(p);
+            }
+        }
     }
 }

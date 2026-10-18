@@ -1,0 +1,22 @@
+format 0 = "a = {}"
+
+// Divisions by values get guards; by a constant other than 0 and -1, none.
+func @divide(%a: i32, %b: i32) -> i32 {
+block0:
+    %q = sdiv %a, %b
+    %u = udiv %a, i32 3
+    %r = srem %q, i32 -1
+    %s = add %r, %u
+    debug.print 0, (%s)
+    return %s
+}
+
+// What a precise result is computed from becomes precise.
+func @precise(%a: i32) -> i32 {
+block0:
+    %f = sitofp %a : f32
+    %g = fmul %f, f32 3.0
+    %h = fadd precise %g, f32 1.0
+    %i = fptosi %h : i32
+    return %i
+}

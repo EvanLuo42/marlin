@@ -176,9 +176,23 @@ impl World {
             .try_entry(path, type_args, statics)
             .unwrap_or_else(|e| panic!("{path}: {e}"));
         let entry = module.entries[0].func;
-        Interpreter::new(&module)
+        // The optimized module must compute the same, on a copy of the resources.
+        let optimized = optimize(&module, path);
+        let mut copy = resources.clone();
+        let opt_out = Interpreter::new(&optimized)
+            .dispatch(optimized.entries[0].func, groups, &mut copy)
+            .unwrap_or_else(|e| panic!("{path}, optimized: {e}\n{}", print_module(&optimized)));
+        let out = Interpreter::new(&module)
             .dispatch(entry, groups, resources)
-            .unwrap_or_else(|e| panic!("{path}: {e}\n{}", print_module(&module)))
+            .unwrap_or_else(|e| panic!("{path}: {e}\n{}", print_module(&module)));
+        assert_eq!(
+            copy.buffers,
+            resources.buffers,
+            "{path}: the optimized entry writes something else\n{}",
+            print_module(&optimized)
+        );
+        assert_eq!(opt_out.prints, out.prints, "{path}");
+        out
     }
 
     fn render_error(
@@ -196,9 +210,22 @@ impl World {
     pub fn run(&self, path: &str, args: &[Val]) -> Vec<Val> {
         let module = self.lower(&[path]);
         let f = module.find_function(path).unwrap();
-        Interpreter::new(&module)
+        let result = Interpreter::new(&module)
             .call(f, args)
-            .unwrap_or_else(|e| panic!("{path}: {e}\n{}", print_module(&module)))
+            .unwrap_or_else(|e| panic!("{path}: {e}\n{}", print_module(&module)));
+        // The optimized module must compute the same.
+        let optimized = optimize(&module, path);
+        let g = optimized.find_function(path).unwrap();
+        let again = Interpreter::new(&optimized)
+            .call(g, args)
+            .unwrap_or_else(|e| panic!("{path}, optimized: {e}\n{}", print_module(&optimized)));
+        assert_eq!(
+            again,
+            result,
+            "{path}: the optimized function computes something else\n{}",
+            print_module(&optimized)
+        );
+        result
     }
 }
 
@@ -209,4 +236,17 @@ impl SourceMap for World {
     fn text(&self, file: FileId) -> &str {
         &self.files[file.0 as usize].1
     }
+}
+
+/// `module` through the whole optimization pipeline, verified after every pass.
+pub fn optimize(module: &Module, what: &str) -> Module {
+    let mut m = module.clone();
+    let options = marlin_shaderc_opt::Options {
+        profile: marlin_shaderc_opt::Profile::Development,
+        verify_each: true,
+    };
+    if let Err(e) = marlin_shaderc_opt::pipeline(&options).run(&mut m) {
+        panic!("{what}: {e}\nbefore:\n{}", print_module(module));
+    }
+    m
 }

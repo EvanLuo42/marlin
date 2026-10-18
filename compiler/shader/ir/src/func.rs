@@ -164,6 +164,34 @@ impl Function {
         v
     }
 
+    /// Renumbers called functions and module variables (see [`crate::Module::retain`]).
+    pub(crate) fn remap(
+        &mut self,
+        funcs: &HashMap<FuncId, FuncId>,
+        globals: &HashMap<GlobalId, GlobalId>,
+    ) {
+        for (_, inst) in self.insts.iter_mut() {
+            if let Op::Call(c) = &mut inst.op
+                && let Some(&n) = funcs.get(c)
+            {
+                *c = n;
+            }
+        }
+        // A removed variable's address value stays, unused, naming nothing.
+        let old = std::mem::take(&mut self.globals);
+        for (g, v) in old {
+            if let Some(&n) = globals.get(&g) {
+                self.values[v].def = ValueDef::Global(n);
+                self.globals.insert(n, v);
+            } else {
+                debug_assert!(
+                    self.values[v].uses.is_empty(),
+                    "a removed module variable is used"
+                );
+            }
+        }
+    }
+
     /// The value standing for the address of module variable `g` in this function.
     pub fn global_value(&mut self, g: GlobalId, ty: Type) -> Value {
         if let Some(&v) = self.globals.get(&g) {

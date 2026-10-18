@@ -80,6 +80,7 @@ marlin-front-hir-def = { path = "compiler/front/hir_def" }
 marlin-shaderc-syntax = { path = "compiler/shader/syntax" }
 marlin-shaderc-hir-ty = { path = "compiler/shader/hir_ty" }
 marlin-shaderc-ir = { path = "compiler/shader/ir" }
+marlin-shaderc-opt = { path = "compiler/shader/opt" }
 # --- editor ---
 marlin-editor-ui-core = { path = "editor/ui_core" }
 marlin-editor-ui-widgets = { path = "editor/ui_widgets" }

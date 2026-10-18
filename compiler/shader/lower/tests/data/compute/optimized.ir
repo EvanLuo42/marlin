@@ -1,0 +1,80 @@
+struct @Game.Args { Out: res<Buffer<i32>>, Total: res<Buffer<i32>>, Scale: i32 }
+global @Game.Mirror.id : ptr<input, i32x3> builtin(DispatchThreadId)
+global @Game.Mirror.gi : ptr<input, i32> builtin(GroupIndex)
+global @Game.Mirror.a : ptr<push, @Game.Args>
+global @Game.Tile : ptr<groupshared, [i32; 64]>
+
+entry compute(64, 1, 1) @Game.Mirror uses(@Game.Mirror.id, @Game.Mirror.gi, @Game.Mirror.a, @Game.Tile) {
+block0:
+    %0 = load @Game.Mirror.id
+    %1 = load @Game.Mirror.gi
+    %2 = load @Game.Mirror.a
+    %3 = access @Game.Tile, [%1]
+    %4 = extract %0, 0
+    %5 = extract.field %2, .Scale
+    %6 = mul %4, %5
+    store %3, %6
+    barrier exec(group) mem(group) spaces(groupshared)
+    %7 = extract.field %2, .Out
+    %8 = extract %0, 0
+    %9 = desc.get %7
+    %10 = buffer.elem %9, %8
+    %11 = sub i32 63, %1
+    %12 = access @Game.Tile, [%11]
+    %13 = load %12
+    store %10, %13
+    %14 = extract %0, 0
+    %15 = extract.field %2, .Total
+    %16 = desc.get %15
+    %17 = buffer.elem %16, i32 0
+    %18 = atomic.add %17, %14 scope(device) order(relaxed)
+    %19 = extract %0, 0
+    %20 = extract.field %2, .Total
+    %21 = desc.get %20
+    %22 = buffer.elem %21, i32 1
+    %23 = atomic.umax %22, %19 scope(device) order(relaxed)
+    return
+}
+
+struct @Game.MoveArgs { Particles: res<Buffer<@Game.Particle>>, Dt: f32 }
+struct @Game.Particle { Pos: f32x3, Mass: f32 }
+global @Game.Move.id : ptr<input, i32x3> builtin(DispatchThreadId)
+global @Game.Move.a : ptr<push, @Game.MoveArgs>
+
+entry compute(32, 1, 1) @Game.Move uses(@Game.Move.id, @Game.Move.a) {
+block0:
+    %0 = load @Game.Move.id
+    %1 = load @Game.Move.a
+    loop header block1 continue block4 merge block3
+block1:
+    %2 = extract %0, 0
+    %3 = extract.field %1, .Particles
+    %4 = desc.get %3
+    %5 = buffer.length %4
+    %6 = icmp uge %2, %5
+    cond_br %6, block3, block2 merge block2
+block2:
+    %7 = extract.field %1, .Particles
+    %8 = extract %0, 0
+    %9 = desc.get %7
+    %10 = buffer.elem %9, %8
+    %11 = access %10, .Pos
+    %12 = access %11, [1]
+    %13 = load %12
+    %14 = extract.field %1, .Dt
+    %15 = extract.field %1, .Particles
+    %16 = extract %0, 0
+    %17 = desc.get %15
+    %18 = buffer.elem %17, %16
+    %19 = access %18, .Mass
+    %20 = load %19
+    %21 = fmul %14, %20
+    %22 = fadd %13, %21
+    store %12, %22
+    br block3
+block3:
+    return
+block4:
+    unreachable
+}
+

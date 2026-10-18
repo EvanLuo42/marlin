@@ -901,13 +901,15 @@ impl<'v, 'a> FunctionVerifier<'v, 'a> {
                         && f.insts[inst].results.get(i as usize) == Some(&v)
                         || f.uses(v).is_empty()
                 }
-                // A removed parameter or result stays in the arena, unused.
+                // A removed parameter, result or module variable stays in the arena, unused.
                 ValueDef::Param(b, i) => {
                     f.blocks.get(b).and_then(|b| b.params.get(i as usize)) == Some(&v)
                         || f.uses(v).is_empty()
                 }
                 ValueDef::Const(c) => self.v.v_const(c).is_some_and(|d| d.ty == data.ty),
-                ValueDef::Global(g) => self.m.globals.get(g).is_some_and(|g| g.ty == data.ty),
+                ValueDef::Global(g) => {
+                    self.m.globals.get(g).is_some_and(|g| g.ty == data.ty) || f.uses(v).is_empty()
+                }
             };
             if !ok {
                 self.error("a value's definition does not match what defines it");

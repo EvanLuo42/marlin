@@ -1,6 +1,6 @@
 //! marlin-shaderc-lower's tests (quick tier, docs/design/0014-testing.md §5): Marlin shader
 //! source through type checking and lowering to IR that verifies, run in the IR interpreter
-//! and checked against what the source means.
+//! and checked against what the source means, and again after the whole optimization pipeline.
 //! Platform-independent.
 //! Run alone with `cargo test -p marlin-shaderc-lower --test unit`.
 

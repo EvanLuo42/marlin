@@ -1,0 +1,71 @@
+func @find(%n: i32) -> i32 {
+block0:
+    %small = icmp slt %n, i32 0
+    cond_br %small, block1, block2 merge block2
+block1:
+    return i32 -1
+block2:
+    loop header block3(i32 0) continue block7 merge block8
+block3(%i: i32):
+    %done = icmp sge %i, %n
+    cond_br %done, block8, block4 merge block4
+block4:
+    %hit = icmp eq %i, i32 3
+    cond_br %hit, block5, block6 merge block6
+block5:
+    %r = mul %i, i32 10
+    return %r
+block6:
+    br block7(%i)
+block7(%j: i32):
+    %k = add %j, i32 1
+    br block3(%k)
+block8:
+    return %n
+}
+
+func @caller(%a: i32) -> i32 {
+block0:
+    %0 = var function : i1
+    %1 = var function : i32
+    store %0, i1 false
+    loop header block1 continue block14 merge block13
+block1:
+    br block2
+block2:
+    %small = icmp slt %a, i32 0
+    cond_br %small, block3, block4 merge block4
+block3:
+    br block13(i32 -1)
+block4:
+    loop header block5(i32 0) continue block9 merge block10
+block5(%i: i32):
+    %done = icmp sge %i, %a
+    cond_br %done, block10, block6 merge block6
+block6:
+    %hit = icmp eq %i, i32 3
+    cond_br %hit, block7, block8 merge block8
+block7:
+    %r = mul %i, i32 10
+    store %1, %r
+    store %0, i1 true
+    br block10
+block8:
+    br block9(%i)
+block9(%j: i32):
+    %k = add %j, i32 1
+    br block5(%k)
+block10:
+    %2 = load %0
+    cond_br %2, block11, block12 merge block12
+block11:
+    %3 = load %1
+    br block13(%3)
+block12:
+    br block13(%a)
+block13(%4: i32):
+    %y = add %4, i32 1
+    return %y
+block14:
+    unreachable
+}

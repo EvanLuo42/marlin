@@ -1,7 +1,10 @@
 //! Editing helpers the passes share: what an operation may be removed or folded for, and
 //! terminators rebuilt with different jumps.
 
-use marlin_shaderc_ir::{Block, Function, Inst, Op, SwitchCase, Value};
+use marlin_shaderc_ir::{
+    Block, ConstValue, Function, Inst, Module, Op, SwitchCase, Type, Val, Value, result_types,
+    value_constant,
+};
 
 /// Operations whose only effect is their result: unused, they may go.
 pub(crate) fn is_pure(op: &Op) -> bool {
@@ -137,4 +140,34 @@ pub(crate) fn set_jumps(f: &mut Function, term: Inst, new: Vec<(Block, Vec<Value
 /// Replaces terminator `term` by a jump to `target`.
 pub(crate) fn set_br(f: &mut Function, term: Inst, target: Block, args: Vec<Value>) -> Inst {
     f.replace_inst(term, Op::Br(target), args)
+}
+
+/// A new instruction right before `before`, with inferred result types (or `explicit`); its
+/// single result.
+pub(crate) fn value_before(
+    m: &mut Module,
+    f: &mut Function,
+    before: Inst,
+    op: Op,
+    operands: Vec<Value>,
+    explicit: Option<Type>,
+) -> Value {
+    let types: Vec<Type> = operands.iter().map(|&v| f.ty(v)).collect();
+    let results = result_types(m, &op, &types, explicit)
+        .unwrap_or_else(|e| panic!("a pass built an operation that does not type: {e}"));
+    let inst = f.create_inst(op, operands, &results);
+    f.insert_before(before, inst);
+    f.result(inst)
+}
+
+/// The constant `v` of type `t` as a value of `f`.
+pub(crate) fn constant(m: &mut Module, f: &mut Function, v: &Val, t: Type) -> Value {
+    let c = value_constant(m, v, t).expect("a constant of a data type");
+    f.const_value(c, t)
+}
+
+/// The all-zero constant of type `t` as a value of `f`.
+pub(crate) fn zero(m: &mut Module, f: &mut Function, t: Type) -> Value {
+    let c = m.constant(t, ConstValue::Zero);
+    f.const_value(c, t)
 }

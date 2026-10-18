@@ -1,0 +1,35 @@
+// Three returns: one at the top, which becomes a jump past the call; one inside an `if`,
+// a break out of the loop that runs the body once; one inside a loop, which sets a flag that
+// the loop's merge block checks on the way out.
+func @find(%n: i32) -> i32 {
+block0:
+    %small = icmp slt %n, i32 0
+    cond_br %small, block1, block2 merge block2
+block1:
+    return i32 -1
+block2:
+    loop header block3(i32 0) continue block6 merge block7
+block3(%i: i32):
+    %done = icmp sge %i, %n
+    cond_br %done, block7, block4 merge block4
+block4:
+    %hit = icmp eq %i, i32 3
+    cond_br %hit, block5, block8 merge block8
+block5:
+    %r = mul %i, i32 10
+    return %r
+block8:
+    br block6(%i)
+block6(%j: i32):
+    %k = add %j, i32 1
+    br block3(%k)
+block7:
+    return %n
+}
+
+func @caller(%a: i32) -> i32 {
+block0:
+    %x = call @find(%a)
+    %y = add %x, i32 1
+    return %y
+}

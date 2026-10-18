@@ -928,6 +928,7 @@ dependencies = [
  "marlin-math",
  "marlin-shaderc-hir-ty",
  "marlin-shaderc-ir",
+ "marlin-shaderc-opt",
  "marlin-test-support",
 ]
 

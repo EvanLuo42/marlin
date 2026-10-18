@@ -170,3 +170,21 @@ fn entries_lower_to_wrappers_over_memory_places() {
         &text,
     );
 }
+
+#[test]
+fn compute_entries_go_through_the_whole_pipeline() {
+    let w = compute();
+    let mut text = String::new();
+    for path in ["Game.Mirror", "Game.Move"] {
+        let module = w.try_entry(path, &[], &[]).unwrap();
+        let optimized = crate::support::optimize(&module, path);
+        // One function per entry is left: the instance it called is inlined and gone.
+        assert_eq!(optimized.funcs.len(), 1, "{}", print_module(&optimized));
+        text.push_str(&print_module(&optimized));
+        text.push('\n');
+    }
+    golden::assert_text(
+        &data_path(env!("CARGO_MANIFEST_DIR"), "compute/optimized.ir"),
+        &text,
+    );
+}

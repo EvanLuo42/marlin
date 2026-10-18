@@ -1,0 +1,41 @@
+struct @P { x: i32, y: i32 }
+global @table.const0 : ptr<constant, [i32; 4]> = (10, 20, 30, 40)
+
+func @fields(%a: i32) -> i32 {
+block0:
+    %c = icmp slt %a, i32 0
+    cond_br %c, block1, block2 merge block3
+block1:
+    br block3(i32 1)
+block2:
+    br block3(%a)
+block3(%0: i32):
+    %1 = construct @P(%0, i32 5)
+    %fx = extract.field %1, .x
+    %fy = extract.field %1, .y
+    %s = add %fx, %fy
+    return %s
+}
+
+func @counter(%n: i32) -> i32 {
+block0:
+    loop header block1(i32 0) continue block3 merge block4
+block1(%0: i32):
+    %done = icmp sge %0, %n
+    cond_br %done, block4, block2 merge block2
+block2:
+    br block3
+block3:
+    %v3 = add %0, i32 1
+    br block1(%v3)
+block4:
+    return %0
+}
+
+func @table(%i: i32) -> i32 {
+block0:
+    %k = and %i, i32 3
+    %0 = access @table.const0, [%k]
+    %v = load %0
+    return %v
+}

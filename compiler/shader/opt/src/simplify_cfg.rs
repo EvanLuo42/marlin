@@ -130,7 +130,7 @@ fn fold_terminators(m: &Module, f: &mut Function) -> bool {
 
 /// Deletes blocks the entry does not reach; empties the merge and continue blocks of reachable
 /// regions among them.
-fn remove_unreachable(f: &mut Function, cfg: &Cfg, st: &Structure) -> bool {
+pub(crate) fn remove_unreachable(f: &mut Function, cfg: &Cfg, st: &Structure) -> bool {
     let keep: HashSet<usize> = st
         .regions
         .iter()

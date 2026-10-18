@@ -238,4 +238,42 @@ impl Module {
     pub fn entry_of(&self, func: FuncId) -> Option<&Entry> {
         self.entries.iter().find(|e| e.func == func)
     }
+
+    /// Keeps only the functions and module variables `keep_func` and `keep_global` accept; ids
+    /// change, and calls, entries and the functions' references follow. Nothing kept may call a
+    /// removed function or use a removed variable.
+    pub fn retain(
+        &mut self,
+        keep_func: impl Fn(FuncId) -> bool,
+        keep_global: impl Fn(GlobalId) -> bool,
+    ) {
+        let mut globals = Arena::new();
+        let mut global_map = std::collections::HashMap::new();
+        for (id, g) in std::mem::take(&mut self.globals).iter() {
+            if keep_global(id) {
+                global_map.insert(id, globals.alloc(g.clone()));
+            }
+        }
+        self.globals = globals;
+        let mut funcs = Arena::new();
+        let mut func_map = std::collections::HashMap::new();
+        for (id, f) in std::mem::take(&mut self.funcs).iter() {
+            if keep_func(id) {
+                func_map.insert(id, funcs.alloc(f.clone()));
+            }
+        }
+        self.funcs = funcs;
+        for (_, f) in self.funcs.iter_mut() {
+            f.remap(&func_map, &global_map);
+        }
+        self.entries.retain(|e| func_map.contains_key(&e.func));
+        for e in &mut self.entries {
+            e.func = func_map[&e.func];
+            e.uses = e
+                .uses
+                .iter()
+                .filter_map(|g| global_map.get(g).copied())
+                .collect();
+        }
+    }
 }
