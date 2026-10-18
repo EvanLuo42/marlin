@@ -319,6 +319,10 @@ pub(crate) struct FnCx<'l, 'a, 'b> {
     pub jumps: Vec<Jumps>,
     pub results: Option<Ty>,
     pub is_constructor: bool,
+    /// The source location of what is being lowered, which new instructions get.
+    pub loc: Option<u32>,
+    /// Locals declared `[Uniform]`: what is written to them is asserted the same in every lane.
+    pub uniform_locals: std::collections::HashSet<BindingId>,
 }
 
 pub(crate) fn lower_body(l: &mut Lowering<'_, '_>, instance: &Instance, id: FuncId) -> R<()> {
@@ -345,6 +349,8 @@ pub(crate) fn lower_body(l: &mut Lowering<'_, '_>, instance: &Instance, id: Func
         jumps: Vec::new(),
         results: sig.result.clone(),
         is_constructor: sig.is_constructor,
+        loc: None,
+        uniform_locals: std::collections::HashSet::new(),
     };
     cx.ssa.seal(&mut cx.f, &mut cx.l.module, entry);
     let result = cx.lower(&sig);
@@ -621,6 +627,7 @@ impl FnCx<'_, '_, '_> {
         let results = result_types(&mut self.l.module, &op, &types, explicit)
             .map_err(|e| LowerError::new("E1304", format!("lowering produced bad IR: {e}")))?;
         let inst = self.f.create_inst(op, operands, &results);
+        self.f.insts[inst].loc = self.loc;
         self.f.append_inst(b, inst);
         Ok(inst)
     }

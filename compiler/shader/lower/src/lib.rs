@@ -37,6 +37,9 @@
 //! - Compile-time evaluation calls only `const` functions (0004 §13.4); thread-group sizes and
 //!   array lengths may be constants.
 //!
+//! Step 8c: instructions carry the source location of what they were lowered from, for checks
+//! after inlining; `[Uniform]` locals assert what is written to them (`assume.uniform`).
+//!
 //! Not lowered yet: vertex, pixel, mesh and amplification entries and their stage I/O (step
 //! 10); `[Export]` and local `const` evaluation (step 9, with reflection); auto-properties.
 
@@ -106,6 +109,8 @@ pub struct Lowering<'a, 'b> {
     pub(crate) shared: HashMap<ItemId, GlobalId>,
     /// Lowering for compile-time evaluation: only `const` functions may be called.
     pub(crate) ctfe: bool,
+    /// The index of each source location in the module's table.
+    pub(crate) locs: HashMap<marlin_shaderc_ir::SourceLoc, u32>,
 }
 
 impl<'a, 'b> Lowering<'a, 'b> {
@@ -126,6 +131,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
             statics: HashSet::new(),
             shared: HashMap::new(),
             ctfe: false,
+            locs: HashMap::new(),
         })
     }
 
@@ -284,5 +290,37 @@ impl Lowering<'_, '_> {
         }
         instance.subst = Subst { entries };
         Ok(instance)
+    }
+}
+
+impl Lowering<'_, '_> {
+    /// The module's index for the source of `loc` in `owner`'s body, if it has one.
+    pub(crate) fn source_loc(
+        &mut self,
+        owner: BodyOwner,
+        loc: &marlin_shaderc_hir_ty::InferLoc,
+    ) -> R<Option<u32>> {
+        use marlin_shaderc_hir_ty::InferLoc;
+        let (_, map) = self
+            .cx
+            .get::<marlin_front_hir_def::BodyWithSourceMap>(&owner)?;
+        let ptr = match loc {
+            InferLoc::Expr(e) => map.exprs.get(*e).copied(),
+            InferLoc::Stmt(s) => map.stmts.get(*s).copied(),
+            _ => None,
+        };
+        let Some(ptr) = ptr else { return Ok(None) };
+        let source = marlin_shaderc_ir::SourceLoc {
+            file: owner.item.file.0,
+            start: ptr.range.start().0,
+            end: ptr.range.end().0,
+        };
+        if let Some(&i) = self.locs.get(&source) {
+            return Ok(Some(i));
+        }
+        let i = self.module.locs.len() as u32;
+        self.module.locs.push(source);
+        self.locs.insert(source, i);
+        Ok(Some(i))
     }
 }

@@ -96,9 +96,11 @@ fn pipeline_on_text(text: &str) {
         verify_each: true,
     };
     let mut opt = module.clone();
-    pipeline(&options)
-        .run(&mut opt)
-        .unwrap_or_else(|e| panic!("{e}"));
+    match pipeline(&options).run(&mut opt) {
+        Ok(_) => {}
+        Err(marlin_shaderc_opt::PassError::Rejected { .. }) => return,
+        Err(e) => panic!("{e}"),
+    }
     for (id, f) in module.funcs.iter() {
         if module.entry_of(id).is_some() {
             continue;

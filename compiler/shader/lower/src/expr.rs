@@ -153,14 +153,20 @@ impl FnCx<'_, '_, '_> {
                 return self.number(&text, &ty, e).map(Some);
             }
         }
-        let raw = self.expr_raw(e)?;
-        match (raw, self.infer.coercions.get(e).cloned()) {
-            (Some(v), Some(to)) => {
-                let (from, to) = (self.expr_ty(e), self.concrete(&to));
-                self.convert(v, &from, &to, e).map(Some)
-            }
-            (raw, _) => Ok(raw),
-        }
+        // What this expression emits comes from its source.
+        let outer = self.loc;
+        self.loc = self.l.source_loc(self.owner(), &Self::loc(e))?.or(outer);
+        let result =
+            self.expr_raw(e)
+                .and_then(|raw| match (raw, self.infer.coercions.get(e).cloned()) {
+                    (Some(v), Some(to)) => {
+                        let (from, to) = (self.expr_ty(e), self.concrete(&to));
+                        self.convert(v, &from, &to, e).map(Some)
+                    }
+                    (raw, _) => Ok(raw),
+                });
+        self.loc = outer;
+        result
     }
 
     /// The value of `e`, which must have one.
@@ -554,6 +560,7 @@ impl FnCx<'_, '_, '_> {
         b: marlin_front_hir_def::store::BindingId,
         value: Value,
     ) -> R<()> {
+        let value = self.vouched(b, value)?;
         match self.local(b)? {
             Local::Var(var) => self.write_var(var, value),
             Local::Ptr(p) => {
@@ -561,6 +568,15 @@ impl FnCx<'_, '_, '_> {
             }
         }
         Ok(())
+    }
+
+    /// `value` as written to local `b`: asserted uniform if `b` is `[Uniform]`.
+    fn vouched(&mut self, b: marlin_front_hir_def::store::BindingId, value: Value) -> R<Value> {
+        if self.uniform_locals.contains(&b) {
+            self.op(Op::AssumeUniform, vec![value], None)
+        } else {
+            Ok(value)
+        }
     }
 
     fn write_path(&mut self, path: &ValuePath, value: Value, e: ExprId) -> R<()> {
@@ -598,6 +614,10 @@ impl FnCx<'_, '_, '_> {
         let new = match old {
             Some(old) => self.rebuild(old, &ty, &path.steps, value, e)?,
             None => value,
+        };
+        let new = match path.root {
+            Root::Local(b) => self.vouched(b, new)?,
+            _ => new,
         };
         match place {
             Local::Var(var) => self.write_var(var, new),

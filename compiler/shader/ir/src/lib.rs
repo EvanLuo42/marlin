@@ -24,6 +24,10 @@
 //! Step 8a, for the passes: [`mod@cfg`] (jumps, dominators and structured regions, shared with the
 //! verifier); removing instructions, parameters and blocks' contents; [`constant_value`] and
 //! [`value_constant`] between constants and interpreter values.
+//!
+//! Step 8c: the verifier lets a break leave only the innermost loop or switch, as SPIR-V does;
+//! `assume.uniform` and `assume.nonuniform`; source locations for instructions
+//! ([`SourceLoc`]), which the text format leaves out.
 
 macro_rules! words {
     ($(#[$meta:meta])* $name:ident { $($variant:ident = $word:literal),* $(,)? }) => {
@@ -74,7 +78,7 @@ pub use interp::{
 };
 pub use module::{
     Binding, Builtin, Const, ConstData, ConstValue, Entry, GlobalData, GlobalId, Interp, Module,
-    Stage, StructData,
+    SourceLoc, Stage, StructData,
 };
 pub use op::{
     AccessStep, AtomicOp, Axis, BinaryOp, ConvertOp, FloatCmp, IntCmp, MathOp, MemOrder, Op,

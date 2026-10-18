@@ -250,3 +250,51 @@ pub fn optimize(module: &Module, what: &str) -> Module {
     }
     m
 }
+
+impl World {
+    /// What the optimizer's checks find wrong with the entry point at `path`, rendered as
+    /// diagnostics (empty when the pipeline accepts it).
+    pub fn problems(&self, path: &str) -> String {
+        let module = self
+            .try_entry(path, &[], &[])
+            .unwrap_or_else(|e| panic!("{path}: {e}"));
+        let mut m = module.clone();
+        let options = marlin_shaderc_opt::Options {
+            profile: marlin_shaderc_opt::Profile::Development,
+            verify_each: true,
+        };
+        let problems = match marlin_shaderc_opt::pipeline(&options).run(&mut m) {
+            Ok(_) => return String::new(),
+            Err(marlin_shaderc_opt::PassError::Rejected { problems, .. }) => problems,
+            Err(e) => panic!("{path}: {e}"),
+        };
+        let span = |at: Option<u32>| {
+            at.map(|i| {
+                let l = module.locs[i as usize];
+                marlin_lang_diag::Span::new(
+                    FileId(l.file),
+                    marlin_lang_span::TextRange::new(l.start.into(), l.end.into()),
+                )
+            })
+        };
+        let diagnostics: Vec<_> = problems
+            .iter()
+            .map(|p| {
+                let mut d = marlin_lang_diag::Diagnostic::error(
+                    marlin_lang_diag::Code(p.code),
+                    p.message.clone(),
+                );
+                if let Some(s) = span(p.at) {
+                    d = d.at(s, "");
+                }
+                if let Some((why, at)) = &p.because
+                    && let Some(s) = span(*at)
+                {
+                    d = d.label(s, why.clone());
+                }
+                d
+            })
+            .collect();
+        render_all(&diagnostics, self)
+    }
+}

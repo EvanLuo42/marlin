@@ -15,6 +15,18 @@ use crate::{LowerError, R};
 
 impl FnCx<'_, '_, '_> {
     pub(crate) fn stmt(&mut self, s: StmtId) -> R<()> {
+        // What this statement emits comes from its source.
+        let outer = self.loc;
+        self.loc = self
+            .l
+            .source_loc(self.owner(), &InferLoc::Stmt(s))?
+            .or(outer);
+        let result = self.stmt_here(s);
+        self.loc = outer;
+        result
+    }
+
+    fn stmt_here(&mut self, s: StmtId) -> R<()> {
         if self.block.is_none() {
             return Ok(());
         }
@@ -25,7 +37,21 @@ impl FnCx<'_, '_, '_> {
             Stmt::Expr(e) => {
                 self.expr(e)?;
             }
-            Stmt::Local { declarators, .. } => {
+            Stmt::Local {
+                attributes,
+                declarators,
+                ..
+            } => {
+                if !attributes.is_empty()
+                    && marlin_shaderc_hir_ty::body_attributes(
+                        self.l.cx,
+                        self.owner().item,
+                        &attributes,
+                    )?
+                    .contains(&marlin_shaderc_hir_ty::KnownAttr::Uniform)
+                {
+                    self.uniform_locals.extend(declarators.iter().map(|d| d.0));
+                }
                 for (b, init) in declarators {
                     if let Some(init) = init {
                         let v = self.value(init)?;

@@ -537,7 +537,7 @@ var c = p.Albedo.Sample(p.Sampler, uv);
 
 - 编译器做 uniformity 分析：资源下标在 wave 内可能不一致时，自动加 NonUniform 标记。
 - 作者可以手工覆盖：
-  - 用 `[Uniform]` 断言某个值一致，消除保守分析带来的多余开销；
+  - 用 `[Uniform]` 断言某个值一致，消除保守分析带来的多余开销；写在局部变量的声明上，断言写进它的每一个值在整个 group 里都一样（§12.2 的 barrier 也认这个断言）；
   - 用 `NonUniform(x)` 强制标为不一致。
 
 ### 10.4 纹理 API
@@ -742,6 +742,8 @@ Tile.AtomicMax(i, v);
 - `Wave.*`：`Sum`、`Ballot`、`ReadLane`、`IsFirstLane`……
 - `Barrier.*`：`Group`、`Device`……
 - 原子操作是资源和 groupshared 数组上的方法。它们都按下标访问，所以不需要对 buffer 元素取真正的 `ref`（§6）。
+- 等整个 group 的 barrier（`Barrier.Group()` 等）必须是整个 group 都会走到的：放在线程之间可能不一致的条件下（包括有的线程已经 `return` 之后、在这样的条件下调用的函数里），编译报错，并指出线程分开的那个条件（2026-10-17 定）。在那个值上写 `[Uniform]` 断言它一致，就不再报错。
+- 导数（`Ddx`、`Fwidth`、隐式 LOD 的 `Sample`）在 2×2 quad 内不一致的控制流里结果未定义，但照 HLSL 允许（2026-10-17 定）。
 
 ### 12.3 capability
 

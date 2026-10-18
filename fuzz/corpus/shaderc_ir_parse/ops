@@ -127,6 +127,8 @@ block0:
     %15 = insert.elem %a, 0, %14
     %16 = construct @Light(%2, %12, (extract.field %l, .Albedo))
     %17 = construct [f32; 2](%14, %12)
+    %18 = assume.uniform %k
+    %19 = assume.nonuniform %18
     return %10
 }
 

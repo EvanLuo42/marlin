@@ -50,6 +50,8 @@ pub enum KnownAttr {
     Push,
     GroupShared,
     Requires,
+    /// `[Uniform]` on a local: its values are the same in every lane (0004 §10.3).
+    Uniform,
 }
 
 impl KnownAttr {
@@ -66,6 +68,7 @@ impl KnownAttr {
             "Push" => KnownAttr::Push,
             "GroupShared" => KnownAttr::GroupShared,
             "Requires" => KnownAttr::Requires,
+            "Uniform" => KnownAttr::Uniform,
             "Flat" | "NoPerspective" | "Centroid" | "Sample" => KnownAttr::Interpolation,
             _ => KnownAttr::SystemValue(match name {
                 "DispatchThreadId" => DispatchThreadId,
@@ -177,4 +180,26 @@ impl Query for ItemAttributesQuery {
         }
         Ok(Arc::new(out))
     }
+}
+
+/// The compiler-known attributes among `attributes`, written inside `item`'s body (on a local
+/// declaration, say). Attributes that do not resolve are left out.
+pub fn body_attributes(
+    cx: &Cx<'_>,
+    item: ItemId,
+    attributes: &[marlin_front_hir_def::store::Attribute],
+) -> Result<Vec<KnownAttr>, Cancelled> {
+    let package = cx.input::<FilePackage>(&item.file)?;
+    let builtins = cx.get::<BuiltinsQuery>(&package)?;
+    let resolver = Resolver::for_item(cx, item)?;
+    let mut out = Vec::new();
+    for attribute in attributes {
+        let Some(ty) = resolve_attribute(cx, &resolver, &attribute.path.to_def_path())? else {
+            continue;
+        };
+        if let Some(known) = known_attribute(cx, &builtins, ty)? {
+            out.push(known);
+        }
+    }
+    Ok(out)
 }

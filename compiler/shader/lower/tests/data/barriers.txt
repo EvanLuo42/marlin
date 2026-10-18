@@ -1,0 +1,30 @@
+== Game.Divergent
+error[E1401]: this barrier waits for the whole thread group, but only some of its threads may get here
+  --> game/Barriers.mshader:16:18
+   |
+16 |     if (gi < 32) Barrier.Group();
+   |                  ^^^^^^^^^^^^^^^
+   |         ------- the threads may part here: this may differ between them (`[Uniform]` asserts it does not)
+
+== Game.AfterReturn
+error[E1401]: this barrier waits for the whole thread group, but only some of its threads may get here
+  --> game/Barriers.mshader:26:5
+   |
+24 |     if (gi >= a.Count) return;
+   |         ------------- the threads may part here: this may differ between them (`[Uniform]` asserts it does not)
+...
+26 |     Barrier.Group();
+   |     ^^^^^^^^^^^^^^^
+
+== Game.InHelper
+error[E1401]: this barrier waits for the whole thread group, but only some of its threads may get here
+  --> game/Barriers.mshader:30:15
+   |
+30 | void Sync() { Barrier.Group(); }
+   |               ^^^^^^^^^^^^^^^
+...
+36 |     if (a.Out[gi] > 0) Sync();
+   |         ------------- the threads may part here: this may differ between them (`[Uniform]` asserts it does not)
+
+== Game.Together
+

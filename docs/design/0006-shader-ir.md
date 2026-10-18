@@ -105,7 +105,7 @@ block3(%x: f32, %y: f32):
 
 源语言没有 `goto`，所以降低出来的控制流从一开始就满足这些条件。所有 pass 都必须保持这些不变量（0005 §4.1）。
 
-verifier 怎么划分 region（第 6b 步定）：在 CFG 上再加上每个 header 到它的 merge 块的边（loop 再加 header 到 continue 块的边），region 就是 header 支配、merge 块不支配的那些块，并且限制在外层 region 之内；在 loop 里面的 region 到 loop 的 continue 块为止（除非这个 region 本身就在 continue 块那一部分里）。这和 SPIR-V 对 construct 的定义一致。跳出 region 只能去它的 merge 块、最内层 loop 的 merge 或 continue 块（`break`、`continue`），或者外层 switch 的 merge 块。
+verifier 怎么划分 region（第 6b 步定）：在 CFG 上再加上每个 header 到它的 merge 块的边（loop 再加 header 到 continue 块的边），region 就是 header 支配、merge 块不支配的那些块，并且限制在外层 region 之内；在 loop 里面的 region 到 loop 的 continue 块为止（除非这个 region 本身就在 continue 块那一部分里）。这和 SPIR-V 对 construct 的定义一致。跳出 region 只能去它的 merge 块（只对直接在这个 region 里的块）、最内层 loop 的 merge 或 continue 块（`break`、`continue`，从 loop 里任何地方，包括 loop 里的 switch），或者最内层 switch 的 merge 块（这一跳不能同时跳出一个 loop）。和 SPIR-V 2.11.3 一样，不能一次跳出两层 loop（第 8c 步收紧，原来接受任何一层外面的 loop 或 switch）。
 
 ### 5.2 `discard`
 
@@ -122,7 +122,8 @@ verifier 怎么划分 region（第 6b 步定）：在 CFG 上再加上每个 hea
   - wave op；
   - barrier；
   - `mesh.set_counts` 和 `mesh.dispatch`。
-- 对 convergent 的 op，pass 只能在**控制依赖相同**的位置之间移动它，不能把它移进或移出发散的条件。verifier 会检查这一点；能不能移动由 uniformity 分析判断（0005 §4.3）。这项检查要等 uniformity 分析（0005 §11 第 8c 步）才加进 verifier。
+- 对 convergent 的 op，pass 只能在**控制依赖相同**的位置之间移动它，不能把它移进或移出发散的条件；能不能移动由 uniformity 分析判断（0005 §4.3）。
+- 第 8c 步定：verifier 不检查这一条。wave op 和导数放在哪里都是合法的 IR（作用在活动的 lane 上），只是结果不同；解释器按 wave 锁步执行，所以 pass 把它们移错了位置，差分测试会算出不同的结果。group barrier 在发散的控制流里是未定义行为，这是程序的错误而不是 IR 的不变量：由优化流水线里的检查报错（E1401，0004 §12.2），在 inline 之后做，因为工具函数里的 barrier 只有在调用处才看得出对不对。
 - 不用显式的 convergence token。
 
 ## 6. 内存与逻辑指针
@@ -286,6 +287,7 @@ tex.store %st, %coord, %v
 - 查询类：`wave.lane_index`、`wave.lane_count`、`wave.is_first`。
 - 都可以带 `cluster(n)`。target 不支持 cluster 时，在 legalize 阶段用 shuffle 展开。
 - 都是 convergent 的。
+- 第 8c 步加：`assume.uniform %v` 和 `assume.nonuniform %v` 的值就是 `%v`，前者断言它在整个 group 里都一样（`[Uniform]`），后者让分析把它当作每个 lane 不同（`NonUniform(x)`，0004 §10.3）。
 
 ### 8.8 调用
 
@@ -364,7 +366,7 @@ mesh.dispatch %x, %y, %z          // amplification；payload 是 @payload 变量
 - 每个值有自己的 use 列表，所以替换一个值的所有使用、查找使用者都很快。
 - 类型、常量和 struct 布局在 module 级 intern。
 - 没有 `Rc`，也没有 unsafe 的指针图。
-- source location 和 debug 信息挂在指令上，作为一个额外的下标。
+- source location 和 debug 信息挂在指令上，作为一个额外的下标：module 里有一张 `locs` 表（文件和字节范围，IR 不解释它们），由降低填写，供 inline 之后的检查报错时指回源码（第 8c 步）。文本格式里没有它们。
 
 ## 13. 文本格式
 

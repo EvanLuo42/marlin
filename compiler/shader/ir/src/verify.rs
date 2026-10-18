@@ -1201,6 +1201,12 @@ impl<'v, 'a> FunctionVerifier<'v, 'a> {
                 (!ok).then(|| "the shapes do not multiply".into())
             }
             Op::Transpose => count(1),
+            Op::AssumeUniform | Op::AssumeNonUniform => {
+                if let Some(p) = count(1) {
+                    return Some(p);
+                }
+                (!v.is_data(args[0])).then(|| "takes plain data".into())
+            }
             Op::MatColumn(i) | Op::MatRow(i) | Op::MatExtract(i, _) => {
                 if let Some(p) = count(1) {
                     return Some(p);
@@ -1780,15 +1786,23 @@ impl<'v, 'a> FunctionVerifier<'v, 'a> {
                     if r.blocks[s] || s == r.merge {
                         continue;
                     }
-                    let escape = regions.iter().any(|o| {
-                        o.blocks[b]
-                            && ((o.kind == Kind::Loop && (s == o.merge || Some(s) == o.cont))
-                                || (o.kind == Kind::Switch && s == o.merge))
-                    });
+                    // As SPIR-V has it: a break or continue of the innermost loop, or a break of
+                    // the innermost switch that does not leave a loop.
+                    let innermost = |kinds: &[Kind]| {
+                        regions
+                            .iter()
+                            .filter(|o| o.blocks[b] && kinds.contains(&o.kind))
+                            .min_by_key(|o| o.blocks.iter().filter(|x| **x).count())
+                    };
+                    let in_loop = innermost(&[Kind::Loop]);
+                    let in_breakable = innermost(&[Kind::Loop, Kind::Switch]);
+                    let escape = in_loop.is_some_and(|l| s == l.merge || Some(s) == l.cont)
+                        || in_breakable.is_some_and(|w| w.kind == Kind::Switch && s == w.merge);
                     if !escape {
                         problems.push(format!(
                             "{} leaves the {what} at {header} for {}, which is not its merge, a \
-                             break or a continue",
+                             break of the innermost loop or switch, or a continue of the innermost \
+                             loop",
                             name(self, b),
                             name(self, s)
                         ));

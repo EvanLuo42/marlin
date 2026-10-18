@@ -1,0 +1,52 @@
+namespace Game;
+
+public struct SyncArgs
+{
+    public Buffer<uint> Out;
+    public uint Count;
+}
+
+[GroupShared] uint[64] Shared;
+
+// Only the first half of the group reaches the barrier.
+[Compute(64, 1, 1)]
+public void Divergent([GroupIndex] uint gi, [Push] in SyncArgs a)
+{
+    Shared[gi] = gi;
+    if (gi < 32) Barrier.Group();
+    a.Out[gi] = Shared[63 - gi];
+}
+
+// Threads past the count have returned when the others get to the barrier.
+[Compute(64, 1, 1)]
+public void AfterReturn([GroupIndex] uint gi, [Push] in SyncArgs a)
+{
+    if (gi >= a.Count) return;
+    Shared[gi] = gi;
+    Barrier.Group();
+    a.Out[gi] = Shared[0];
+}
+
+void Sync() { Barrier.Group(); }
+
+// A helper's barrier, called where threads have parted.
+[Compute(64, 1, 1)]
+public void InHelper([GroupIndex] uint gi, [Push] in SyncArgs a)
+{
+    if (a.Out[gi] > 0) Sync();
+}
+
+// Conditions on push constants, loops over them, values asserted the same: all fine.
+[Compute(64, 1, 1)]
+public void Together([GroupIndex] uint gi, [Push] in SyncArgs a)
+{
+    if (a.Count > 0) Barrier.Group();
+    for (uint i = 0; i < a.Count; i++)
+    {
+        Shared[gi] = i;
+        Barrier.Group();
+    }
+    [Uniform] uint first = a.Out[gi];
+    if (first > 1) Sync();
+    a.Out[gi] = NonUniform(gi) + Shared[0];
+}

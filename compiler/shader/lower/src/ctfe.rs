@@ -97,6 +97,7 @@ impl Lowering<'_, '_> {
             statics: self.statics.clone(),
             shared: HashMap::new(),
             ctfe: true,
+            locs: HashMap::new(),
         };
         let f = scratch.function(item)?;
         scratch.run()?;

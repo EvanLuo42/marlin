@@ -296,6 +296,12 @@ pub enum Op {
         cluster: Option<u32>,
     },
 
+    // ---- uniformity (0004 §10.3) ----
+    /// The operand, asserted to be the same in every lane of the group (`[Uniform]`).
+    AssumeUniform,
+    /// The operand, to be treated as different in each lane (`NonUniform(x)`).
+    AssumeNonUniform,
+
     // ---- calls and debugging (§8.8, §8.10) ----
     Call(FuncId),
     /// Operands: the values the format refers to.

@@ -1,10 +1,10 @@
 //! `marlin_shaderc_opt::pipeline`: the optimization passes on any IR that verifies.
 //!
 //! Input: IR text as UTF-8. On a module that parses and verifies, the pipeline (verifying after
-//! every pass) must not panic and must leave a module that verifies; each function that takes
-//! plain data and finishes under a small step limit on zero arguments must return the same
-//! after it. The replay test is `fuzz_finds_stay_fixed` in
-//! compiler/shader/opt/tests/unit/passes.rs.
+//! every pass) must not panic and must leave a module that verifies, or reject the program
+//! (a barrier some threads miss); each function that takes plain data and finishes under a
+//! small step limit on zero arguments must return the same after it. The replay test is
+//! `fuzz_finds_stay_fixed` in compiler/shader/opt/tests/unit/passes.rs.
 #![no_main]
 
 use marlin_shaderc_ir::{Interpreter, Module, Val, parse_module, verify_module};
@@ -45,8 +45,11 @@ fn run(data: &[u8]) {
         profile: Profile::Development,
         verify_each: true,
     };
-    if let Err(e) = pipeline(&options).run(&mut opt) {
-        panic!("{e}");
+    match pipeline(&options).run(&mut opt) {
+        Ok(_) => {}
+        // A program the checks reject (a barrier some threads miss) is not a crash.
+        Err(marlin_shaderc_opt::PassError::Rejected { .. }) => return,
+        Err(e) => panic!("{e}"),
     }
     for (b, a) in before.iter().zip(results(&opt)) {
         if let (Some(b), Some(a)) = (b, a) {

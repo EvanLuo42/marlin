@@ -74,3 +74,6 @@ public struct Barrier
 {
     [Intrinsic("barrier.group")] public static void Group();
 }
+
+public struct UniformAttribute : IAttribute { }
+[Intrinsic("assume.nonuniform")] public T NonUniform<T>(T x);

@@ -667,6 +667,7 @@ pub(crate) fn eval(
             Ok(Val::Agg(items))
         }
         Op::MatMul => matmul(m, args, tys),
+        Op::AssumeUniform | Op::AssumeNonUniform => Ok(arg(0)?.clone()),
         Op::Transpose => {
             let cols = parts(arg(0)?)?;
             let rows = cols.first().map_or(Ok(0), |c| parts(c).map(<[Val]>::len))?;

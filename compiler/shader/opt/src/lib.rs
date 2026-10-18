@@ -29,6 +29,10 @@
 //! - [`PrecisePropagate`] (1.6), [`HoistConstArrays`] (1.7), [`GlobalDce`] (1.8).
 //!
 //! Passes 1.4 and 1.5 come with the DXIL backend, the only one that needs them (0005 §11).
+//!
+//! Step 8c: [`uniformity`], which values and blocks may differ between the lanes of a wave or
+//! a group, and [`CheckBarriers`], which rejects (E1401, a [`Problem`]) a group barrier some
+//! threads may miss, after inlining.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -36,6 +40,7 @@ use std::sync::Arc;
 use marlin_shaderc_ir::cfg::{Cfg, Structure};
 use marlin_shaderc_ir::{FuncId, Function, Module, VerifyError, verify_module};
 
+mod check_barriers;
 mod dce;
 mod edit;
 mod global_dce;
@@ -48,7 +53,9 @@ mod sccp;
 mod simplify_cfg;
 mod sroa;
 mod strip_debug;
+pub mod uniformity;
 
+pub use check_barriers::CheckBarriers;
 pub use dce::Dce;
 pub use global_dce::GlobalDce;
 pub use guard::DivGuard;
@@ -128,6 +135,22 @@ pub trait Pass {
     fn name(&self) -> &'static str;
     /// Whether it changed anything.
     fn run(&self, m: &mut Module, analyses: &mut Analyses) -> bool;
+    /// What is wrong with the program that the pass found (a check pass): the pipeline stops
+    /// with them.
+    fn problems(&self, _m: &Module) -> Vec<Problem> {
+        Vec::new()
+    }
+}
+
+/// Something wrong with the program that only the optimizer sees (after inlining, say).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Problem {
+    pub code: &'static str,
+    pub message: String,
+    /// Where: an index into the module's source locations.
+    pub at: Option<u32>,
+    /// Why, and where that is.
+    pub because: Option<(String, Option<u32>)>,
 }
 
 /// A pass over one function at a time. While it runs, the function is taken out of the module:
@@ -162,18 +185,35 @@ impl<P: FunctionPass> Pass for P {
     }
 }
 
-/// The module did not verify after a pass.
 #[derive(Clone, Debug)]
-pub struct PassError {
-    pub pass: &'static str,
-    pub errors: Vec<VerifyError>,
+pub enum PassError {
+    /// The module did not verify after a pass: a bug in the pass.
+    Verify {
+        pass: &'static str,
+        errors: Vec<VerifyError>,
+    },
+    /// A check found the program wrong.
+    Rejected {
+        pass: &'static str,
+        problems: Vec<Problem>,
+    },
 }
 
 impl std::fmt::Display for PassError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "the module does not verify after `{}`", self.pass)?;
-        for e in &self.errors {
-            write!(f, "\n  {e}")?;
+        match self {
+            PassError::Verify { pass, errors } => {
+                write!(f, "the module does not verify after `{pass}`")?;
+                for e in errors {
+                    write!(f, "\n  {e}")?;
+                }
+            }
+            PassError::Rejected { pass, problems } => {
+                write!(f, "`{pass}` rejected the program")?;
+                for p in problems {
+                    write!(f, "\n  error[{}]: {}", p.code, p.message)?;
+                }
+            }
         }
         Ok(())
     }
@@ -220,6 +260,13 @@ impl PassManager {
         for pass in &self.passes {
             let changed = pass.run(m, &mut analyses);
             report.ran.push((pass.name(), changed));
+            let problems = pass.problems(m);
+            if !problems.is_empty() {
+                return Err(PassError::Rejected {
+                    pass: pass.name(),
+                    problems,
+                });
+            }
             if changed && self.verify_each {
                 check(m, pass.name())?;
             }
@@ -236,7 +283,7 @@ fn check(m: &Module, pass: &'static str) -> Result<(), PassError> {
     if errors.is_empty() {
         Ok(())
     } else {
-        Err(PassError { pass, errors })
+        Err(PassError::Verify { pass, errors })
     }
 }
 
@@ -256,10 +303,11 @@ pub fn pipeline(options: &Options) -> PassManager {
         .add(PrecisePropagate)
         .add(HoistConstArrays)
         .add(GlobalDce);
-    // Stage 2, so far.
+    // Stage 2, so far; barriers are checked once constants have folded what they can.
     pm.add(SimplifyCfg)
         .add(Sccp)
         .add(SimplifyCfg)
+        .add(CheckBarriers)
         .add(Dce)
         .add(SimplifyCfg);
     pm

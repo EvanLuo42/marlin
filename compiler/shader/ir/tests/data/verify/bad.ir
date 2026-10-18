@@ -94,6 +94,27 @@ block4:
     return
 }
 
+// A break out of the outer loop from inside the inner one (SPIR-V breaks only the innermost).
+func @OuterBreak(%n: i32) {
+block0:
+    loop header block1 continue block7 merge block6
+block1:
+    loop header block2 continue block4 merge block5
+block2:
+    %c = icmp slt %n, i32 0
+    cond_br %c, block6, block3 merge block3
+block3:
+    br block4
+block4:
+    br block2
+block5:
+    br block7
+block6:
+    return
+block7:
+    br block1
+}
+
 // ==== recursion
 func @Ping(%n: i32) -> i32 {
 block0:

@@ -1,0 +1,73 @@
+struct @Args { Out: res<Buffer<i32>>, Count: i32 }
+
+global @gi : ptr<input, i32> builtin(GroupIndex)
+global @gid : ptr<input, i32x3> builtin(GroupId)
+global @args : ptr<push, @Args>
+
+// Thread ids differ; the group id and push constants do not; arithmetic follows its operands;
+// a wave reduction is the same within a wave but not across a group.
+entry compute(64, 1, 1) @Sources uses(@gi, @gid, @args) {
+block0:
+    %lane = load @gi
+    %group = load @gid
+    %a = load @args
+    %count = extract.field %a, .Count
+    %x = add %lane, %count
+    %g = extract %group, 0
+    %y = mul %g, %count
+    %sum = wave.reduce add %lane
+    %first = wave.is_first
+    %v = assume.uniform %x
+    %w = assume.nonuniform %y
+    %out = extract.field %a, .Out
+    %h = desc.get %out
+    %p = buffer.elem %h, %y
+    %loaded = load %p
+    %q = buffer.elem %h, %lane
+    %there = load %q
+    return
+}
+
+// A branch on the lane parts the threads: its arms and what they join to differ; after the
+// merge they are together again. A loop that lanes leave at different times: what it defines
+// differs after it.
+entry compute(64, 1, 1) @Control uses(@gi, @args) {
+block0:
+    %lane = load @gi
+    %a = load @args
+    %count = extract.field %a, .Count
+    %c = icmp slt %lane, i32 4
+    cond_br %c, block1, block2(i32 0) merge block2
+block1:
+    br block2(i32 1)
+block2(%j: i32):
+    loop header block3(i32 0) continue block6 merge block7
+block3(%i: i32):
+    %done = icmp sge %i, %count
+    cond_br %done, block7, block4 merge block4
+block4:
+    %stop = icmp eq %i, %lane
+    cond_br %stop, block7, block5 merge block5
+block5:
+    br block6
+block6:
+    %i2 = add %i, i32 1
+    br block3(%i2)
+block7:
+    %u = add %count, i32 1
+    %d = add %i, i32 1
+    return
+}
+
+// Lanes that return early leave the rest to the others.
+entry compute(64, 1, 1) @Early uses(@gi) {
+block0:
+    %lane = load @gi
+    %c = icmp sgt %lane, i32 10
+    cond_br %c, block1, block2 merge block2
+block1:
+    return
+block2:
+    %x = add %lane, i32 1
+    return
+}

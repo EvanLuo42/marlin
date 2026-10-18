@@ -47,7 +47,7 @@ use marlin_shaderc_syntax::SHADER;
 
 pub use attrs::{
     AttributeTy, ItemAttributes, ItemAttributesQuery, KnownAttr, Stage, SystemValue,
-    known_attribute,
+    body_attributes, known_attribute,
 };
 pub use builtins::{BuiltinKind, Builtins, BuiltinsQuery, Resource, Scalar};
 pub use caps::{Capabilities, CapabilitiesQuery, declared_requirements};

@@ -1,0 +1,18 @@
+@Sources across a wave
+  values: %first %lane %q %there %w %x
+  blocks: 
+@Sources across a group
+  values: %first %lane %q %sum %there %w %x
+  blocks: 
+@Control across a wave
+  values: %c %d %done %i %i2 %j %lane %stop
+  blocks: block1 block3 block4 block5 block6
+@Control across a group
+  values: %c %d %done %i %i2 %j %lane %stop
+  blocks: block1 block3 block4 block5 block6
+@Early across a wave
+  values: %c %lane %x
+  blocks: block1 block2
+@Early across a group
+  values: %c %lane %x
+  blocks: block1 block2

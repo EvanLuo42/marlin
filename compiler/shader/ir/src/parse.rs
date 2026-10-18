@@ -1307,6 +1307,8 @@ impl Parser {
                     (Op::MatMul, self.operands(b, line, 2)?, None)
                 }
                 "transpose" => (Op::Transpose, self.operands(b, line, 1)?, None),
+                "assume.uniform" => (Op::AssumeUniform, self.operands(b, line, 1)?, None),
+                "assume.nonuniform" => (Op::AssumeNonUniform, self.operands(b, line, 1)?, None),
                 "mat.column" | "mat.row" => {
                     let operands = self.operands(b, line, 1)?;
                     self.expect_punct(',')?;

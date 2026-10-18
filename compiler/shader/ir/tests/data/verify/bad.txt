@@ -33,12 +33,14 @@ global `@in_function`: a module-level variable is not in the `function` space
 == jumps and dominance
 @Flow: `return %x`: `%x` is used where its definition does not dominate
 @Flow: block2 jumps into the middle of the selection at block0 (to block4)
-@Flow: block2 leaves the selection at block2 for block4, which is not its merge, a break or a continue
+@Flow: block2 leaves the selection at block2 for block4, which is not its merge, a break of the innermost loop or switch, or a continue of the innermost loop
 @Args: `br block1(%n, %n)`: block1 takes (i32), not (i32, i32)
 @Args: `return %n, %a`: returns other types than the function's
 @NoTerminator: block0 does not end in a terminator
 == loops
 @Loops: block2 jumps back to block1 from outside the continue block
+@OuterBreak: block2 leaves the loop at block2 for block7, which is not its merge, a break of the innermost loop or switch, or a continue of the innermost loop
+@OuterBreak: block2 leaves the selection at block2 for block7, which is not its merge, a break of the innermost loop or switch, or a continue of the innermost loop
 == recursion
 runtime recursion: @Ping -> @Pong -> @Ping (recursion must unroll at compile time)
 == entry points

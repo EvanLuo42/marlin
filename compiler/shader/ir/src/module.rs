@@ -113,6 +113,15 @@ pub struct Entry {
     pub uses: Vec<GlobalId>,
 }
 
+/// Where an instruction came from in the source, for diagnostics after lowering: a file and a
+/// byte range as the front end numbers them (opaque to the IR).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct SourceLoc {
+    pub file: u32,
+    pub start: u32,
+    pub end: u32,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Module {
     pub types: Interner<TypeData>,
@@ -123,6 +132,9 @@ pub struct Module {
     pub entries: Vec<Entry>,
     /// Format strings of `debug.print` and `debug.assert`, by index.
     pub formats: Vec<Box<str>>,
+    /// Source locations, which instructions name by index (`InstData::loc`). The text format
+    /// leaves them out.
+    pub locs: Vec<SourceLoc>,
 }
 
 impl Module {

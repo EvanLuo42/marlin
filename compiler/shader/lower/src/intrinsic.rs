@@ -19,6 +19,8 @@ pub(crate) fn op(name: &str) -> Option<Op> {
     }
     Some(match name {
         "select" => Op::Select,
+        "assume.uniform" => Op::AssumeUniform,
+        "assume.nonuniform" => Op::AssumeNonUniform,
         "matmul" => Op::MatMul,
         "transpose" => Op::Transpose,
         "barrier.group" => Op::Barrier {

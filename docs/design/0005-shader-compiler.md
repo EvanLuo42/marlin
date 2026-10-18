@@ -143,7 +143,7 @@ DXC **故意关掉**了以下几项：
 | analysis | 来源 | 用途 |
 |---|---|---|
 | 支配树、后支配树、loop info、控制依赖 | 标准 | 几乎所有 pass |
-| **uniformity（发散）分析** | 新增：按 cycle 处理的发散分析。DXC 只把它用在 WaveSensitivity 验证上 | 自动加 NonUniform 标记；判断 convergent 操作能不能移动；unswitch、if-conversion 和 LICM 的决策；标出 wave 内一致的 load |
+| **uniformity（发散）分析** | 新增：按 cycle 处理的发散分析，分 wave 和 group 两级（第 8c 步）。值：参数、每个 lane 不同的输入、原子操作、经过 `function` 变量的 load、reduce/broadcast/vote/ballot 以外的 wave op（对 group 是所有 wave op）不一致，`assume.uniform` 一致，其他的跟着操作数走；控制：按后支配算控制依赖，依赖于条件不一致的分支的块只有部分 lane 执行（`return` 也算在内）；汇合：条件不一致的 region 的各个出口处，块参数不一致；lane 离开时间不同的 loop，它定义的值在 loop 之后不一致。DXC 只把它用在 WaveSensitivity 验证上 | 自动加 NonUniform 标记；判断 convergent 操作能不能移动；unswitch、if-conversion 和 LICM 的决策；标出 wave 内一致的 load |
 | **convergence 信息** | 新增：显式记录哪些操作是 convergent 的（导数、隐式 LOD 采样、wave 操作、barrier） | 替代 DXC 的 DxilConvergentMark/Clear：不靠临时插桩来阻止优化，而是让每个 pass 都去查询它 |
 | **资源别名分析** | 新增：基于 bindless 类型的别名分析。`ReadOnly*` 在一次 dispatch 内不变；资源种类不同就不会别名；同一 heap 下标、同一偏移就一定别名 | 跨 buffer 访问的 load CSE、DSE、LICM。DXC 只有一个全局开关 `HLSLResMayAlias` |
 | 整数值域分析 | 新增，取代 CorrelatedValuePropagation 依赖的 LVI | 删掉多余的除零检查（0004 §9.6）和多余的边界检查；`Float2Int`；判断移位次数的范围 |

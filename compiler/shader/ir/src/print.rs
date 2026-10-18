@@ -528,6 +528,8 @@ impl<'a> FuncText<'a> {
             Op::InsertDyn => format!("insert.dyn {}", self.values(ops)),
             Op::MatMul => format!("matmul{precise} {}", self.values(ops)),
             Op::Transpose => format!("transpose {}", self.values(ops)),
+            Op::AssumeUniform => format!("assume.uniform {}", self.values(ops)),
+            Op::AssumeNonUniform => format!("assume.nonuniform {}", self.values(ops)),
             Op::MatColumn(i) => format!("mat.column {}, {i}", self.values(ops)),
             Op::MatRow(i) => format!("mat.row {}, {i}", self.values(ops)),
             Op::MatExtract(r, c) => format!("mat.extract {}, {r}, {c}", self.values(ops)),
