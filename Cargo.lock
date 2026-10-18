@@ -1166,6 +1166,12 @@ dependencies = [
 [[package]]
 name = "marlin-ui-render"
 version = "0.1.0"
+dependencies = [
+ "marlin-cook-font",
+ "marlin-font",
+ "marlin-jobs",
+ "marlin-math",
+]
 
 [[package]]
 name = "marlin-vcs"

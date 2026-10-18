@@ -8,8 +8,9 @@
 //!   rasterized (in jobs when given a job system) and packed into a page with the skyline
 //!   packer. The caller uploads the new bitmaps ([`GlyphCache::take_uploads`]) and the id → page
 //!   rectangle table ([`GlyphCache::table`]) before drawing.
-//! - Pages are evicted whole, least recently used first, never a page the frame uses; its glyphs
-//!   are rasterized again the next time they are drawn. Commands and retained chunks stay valid,
+//! - Pages are evicted whole, least recently used first, never a page holding a glyph the frame
+//!   draws that was there before the frame; glyphs the frame had just added to an evicted page are
+//!   placed again. Evicted glyphs are rasterized again the next time they are drawn. Commands and retained chunks stay valid,
 //!   since they never name a place in a page.
 
 use alloc::vec;
@@ -174,12 +175,16 @@ struct Slot {
 struct Page {
     packer: Skyline,
     glyphs: Vec<GlyphId>,
+    /// The last frame that drew from it or added to it: the LRU order.
     used: u64,
+    /// The last frame that drew a glyph already in it (or evicted it): not evicted then.
+    protected: u64,
 }
 
 /// New bitmap data for a page.
 #[derive(Clone, PartialEq, Debug)]
 pub struct GlyphUpload {
+    pub id: GlyphId,
     pub page: u32,
     pub rect: Rect,
     /// `rect.width * rect.height` coverage values, rows top to bottom.
@@ -191,8 +196,8 @@ pub struct GlyphUpload {
 pub struct PrepareStats {
     pub rasterized: u32,
     pub evicted_pages: u32,
-    /// Glyphs that found no room even after evicting every page the frame does not use: they
-    /// draw nothing this frame.
+    /// Glyphs that found no room even after evicting every page holding glyphs the frame draws:
+    /// they draw nothing this frame.
     pub dropped: u32,
 }
 
@@ -279,7 +284,11 @@ impl GlyphCache {
             }
             slot.used = frame;
             match slot.placement {
-                Some(p) if p.width > 0 => self.pages[p.page as usize].used = frame,
+                Some(p) if p.width > 0 => {
+                    let page = &mut self.pages[p.page as usize];
+                    page.used = frame;
+                    page.protected = frame;
+                }
                 Some(_) => {}
                 None => missing.push(id),
             }
@@ -311,12 +320,15 @@ impl GlyphCache {
             _ => (0..missing.len()).map(raster).collect(),
         };
         stats.rasterized = missing.len() as u32;
-        for (&id, bitmap) in missing.iter().zip(bitmaps) {
+        // A stack: placed in id order, and glyphs of an evicted page go back on it.
+        let mut queue: Vec<(GlyphId, GlyphBitmap)> =
+            missing.into_iter().zip(bitmaps).rev().collect();
+        while let Some((id, bitmap)) = queue.pop() {
             if bitmap.width == 0 {
                 self.slots[id.0 as usize].placement = Some(Placement::default());
                 continue;
             }
-            match self.place(&bitmap, &mut stats) {
+            match self.place(&bitmap, &mut stats, &mut queue) {
                 Some((page, rect)) => {
                     self.pages[page as usize].glyphs.push(id);
                     self.pages[page as usize].used = frame;
@@ -330,12 +342,9 @@ impl GlyphCache {
                         top: bitmap.top,
                     });
                     self.uploads.push(GlyphUpload {
+                        id,
                         page,
-                        rect: Rect {
-                            width: bitmap.width,
-                            height: bitmap.height,
-                            ..rect
-                        },
+                        rect,
                         coverage: bitmap.coverage,
                     });
                 }
@@ -350,8 +359,14 @@ impl GlyphCache {
     }
 
     /// Finds room for `bitmap`: a page that has it, a new page, or the least recently used page
-    /// the frame does not draw from, evicted.
-    fn place(&mut self, bitmap: &GlyphBitmap, stats: &mut PrepareStats) -> Option<(u32, Rect)> {
+    /// no glyph drawn this frame was already in, evicted. The glyphs this frame had just put in
+    /// the evicted page go back on `queue`.
+    fn place(
+        &mut self,
+        bitmap: &GlyphBitmap,
+        stats: &mut PrepareStats,
+        queue: &mut Vec<(GlyphId, GlyphBitmap)>,
+    ) -> Option<(u32, Rect)> {
         let g = self.config.gutter;
         let (w, h) = (bitmap.width + 2 * g, bitmap.height + 2 * g);
         let inner = |r: Rect| Rect {
@@ -373,6 +388,7 @@ impl GlyphCache {
                 packer,
                 glyphs: Vec::new(),
                 used: 0,
+                protected: 0,
             });
             return Some((self.pages.len() as u32 - 1, inner(r)));
         }
@@ -381,17 +397,42 @@ impl GlyphCache {
             .pages
             .iter()
             .enumerate()
-            .filter(|(_, p)| p.used < frame)
+            .filter(|(_, p)| p.protected < frame)
             .min_by_key(|(_, p)| p.used)?;
+        let lru32 = lru as u32;
+        // This frame's uploads into the page are moot; their glyphs are placed again.
+        let mut i = 0;
+        while i < self.uploads.len() {
+            if self.uploads[i].page == lru32 {
+                let u = self.uploads.swap_remove(i);
+                let p = self.slots[u.id.0 as usize]
+                    .placement
+                    .expect("an uploaded glyph is resident");
+                queue.push((
+                    u.id,
+                    GlyphBitmap {
+                        width: u.rect.width,
+                        height: u.rect.height,
+                        left: p.left,
+                        top: p.top,
+                        coverage: u.coverage,
+                    },
+                ));
+            } else {
+                i += 1;
+            }
+        }
         let page = &mut self.pages[lru];
         for id in page.glyphs.drain(..) {
             self.slots[id.0 as usize].placement = None;
         }
         page.packer.clear();
+        // Not again this frame.
+        page.protected = frame;
         self.generation += 1;
         stats.evicted_pages += 1;
         let r = page.packer.insert(w, h)?;
-        Some((lru as u32, inner(r)))
+        Some((lru32, inner(r)))
     }
 
     /// The bitmaps rasterized since the last call, for the caller to copy into the pages.

@@ -6,6 +6,12 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+marlin-font.workspace = true
+marlin-math.workspace = true
+
+[dev-dependencies]
+marlin-cook-font.workspace = true
+marlin-jobs.workspace = true
 
 [lints]
 workspace = true
