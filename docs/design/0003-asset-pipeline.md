@@ -25,6 +25,7 @@
 | 压缩 | 每个 chunk 可选 codec；zstd、LZ4、GDeflate **全部自研**，先把 API 定死并实现功能，之后再优化；主机硬件解压走 ext |
 | 包与挂载 | 分层挂载并按优先级覆盖（base < patch < DLC < dev）；包布局对平台的二进制差分补丁友好 |
 | 主循环 | 模拟与渲染重叠：渲染数据抽取成快照，两侧都以 job 图运行 |
+| Shader | `ShaderPackage`（`!Name` 即包名）cook 成整包的库，含全部 public 入口；运行时按包名查名字表，再按入口全名取；引擎 shader 在 `content/engine`，独立的引擎包（§4.4，2026-10-18） |
 | 世界数据 | 用同一种文本格式：entity 是对象，component 是嵌套块，prefab、关卡、流式 cell 都通过链接组织 |
 | 第三方 | 核心算法自研：压缩、BCn 编码、网格优化、meshlet；外部格式的解析用成熟 crate（png/jpeg/exr/glTF） |
 | 首批导入格式 | glTF 2.0，PNG/TGA/JPEG，EXR/HDR |
@@ -155,6 +156,8 @@ pub trait Cooker {
 - `cook_texture`：解码源文件、生成 mip、编码 BC1/3/4/5/6H/7，主机上还要做 swizzle（`platforms/<p>/cook/`）。
 - `cook_mesh`：处理 glTF，包括顶点缓存优化、overdraw 优化、LOD、meshlet，以及骨骼、蒙皮与动画。
 - 没有专用 cooker 的类型走通用 cooker，把 reflect 值写成 cooked 二进制。
+- 实际的 trait（`marlin_cook_core::Cooker`）只有 `version`、`key(platform, profile) -> u128`（cooker 自己的额外输入，例如编译器指纹）和 `cook`；`build_dependencies` 还没做。
+- `cook_shader`：把 shader 包编译成库，见 §4.4。
 
 ### 4.3 cooked 单元格式
 
@@ -167,6 +170,41 @@ bulk        GPU 数据（顶点、纹理 mip），对齐到 4 KiB，直接上传
 ```
 
 单元内部的链接直接写成相对指针。跨单元的链接写成 import 下标，加载后再修正。
+
+### 4.4 Shader 资产
+
+决定都在 2026-10-18 由用户选定（多选题）。
+
+- **形状：包对象加入口对象。**
+  - `ShaderPackage` 对象就是 0004 §7.2 的包清单，写成 `ShaderPackage { !Uuid, !Name, Sources, Dependencies }`。
+  - 包名就是对象的 `!Name`（如 `Marlin.Engine`），没有单独的 `Name` 字段。索引里本来就有 `!Name`，所以不 cook 也能建出名字表。
+  - 带类型实参或常量的变体（材质用）写成 `Shader { Package = <链接>, Entry, TypeArgs, Consts }` 入口对象，每个 cook 成一个单入口 blob。它到包的链接是 §4.1 的构建依赖。
+- **源文件显式列出**：`Sources = [`source:…`]`。cooker 只能读声明过的文件（§12 P3），索引的悬空检查和"谁用了这个源文件"查询直接可用。
+- **目录按 namespace 摆**：包的根目录对应包的 namespace，子目录对应子 namespace。例如 `content/engine/shaders/` 是 `Marlin.Engine`，`shaders/Post/` 就是 `Marlin.Engine.Post`。编译器不强制目录和 namespace 一致。
+- **包 cook 成库，库里是全部 public 入口。**
+  - `ShaderPackageCooker`（`tools/cook_shader`）读入包的文件，换行统一成 `\n`，交给 `marlin_shaderc::Session`。
+  - 用 `Session::entries` 列出包里所有 public、带 stage 属性、不带类型参数的入口，多线程编译。
+  - 结果是 `marlin_shader::asset::ShaderLibrary { Package, Target, Entries: [{ Name, Code, Reflection }] }`，按全名排序，整个用 marlin-serial 写进 payload。SPIR-V 很小，RHI 会自己拷成 u32，所以不用 bulk。
+  - 任一入口编译失败，整个单元失败，错误里带渲染好的诊断。
+- **运行时按名字找。**
+  - `Cookers::register_named` 登记的类型（目前只有 `ShaderPackage`）按 `!Name` 进**名字表**，名字表放在：
+    - 构建清单（MMAN v2）；
+    - 包索引（MPK v2 的 `NameRecord`：xxh3-64 名字哈希加 UUID）；
+    - cookd 的对象表。
+  - 重名或哈希相撞在 cook 时报错，涉及的对象都不进名字表。
+  - `Vfs::named("Marlin.Engine")` 从上层往下查，所以上层可以覆盖引擎的包。
+  - 引擎先按包名加载库，再用全名取入口（`Marlin.Engine.ForwardVs`）。代码里不出现 shader 的路径或 UUID。
+- **target**：写在 `platforms/<p>/platform.toml` 的 `[cook] shader-target`，Windows 和 Linux 是 `vulkan-1.4`。macOS 写的是 `metal-3`，还没有后端，cook 时报错。
+- **cook 键**：
+  - `Cooker::key(platform, profile) -> u128` 进每个对象的键。shader cooker 在里面放 target 名、profile 和 `Session::fingerprint(target)`（编译器源码哈希加 target 描述版本，0005 §8）。
+  - 包的全部 `Sources` 按内容进键。
+  - `CompileOutput::used_sources` 只写进反射的 `sources`。按入口、按实际用到的文件缓存（0005 §8 的 manifest 模式）还没做，见待做。
+- **profile**：`CookOptions::profile`，取 Development 或 Shipping，`marlin-cook cook --shipping` 选 Shipping。只有读它的 cooker 把它放进 `key`，所以纹理和网格不会因为 profile 不同而重 cook。cookd 总是用 Development。
+- **引擎内容**：
+  - `content/engine/` 是独立的资产根，单独 cook 和打包，`samples/basic/boot.toml` 用新 cvar `content.engine` 先挂上它，游戏包挂在它上面。
+  - cookd 只服务游戏内容，引擎包总是从包里来。
+  - 用户对这一项没有偏好，按推荐做。
+- **这一步的范围**：只实现 `ShaderPackage` 到库。`Dependencies` 非空时报错（"需要构建依赖"），`Shader` 入口对象也还没实现，两者都要等 cook_core 有了构建依赖。
 
 ## 5. 缓存
 
@@ -204,6 +242,7 @@ bulk        GPU 数据（顶点、纹理 mip），对齐到 4 KiB，直接上传
   4. 调用按类型注册的 loader，构造运行时对象。
   5. bulk 数据交给渲染的上传队列（以后改用 copy queue）。
 - **只能通过链接加载**：根集合来自启动配置（入口关卡），没有按路径加载的 API。
+  - 唯一的例外是名字表（§4.4）：代码按名字找少数对象，目前只有 shader 包（`Vfs::named`）。
 - 流式加载的优先级与内存预算在之后的阶段实现。
 
 ## 9. Framework（`marlin-framework`）
@@ -233,6 +272,8 @@ bulk        GPU 数据（顶点、纹理 mip），对齐到 4 KiB，直接上传
 | `tools/vcs` | std | VCS trait 与 Git 后端 |
 | `tools/cook_core` | std | 依赖图、cook 键、DDC、cooked 单元写出、打包 |
 | `tools/cook_texture`、`tools/cook_mesh` | std | 导入与编码 |
+| `tools/cook_shader` | std | shader 包 → 库（`marlin-shaderc`） |
+| `content/engine` | 内容 | 引擎自己的资产根：`shaders/`（`Marlin.Engine` 包） |
 | `tools/store` | std | 共享缓存服务器（库加二进制） |
 | `tools/cookd` | std | cook 服务 |
 | `tools/cooker` | std | CLI：cook、打包、校验、查询 |
@@ -364,9 +405,40 @@ bulk        GPU 数据（顶点、纹理 mip），对齐到 4 KiB，直接上传
     - 同一份内容改从运行中的 cookd 串流，图像与包路径逐像素相同；
     - 游戏运行时修改关卡文本，画面里的物体颜色随之改变，网格不重新上传；
     - 全工作区 551 个测试通过。
+- **Shader 资产完成**（§4.4，2026-10-18）：
+  - `marlin-shaderc` 新增 `Session::entries(package)`，列出包里可以直接编译的入口。
+  - `marlin_shader::asset`（no_std）：`ShaderPackage`（源类型）、`ShaderLibrary` 和 `LibraryEntry`（cooked 类型，按全名二分查找）。
+  - `tools/cook_shader`：`ShaderPackageCooker`，`engine_cookers` 用 `register_named` 登记它。
+  - cook_core：
+    - `Platform::shader_target` 来自 `platform.toml`；
+    - 新增 `Profile`、`CookOptions::profile` 和 `CookContext::profile`；
+    - `Cooker::key` 进单元键；
+    - `named_objects` 建名字表，清单升到 MMAN v2，打包器写出名字表。
+  - `marlin-asset`：
+    - 包格式升到 MPK v2，带 `NameRecord`；
+    - 新增 `UnitSource::named`、`Vfs::named`、`MemorySource::name` 和 `name_hash`；
+    - dev 协议的 `OBJECTS` 和 `CHANGED` 带上名字表（`ObjectTable`）。
+  - framework：
+    - `shaders::load_engine_shaders` 和 `forward_shaders` 会检查 stage，以及 push 是否等于 `marlin_render::FORWARD_PUSH_BYTES`；
+    - `run` 用 cooked 的 `Marlin.Engine.ForwardVs` / `ForwardPs` 建 renderer，`marlin-game` 重新画出 mesh；
+    - 新增 cvar `content.engine`。
+  - 引擎 shader 源码移到 `content/engine/shaders/Forward.mshader`（`namespace Marlin.Engine`）。gpu-test-support 也编译这个包（`ENGINE`），render 测试用的就是引擎自己的 shader。
+  - 测试：
+    - cook_shader 单元测试：库、名字、诊断、只读声明过的源文件、依赖报错、键、profile、确定性、引擎包；
+    - 包名字表经过打包后仍可查；
+    - cookd 推送名字表，改名后跟着更新；
+    - framework 单元测试：按名字加载，以及缺包、缺入口、stage 或 push 不对时的报错；
+    - 端到端 GPU 测试改用 cooked 的引擎包，golden 不变。
 - **待做**：
   - Linux 和 macOS 的变更源（fanotify、FSEvents）。
   - 共享缓存中的 extract；store 的 LRU 与容量上限；store 的鉴权与 TLS（目前只适合可信局域网）。
+  - shader：
+    - 按入口、按实际用到的源文件缓存（0005 §8 的 manifest 模式，cooker 需要能访问 DDC）；现在改一个文件，整个包都重编；
+    - 构建依赖，之后才能做 `Dependencies` 和 `Shader` 入口对象（材质变体）；
+    - 一个平台多档 target（按设备能力选库）；
+    - 库热重载后重建 pipeline；
+    - PSO 缓存与预编译；
+    - 调试信息单独存放。
   - cook：MikkTSpace 逐位一致的切线（现在是 Lengyel 加按角度加权，与 MikkTSpace 很接近，但拆分处不完全一致）、morph target、主机纹理 tiling 单元、cluster DAG（格式里已经预留了字段）、DDC 的 LRU 淘汰。
   - 加载：
     - 按 blob 流送，带优先级和内存预算（包格式与 `Package::read_blob` 已经支持）；

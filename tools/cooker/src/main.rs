@@ -1,9 +1,10 @@
 //! Command-line asset cooker (`docs/design/0003-asset-pipeline.md`).
 //!
-//! - `marlin-cook cook <root> [--platform <name>] [--threads <n>] [--store <addr>]`: brings the index up to date,
-//!   cooks every unit whose inputs changed (the rest come from the local cache in
-//!   `<root>/.marlin/ddc`) and publishes the build manifest to
-//!   `<root>/.marlin/build/<platform>.manifest`. Fails if any unit fails.
+//! - `marlin-cook cook <root> [--platform <name>] [--threads <n>] [--store <addr>] [--shipping]`:
+//!   brings the index up to date, cooks every unit whose inputs changed (the rest come from the
+//!   local cache in `<root>/.marlin/ddc`) and publishes the build manifest to
+//!   `<root>/.marlin/build/<platform>.manifest`. Fails if any unit fails. `--shipping` cooks
+//!   for a shipping build (shaders without `Debug.*` and debug information).
 //! - `marlin-cook package <root> [--platform <name>] [--store <addr>] [--out <file>] [--head-codec <codec>]
 //!   [--bulk-codec <codec>] [--level <1-9>]`: packs the last cooked build of the platform into a
 //!   `.mpak` (default `<root>/.marlin/build/<platform>.mpak`). Codecs: none, lz4, zstd,
@@ -24,7 +25,8 @@ use std::time::Instant;
 
 use marlin_asset_db::{AssetDb, Options};
 use marlin_cook_core::{
-    CookOptions, Manifest, PackageOptions, Platform, cook_all, publish_manifest, write_package,
+    CookOptions, Manifest, PackageOptions, Platform, Profile, cook_all, publish_manifest,
+    write_package,
 };
 use marlin_cooker::{engine_cookers, open_ddc};
 use marlin_masset::{NodeKind, parse};
@@ -247,6 +249,10 @@ fn cook(args: &[String]) -> ExitCode {
     let mut store = None;
     let mut rest = args[1..].iter();
     while let Some(flag) = rest.next() {
+        if flag == "--shipping" {
+            options.profile = Profile::Shipping;
+            continue;
+        }
         match (flag.as_str(), rest.next()) {
             ("--platform", Some(p)) => match Platform::find(p) {
                 Ok(p) => options.platform = p,

@@ -12,7 +12,7 @@ mod shaders;
 
 pub use image::{Image, Tolerance, read_texture};
 pub use marlin_shaderc::ConstValue;
-pub use shaders::{SHARED, Shader, shader};
+pub use shaders::{ENGINE, SHARED, Shader, shader};
 
 use marlin_rhi::{
     AdapterPreference, Buffer, BufferDesc, BufferUsage, CommandList, Device, DeviceDesc,

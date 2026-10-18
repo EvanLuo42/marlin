@@ -399,6 +399,17 @@ dependencies = [
 [[package]]
 name = "marlin-cook-shader"
 version = "0.1.0"
+dependencies = [
+ "marlin-asset",
+ "marlin-asset-db",
+ "marlin-cook-core",
+ "marlin-hash",
+ "marlin-reflect",
+ "marlin-serial",
+ "marlin-shader",
+ "marlin-shaderc",
+ "marlin-test-support",
+]
 
 [[package]]
 name = "marlin-cook-text"
@@ -466,6 +477,7 @@ dependencies = [
  "marlin-framework",
  "marlin-masset",
  "marlin-render",
+ "marlin-shader",
  "marlin-store",
  "marlin-test-support",
  "marlin-vcs",
@@ -591,6 +603,7 @@ dependencies = [
  "marlin-rhi",
  "marlin-rt",
  "marlin-serial",
+ "marlin-shader",
  "marlin-sync",
  "marlin-test-support",
  "marlin-time",
@@ -893,6 +906,7 @@ version = "0.1.0"
 name = "marlin-shader"
 version = "0.1.0"
 dependencies = [
+ "marlin-asset",
  "marlin-reflect",
  "marlin-serial",
  "marlin-test-support",

@@ -6,6 +6,14 @@ sphere, a spinning torus and a ring of spinning cubes, plus a texture that is co
 
 ## Running it
 
+The engine's own content (its shaders, `content/engine`) is a package of its own, which
+`boot.toml` mounts below the sample's; cook and package it first:
+
+```
+cargo run -p marlin-cooker --bin marlin-cook -- cook content/engine
+cargo run -p marlin-cooker --bin marlin-cook -- package content/engine
+```
+
 From a packaged build:
 
 ```
@@ -15,7 +23,7 @@ cargo run -p marlin-game -- samples/basic/boot.toml
 ```
 
 Live, from the cook service (edits to the `.masset` files and their sources show up in the
-running game):
+running game; the engine package still comes from `content/engine`):
 
 ```
 cargo run -p marlin-cookd -- samples/basic

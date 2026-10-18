@@ -20,3 +20,5 @@ texture-layout = "linear"
 # Package codecs (marlin_compress names) of unit heads, decoded on the CPU, and of bulk blobs.
 head-codec = "zstd"
 bulk-codec = "zstd"
+# The shader compiler target engine and game shaders are cooked for (marlin-shaderc target names).
+shader-target = "vulkan-1.4"

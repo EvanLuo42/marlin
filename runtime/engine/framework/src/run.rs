@@ -8,7 +8,7 @@ use core::fmt::Write;
 use core::time::Duration;
 
 use marlin_app::{App, Event, Surface, WindowDesc};
-use marlin_diag::{FixedBuf, info, warn};
+use marlin_diag::{FixedBuf, info};
 use marlin_input::{GamepadButton, Input, Key};
 use marlin_jobs::{Config, JobSystem};
 use marlin_render::{Renderer, RendererDesc};
@@ -21,6 +21,7 @@ use marlin_time::Instant;
 use crate::boot::{Boot, R_VSYNC, WINDOW_HEIGHT, WINDOW_WIDTH};
 use crate::delta::{RenderDelta, RenderSide};
 use crate::engine::{Engine, EngineError};
+use crate::shaders::{ShaderError, forward_shaders, load_engine_shaders};
 
 #[derive(Debug, marlin_error::Error)]
 pub enum RunError {
@@ -30,6 +31,8 @@ pub enum RunError {
     Gpu(#[from] marlin_rhi::Error),
     #[error("engine")]
     Engine(#[from] EngineError),
+    #[error("engine shaders")]
+    Shaders(#[from] ShaderError),
 }
 
 /// Runs the game in a window until it is closed (or Esc / gamepad Start).
@@ -71,8 +74,14 @@ pub fn run(boot: &Boot, title: &str) -> Result<(), RunError> {
         PresentMode::Immediate
     });
     let mut frames = FramesInFlight::new(&device, 2)?;
-    // The forward shaders come from the cooker, which does not cook shaders yet.
-    warn!("no cooked shaders yet: the window is cleared, meshes are not drawn");
+
+    let mut engine = Engine::new(&boot.vfs)?;
+    // The forward pass's shaders, cooked from content/engine like any asset.
+    let library = load_engine_shaders(&mut engine.assets, &boot.vfs, Some(&jobs))?;
+    let shaders = engine
+        .assets
+        .get(&library)
+        .ok_or(ShaderError::Load(marlin_asset::AssetError::NotFound))?;
     let renderer = Renderer::new(
         &device,
         &RendererDesc {
@@ -80,12 +89,10 @@ pub fn run(boot: &Boot, title: &str) -> Result<(), RunError> {
             frames_in_flight: frames.count(),
             width: size.width,
             height: size.height,
-            shaders: None,
+            shaders: Some(forward_shaders(shaders)?),
         },
     )?;
     let mut render = RenderSide::new(renderer, frames.count());
-
-    let mut engine = Engine::new(&boot.vfs)?;
     engine.load_level(boot.level);
 
     let mut pending: Option<RenderDelta> = None;

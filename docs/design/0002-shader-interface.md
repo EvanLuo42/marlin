@@ -94,7 +94,11 @@
   - 需要设静态参数时用 `Shader::new(entry).with_const(path, value)`。
   - shader 编不过时测试会 panic，panic 信息里带着编译器的诊断。
   - 不用 GPU 的 `unit` 测试会把 `Test` 包里的每个 entry 都编一遍；设了 `MARLIN_SPIRV_VAL` 时，还会再用 spirv-val 检查一遍。
-- **引擎 shader** 由 cooker 编译，作为资产交给引擎，引擎自己不带 shader。`marlin_render::RendererDesc::shaders` 由创建方传入：测试里传 `ForwardVs` / `ForwardPs`。cooker 还不能编 shader，所以在那之前 `framework::run` 传 `None`，窗口只清屏、不画 mesh（2026-10-18 定）。
+- **引擎 shader** 由 cooker 编译，作为资产交给引擎，引擎自己不带 shader（2026-10-18 定）。
+  - `marlin_render::RendererDesc::shaders` 由创建方传入。
+  - 源码在 `content/engine/shaders/`（`Marlin.Engine` 包），`cook_shader` 把它编成库（0003 §4.4）。
+  - `framework::run` 按包名从挂载的内容里加载这个库，取 `Marlin.Engine.ForwardVs` / `ForwardPs`。
+  - 测试经 `marlin-gpu-test-support` 在运行时编译同一份源码（`shader("Marlin.Engine.ForwardVs")`）；端到端测试则用 cook 出来的包。
 - 编译器只产出 SPIR-V。后端格式不是 SPIR-V（D3D12）时没有测试 shader 可用；D3D12 只留给 Xbox（0016）。
 
 ## 6. SPIR-V 绑定（Vulkan）

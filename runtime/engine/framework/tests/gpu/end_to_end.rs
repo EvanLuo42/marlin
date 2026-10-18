@@ -1,7 +1,9 @@
-//! The whole pipeline on real hardware: `samples/basic` cooked, packaged, booted, rendered and
-//! read back; the same through a live cook service; and an edit hot-reloading into the picture.
+//! The whole pipeline on real hardware: `samples/basic` cooked, packaged, booted, rendered with
+//! the engine's cooked shaders (`content/engine`, its own package) and read back; the same
+//! through a live cook service; and an edit hot-reloading into the picture.
 
 use std::path::Path;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use marlin_asset::Uuid;
@@ -10,11 +12,13 @@ use marlin_cook_core::{CookOptions, PackageOptions, cook_all, publish_manifest, 
 use marlin_cookd::{Cookd, CookdOptions, bind};
 use marlin_cooker::{engine_cookers, open_ddc};
 use marlin_framework::{
-    Boot, ContentSettings, Engine, OFFSCREEN_FORMAT, Offscreen, RenderSide, mount,
+    Boot, ContentSettings, Engine, OFFSCREEN_FORMAT, Offscreen, RenderSide, forward_shaders,
+    load_engine_shaders, mount,
 };
-use marlin_gpu_test_support::{Image, assert_image, hardware_device, shader};
-use marlin_render::{ForwardShaders, Renderer, RendererDesc};
+use marlin_gpu_test_support::{Image, assert_image, hardware_device};
+use marlin_render::{Renderer, RendererDesc};
 use marlin_rhi::Device;
+use marlin_shader::asset::ShaderLibrary;
 use marlin_test_support::{BackgroundService, TempDir, wait_until};
 
 const LEVEL: &str = "01992d00-0000-7000-8000-000000000001";
@@ -65,9 +69,26 @@ fn package(root: &Path) -> String {
     );
     assert!(report.errors.is_empty(), "{:?}", report.errors);
     publish_manifest(root, ddc.as_ref(), &manifest).unwrap();
-    let out = root.join("game.mpak");
+    let out = root.join("content.mpak");
     write_package(&manifest, ddc.as_ref(), &PackageOptions::default(), &out).unwrap();
     out.to_string_lossy().into_owned()
+}
+
+/// The engine's content (`content/engine`) cooked and packaged once per test binary, as a game
+/// mounts it below its own (`content.engine`).
+fn engine_package() -> String {
+    static PACKAGE: OnceLock<String> = OnceLock::new();
+    PACKAGE
+        .get_or_init(|| {
+            let root = TempDir::new("e2e-engine");
+            let content = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../content/engine");
+            copy_dir(&content, &root);
+            let path = package(&root);
+            // Kept for the binary's life: the package is read while tests run.
+            std::mem::forget(root);
+            path
+        })
+        .clone()
 }
 
 struct Viewer {
@@ -77,7 +98,8 @@ struct Viewer {
 }
 
 impl Viewer {
-    fn new() -> Self {
+    /// A renderer with the forward shaders of `library`, the engine's cooked one.
+    fn new(library: &ShaderLibrary) -> Self {
         let device = hardware_device();
         let renderer = Renderer::new(
             device,
@@ -86,10 +108,7 @@ impl Viewer {
                 frames_in_flight: 2,
                 width: WIDTH,
                 height: HEIGHT,
-                shaders: Some(ForwardShaders {
-                    vertex: shader("ForwardVs"),
-                    pixel: shader("ForwardPs"),
-                }),
+                shaders: Some(forward_shaders(library).unwrap()),
             },
         )
         .unwrap();
@@ -110,10 +129,13 @@ impl Viewer {
     }
 }
 
-/// Starts `boot`'s level and runs frames until it is loaded; returns the engine and the first
-/// complete picture.
-fn start<'a>(boot: &'a Boot, viewer: &mut Viewer) -> (Engine<'a>, Vec<u32>) {
+/// Loads the engine's shaders from `boot`'s content as `run` does, then its level, and runs
+/// frames until the level is loaded; returns the engine, a viewer drawing with those shaders, and
+/// the first complete picture.
+fn start<'a>(boot: &'a Boot) -> (Engine<'a>, Viewer, Vec<u32>) {
     let mut engine = Engine::new(&boot.vfs).unwrap();
+    let library = load_engine_shaders(&mut engine.assets, &boot.vfs, None).unwrap();
+    let mut viewer = Viewer::new(engine.assets.get(&library).unwrap());
     engine.load_level(boot.level);
     wait_until(Duration::from_secs(60), "the level to load", || {
         engine.is_ready() || {
@@ -124,7 +146,7 @@ fn start<'a>(boot: &'a Boot, viewer: &mut Viewer) -> (Engine<'a>, Vec<u32>) {
     // The frame that sent the last uploads, then one more to be sure everything is drawn.
     viewer.frame(&mut engine);
     let pixels = viewer.frame(&mut engine);
-    (engine, pixels)
+    (engine, viewer, pixels)
 }
 
 fn rgb(p: u32) -> [u8; 3] {
@@ -184,16 +206,15 @@ fn the_sample_cooks_packages_and_renders_the_same_from_cookd() {
     let root = sample("package");
     let package = package(&root);
     let level: Uuid = LEVEL.parse().unwrap();
-    let mut viewer = Viewer::new();
 
     let boot = mount(&ContentSettings {
-        packages: vec![package],
+        packages: vec![engine_package(), package],
         cookd: None,
         platform: marlin_rt::PLATFORM.into(),
         level,
     })
     .unwrap();
-    let (_, packaged) = start(&boot, &mut viewer);
+    let (_, viewer, packaged) = start(&boot);
     check_sample(&packaged);
     assert_eq!(
         viewer.render.mesh_count(),
@@ -206,17 +227,17 @@ fn the_sample_cooks_packages_and_renders_the_same_from_cookd() {
         &Image::from_words(WIDTH, HEIGHT, &packaged)
     );
 
-    // The same content streamed from a cook service: the same picture, pixel for pixel.
+    // The same content streamed from a cook service (the engine's still from its package): the
+    // same picture, pixel for pixel.
     let cookd = start_cookd(&root);
     let boot = mount(&ContentSettings {
-        packages: Vec::new(),
+        packages: vec![engine_package()],
         cookd: Some(cookd.addr()),
         platform: marlin_rt::PLATFORM.into(),
         level,
     })
     .unwrap();
-    let mut viewer2 = Viewer::new();
-    let (_, streamed) = start(&boot, &mut viewer2);
+    let (_, _, streamed) = start(&boot);
     assert!(
         streamed == packaged,
         "cookd and the package render the same"
@@ -230,14 +251,13 @@ fn editing_the_level_changes_the_picture_live() {
     let cookd = start_cookd(&root);
     let level: Uuid = LEVEL.parse().unwrap();
     let boot = mount(&ContentSettings {
-        packages: Vec::new(),
+        packages: vec![engine_package()],
         cookd: Some(cookd.addr()),
         platform: marlin_rt::PLATFORM.into(),
         level,
     })
     .unwrap();
-    let mut viewer = Viewer::new();
-    let (mut engine, before) = start(&boot, &mut viewer);
+    let (mut engine, mut viewer, before) = start(&boot);
     check_sample(&before);
 
     // The sphere turns green in the text; the running game follows.

@@ -25,6 +25,6 @@ pub mod wire;
 
 pub use dev::DevSource;
 pub use handle::{AssetRef, Handle, WeakHandle};
-pub use id::{Link, ParseUuidError, SourceFile, Uuid};
+pub use id::{Link, ParseUuidError, SourceFile, Uuid, name_hash};
 pub use server::{AssetError, AssetServer, LoadContext, LoadState, Loaders, UpdateStats};
 pub use vfs::{MemorySource, Package, Read, SourceError, UNIT_ALIGN, UnitBytes, UnitSource, Vfs};

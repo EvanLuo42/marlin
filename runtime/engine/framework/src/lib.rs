@@ -9,6 +9,7 @@
 //!   state, so [`run`] simulates frame N+1 on a job while rendering frame N.
 //! - [`level`]: the level asset; [`loaders`]: what each cooked type becomes at runtime.
 //! - [`Offscreen`]: rendering into a texture and reading it back.
+//! - [`shaders`]: the engine's cooked shader library, found by package name.
 #![cfg_attr(not(test), no_std)]
 
 extern crate alloc;
@@ -20,6 +21,7 @@ pub mod level;
 pub mod loaders;
 mod offscreen;
 mod run;
+pub mod shaders;
 
 pub use boot::{Boot, BootError, ContentSettings, boot, mount, register_cvars};
 pub use delta::{MeshUpload, RenderDelta, RenderInstance, RenderSide};
@@ -27,3 +29,4 @@ pub use engine::{Engine, EngineError, FlyCamera, FromLevel, Spin, StaticMesh};
 pub use level::{Component, Level, LevelEntity, LevelEnvironment, TransformDesc};
 pub use offscreen::{OFFSCREEN_FORMAT, Offscreen};
 pub use run::{RunError, run};
+pub use shaders::{ShaderError, forward_shaders, load_engine_shaders};

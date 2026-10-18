@@ -22,8 +22,12 @@ const ENTRIES: &[(&str, &str)] = &[
     ("VolumeWrite", "Compute"),
     ("VolumeRead", "Compute"),
     ("TraceRays", "Compute"),
-    ("ForwardVs", "Vertex"),
-    ("ForwardPs", "Pixel"),
+];
+
+/// Every entry of the engine's package, with its stage.
+const ENGINE_ENTRIES: &[(&str, &str)] = &[
+    ("Marlin.Engine.ForwardVs", "Vertex"),
+    ("Marlin.Engine.ForwardPs", "Pixel"),
 ];
 
 /// Khronos' spirv-val on `bytes`, when `MARLIN_SPIRV_VAL` names it (0014 §6.1).
@@ -58,6 +62,24 @@ fn every_shared_shader_compiles() {
         let module = shader.module();
         assert_eq!(module.entry, "main");
         external_check(module.code, entry);
+    }
+}
+
+#[test]
+fn every_engine_shader_compiles() {
+    for &(entry, stage) in ENGINE_ENTRIES {
+        let shader = Shader::new(entry);
+        let reflection = shader.reflection();
+        assert_eq!(reflection.entry.name, entry);
+        assert_eq!(format!("{:?}", reflection.entry.stage), stage, "{entry}");
+        assert!(
+            reflection
+                .sources
+                .iter()
+                .any(|s| s.package == marlin_gpu_test_support::ENGINE),
+            "{entry} comes from content/engine/shaders"
+        );
+        external_check(shader.module().code, entry);
     }
 }
 

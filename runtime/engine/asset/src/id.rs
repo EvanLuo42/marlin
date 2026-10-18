@@ -193,3 +193,10 @@ impl SourceFile {
         Self { path: path.into() }
     }
 }
+
+/// The key of a named object in name tables (0003 §4.4): xxh3-64 of its `!Name`. Only types
+/// whose cooker registers them as named (shader packages) are in the tables, and a build whose
+/// names collide does not cook, so a hit is the object.
+pub fn name_hash(name: &str) -> u64 {
+    marlin_hash::xxh3_64(name.as_bytes())
+}

@@ -362,3 +362,36 @@ fn damage_is_detected() {
     fs::write(&out, &good[..good.len() / 2]).unwrap();
     assert!(Package::open(out.to_str().unwrap()).is_err());
 }
+
+#[test]
+fn named_objects_are_found_by_name_in_the_package() {
+    let p = Project::new("names");
+    cooked(&p);
+    let db = p.db();
+    // The same project with images registered as named: their `!Name`s make the name table.
+    let mut cookers = Cookers::new();
+    cookers.register_generic::<Thing>().unwrap();
+    cookers.register_named::<Image>(ImageCooker).unwrap();
+    let ddc = p.ddc("named");
+    let (report, manifest) = cook_all(&db, &cookers, &ddc, &CookOptions::default());
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert_eq!(
+        manifest.names,
+        [("Noise".to_string(), NOISE), ("Picture".to_string(), PIC)]
+    );
+    assert_eq!(
+        Manifest::from_bytes(&manifest.to_bytes()).unwrap(),
+        manifest
+    );
+
+    let out = p.root.join("named.mpak");
+    write_package(&manifest, &ddc, &PackageOptions::default(), &out).unwrap();
+    let package = Package::open(out.to_str().unwrap()).unwrap();
+    assert_eq!(package.index().names.len(), 2);
+    let mut vfs = Vfs::new();
+    vfs.mount("named", package);
+    assert_eq!(vfs.named("Picture"), Some(PIC));
+    assert_eq!(vfs.named("Noise"), Some(NOISE));
+    // Things are not a named type.
+    assert_eq!(vfs.named("A"), None);
+}

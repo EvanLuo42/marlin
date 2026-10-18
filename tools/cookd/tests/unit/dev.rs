@@ -191,7 +191,8 @@ impl Running {
             let (db, _) = AssetDb::open(&r, Options::default()).unwrap();
             let mut cookers = Cookers::new();
             cookers.register_generic::<Thing>().unwrap();
-            cookers.register::<Image>(ImageCooker).unwrap();
+            // Named, so the service also serves a name table.
+            cookers.register_named::<Image>(ImageCooker).unwrap();
             cookers.register::<Slow>(SlowCooker).unwrap();
             cookers.register::<Bomb>(BombCooker).unwrap();
             let ddc = Box::new(LocalDdc::open(r.join(".marlin/ddc")).unwrap());
@@ -407,4 +408,27 @@ fn a_cooker_panic_takes_the_service_down() {
         panic_message(|| std::panic::resume_unwind(panic)),
         "cooker bug"
     );
+}
+
+#[test]
+fn names_are_served_and_follow_edits() {
+    let cookd = Running::start("names");
+    let vfs = cookd.connect();
+    assert_eq!(vfs.named("Pic"), Some(PIC));
+    assert_eq!(vfs.named("Broken"), Some(BROKEN));
+    assert_eq!(vfs.named("A"), None, "things are not a named type");
+
+    // Renamed in the text: the client is told the new table.
+    cookd.root.write(
+        "img.masset",
+        format!(
+            "!Version 1\nImage {{ !Uuid = \"{PIC}\" !Name = \"Picture\" Source = `source:pic.bin` }}\n"
+        )
+        .as_bytes(),
+    );
+    wait_until(Duration::from_secs(20), "the new name", || {
+        vfs.wait(Duration::from_millis(20));
+        vfs.named("Picture") == Some(PIC)
+    });
+    assert_eq!(vfs.named("Pic"), None);
 }

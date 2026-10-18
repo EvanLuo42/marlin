@@ -343,6 +343,54 @@ fn the_fingerprint_names_the_compiler_and_the_target() {
 }
 
 #[test]
+fn a_package_lists_its_public_entry_points() {
+    let (sources, targets) = (Memory::new(), default_targets());
+    sources.set(
+        "Lib",
+        "Lib.mshader",
+        "namespace Lib.Passes;\n\
+         [Pixel] public float4 Shade() { return float4(1, 0, 0, 1); }\n\
+         [Compute(1, 1, 1)] public void Clear() {}\n\
+         [Compute(1, 1, 1)] internal void Hidden() {}\n\
+         [Compute(1, 1, 1)] public void Generic<T>() {}\n\
+         public float Helper(float x) { return x; }\n",
+    );
+    sources.set(
+        "Lib",
+        "Inner.mshader",
+        "namespace Lib.Passes.Inner;\n[Compute(1, 1, 1)] public void Nested() {}\n",
+    );
+    let mut s = Session::new(SessionDesc {
+        sources: &sources,
+        targets: &targets,
+    });
+    s.add_package(&PackageDesc {
+        name: "Lib",
+        dependencies: &["Marlin"],
+    })
+    .unwrap();
+    let entries: Vec<(String, Stage)> = s
+        .entries("Lib")
+        .unwrap()
+        .into_iter()
+        .map(|e| (e.path, e.stage))
+        .collect();
+    assert_eq!(
+        entries,
+        [
+            ("Lib.Passes.Clear".to_string(), Stage::Compute),
+            ("Lib.Passes.Inner.Nested".to_string(), Stage::Compute),
+            ("Lib.Passes.Shade".to_string(), Stage::Pixel),
+        ]
+    );
+    for (entry, _) in &entries {
+        s.compile(&request(entry, &[]))
+            .unwrap_or_else(|e| panic!("{entry}: {}", errors(&s, &e)));
+    }
+    assert!(s.entries("Nope").is_err());
+}
+
+#[test]
 fn sessions_are_shared_across_threads() {
     fn sync<T: Sync>(_: &T) {}
     let (sources, targets) = (Memory::new(), default_targets());

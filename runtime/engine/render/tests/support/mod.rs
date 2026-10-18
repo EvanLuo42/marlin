@@ -38,8 +38,8 @@ impl Harness {
                 width: SIZE,
                 height: SIZE,
                 shaders: Some(ForwardShaders {
-                    vertex: shader("ForwardVs"),
-                    pixel: shader("ForwardPs"),
+                    vertex: shader("Marlin.Engine.ForwardVs"),
+                    pixel: shader("Marlin.Engine.ForwardPs"),
                 }),
             },
         )

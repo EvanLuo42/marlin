@@ -41,11 +41,12 @@ fn main() {
             out,
             "    Platform {{ name: {name:?}, texture_compression: &[{}], \
              texture_layout: texture_layout({:?}), head_codec: codec({:?}), \
-             bulk_codec: codec({:?}) }},",
+             bulk_codec: codec({:?}), shader_target: {:?} }},",
             families.join(", "),
             cook.texture_layout,
             cook.head_codec,
             cook.bulk_codec,
+            cook.shader_target,
         )
         .unwrap();
     }
@@ -59,6 +60,7 @@ struct Cook {
     texture_layout: String,
     head_codec: String,
     bulk_codec: String,
+    shader_target: String,
 }
 
 fn string(value: &DeValue, key: &str) -> Result<String, String> {
@@ -79,7 +81,7 @@ fn parse(text: &str) -> Result<(String, Cook), String> {
         .get_ref()
         .as_table()
         .ok_or("`cook` must be a table")?;
-    let (mut families, mut layout, mut head, mut bulk) = (None, None, None, None);
+    let (mut families, mut layout, mut head, mut bulk, mut shader) = (None, None, None, None, None);
     for (key, value) in cook.iter() {
         let (key, value) = (key.get_ref().as_ref(), value.get_ref());
         match key {
@@ -97,6 +99,7 @@ fn parse(text: &str) -> Result<(String, Cook), String> {
             "texture-layout" => layout = Some(string(value, key)?),
             "head-codec" => head = Some(string(value, key)?),
             "bulk-codec" => bulk = Some(string(value, key)?),
+            "shader-target" => shader = Some(string(value, key)?),
             other => return Err(format!("unknown field `cook.{other}`")),
         }
     }
@@ -108,6 +111,7 @@ fn parse(text: &str) -> Result<(String, Cook), String> {
             texture_layout: layout.ok_or_else(|| missing("texture-layout"))?,
             head_codec: head.ok_or_else(|| missing("head-codec"))?,
             bulk_codec: bulk.ok_or_else(|| missing("bulk-codec"))?,
+            shader_target: shader.ok_or_else(|| missing("shader-target"))?,
         },
     ))
 }

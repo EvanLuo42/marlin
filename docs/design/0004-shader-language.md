@@ -296,15 +296,16 @@ public type Color = float4;
 
 ### 7.2 包清单
 
-清单用 0003 的资产文本格式：
+清单用 0003 的资产文本格式。包名就是 `!Name`，源文件逐个列在 `Sources` 里，目录按 namespace 摆（0003 §4.4，2026-10-18）：
 
 ```text
 // shaders/substrate/package.masset
 ShaderPackage
 {
     !Uuid = "…"
-    Name = "Marlin.Substrate"
-    Dependencies = [<shaders/math:Marlin.Math #…>]
+    !Name = "Marlin.Substrate"
+    Sources = [`source:shaders/substrate/Substrate.mshader`]
+    Dependencies = [<shaders/math/package:Marlin.Math #…>]
 }
 ```
 

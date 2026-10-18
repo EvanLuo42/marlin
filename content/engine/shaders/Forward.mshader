@@ -1,8 +1,8 @@
-namespace Test;
+namespace Marlin.Engine;
 
-// The renderer's forward opaque pass, for its tests (the engine gets its shaders from the
-// cooker): vertex pulling, per-instance transforms and colors, one directional light plus
-// ambient.
+// The renderer's forward opaque pass (`Marlin.Engine.ForwardVs` / `ForwardPs`): vertex pulling,
+// per-instance transforms and colors, one directional light plus ambient. `ForwardArgs` is
+// what marlin-render's forward pass pushes (docs/design/0002-shader-interface.md).
 
 public struct ForwardArgs
 {

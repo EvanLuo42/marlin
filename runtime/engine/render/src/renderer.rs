@@ -131,6 +131,10 @@ pub struct ForwardShaders<'a> {
     pub pixel: ShaderModule<'a>,
 }
 
+/// Bytes of push constants the forward pass sets: four 32-bit words (0002). Its shaders' `[Push]`
+/// struct must be this size.
+pub const FORWARD_PUSH_BYTES: u32 = 16;
+
 /// What a [`Renderer::render`] call drew.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct RenderStats {
@@ -436,15 +440,13 @@ impl Renderer {
                     continue;
                 };
                 list.set_index_buffer(&mesh.indices, 0, IndexFormat::U32);
-                list.push_constants(
-                    0,
-                    &[
-                        frame_index,
-                        instances_index,
-                        mesh.vertex_view.index(),
-                        start as u32,
-                    ],
-                );
+                let push: [u32; FORWARD_PUSH_BYTES as usize / 4] = [
+                    frame_index,
+                    instances_index,
+                    mesh.vertex_view.index(),
+                    start as u32,
+                ];
+                list.push_constants(0, &push);
                 list.draw_indexed(mesh.index_count, count as u32, 0, 0, 0);
                 stats.draws += 1;
                 start += count;

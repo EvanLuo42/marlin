@@ -1,0 +1,11 @@
+!Version 1
+
+// The engine's own shaders: one package, a namespace per directory (this one is
+// `Marlin.Engine`, a subdirectory `Post/` would be `Marlin.Engine.Post`). The engine finds the
+// cooked library by the package's name and each entry point by its full path.
+ShaderPackage
+{
+    !Uuid = "01a14e23-41a7-7240-a3d8-65abdeb55b0e"
+    !Name = "Marlin.Engine"
+    Sources = [`source:shaders/Forward.mshader`]
+}

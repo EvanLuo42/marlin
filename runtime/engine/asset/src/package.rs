@@ -3,7 +3,7 @@
 //! ```text
 //! header   PackageHeader (64 bytes) at offset 0
 //! data     chunks, each compressed on its own
-//! index    units, blobs, chunks, objects; then xxh3_64 of the index
+//! index    units, blobs, chunks, objects, names; then xxh3_64 of the index
 //! ```
 //!
 //! A unit is stored as its cooked bytes cut into chunks of at most [`MAX_CHUNK`] raw bytes: the
@@ -28,7 +28,7 @@ use crate::cooked::BULK_ALIGN;
 use crate::le::{u16_at, u32_at, u64_at, u128_at};
 
 pub const PACKAGE_MAGIC: [u8; 4] = *b"MPK1";
-pub const PACKAGE_VERSION: u16 = 1;
+pub const PACKAGE_VERSION: u16 = 2;
 /// Largest raw chunk: big enough for good ratios and few IO requests, small enough that a
 /// texture mip or mesh page decodes in parallel pieces.
 pub const MAX_CHUNK: u32 = 256 << 10;
@@ -45,6 +45,7 @@ pub struct PackageHeader {
     pub blob_count: u32,
     pub chunk_count: u32,
     pub object_count: u32,
+    pub name_count: u32,
     /// The build manifest's key the package was made from.
     pub build: u128,
     pub index_offset: u64,
@@ -113,6 +114,18 @@ impl ObjectRecord {
     pub const SIZE: usize = 24;
 }
 
+/// A named object (a shader package, 0003 §4.4): found by name rather than by link.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct NameRecord {
+    /// [`crate::name_hash`] of the name; the cook refuses builds where two names collide.
+    pub name: u64,
+    pub uuid: Uuid,
+}
+
+impl NameRecord {
+    pub const SIZE: usize = 24;
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PackageError {
     BadMagic,
@@ -172,6 +185,7 @@ pub fn read_header(bytes: &[u8]) -> Result<PackageHeader, PackageError> {
         blob_count: u32_at(bytes, 16),
         chunk_count: u32_at(bytes, 20),
         object_count: u32_at(bytes, 24),
+        name_count: u32_at(bytes, 28),
         build: u128_at(bytes, 32),
         index_offset: u64_at(bytes, 48),
         index_size: u64_at(bytes, 56),
@@ -188,6 +202,8 @@ pub struct PackageIndex {
     pub chunks: Vec<ChunkRecord>,
     /// Sorted by UUID.
     pub objects: Vec<ObjectRecord>,
+    /// Sorted by name hash; every object is in `objects`.
+    pub names: Vec<NameRecord>,
 }
 
 impl PackageIndex {
@@ -199,6 +215,7 @@ impl PackageIndex {
             (header.blob_count as u64, BlobRecord::SIZE as u64),
             (header.chunk_count as u64, ChunkRecord::SIZE as u64),
             (header.object_count as u64, ObjectRecord::SIZE as u64),
+            (header.name_count as u64, NameRecord::SIZE as u64),
         ];
         let tables: u64 = counts.iter().map(|(n, s)| n * s).sum();
         if index.len() as u64 != header.index_size || header.index_size != tables + 8 {
@@ -252,12 +269,21 @@ impl PackageIndex {
             });
             at += ObjectRecord::SIZE;
         }
+        let mut names = Vec::with_capacity(header.name_count as usize);
+        for _ in 0..header.name_count {
+            names.push(NameRecord {
+                name: u64_at(body, at),
+                uuid: Uuid::from_u128(u128_at(body, at + 8)),
+            });
+            at += NameRecord::SIZE;
+        }
         let index = Self {
             header,
             units,
             blobs,
             chunks,
             objects,
+            names,
         };
         index.check()?;
         Ok(index)
@@ -267,6 +293,7 @@ impl PackageIndex {
         let bad = Err(PackageError::Malformed);
         if !self.units.windows(2).all(|w| w[0].unit < w[1].unit)
             || !self.objects.windows(2).all(|w| w[0].uuid < w[1].uuid)
+            || !self.names.windows(2).all(|w| w[0].name < w[1].name)
         {
             return bad;
         }
@@ -326,10 +353,23 @@ impl PackageIndex {
                 }
             }
         }
-        if self.objects.iter().any(|o| self.unit(o.unit).is_none()) {
+        if self.objects.iter().any(|o| self.unit(o.unit).is_none())
+            || self
+                .names
+                .iter()
+                .any(|n| self.object_unit(n.uuid).is_none())
+        {
             return bad;
         }
         Ok(())
+    }
+
+    /// The object called `name` (by [`crate::name_hash`]).
+    pub fn named(&self, name: u64) -> Option<Uuid> {
+        self.names
+            .binary_search_by_key(&name, |n| n.name)
+            .ok()
+            .map(|i| self.names[i].uuid)
     }
 
     pub fn unit(&self, unit: u64) -> Option<&UnitRecord> {
@@ -415,8 +455,8 @@ pub mod write {
     use alloc::vec::Vec;
 
     use super::{
-        BlobRecord, ChunkRecord, ObjectRecord, PACKAGE_MAGIC, PACKAGE_VERSION, PackageHeader,
-        UnitRecord,
+        BlobRecord, ChunkRecord, NameRecord, ObjectRecord, PACKAGE_MAGIC, PACKAGE_VERSION,
+        PackageHeader, UnitRecord,
     };
 
     pub fn header(h: &PackageHeader) -> [u8; PackageHeader::SIZE] {
@@ -428,6 +468,7 @@ pub mod write {
         out[16..20].copy_from_slice(&h.blob_count.to_le_bytes());
         out[20..24].copy_from_slice(&h.chunk_count.to_le_bytes());
         out[24..28].copy_from_slice(&h.object_count.to_le_bytes());
+        out[28..32].copy_from_slice(&h.name_count.to_le_bytes());
         out[32..48].copy_from_slice(&h.build.to_le_bytes());
         out[48..56].copy_from_slice(&h.index_offset.to_le_bytes());
         out[56..64].copy_from_slice(&h.index_size.to_le_bytes());
@@ -465,18 +506,25 @@ pub mod write {
         out.extend_from_slice(&o.unit.to_le_bytes());
     }
 
+    pub fn name(out: &mut Vec<u8>, n: &NameRecord) {
+        out.extend_from_slice(&n.name.to_le_bytes());
+        out.extend_from_slice(&n.uuid.as_u128().to_le_bytes());
+    }
+
     /// The index: tables in order, then the checksum.
     pub fn index(
         units: &[UnitRecord],
         blobs: &[BlobRecord],
         chunks: &[ChunkRecord],
         objects: &[ObjectRecord],
+        names: &[NameRecord],
     ) -> Vec<u8> {
         let mut out = Vec::new();
         units.iter().for_each(|u| unit(&mut out, u));
         blobs.iter().for_each(|b| blob(&mut out, b));
         chunks.iter().for_each(|c| chunk(&mut out, c));
         objects.iter().for_each(|o| object(&mut out, o));
+        names.iter().for_each(|n| name(&mut out, n));
         let checksum = marlin_hash::xxh3_64(&out);
         out.extend_from_slice(&checksum.to_le_bytes());
         out

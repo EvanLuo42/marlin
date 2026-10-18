@@ -79,6 +79,10 @@ pub trait UnitSource: Send + Sync {
     fn contains(&self, unit: u64) -> bool;
     /// The unit holding object `uuid`, if this source has it.
     fn object_unit(&self, uuid: Uuid) -> Option<u64>;
+    /// The named object whose [`crate::name_hash`] is `name`, if this source has one.
+    fn named(&self, _name: u64) -> Option<Uuid> {
+        None
+    }
     fn begin(&self, unit: u64) -> Result<Read<'_>, SourceError>;
     /// Turns the bytes read for a [`Read::File`] into the unit (decompression: may run on any
     /// thread).
@@ -170,6 +174,10 @@ impl UnitSource for Package {
         self.index.object_unit(uuid)
     }
 
+    fn named(&self, name: u64) -> Option<Uuid> {
+        self.index.named(name)
+    }
+
     fn begin(&self, unit: u64) -> Result<Read<'_>, SourceError> {
         let record = self.index.unit(unit).ok_or(SourceError::NotFound)?;
         let (_, range) = self.index.unit_read(record);
@@ -195,11 +203,17 @@ impl UnitSource for Package {
 pub struct MemorySource {
     units: HashMap<u64, Vec<u8>>,
     objects: HashMap<Uuid, u64>,
+    names: HashMap<u64, Uuid>,
 }
 
 impl MemorySource {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Makes object `uuid` findable as `name` (see [`Vfs::named`]).
+    pub fn name(&mut self, name: &str, uuid: Uuid) {
+        self.names.insert(crate::name_hash(name), uuid);
     }
 
     /// Adds a cooked unit, indexing its objects. Fails if the bytes are not a unit.
@@ -221,6 +235,10 @@ impl UnitSource for MemorySource {
 
     fn object_unit(&self, uuid: Uuid) -> Option<u64> {
         self.objects.get(&uuid).copied()
+    }
+
+    fn named(&self, name: u64) -> Option<Uuid> {
+        self.names.get(&name).copied()
     }
 
     fn begin(&self, unit: u64) -> Result<Read<'_>, SourceError> {
@@ -287,6 +305,15 @@ impl Vfs {
             .iter()
             .rev()
             .find_map(|l| l.source.object_unit(uuid))
+    }
+
+    /// The object called `name` (a shader package's `!Name`), as the topmost source that has
+    /// the name says: so an engine package's `Marlin.Engine` can be overridden by a layer above
+    /// it. Names are for the few objects code asks for by name (0003 §4.4); everything else is
+    /// reached by links.
+    pub fn named(&self, name: &str) -> Option<Uuid> {
+        let hash = crate::name_hash(name);
+        self.layers.iter().rev().find_map(|l| l.source.named(hash))
     }
 }
 

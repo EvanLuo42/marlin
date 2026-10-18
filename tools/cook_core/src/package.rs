@@ -7,9 +7,10 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use marlin_asset::cooked::{UnitView, platform_id};
+use marlin_asset::name_hash;
 use marlin_asset::package::{
-    BLOB_FILE_ALIGN, BlobRecord, CHUNK_FILE_ALIGN, ChunkRecord, MAX_CHUNK, ObjectRecord,
-    PackageHeader, UnitRecord, write,
+    BLOB_FILE_ALIGN, BlobRecord, CHUNK_FILE_ALIGN, ChunkRecord, MAX_CHUNK, NameRecord,
+    ObjectRecord, PackageHeader, UnitRecord, write,
 };
 use marlin_compress::{Codec, Level};
 use marlin_hash::xxh3_64;
@@ -245,8 +246,17 @@ pub fn write_package(
         .iter()
         .map(|&(uuid, unit)| ObjectRecord { uuid, unit })
         .collect();
+    let mut names: Vec<NameRecord> = manifest
+        .names
+        .iter()
+        .map(|(name, uuid)| NameRecord {
+            name: name_hash(name),
+            uuid: *uuid,
+        })
+        .collect();
+    names.sort_by_key(|n| n.name);
 
-    let index = write::index(&units, &blobs, &chunks, &objects);
+    let index = write::index(&units, &blobs, &chunks, &objects, &names);
     let index_offset = at.next_multiple_of(CHUNK_FILE_ALIGN);
     file.write_all(&vec![0u8; (index_offset - at) as usize])?;
     file.write_all(&index)?;
@@ -256,6 +266,7 @@ pub fn write_package(
         blob_count: blobs.len() as u32,
         chunk_count: chunks.len() as u32,
         object_count: objects.len() as u32,
+        name_count: names.len() as u32,
         build: manifest.key(),
         index_offset,
         index_size: index.len() as u64,

@@ -1,7 +1,8 @@
 //! The test shaders: Marlin shaders compiled at run time, the first time a test asks for one.
 //!
 //! One compiler session per test binary holds the shared package `Test` (this crate's
-//! `shaders/`) and, for a test that asks with [`Shader::in_crate`] or [`crate_shader!`], the
+//! `shaders/`), the engine's own package `Marlin.Engine` (`content/engine/shaders/`, the source
+//! the cooker compiles for the engine) and, for a test that asks with [`Shader::in_crate`] or [`crate_shader!`], the
 //! package of its own crate (its `tests/data/shaders/`), which may use the shared one. Every
 //! result is kept for the binary's life, like [`crate::devices`].
 //!
@@ -20,6 +21,10 @@ use marlin_shaderc::{
 
 /// The shared package and namespace: an entry named without a namespace is in it.
 pub const SHARED: &str = "Test";
+
+/// The engine's shader package (`content/engine/shaders/`): its entries are named in full
+/// (`Marlin.Engine.ForwardVs`).
+pub const ENGINE: &str = "Marlin.Engine";
 
 const TARGET: &str = "vulkan-1.4";
 
@@ -173,6 +178,10 @@ fn compiler() -> &'static Mutex<Compiler> {
             SHARED,
             Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders"),
         );
+        sources.add(
+            ENGINE,
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/engine/shaders"),
+        );
         let targets = Box::leak(Box::new(marlin_shaderc::default_targets()));
         let mut session = Session::new(SessionDesc { sources, targets });
         session
@@ -181,6 +190,12 @@ fn compiler() -> &'static Mutex<Compiler> {
                 dependencies: &["Marlin"],
             })
             .unwrap_or_else(|e| panic!("the shared test shaders: {e}"));
+        session
+            .add_package(&PackageDesc {
+                name: ENGINE,
+                dependencies: &["Marlin"],
+            })
+            .unwrap_or_else(|e| panic!("the engine's shaders: {e}"));
         Mutex::new(Compiler {
             session,
             sources,
@@ -217,11 +232,20 @@ impl SourceProvider for Dirs {
         let error = |e: std::io::Error| SourceError {
             message: format!("{}: {e}", dir.display()),
         };
+        // Subdirectories too: a package keeps a namespace per directory.
         let mut names = Vec::new();
-        for entry in std::fs::read_dir(&dir).map_err(error)? {
-            let name = entry.map_err(error)?.file_name();
-            if let Some(name) = name.to_str().filter(|n| n.ends_with(".mshader")) {
-                names.push(name.to_string());
+        let mut dirs = vec![(dir.clone(), String::new())];
+        while let Some((at, prefix)) = dirs.pop() {
+            for entry in std::fs::read_dir(&at).map_err(error)? {
+                let entry = entry.map_err(error)?;
+                let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+                    continue;
+                };
+                if entry.file_type().map_err(error)?.is_dir() {
+                    dirs.push((entry.path(), format!("{prefix}{name}/")));
+                } else if name.ends_with(".mshader") {
+                    names.push(format!("{prefix}{name}"));
+                }
             }
         }
         names.sort();

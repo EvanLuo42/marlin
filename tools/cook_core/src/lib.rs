@@ -21,10 +21,10 @@ mod platform;
 
 pub use cook::{
     COOK_FORMAT, CookError, CookOptions, CookReport, UnitOutcome, cook, cook_all, cook_unit,
-    fetch_unit, publish_manifest, source_units, unit_key,
+    fetch_unit, named_objects, publish_manifest, source_units, unit_key,
 };
 pub use cooker::{CookContext, Cooked, Cooker, Cookers, SourceObject, fingerprint};
 pub use ddc::{Ddc, LayeredDdc, LocalDdc};
 pub use manifest::{Manifest, ManifestError, ManifestUnit};
 pub use package::{PackageOptions, PackageReport, PackageWriteError, write_package};
-pub use platform::{Platform, TextureFamily, TextureLayout, UnknownPlatform};
+pub use platform::{Platform, Profile, TextureFamily, TextureLayout, UnknownPlatform};

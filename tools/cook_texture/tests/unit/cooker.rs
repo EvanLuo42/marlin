@@ -279,6 +279,7 @@ fn formats_follow_the_platform() {
         texture_layout: TextureLayout::Linear,
         head_codec: Codec::Zstd,
         bulk_codec: Codec::Zstd,
+        shader_target: "vulkan-1.4",
     };
     let bc_last = Platform {
         texture_compression: &[TextureFamily::Astc, TextureFamily::Bc],

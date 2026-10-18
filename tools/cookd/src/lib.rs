@@ -17,12 +17,14 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use marlin_asset::Uuid;
 use marlin_asset::cooked::unit_id;
 use marlin_asset::dev::*;
 use marlin_asset::wire::{Frame, Reader, Writer};
+use marlin_asset::{Uuid, name_hash};
 use marlin_asset_db::{AssetDb, FileId};
-use marlin_cook_core::{Cookers, Ddc, Platform, fetch_unit, source_units, unit_key};
+use marlin_cook_core::{
+    Cookers, Ddc, Platform, Profile, fetch_unit, named_objects, source_units, unit_key,
+};
 use marlin_store::{ConnId, Outbox, Server, ServerError, Service};
 
 /// The project as the service sees it.
@@ -30,22 +32,22 @@ struct Project {
     db: AssetDb,
     /// Unit id → its `.masset` file.
     units: HashMap<u64, FileId>,
-    /// Every object and its unit, sorted.
-    objects: Vec<(Uuid, u64)>,
+    /// Every object and its unit, and the named objects.
+    table: ObjectTable,
 }
 
 impl Project {
-    fn new(db: AssetDb) -> Self {
+    fn new(db: AssetDb, cookers: &Cookers) -> Self {
         let mut p = Self {
             db,
             units: HashMap::new(),
-            objects: Vec::new(),
+            table: ObjectTable::default(),
         };
-        p.reindex();
+        p.reindex(cookers);
         p
     }
 
-    fn reindex(&mut self) {
+    fn reindex(&mut self, cookers: &Cookers) {
         self.units = source_units(&self.db)
             .into_iter()
             .map(|f| (unit_id(&self.db.asset_path(f)), f))
@@ -60,9 +62,19 @@ impl Project {
             .collect();
         objects.sort_unstable();
         objects.dedup_by_key(|o| o.0);
-        self.objects = objects;
+        // A name given twice names nothing (the cook reports it); the rest are served.
+        let mut names: Vec<(u64, Uuid)> = named_objects(&self.db, cookers)
+            .0
+            .into_iter()
+            .map(|(name, uuid)| (name_hash(&name), uuid))
+            .collect();
+        names.sort_unstable();
+        self.table = ObjectTable { objects, names };
     }
 }
+
+/// What cookd cooks for: games under development.
+const PROFILE: Profile = Profile::Development;
 
 struct Shared {
     project: RwLock<Project>,
@@ -132,7 +144,7 @@ impl Cookd {
             .ok()
             .map(|(spare, _)| spare);
         let shared = Arc::new(Shared {
-            project: RwLock::new(Project::new(db)),
+            project: RwLock::new(Project::new(db, &cookers)),
             cookers,
             ddc,
         });
@@ -171,6 +183,7 @@ impl Cookd {
             .project
             .read()
             .unwrap_or_else(|e| e.into_inner())
+            .table
             .objects
             .len()
     }
@@ -197,13 +210,13 @@ impl Cookd {
                     self.spare = Some(spare);
                     return;
                 }
-                let mut next = Project::new(spare);
+                let mut next = Project::new(spare, &self.shared.cookers);
                 let mut project = self
                     .shared
                     .project
                     .write()
                     .unwrap_or_else(|e| e.into_inner());
-                let moved = next.objects != project.objects;
+                let moved = next.table != project.table;
                 std::mem::swap(&mut *project, &mut next);
                 drop(project);
                 let mut old = next.db;
@@ -227,9 +240,9 @@ impl Cookd {
                 if !changed(project.db.update()) {
                     return;
                 }
-                let old = std::mem::take(&mut project.objects);
-                project.reindex();
-                old != project.objects
+                let old = std::mem::take(&mut project.table);
+                project.reindex(&self.shared.cookers);
+                old != project.table
             }
         };
         let project = self
@@ -243,10 +256,9 @@ impl Cookd {
             };
             let mut stale = Vec::new();
             for (&unit, &key) in &client.served {
-                let now = project
-                    .units
-                    .get(&unit)
-                    .and_then(|&f| unit_key(&project.db, &self.shared.cookers, f, platform).ok());
+                let now = project.units.get(&unit).and_then(|&f| {
+                    unit_key(&project.db, &self.shared.cookers, f, platform, PROFILE).ok()
+                });
                 if now != key {
                     stale.push((unit, now));
                 }
@@ -262,7 +274,7 @@ impl Cookd {
             }
             let mut stale: Vec<u64> = stale.into_iter().map(|(u, _)| u).collect();
             stale.sort_unstable();
-            let table = objects_moved.then_some(project.objects.as_slice());
+            let table = objects_moved.then_some(&project.table);
             out.send(conn, CHANGED, 0, &changed_payload(&stale, table));
         }
     }
@@ -293,11 +305,13 @@ fn worker(shared: &Shared, jobs: &Mutex<Receiver<Job>>, done: &Sender<Done>) {
                     &shared.cookers,
                     shared.ddc.as_ref(),
                     job.platform,
+                    PROFILE,
                     file,
                 )
                 .map(|(key, bytes, _, _)| (key, bytes))
                 .map_err(|e| {
-                    let key = unit_key(&project.db, &shared.cookers, file, job.platform).ok();
+                    let key =
+                        unit_key(&project.db, &shared.cookers, file, job.platform, PROFILE).ok();
                     (e.to_string(), key)
                 }),
             }
@@ -359,7 +373,7 @@ impl Service for Cookd {
                     .project
                     .read()
                     .unwrap_or_else(|e| e.into_inner());
-                out.send(conn, OBJECTS, frame.id, &objects_payload(&project.objects));
+                out.send(conn, OBJECTS, frame.id, &table_payload(&project.table));
             }
             UNIT => {
                 let (Ok(unit), Ok(())) = (r.u64(), r.end()) else {

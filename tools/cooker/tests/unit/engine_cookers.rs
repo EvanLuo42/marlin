@@ -12,10 +12,16 @@ fn every_engine_type_has_a_cooker() {
         "AnimationClip",
         "StringTable",
         "Level",
+        "ShaderPackage",
     ] {
         assert!(
             cookers.schema().object_type(name).is_some(),
             "{name} is not registered"
         );
     }
+    assert!(
+        cookers.is_named("ShaderPackage"),
+        "shader packages are found by name"
+    );
+    assert!(!cookers.is_named("Texture"));
 }

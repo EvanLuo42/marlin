@@ -12,7 +12,7 @@ use marlin_masset::{DocumentLinks, Severity, parse};
 use crate::cooker::{CookContext, Cookers, SourceObject};
 use crate::ddc::Ddc;
 use crate::manifest::{Manifest, ManifestUnit};
-use crate::platform::Platform;
+use crate::platform::{Platform, Profile};
 
 /// Bump when the unit layout or key derivation changes: every key changes with it.
 pub const COOK_FORMAT: u32 = 1;
@@ -23,6 +23,7 @@ pub struct CookOptions {
     pub platform: &'static Platform,
     /// 0: one thread per logical CPU.
     pub threads: usize,
+    pub profile: Profile,
 }
 
 impl Default for CookOptions {
@@ -30,6 +31,7 @@ impl Default for CookOptions {
         Self {
             platform: Platform::host(),
             threads: 0,
+            profile: Profile::Development,
         }
     }
 }
@@ -108,8 +110,8 @@ fn unit_of(db: &AssetDb, uuid: Uuid) -> Option<u64> {
 /// The cook key of `file`: a hash over every input of its cooked unit.
 ///
 /// Inputs: the format version; the platform's name and the texture description cookers read;
-/// the unit id; the source text; per object its type and the type's fingerprint (structure and
-/// cooker version); every source file it links to, by content; and the unit of every object it
+/// the unit id; the source text; per object its type, the type's fingerprint (structure and
+/// cooker version) and its cooker's own key for the platform and profile; every source file it links to, by content; and the unit of every object it
 /// links to (which the import table records). A link's target content is not an input: links
 /// are resolved at load time.
 pub fn unit_key(
@@ -117,6 +119,7 @@ pub fn unit_key(
     cookers: &Cookers,
     file: FileId,
     platform: &Platform,
+    profile: Profile,
 ) -> Result<u128, CookError> {
     let info = db.file_info(file);
     let asset_path = db.asset_path(file);
@@ -145,6 +148,7 @@ pub fn unit_key(
             .ok_or_else(|| fail(format!("{}: no cooker for type `{}`", o.name, o.type_name)))?;
         key.bytes(o.type_name.as_bytes());
         key.u64(registered.fingerprint);
+        key.u128(registered.cooker.key(platform, profile));
         for source in db.source_links(object) {
             key.bytes(source.path.as_bytes());
             match db.file(source.path) {
@@ -203,6 +207,7 @@ pub fn cook_unit(
     cookers: &Cookers,
     file: FileId,
     platform: &Platform,
+    profile: Profile,
 ) -> Result<(Vec<u8>, Vec<String>), CookError> {
     let info = db.file_info(file);
     let asset_path = db.asset_path(file);
@@ -280,6 +285,7 @@ pub fn cook_unit(
             .unwrap_or_default();
         let mut ctx = CookContext {
             platform,
+            profile,
             root: db.root(),
             sources: &sources,
             bulk: Vec::new(),
@@ -335,14 +341,14 @@ pub fn cook(
     }
     .clamp(1, units.len().max(1));
     let chunk = units.len().div_ceil(threads).max(1);
-    let platform = options.platform;
+    let (platform, profile) = (options.platform, options.profile);
     let results: Vec<Result<UnitOutcome, CookError>> = std::thread::scope(|s| {
         let handles: Vec<_> = units
             .chunks(chunk)
             .map(|part| {
                 s.spawn(move || {
                     part.iter()
-                        .map(|&file| cook_one(db, cookers, ddc, platform, file))
+                        .map(|&file| cook_one(db, cookers, ddc, platform, profile, file))
                         .collect::<Vec<_>>()
                 })
             })
@@ -368,10 +374,11 @@ fn cook_one(
     cookers: &Cookers,
     ddc: &dyn Ddc,
     platform: &Platform,
+    profile: Profile,
     file: FileId,
 ) -> Result<UnitOutcome, CookError> {
     let path = db.asset_path(file);
-    let key = unit_key(db, cookers, file, platform)?;
+    let key = unit_key(db, cookers, file, platform, profile)?;
     let unit = unit_id(&path);
     if ddc.contains(key) {
         return Ok(UnitOutcome {
@@ -383,7 +390,7 @@ fn cook_one(
             warnings: Vec::new(),
         });
     }
-    let (bytes, warnings) = cook_unit(db, cookers, file, platform)?;
+    let (bytes, warnings) = cook_unit(db, cookers, file, platform, profile)?;
     ddc.put(key, &bytes).map_err(|source| CookError::Io {
         path: db.file_info(file).path,
         source,
@@ -405,7 +412,7 @@ pub fn cook_all(
     ddc: &dyn Ddc,
     options: &CookOptions,
 ) -> (CookReport, Manifest) {
-    let report = cook(db, cookers, ddc, options, &source_units(db));
+    let mut report = cook(db, cookers, ddc, options, &source_units(db));
     let mut units: Vec<ManifestUnit> = report
         .units
         .iter()
@@ -427,10 +434,14 @@ pub fn cook_all(
         .collect();
     objects.sort_unstable();
     objects.dedup_by_key(|(uuid, _)| *uuid);
+    let (mut names, errors) = named_objects(db, cookers);
+    report.errors.extend(errors);
+    names.retain(|(_, uuid)| objects.binary_search_by_key(uuid, |o| o.0).is_ok());
     let manifest = Manifest {
         platform: options.platform.name.to_owned(),
         units,
         objects,
+        names,
     };
     (report, manifest)
 }
@@ -454,9 +465,10 @@ pub fn fetch_unit(
     cookers: &Cookers,
     ddc: &dyn Ddc,
     platform: &Platform,
+    profile: Profile,
     file: FileId,
 ) -> Result<(u128, Vec<u8>, bool, Vec<String>), CookError> {
-    let key = unit_key(db, cookers, file, platform)?;
+    let key = unit_key(db, cookers, file, platform, profile)?;
     let io = |source| CookError::Io {
         path: db.file_info(file).path,
         source,
@@ -464,7 +476,67 @@ pub fn fetch_unit(
     if let Some(bytes) = ddc.get(key).map_err(io)? {
         return Ok((key, bytes, true, Vec::new()));
     }
-    let (bytes, warnings) = cook_unit(db, cookers, file, platform)?;
+    let (bytes, warnings) = cook_unit(db, cookers, file, platform, profile)?;
     ddc.put(key, &bytes).map_err(io)?;
     Ok((key, bytes, false, warnings))
+}
+
+/// The build's name table (0003 §4.4): every object of a type registered as named, by `!Name`,
+/// sorted by name. Names given twice (or whose hashes collide, which the runtime's tables could
+/// not tell apart) are errors, and none of the objects involved is in the table.
+pub fn named_objects(db: &AssetDb, cookers: &Cookers) -> (Vec<(String, Uuid)>, Vec<CookError>) {
+    let mut named: Vec<(String, Uuid, String)> = db
+        .objects()
+        .map(|o| db.object_info(o))
+        .filter(|info| cookers.is_named(info.type_name))
+        .map(|info| {
+            (
+                info.name.to_owned(),
+                info.uuid,
+                db.file_info(info.file).path,
+            )
+        })
+        .collect();
+    named.sort_by(|a, b| (&a.0, a.1).cmp(&(&b.0, b.1)));
+    let mut by_hash: HashMap<u64, Vec<usize>> = HashMap::new();
+    for (i, (name, _, _)) in named.iter().enumerate() {
+        by_hash
+            .entry(marlin_asset::name_hash(name))
+            .or_default()
+            .push(i);
+    }
+    let mut errors = Vec::new();
+    let mut clashing = HashSet::new();
+    let mut groups: Vec<&Vec<usize>> = by_hash.values().filter(|g| g.len() > 1).collect();
+    groups.sort();
+    for group in groups {
+        let first = &named[group[0]];
+        for &i in &group[1..] {
+            let (name, _, path) = &named[i];
+            let message = if *name == first.0 {
+                format!(
+                    "`{name}` also names an object in {}; names must be unique",
+                    first.2
+                )
+            } else {
+                format!(
+                    "the name `{name}` hashes like `{}` (in {}); rename one of them",
+                    first.0, first.2
+                )
+            };
+            errors.push(CookError::Object {
+                path: path.clone(),
+                object: name.clone(),
+                message,
+            });
+        }
+        clashing.extend(group.iter().copied());
+    }
+    let names = named
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| !clashing.contains(i))
+        .map(|(_, (name, uuid, _))| (name, uuid))
+        .collect();
+    (names, errors)
 }

@@ -62,6 +62,9 @@ pub struct Platform {
     pub head_codec: Codec,
     /// Default package codec of bulk blobs (GDeflate where the GPU decompresses).
     pub bulk_codec: Codec,
+    /// The shader compiler's target (`vulkan-1.4`): a name the shader cooker looks up, never
+    /// matched in shared code.
+    pub shader_target: &'static str,
 }
 
 /// No `platforms/<name>/platform.toml` was built in.
@@ -156,3 +159,21 @@ const fn texture_layout(name: &str) -> TextureLayout {
 }
 
 include!(concat!(env!("OUT_DIR"), "/platforms.rs"));
+
+/// Which build a cook is for: development builds keep debugging aids (the shader compiler's
+/// `Debug.*` and debug information), shipping builds drop them.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub enum Profile {
+    #[default]
+    Development,
+    Shipping,
+}
+
+impl Profile {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Profile::Development => "development",
+            Profile::Shipping => "shipping",
+        }
+    }
+}

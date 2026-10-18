@@ -6,17 +6,17 @@
 //! | message            | payload                                   |
 //! |--------------------|-------------------------------------------|
 //! | → `HELLO`          | platform                                  |
-//! | ← `OBJECTS`        | n:u32, n × (uuid:u128 unit:u64), sorted   |
+//! | ← `OBJECTS`        | n:u32, n × (uuid:u128 unit:u64) sorted by uuid; m:u32, m × (name:u64 uuid:u128) sorted by name |
 //! | → `UNIT`           | unit:u64                                  |
 //! | ← `UNIT_DATA`      | the cooked unit                           |
 //! | ← `UNIT_FAILED`    | message                                   |
 //! | ← `CHANGED` (id 0) | units: n:u32 n × u64, then `OBJECTS`' table when objects moved, else nothing |
 //! | ← `ERROR`          | message                                   |
 //!
-//! The client learns every object's unit at connect, so lookups never wait on the network;
-//! units are requested as the asset server needs them and arrive whenever cookd has cooked
-//! them (cache hits at once). `CHANGED` lists units whose cook keys changed since the client got
-//! them, so it reloads exactly those.
+//! The client learns every object's unit and the named objects at connect, so lookups never
+//! wait on the network; units are requested as the asset server needs them and arrive whenever
+//! cookd has cooked them (cache hits at once). `CHANGED` lists units whose cook keys changed
+//! since the client got them, so it reloads exactly those.
 
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -42,37 +42,55 @@ pub const CHANGED: u16 = 0x200;
 /// Default cookd port.
 pub const PORT: u16 = 47_200;
 
+/// What a client finds objects by: every object's unit, and the named objects (0003 §4.4).
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct ObjectTable {
+    /// (uuid, unit), sorted by UUID.
+    pub objects: Vec<(Uuid, u64)>,
+    /// ([`crate::name_hash`], uuid), sorted by name hash.
+    pub names: Vec<(u64, Uuid)>,
+}
+
 /// An object table payload.
-pub fn objects_payload(objects: &[(Uuid, u64)]) -> Vec<u8> {
+pub fn table_payload(table: &ObjectTable) -> Vec<u8> {
     let mut w = Writer::new();
-    w.u32(objects.len() as u32);
-    for &(uuid, unit) in objects {
+    w.u32(table.objects.len() as u32);
+    for &(uuid, unit) in &table.objects {
         w.uuid(uuid).u64(unit);
+    }
+    w.u32(table.names.len() as u32);
+    for &(name, uuid) in &table.names {
+        w.u64(name).uuid(uuid);
     }
     w.finish()
 }
 
-pub fn read_objects(r: &mut Reader<'_>) -> Result<Vec<(Uuid, u64)>, wire::WireError> {
+pub fn read_table(r: &mut Reader<'_>) -> Result<ObjectTable, wire::WireError> {
     let n = r.u32()? as usize;
-    let mut out = Vec::with_capacity(n.min(r.remaining() / 24));
+    let mut objects = Vec::with_capacity(n.min(r.remaining() / 24));
     for _ in 0..n {
-        out.push((r.uuid()?, r.u64()?));
+        objects.push((r.uuid()?, r.u64()?));
     }
-    if !out.windows(2).all(|w| w[0].0 < w[1].0) {
+    let n = r.u32()? as usize;
+    let mut names = Vec::with_capacity(n.min(r.remaining() / 24));
+    for _ in 0..n {
+        names.push((r.u64()?, r.uuid()?));
+    }
+    if !objects.windows(2).all(|w| w[0].0 < w[1].0) || !names.windows(2).all(|w| w[0].0 < w[1].0) {
         return Err(wire::WireError::Malformed);
     }
-    Ok(out)
+    Ok(ObjectTable { objects, names })
 }
 
 /// A `CHANGED` payload.
-pub fn changed_payload(units: &[u64], objects: Option<&[(Uuid, u64)]>) -> Vec<u8> {
+pub fn changed_payload(units: &[u64], table: Option<&ObjectTable>) -> Vec<u8> {
     let mut w = Writer::new();
     w.u32(units.len() as u32);
     for &u in units {
         w.u64(u);
     }
-    if let Some(objects) = objects {
-        w.raw(&objects_payload(objects));
+    if let Some(table) = table {
+        w.raw(&table_payload(table));
     }
     w.finish()
 }
@@ -84,8 +102,7 @@ struct State {
     socket: SocketId,
     reader: FrameReader,
     next_id: u32,
-    /// Sorted by UUID.
-    objects: Vec<(Uuid, u64)>,
+    table: ObjectTable,
     units: HashSet<u64>,
     /// Request id -> unit.
     pending: HashMap<u32, u64>,
@@ -109,9 +126,9 @@ fn net(e: marlin_net::Error) -> SourceError {
 }
 
 impl State {
-    fn index_objects(&mut self, objects: Vec<(Uuid, u64)>) {
-        self.units = objects.iter().map(|o| o.1).collect();
-        self.objects = objects;
+    fn index(&mut self, table: ObjectTable) {
+        self.units = table.objects.iter().map(|o| o.1).collect();
+        self.table = table;
     }
 
     fn send(&mut self, kind: u16, id: u32, payload: &[u8]) {
@@ -224,27 +241,27 @@ impl State {
                     for _ in 0..n {
                         units.push(r.u64()?);
                     }
-                    let objects = if r.remaining() > 0 {
-                        Some(read_objects(&mut r)?)
+                    let table = if r.remaining() > 0 {
+                        Some(read_table(&mut r)?)
                     } else {
                         None
                     };
                     r.end()?;
-                    Ok::<_, wire::WireError>((units, objects))
+                    Ok::<_, wire::WireError>((units, table))
                 })();
                 match parsed {
-                    Ok((units, objects)) => {
-                        if let Some(objects) = objects {
-                            self.index_objects(objects);
+                    Ok((units, table)) => {
+                        if let Some(table) = table {
+                            self.index(table);
                         }
                         self.invalidated.extend(units);
                     }
                     Err(e) => self.fail(e.to_string()),
                 }
             }
-            OBJECTS => match read_objects(&mut r) {
-                Ok(objects) => {
-                    self.index_objects(objects);
+            OBJECTS => match read_table(&mut r) {
+                Ok(table) => {
+                    self.index(table);
                     self.ready = true;
                 }
                 Err(e) => self.fail(e.to_string()),
@@ -279,7 +296,7 @@ impl DevSource {
             socket,
             reader: FrameReader::new(),
             next_id: 1,
-            objects: Vec::new(),
+            table: ObjectTable::default(),
             units: HashSet::new(),
             pending: HashMap::new(),
             arrived: HashMap::new(),
@@ -318,7 +335,7 @@ impl DevSource {
 
     /// Objects the cook service knows.
     pub fn object_count(&self) -> usize {
-        self.state.lock().objects.len()
+        self.state.lock().table.objects.len()
     }
 
     /// Whether the connection broke (requests then fail); the reason.
@@ -334,10 +351,20 @@ impl UnitSource for DevSource {
 
     fn object_unit(&self, uuid: Uuid) -> Option<u64> {
         let s = self.state.lock();
-        s.objects
+        s.table
+            .objects
             .binary_search_by_key(&uuid, |o| o.0)
             .ok()
-            .map(|i| s.objects[i].1)
+            .map(|i| s.table.objects[i].1)
+    }
+
+    fn named(&self, name: u64) -> Option<Uuid> {
+        let s = self.state.lock();
+        s.table
+            .names
+            .binary_search_by_key(&name, |n| n.0)
+            .ok()
+            .map(|i| s.table.names[i].1)
     }
 
     fn begin(&self, unit: u64) -> Result<Read<'_>, SourceError> {

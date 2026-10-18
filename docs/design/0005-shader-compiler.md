@@ -283,6 +283,7 @@ s.invalidate(&path);   // 源文件变了，相关的 query 会重算
 ```
 
 - 包由宿主描述：名字和直接依赖。宿主自己解析 `ShaderPackage` 清单（0004 §7.2），文件由 `SourceProvider::list` 按包名列出；编译器不读清单（0015 §3.1，2026-10-17 定）。
+- `Session::entries(package)` 列出包里能直接编译的入口：public、带 stage 属性、不带类型参数的 namespace 函数，按全名排序。cook 用它把整个包编成库（0003 §4.4，2026-10-18）。
 - `Session` 的生命周期很长：
   - cookd 进程里一直保持一个，热重载时只重算受影响的 query；
   - build.rs 创建一个，一次编完所有入口；
@@ -472,6 +473,7 @@ Development 下的 `Debug.Print` 在 SPIR-V 上还写不出来，等调试 buffe
 第 10e 步把占位 shader 全部换掉，并在真实 GPU 上跑通（RTX 5060，GPU tier 132 个测试，2026-10-18）：
 - 测试 shader：`marlin-gpu-test-support` 在运行时用 `Session` 编译，见 0002 §5。共用包 `Test` 有 22 个 entry，cook_texture 自己的包里有 `TexelLoad`。
 - 引擎 shader 交给 cooker：`RendererDesc` 的 shader 由调用方传入，`framework::run` 在 cooker 能编 shader 之前只清屏。
+  - 后续（2026-10-18）：`cook_shader` 能编 shader 包了。forward shader 移到 `content/engine/shaders/`，`Test` 包剩 20 个 entry；`framework::run` 用 cooked 的库画 mesh（0003 §4.4）。
 - 硬件上发现的问题：
   - RHI 要启用 `VK_KHR_shader_untyped_pointers`；
   - RHI 的槽宽改成正好等于 shader 算出的值，不对齐的 device 不支持；

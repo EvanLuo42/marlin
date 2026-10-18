@@ -6,6 +6,7 @@
 //! "MMAN" version:u32 platform:(len:u32 utf8)
 //! units:u32   [unit:u64 key:u128 path:(len:u32 utf8)]   sorted by unit
 //! objects:u32 [uuid:u128 unit:u64]                       sorted by uuid
+//! names:u32   [name:(len:u32 utf8) uuid:u128]            sorted by name
 //! ```
 
 use marlin_asset::Uuid;
@@ -13,7 +14,7 @@ use marlin_asset::wire::{Reader, WireError, Writer};
 use marlin_hash::xxh3_128;
 
 const MAGIC: &[u8; 4] = b"MMAN";
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ManifestUnit {
@@ -27,6 +28,9 @@ pub struct Manifest {
     pub platform: String,
     pub units: Vec<ManifestUnit>,
     pub objects: Vec<(Uuid, u64)>,
+    /// The named objects (types a cooker registers as named, 0003 §4.4): `!Name` and UUID,
+    /// sorted by name, unique, every one among `objects`.
+    pub names: Vec<(String, Uuid)>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, marlin_error::Error)]
@@ -44,6 +48,10 @@ impl Manifest {
         w.u32(self.objects.len() as u32);
         for &(uuid, unit) in &self.objects {
             w.uuid(uuid).u64(unit);
+        }
+        w.u32(self.names.len() as u32);
+        for (name, uuid) in &self.names {
+            w.str(name).uuid(*uuid);
         }
         w.finish()
     }
@@ -71,6 +79,11 @@ impl Manifest {
         for _ in 0..count {
             objects.push((r.uuid()?, r.u64()?));
         }
+        let count = r.u32()? as usize;
+        let mut names = Vec::with_capacity(count.min(len / 20));
+        for _ in 0..count {
+            names.push((r.str()?, r.uuid()?));
+        }
         if !r.rest().is_empty() {
             return Err(WireError::Malformed);
         }
@@ -78,6 +91,7 @@ impl Manifest {
             platform,
             units,
             objects,
+            names,
         })
     }
 
@@ -100,5 +114,13 @@ impl Manifest {
             .binary_search_by_key(&uuid, |(u, _)| *u)
             .ok()
             .map(|i| self.objects[i].1)
+    }
+
+    /// The object named `name`.
+    pub fn named(&self, name: &str) -> Option<Uuid> {
+        self.names
+            .binary_search_by(|(n, _)| n.as_str().cmp(name))
+            .ok()
+            .map(|i| self.names[i].1)
     }
 }

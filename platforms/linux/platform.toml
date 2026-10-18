@@ -13,3 +13,4 @@ texture-compression = ["bc"]
 texture-layout = "linear"
 head-codec = "zstd"
 bulk-codec = "zstd"
+shader-target = "vulkan-1.4"

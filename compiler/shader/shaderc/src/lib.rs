@@ -29,7 +29,7 @@ use marlin_shaderc_hir_ty::SHADER_LANGUAGE;
 
 pub use marlin_lang_diag::{Diagnostic, Severity, render_all};
 pub use marlin_lang_span::SourcePath;
-pub use marlin_shader::reflect::{ConstValue, FieldValue, ShaderReflection};
+pub use marlin_shader::reflect::{ConstValue, FieldValue, ShaderReflection, Stage};
 pub use marlin_shaderc_opt::Profile;
 pub use marlin_shaderc_target::{Backend, Blob, Registry, Target};
 
@@ -99,6 +99,14 @@ pub struct CompileOutput {
     pub diagnostics: Vec<Diagnostic>,
     /// The files the result depends on (0005 §8), for the cook's manifest.
     pub used_sources: Vec<SourcePath>,
+}
+
+/// An entry point a package declares (see [`Session::entries`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EntryPoint {
+    /// The full path, as [`EntryRequest::entry`] takes it (`Marlin.Engine.ForwardVs`).
+    pub path: String,
+    pub stage: Stage,
 }
 
 /// Why a request did not compile.
@@ -318,6 +326,16 @@ impl<'a> Session<'a> {
     /// Compiles one entry point.
     pub fn compile(&self, request: &EntryRequest<'_>) -> Result<CompileOutput, CompileError> {
         compile::compile(self, request)
+    }
+
+    /// The entry points of `package` that compile without type arguments: its public,
+    /// non-generic functions with a stage attribute, sorted by full path. A cook compiles all
+    /// of them into the package's library (0003 §4.4); static parameters take their defaults.
+    pub fn entries(&self, package: &str) -> Result<Vec<EntryPoint>, SessionError> {
+        let index = self.package(package).ok_or_else(|| SessionError {
+            message: format!("the session has no package `{package}`"),
+        })?;
+        Ok(compile::entries(self, index))
     }
 
     /// Compiles several entry points, in order (a host that wants threads gives each thread

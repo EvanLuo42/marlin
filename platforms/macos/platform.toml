@@ -14,3 +14,5 @@ texture-compression = ["bc"]
 texture-layout = "linear"
 head-codec = "zstd"
 bulk-codec = "zstd"
+# No Metal backend yet: cooking a shader package for macOS fails until there is one.
+shader-target = "metal-3"

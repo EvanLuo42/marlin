@@ -10,7 +10,7 @@ use marlin_hash::{xxh3_64, xxh3_128};
 use marlin_masset::{Schema, SchemaError};
 use marlin_reflect::{Reflect, TypeId, TypeInfo, TypeKind, Value, type_info};
 
-use crate::platform::Platform;
+use crate::platform::{Platform, Profile};
 
 /// A source object, bound to its reflected type.
 pub struct SourceObject<'a> {
@@ -31,6 +31,7 @@ pub struct Cooked {
 /// What a cooker may do besides returning its result.
 pub struct CookContext<'a> {
     pub(crate) platform: &'a Platform,
+    pub(crate) profile: Profile,
     pub(crate) root: &'a Path,
     /// Source files the object links to (the only files it may read), each with the content
     /// hash the cook key was computed from.
@@ -43,6 +44,11 @@ impl<'a> CookContext<'a> {
     /// The target being cooked for: decide formats and layouts from its description.
     pub fn platform(&self) -> &'a Platform {
         self.platform
+    }
+
+    /// The build being cooked for. A cooker that reads it must put it in its [`Cooker::key`].
+    pub fn profile(&self) -> Profile {
+        self.profile
     }
 
     /// The contents of a source file the object links to (`` `source:path` ``). Files reached
@@ -87,6 +93,15 @@ impl<'a> CookContext<'a> {
 /// [`version`]: Cooker::version
 pub trait Cooker: Send + Sync {
     fn version(&self) -> u32;
+
+    /// What else the output depends on for `platform` and `profile`, beyond the object, its
+    /// source files and the platform's texture description: a tool's own fingerprint (the
+    /// shader compiler's, 0005 §8), the profile when the cooker reads it. Part of every key
+    /// of the type's units; called whenever a key is computed, so it should be cheap.
+    fn key(&self, _platform: &Platform, _profile: Profile) -> u128 {
+        0
+    }
+
     fn cook(&self, object: &SourceObject<'_>, ctx: &mut CookContext<'_>) -> Result<Cooked, String>;
 }
 
@@ -119,6 +134,8 @@ pub(crate) struct Registered {
     pub(crate) cooker: Arc<dyn Cooker>,
     /// Source type structure and cooker version: part of every key of the type.
     pub(crate) fingerprint: u64,
+    /// Objects of the type are found by `!Name` (the build's name table, 0003 §4.4).
+    pub(crate) named: bool,
 }
 
 /// The source types a cook understands and the cooker of each.
@@ -196,15 +213,29 @@ impl Cookers {
         &mut self,
         cooker: impl Cooker + 'static,
     ) -> Result<(), SchemaError> {
-        self.add(type_info::<T>(), Arc::new(cooker))
+        self.add(type_info::<T>(), Arc::new(cooker), false)
+    }
+
+    /// Source type `T`, cooked by `cooker`, whose objects code finds by their `!Name` (shader
+    /// packages): the build's name table lists them, and two with one name fail the build.
+    pub fn register_named<T: Reflect>(
+        &mut self,
+        cooker: impl Cooker + 'static,
+    ) -> Result<(), SchemaError> {
+        self.add(type_info::<T>(), Arc::new(cooker), true)
     }
 
     /// Source type `T`, cooked as itself (see the generic cooker).
     pub fn register_generic<T: Reflect>(&mut self) -> Result<(), SchemaError> {
-        self.add(type_info::<T>(), Arc::new(Generic))
+        self.add(type_info::<T>(), Arc::new(Generic), false)
     }
 
-    fn add(&mut self, info: &'static TypeInfo, cooker: Arc<dyn Cooker>) -> Result<(), SchemaError> {
+    fn add(
+        &mut self,
+        info: &'static TypeInfo,
+        cooker: Arc<dyn Cooker>,
+        named: bool,
+    ) -> Result<(), SchemaError> {
         self.schema.register_info(info, 0)?;
         let name = Schema::text_name(info).to_owned();
         let fingerprint = fingerprint(info) ^ u64::from(cooker.version()).rotate_left(32);
@@ -213,6 +244,7 @@ impl Cookers {
             Registered {
                 cooker,
                 fingerprint,
+                named,
             },
         );
         Ok(())
@@ -230,5 +262,10 @@ impl Cookers {
 
     pub(crate) fn get(&self, type_name: &str) -> Option<&Registered> {
         self.by_type.get(type_name)
+    }
+
+    /// Whether objects of `type_name` are found by name (see [`Cookers::register_named`]).
+    pub fn is_named(&self, type_name: &str) -> bool {
+        self.by_type.get(type_name).is_some_and(|r| r.named)
     }
 }

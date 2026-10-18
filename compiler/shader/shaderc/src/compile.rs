@@ -8,22 +8,23 @@
 use std::sync::Arc;
 
 use marlin_front_hir_def::{
-    FilePackage, ItemId, ItemKind, ItemTreeQuery, SignatureWithSourceMap, item_path,
+    FilePackage, ItemId, ItemKind, ItemTree, ItemTreeQuery, LocalItemId, SignatureWithSourceMap,
+    Visibility, item_path,
 };
 use marlin_lang_diag::{Code, Diagnostic, Severity, Span};
 use marlin_lang_query::{Cancelled, Cx};
 use marlin_lang_span::{FileId, TextRange};
-use marlin_shader::reflect::{Attribute, NamedValue, SourceHash};
+use marlin_shader::reflect::{Attribute, NamedValue, SourceHash, Stage as ReflectStage};
 use marlin_shaderc_hir_ty::{
     Builtins, BuiltinsQuery, CapabilitiesQuery, FileTyDiagnostics, GenericArgTy,
-    ItemAttributesQuery, ItemTypesQuery, Subst, Ty, display_ty,
+    ItemAttributesQuery, ItemTypesQuery, KnownAttr, Stage, Subst, Ty, display_ty,
 };
 use marlin_shaderc_ir::{Module, Space, TypeData};
 use marlin_shaderc_lower::{Evaluated, LowerError, Lowering};
 use marlin_shaderc_opt::{Options, PassError, pipeline};
 use marlin_shaderc_reflect::Front;
 
-use crate::{CompileError, CompileOutput, EntryRequest, Session, values};
+use crate::{CompileError, CompileOutput, EntryPoint, EntryRequest, Session, values};
 
 type Outcome = Result<CompileOutput, CompileError>;
 
@@ -409,4 +410,59 @@ fn find_item(s: &Session<'_>, cx: &Cx<'_>, path: &str) -> Result<Option<ItemId>,
         }
     }
     Ok(None)
+}
+
+/// The entry points a package declares: public namespace functions with a stage attribute and
+/// no type parameters, sorted by full path.
+pub(crate) fn entries(s: &Session<'_>, package: usize) -> Vec<EntryPoint> {
+    let snapshot = s.db.snapshot();
+    // The session's inputs change only through `&mut Session`, so no read is cancelled.
+    find_entries(s, &snapshot, package).unwrap_or_default()
+}
+
+fn find_entries(
+    s: &Session<'_>,
+    cx: &Cx<'_>,
+    package: usize,
+) -> Result<Vec<EntryPoint>, Cancelled> {
+    let mut out = Vec::new();
+    for &file in &s.packages[package].files {
+        let tree = cx.get::<ItemTreeQuery>(&file)?;
+        for (local, item) in tree.items.iter() {
+            if item.kind != ItemKind::Function || !reachable(&tree, local) {
+                continue;
+            }
+            let id = ItemId { file, local };
+            let attrs = cx.get::<ItemAttributesQuery>(&id)?;
+            let stage = attrs.item.iter().find_map(|a| match a.known {
+                Some(KnownAttr::Stage(stage)) => Some(stage),
+                _ => None,
+            });
+            if let Some(stage) = stage {
+                out.push(EntryPoint {
+                    path: item_path(cx, id)?,
+                    stage: match stage {
+                        Stage::Compute => ReflectStage::Compute,
+                        Stage::Vertex => ReflectStage::Vertex,
+                        Stage::Pixel => ReflectStage::Pixel,
+                        Stage::Mesh => ReflectStage::Mesh,
+                        Stage::Amplification => ReflectStage::Amplification,
+                    },
+                });
+            }
+        }
+    }
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(out)
+}
+
+/// Whether `local` can be an entry point another package requests without type arguments: a
+/// public, non-generic function of a namespace (entry points are never type members, E1210).
+fn reachable(tree: &ItemTree, local: LocalItemId) -> bool {
+    let item = &tree.items[local];
+    item.visibility == Visibility::Public
+        && item.generic_params.is_empty()
+        && item
+            .parent
+            .is_none_or(|p| tree.items[p].kind == ItemKind::Namespace)
 }

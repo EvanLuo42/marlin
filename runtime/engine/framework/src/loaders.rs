@@ -1,6 +1,7 @@
 //! The engine's asset loaders: what each cooked type becomes at runtime.
 //!
 //! - [`Level`]: as authored (marlin-serial).
+//! - `ShaderLibrary` (a cooked `ShaderPackage`): as cooked (marlin-serial); see [`crate::shaders`].
 //! - `Mesh` → [`LoadedMesh`]: LOD 0 decoded for the forward renderer, shared with the render side
 //!   (which uploads it) through an `Arc`.
 //! - `Texture`, `Skeleton`, `AnimationClip` → [`InPlace`]: the cooked layout checked once and
@@ -19,6 +20,7 @@ use marlin_render::asset::mesh::MeshView;
 use marlin_render::asset::texture::TextureView;
 use marlin_render::asset::{Mesh, Texture};
 use marlin_render::{MeshData, Vertex};
+use marlin_shader::asset::ShaderLibrary;
 
 use crate::level::Level;
 
@@ -126,6 +128,7 @@ fn load_mesh(ctx: &mut LoadContext<'_>) -> Result<LoadedMesh, alloc::string::Str
 pub fn engine_loaders() -> Loaders {
     let mut l = Loaders::new();
     l.register_serial::<Level>();
+    l.register_serial::<ShaderLibrary>();
     l.register::<LoadedMesh>(type_info::<Mesh>().id.0, load_mesh);
     l.register::<InPlace<Texture>>(type_info::<Texture>().id.0, |ctx| {
         let sizes: Vec<u64> = ctx.bulk.iter().map(|(_, b)| b.len() as u64).collect();
