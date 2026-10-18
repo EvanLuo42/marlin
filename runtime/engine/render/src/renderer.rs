@@ -88,6 +88,15 @@ pub struct ForwardShaders<'a> {
 /// `[Push]` struct must be this size.
 pub const FORWARD_PUSH_BYTES: u32 = 32;
 
+/// What [`Renderer::add_passes`] declares.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ForwardOutput<'g> {
+    pub color: TextureHandle<'g>,
+    /// The pass's depth (`D32Float`, reverse-Z): a transient the caller may read.
+    pub depth: TextureHandle<'g>,
+    pub stats: RenderStats,
+}
+
 /// What a [`Renderer::add_passes`] call draws.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct RenderStats {
@@ -240,6 +249,14 @@ impl Renderer {
         self.meshes.remove(mesh.0);
     }
 
+    /// The most meshlets any LOD of `mesh` has (0 if it was released): what one instance may
+    /// add to the visible clusters.
+    pub(crate) fn meshlet_capacity(&self, mesh: MeshHandle) -> u32 {
+        self.meshes
+            .get(mesh.0)
+            .map_or(0, |m| m.lods.iter().map(|l| l.meshlets).max().unwrap_or(0))
+    }
+
     /// Meshes uploaded and not released.
     pub fn mesh_count(&self) -> usize {
         self.meshes.len()
@@ -276,7 +293,8 @@ impl Renderer {
     /// one instanced draw per mesh and LOD. Transforms and colors come from the GPU Scene `gpu`
     /// (after its scatter), vertices from the meshes' resident pages; the pass uploads only the
     /// frame constants and the instance rows grouped by draw. Without a camera, or shaders, it
-    /// only clears. Returns the target's new handle and what the pass draws.
+    /// only clears. Returns the target's and the depth buffer's new handles and what the pass
+    /// draws.
     pub fn add_passes<'g>(
         &'g self,
         g: &mut RenderGraph<'g>,
@@ -284,7 +302,7 @@ impl Renderer {
         scene: &RenderScene,
         gpu: GpuScene<'g>,
         camera: Option<(Transform, Camera)>,
-    ) -> (TextureHandle<'g>, RenderStats) {
+    ) -> ForwardOutput<'g> {
         let size = g.texture_desc(target);
         let (width, height) = (size.width, size.height);
         let camera = camera.filter(|_| self.pipeline.is_some());
@@ -350,13 +368,13 @@ impl Renderer {
                 .with_clear(ClearValue::Depth(0.0)),
         );
         let pipeline = self.pipeline.as_ref();
-        let target = g.add_raster("Forward", |b| {
+        let (target, depth) = g.add_raster("Forward", |b| {
             let target = b.color(target, LoadOp::Clear(env.clear_color), StoreOp::Store);
-            b.depth(depth, LoadOp::Clear(0.0), StoreOp::DontCare);
+            let depth = b.depth(depth, LoadOp::Clear(0.0), StoreOp::Store);
             let transforms = b.read_buffer(gpu.instance_transforms, Access::VertexRead);
             let instances = b.read_buffer(gpu.instance_data, Access::VertexRead);
             let meshes = b.read_buffer(gpu.meshes, Access::VertexRead);
-            (target, move |ctx: &mut PassContext<'_>| {
+            ((target, depth), move |ctx: &mut PassContext<'_>| {
                 let (Some(pipeline), Some(constants)) = (pipeline, constants) else {
                     return;
                 };
@@ -376,6 +394,10 @@ impl Renderer {
                 }
             })
         });
-        (target, stats)
+        ForwardOutput {
+            color: target,
+            depth,
+            stats,
+        }
     }
 }

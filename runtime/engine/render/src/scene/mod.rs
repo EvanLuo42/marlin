@@ -311,6 +311,8 @@ impl RenderScene {
             InstanceUpdate::Remove => {
                 self.instance_rows.alive[i] = false;
                 self.ids.instances.release(id);
+                // The GPU row reads as hidden from now on.
+                self.instances_dirty.mark(id.index, dirty::DATA);
             }
             InstanceUpdate::Transform(t) => {
                 if self.moved_at[i] != self.frame {
@@ -337,6 +339,11 @@ impl RenderScene {
                 self.instances_dirty.mark(id.index, dirty::DATA);
             }
         }
+    }
+
+    /// Instance rows, live or not: the GPU tables' rows in use.
+    pub(crate) fn instance_rows(&self) -> u32 {
+        self.instance_rows.len() as u32
     }
 
     pub fn environment(&self) -> &Environment {

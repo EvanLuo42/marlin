@@ -32,4 +32,5 @@ pub use offscreen::{OFFSCREEN_FORMAT, Offscreen};
 pub use run::{RunError, run};
 pub use shaders::{
     ShaderError, forward_shaders, load_engine_shaders, post_shaders, scatter_shader,
+    visibility_shaders,
 };

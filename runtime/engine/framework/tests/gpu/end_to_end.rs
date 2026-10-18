@@ -108,6 +108,12 @@ impl Viewer {
             marlin_framework::scatter_shader(library).unwrap(),
         )
         .unwrap();
+        // The visibility pipeline's entries are what marlin-render sets (R1k draws with them).
+        marlin_render::Visibility::new(
+            device,
+            &marlin_framework::visibility_shaders(library).unwrap(),
+        )
+        .unwrap();
         let offscreen = Offscreen::new(device, WIDTH, HEIGHT).unwrap();
         Self {
             render: RenderSide::new(renderer, post, scatter, ids),

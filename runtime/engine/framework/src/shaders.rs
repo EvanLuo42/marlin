@@ -7,7 +7,7 @@ use core::fmt;
 
 use marlin_asset::{AssetError, AssetServer, Handle, LoadState, Vfs};
 use marlin_jobs::JobSystem;
-use marlin_render::{FORWARD_PUSH_BYTES, ForwardShaders, PostShaders};
+use marlin_render::{FORWARD_PUSH_BYTES, ForwardShaders, PostShaders, VisibilityShaders};
 use marlin_rhi::ShaderModule;
 use marlin_shader::asset::{LibraryEntry, ShaderLibrary};
 use marlin_shader::reflect::{Stage, StageBinding};
@@ -202,4 +202,51 @@ pub fn scatter_shader(library: &ShaderLibrary) -> Result<ShaderModule<'_>, Shade
         ));
     }
     Ok(module(e))
+}
+
+/// The visibility pipeline's entries (`Marlin.Engine.Visibility`).
+pub const VISIBILITY: [&str; 9] = [
+    "Marlin.Engine.Visibility.Reset",
+    "Marlin.Engine.Visibility.InstanceCull",
+    "Marlin.Engine.Visibility.InstanceArgs",
+    "Marlin.Engine.Visibility.ClusterCull",
+    "Marlin.Engine.Visibility.FinishArgs",
+    "Marlin.Engine.Visibility.VisMesh",
+    "Marlin.Engine.Visibility.VisPs",
+    "Marlin.Engine.Visibility.VisClear",
+    "Marlin.Engine.Visibility.VisDepth",
+];
+
+/// The visibility pipeline's shaders from the engine's library, checked for their stages and
+/// the push constants marlin-render's visibility passes set.
+pub fn visibility_shaders(library: &ShaderLibrary) -> Result<VisibilityShaders<'_>, ShaderError> {
+    use marlin_render::visibility::{CULL_PUSH_BYTES, RASTER_PUSH_BYTES, TARGET_PUSH_BYTES};
+    let get = |name: &'static str, stage: Stage, push: u32| {
+        let e = library.entry(name).ok_or(ShaderError::MissingEntry(name))?;
+        let mismatch = |problem| ShaderError::Mismatch {
+            entry: name,
+            problem,
+        };
+        if e.reflection.entry.stage != stage {
+            return Err(mismatch("not the stage the visibility passes use it as"));
+        }
+        if e.reflection.push.as_ref().map(|p| p.size) != Some(push) {
+            return Err(mismatch(
+                "its push constants are not what the visibility passes set",
+            ));
+        }
+        Ok(module(e))
+    };
+    let v = &VISIBILITY;
+    Ok(VisibilityShaders {
+        reset: get(v[0], Stage::Compute, CULL_PUSH_BYTES)?,
+        instance_cull: get(v[1], Stage::Compute, CULL_PUSH_BYTES)?,
+        instance_args: get(v[2], Stage::Compute, CULL_PUSH_BYTES)?,
+        cluster_cull: get(v[3], Stage::Compute, CULL_PUSH_BYTES)?,
+        finish_args: get(v[4], Stage::Compute, CULL_PUSH_BYTES)?,
+        mesh: get(v[5], Stage::Mesh, RASTER_PUSH_BYTES)?,
+        pixel: get(v[6], Stage::Pixel, RASTER_PUSH_BYTES)?,
+        clear: get(v[7], Stage::Compute, TARGET_PUSH_BYTES)?,
+        depth: get(v[8], Stage::Compute, TARGET_PUSH_BYTES)?,
+    })
 }

@@ -11,3 +11,4 @@ mod forward;
 mod geometry;
 mod gpu_scene;
 mod post;
+mod visibility;

@@ -346,3 +346,19 @@ R1i（0008 §8）做完时（2026-10-18）定下的细节（离散 LOD 的常驻
 - **离散 LOD 的选择**（每个实例，CPU 上）：取误差投影后不超过 `Renderer::lod_error_pixels`（默认 1 像素）的最粗一级；投影用实例包围球近侧的距离和实例的最大缩放。draw 按 (网格, LOD) 分组。`RenderStats` 多了 `triangles`。
 - `sample_first_frame` 因为 LOD 选择而改变：中间那个物体的轮廓上有 118 个像素不同（LOD 1 的误差在那个距离上不到 1 像素）。把预算设成 0（总是 LOD 0）时，GPU 解码的画面和旧参考图在容差内一致，所以差别只来自 LOD。参考图单独提交重新生成。
 - **测试**（`marlin-render/tests/gpu/geometry.rs`）：用引擎自己的解码函数（测试 shader `Render.DecodeVertices`，crate 的测试包现在可以依赖 `Marlin.Engine`）在 GPU 上解码一个球的每个 LOD 的所有顶点，和 CPU 的 `decode_lod` 比较：位置相差不超过 1e-6（GPU 可能用 FMA），法线点积 > 0.99999；量化和 f32 两种精度都测。往返：LOD 0 的位置都在球面上，误差不超过半个量化步长（f32 时为 0）。LOD：距离增大时三角形数单调不增、最远处是最后一级，预算为 0 时总是 LOD 0。3 张 golden 不变。开窗口跑 `samples/basic` 10 秒，开着验证层，没有报错。
+
+R1j（0008 §8）做完时（2026-10-18）定下的细节（§4.1、§4.3 的离散 LOD 版本）：
+- **范围**：一遍（没有 §4.2 的 HZB 两遍遮挡剔除，那是 R2）、只有硬件光栅（没有软光栅分流）、只有离散 LOD（没有 DAG 遍历）。`marlin_render::Visibility::add_passes(g, renderer, scene, gpu, camera, w, h)` 返回 `VisibilityOutput { visbuffer, depth, clusters, counters, capacity }`。游戏的帧里还没有接上：输出没人读，graph 会把这些 pass 剔除，等 R1k 的材质解算来读 visbuffer。
+- **pass**（`content/engine/shaders/Visibility/Visibility.mshader`，`Marlin.Engine.Visibility`）：`VisClear` → `Reset`（计数清零）→ `InstanceCull`（每个实例行一个线程：视锥测试世界包围球，再选 LOD，可见的追加到 `VisibleInstances`）→ `InstanceArgs`（可见实例数写成下一步的 indirect dispatch）→ `ClusterCull`（每个可见实例一个 64 线程的 group：逐个 meshlet 做视锥和法线锥背面测试，追加到 `VisibleClusters`）→ `FinishArgs`（cluster 数截到容量，写成 mesh dispatch：一行最多 65535 个 group，超出用第二维）→ `VisRaster`（mesh shader 每个 workgroup 一个 cluster，128 线程；pixel shader 对 `R64Uint` 做原子 max；没有颜色和深度附件）→ `VisDepth`（深度拆进 `R32Float`）。
+- **visbuffer 的位**照 §4.3：高 32 位是 reverse-Z 深度的 float 位，然后 25 位可见 cluster 下标、7 位三角形下标。三角形下标经 mesh shader 的逐图元输出 `[PrimitiveId]` 带给 pixel shader，值就是 `cluster << 7 | triangle`。可见 cluster 表每项两个字：实例行、meshlet 下标 | LOD << 24。
+- **计数和 indirect 参数分两个 buffer**：一个 pass 不会既对一个 buffer 做原子计数又从它取 indirect 参数。RHI 的 indirect dispatch 记录是 16 字节（先是一个常量，即 push 的第 31 个字，再是 x、y、z），一开始按 12 字节写，cluster 剔除一个 group 都没跑；直接 dispatch 对照后才找到。
+- **容量**：可见 cluster 表按"每个可绘制实例最大一级的 meshlet 数之和"取上界，取 2 的幂、至少 1024、至多 2^25（25 位），所以不会溢出，场景小变化时 graph 的 plan 也不变。
+- **GPU 上选 LOD**：公式和 CPU（前向渲染器）的完全一样：实例包围球近侧的距离、最大缩放、`lod_error_pixels`，取最粗的合格一级。各级误差从几何 buffer 的 LOD 记录里读。
+- **剔除细节**：视锥平面在 CPU 上从 view-projection 抽出（左右下上和近平面，reverse-Z 的近平面是 z = w，远平面在无穷远不测），按世界空间传入。法线锥用 cooker 写的 snorm8 轴和 cutoff（cutoff 为 1 是退化锥，不剔除）；实例有非均匀缩放时不做法线锥测试（锥在非均匀缩放下不再保守）。被删除的实例行由 scatter 写成 `HIDDEN`，表重建时所有行都重写，所以 GPU 剔除只看标志，不需要存活位图。
+- **网格表里放句柄**：Marlin shader 的资源就是 32 位 bindless 下标，可以放在 buffer 的结构体里，所以 `MeshEntry.Geometry` 直接是 `ReadOnlyByteBuffer`，剔除和 mesh shader 从网格表拿到几何 buffer。
+- **顺带的修正**：
+  - RHI：`RenderPassDesc` 加了 `area`（没有附件的 render pass 必须给，比如只写 storage 视图的 visbuffer pass），graph 的 raster pass 对应 `b.area(w, h)`（进拓扑键）。
+  - shader 编译器：pixel 入口读 `PrimitiveId` 时声明 `Geometry` capability（DXC 对 `SV_PrimitiveID` 也这样做；mesh 入口已经有 `MeshShadingEXT`），并且和其他整数输入一样加 `Flat`。自己的 SPIR-V 校验器也检查这两条（以前对内建变量跳过了 `Flat` 规则，验证层报错后补上），`shaderc` 加了回归测试。语法没有变化。
+  - `Renderer::add_passes` 返回 `ForwardOutput { color, depth, stats }`，深度改为存储（测试拿它和 visbuffer 比较）。
+  - 测试 shader 的 crate 包现在可以依赖 `Marlin.Engine`（R1i 已改）；framework 加了 `visibility_shaders(library)`，按 stage 和 push 大小检查，端到端测试用真实的 cook 结果建一次 `Visibility`。
+- **测试**（`marlin-render/tests/gpu/visibility.rs`，同一帧里同时跑前向和可见性 pass）：旋转、缩放、非均匀缩放、相互穿插的立方体和球，视锥外和相机背后的实例被剔除（可见实例数正确）；visbuffer 的覆盖、深度和前向的深度缓冲**逐像素一致**（RTX 5060 上 0 个像素不同，测试也按 0 容差），拆出的深度纹理和 visbuffer 的高 32 位逐位相同，每个像素的 cluster 都属于前向画出那个颜色的实例；把一个实例移出视野后下一帧再比一次。法线锥：正对相机的球 47 个 meshlet 只画 31 个，画面不变。LOD：5 个距离上的球，GPU 选的 LOD 的三角形总数等于前向渲染器在 CPU 上选的。空场景 visbuffer 全 0。3 张 golden 和 `sample_first_frame` 不变。开窗口跑 `samples/basic` 10 秒，没有报错。

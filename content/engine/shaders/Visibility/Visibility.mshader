@@ -1,0 +1,298 @@
+namespace Marlin.Engine.Visibility;
+
+// The visibility pipeline of one view (0009 §4.1, §4.3), R1's discrete-LOD form:
+//
+// 1. `Reset` zeroes the counters.
+// 2. `InstanceCull`: one thread per instance row; frustum test of its world sphere, then the
+//    LOD whose projected error stays within the budget. Visible instances are appended to
+//    `Visible`; `InstanceArgs` makes their count the next pass's dispatch.
+// 3. `ClusterCull`: one group per visible instance; frustum and normal-cone tests of each of its
+//    LOD's meshlets. Visible clusters are appended to `Clusters` (their index is the cluster id
+//    the visibility buffer stores).
+// 4. `FinishArgs` turns the cluster count into the mesh dispatch.
+// 5. `VisMesh` + `VisPs`: one mesh group per visible cluster; each pixel keeps the nearest
+//    `depth << 32 | cluster << 7 | triangle` with a 64-bit atomic max (no attachments).
+// 6. `VisDepth` splits the depth out into an `R32Float` texture.
+//
+// `Counters` words (atomics): 0 the visible instances, 1 the visible clusters appended (may
+// pass the capacity), 2 the clusters drawn. `Args` (indirect arguments, a pass never both counts
+// into and dispatches from one buffer) holds two records of the RHI's indirect dispatches: a
+// constant (push word 31, unused here), then x, y, z. Words 0–3 are the cluster cull's, 4–7
+// the mesh dispatch.
+
+using Marlin.Engine.Scene;
+
+/// The view, as marlin-render's visibility passes upload it.
+public struct View
+{
+    /// Matrices are column-major; `M * v` is the column-vector product.
+    public float4x4 ViewProjection;
+    /// World-space frustum planes (left, right, bottom, top, near): a point p is inside a plane
+    /// when `Dot(plane.xyz, p) + plane.w >= 0`. The far plane is at infinity.
+    public float4[5] Planes;
+    /// xyz: the eye; w: pixels per world unit at distance 1.
+    public float4 Eye;
+    /// The screen-space error, in pixels, a LOD may have.
+    public float LodErrorPixels;
+    public uint InstanceRows;
+    /// Entries `Clusters` holds.
+    public uint ClusterCapacity;
+    public uint Spare;
+}
+
+public struct CullArgs
+{
+    public Uniform<View> View;
+    public ReadOnlyBuffer<InstanceData> Instances;
+    public ReadOnlyBuffer<InstanceTransforms> Transforms;
+    /// World bounding spheres: center, radius.
+    public ReadOnlyBuffer<float4> Bounds;
+    public ReadOnlyBuffer<MeshEntry> Meshes;
+    /// Visible instances: row, LOD, meshlet count, spare.
+    public Buffer<uint4> Visible;
+    public Buffer<uint> Counters;
+    public Buffer<uint> Args;
+    /// Visible clusters: instance row, meshlet | LOD << 24.
+    public Buffer<uint2> Clusters;
+}
+
+/// Mesh groups per row of the mesh dispatch (the smallest maximum every device allows).
+const uint MeshGroupsPerRow = 65535;
+
+[Compute(1, 1, 1)]
+public void Reset([Push] in CullArgs a)
+{
+    a.Counters[0] = 0;
+    a.Counters[1] = 0;
+    a.Counters[2] = 0;
+}
+
+[Compute(1, 1, 1)]
+public void InstanceArgs([Push] in CullArgs a)
+{
+    a.Args[0] = 0;
+    a.Args[1] = a.Counters[0];
+    a.Args[2] = 1;
+    a.Args[3] = 1;
+}
+
+bool InFrustum(in View v, float3 center, float radius)
+{
+    for (uint i = 0; i < 5; i++)
+    {
+        float4 p = v.Planes[i];
+        if (Dot(p.xyz, center) + p.w < -radius)
+            return false;
+    }
+    return true;
+}
+
+/// The largest scale of a transform: its longest column.
+float MaxScale(in Rows3x4 m)
+{
+    float3 x = float3(m.R0.x, m.R1.x, m.R2.x);
+    float3 y = float3(m.R0.y, m.R1.y, m.R2.y);
+    float3 z = float3(m.R0.z, m.R1.z, m.R2.z);
+    return Sqrt(Max(Dot(x, x), Max(Dot(y, y), Dot(z, z))));
+}
+
+/// Whether a transform scales every axis alike (normal cones stay valid).
+bool UniformScale(in Rows3x4 m)
+{
+    float3 x = float3(m.R0.x, m.R1.x, m.R2.x);
+    float3 y = float3(m.R0.y, m.R1.y, m.R2.y);
+    float3 z = float3(m.R0.z, m.R1.z, m.R2.z);
+    float lo = Min(Dot(x, x), Min(Dot(y, y), Dot(z, z)));
+    float hi = Max(Dot(x, x), Max(Dot(y, y), Dot(z, z)));
+    return hi <= lo * 1.0001;
+}
+
+[Compute(64, 1, 1)]
+public void InstanceCull([DispatchThreadId] uint3 id, [Push] in CullArgs a)
+{
+    View v = a.View.Value;
+    uint row = id.x;
+    if (row >= v.InstanceRows)
+        return;
+    InstanceData instance = a.Instances[row];
+    // Hidden, or removed (the scatter hides removed rows).
+    if ((instance.Flags & 1) != 0)
+        return;
+    MeshEntry mesh = a.Meshes[instance.Mesh];
+    if (mesh.Resident == 0)
+        return;
+    float4 sphere = a.Bounds[row];
+    if (!InFrustum(v, sphere.xyz, sphere.w))
+        return;
+    // The coarsest LOD whose error, projected at the sphere's near side, is within budget.
+    float scale = MaxScale(a.Transforms[row].Current);
+    float distance = Max(Length(sphere.xyz - v.Eye.xyz) - sphere.w, 0.0001);
+    float limit = v.LodErrorPixels * distance / (v.Eye.w * scale);
+    uint lod = 0;
+    for (uint l = 0; l < mesh.Lods; l++)
+    {
+        if (AsFloat(Lod(mesh.Geometry, l).Error) <= limit)
+            lod = l;
+    }
+    uint meshlets = Lod(mesh.Geometry, lod).MeshletCount;
+    uint slot = a.Counters.AtomicAdd(0, 1);
+    a.Visible[slot] = uint4(row, lod, meshlets, 0);
+}
+
+/// A snorm8 in bits `shift` to `shift + 7` of `w`.
+float Snorm8(uint w, uint shift)
+{
+    int b = (int)((w >> shift) & 255);
+    if (b >= 128)
+        b -= 256;
+    return Max((float)b / 127, -1);
+}
+
+[Compute(64, 1, 1)]
+public void ClusterCull([GroupId] uint3 group, [GroupThreadId] uint3 thread, [Push] in CullArgs a)
+{
+    View v = a.View.Value;
+    uint4 visible = a.Visible[group.x];
+    uint row = visible.x;
+    uint lod = visible.y;
+    Rows3x4 t = a.Transforms[row].Current;
+    MeshEntry mesh = a.Meshes[a.Instances[row].Mesh];
+    LodStreams l = Lod(mesh.Geometry, lod);
+    float scale = MaxScale(t);
+    bool cones = UniformScale(t);
+    for (uint i = thread.x; i < visible.z; i += 64)
+    {
+        uint at = l.Meshlets + i * 64;
+        float4 bounds = AsFloat(mesh.Geometry.Load4(at));
+        float3 center = Apply(t, float4(bounds.xyz, 1));
+        float radius = bounds.w * scale;
+        if (!InFrustum(v, center, radius))
+            continue;
+        uint cone = mesh.Geometry.Load(at + 16);
+        float cutoff = Snorm8(cone, 24);
+        // A cutoff of 1 (127) is a degenerate cone: never culled.
+        if (cones && cutoff < 1)
+        {
+            float3 axis = Normalize(Apply(t, float4(Snorm8(cone, 0), Snorm8(cone, 8), Snorm8(cone, 16), 0)));
+            float3 d = center - v.Eye.xyz;
+            if (Dot(d, axis) >= cutoff * Length(d) + radius)
+                continue;
+        }
+        uint slot = a.Counters.AtomicAdd(1, 1);
+        if (slot < v.ClusterCapacity)
+            a.Clusters[slot] = uint2(row, i | (lod << 24));
+    }
+}
+
+[Compute(1, 1, 1)]
+public void FinishArgs([Push] in CullArgs a)
+{
+    uint count = Min(a.Counters[1], a.View.Value.ClusterCapacity);
+    a.Counters[2] = count;
+    a.Args[4] = 0;
+    a.Args[5] = Min(count, MeshGroupsPerRow);
+    a.Args[6] = (count + MeshGroupsPerRow - 1) / MeshGroupsPerRow;
+    a.Args[7] = 1;
+}
+
+public struct RasterArgs
+{
+    public Uniform<View> View;
+    public ReadOnlyBuffer<InstanceData> Instances;
+    public ReadOnlyBuffer<InstanceTransforms> Transforms;
+    public ReadOnlyBuffer<MeshEntry> Meshes;
+    public ReadOnlyBuffer<uint2> Clusters;
+    public ReadOnlyBuffer<uint> Counters;
+    public StorageTexture2D<ulong> Vis;
+}
+
+public struct VisVertex
+{
+    [Position] public float4 Pos;
+}
+
+public struct VisPrimitive
+{
+    /// `cluster << 7 | triangle`.
+    [PrimitiveId] public uint Id;
+}
+
+/// Byte `at` of a byte buffer.
+uint ByteAt(ReadOnlyByteBuffer b, uint at) => (b.Load((at >> 2) << 2) >> ((at & 3) * 8)) & 255;
+
+[Mesh(128, 1, 1, MaxVertices = 64, MaxPrimitives = 124, Topology = MeshTopology.Triangle)]
+public void VisMesh(
+    [GroupId] uint3 group,
+    [GroupThreadId] uint3 thread,
+    [Push] in RasterArgs a,
+    MeshOutput<VisVertex, VisPrimitive> o)
+{
+    uint cluster = group.x + group.y * MeshGroupsPerRow;
+    if (cluster >= a.Counters[2])
+    {
+        o.SetCounts(0, 0);
+        return;
+    }
+    uint2 c = a.Clusters[cluster];
+    uint row = c.x;
+    uint lod = c.y >> 24;
+    MeshEntry mesh = a.Meshes[a.Instances[row].Mesh];
+    ReadOnlyByteBuffer g = mesh.Geometry;
+    LodStreams l = Lod(g, lod);
+    uint at = l.Meshlets + (c.y & 16777215) * 64;
+    uint vertexOffset = g.Load(at + 20);
+    uint triangleOffset = g.Load(at + 24);
+    uint counts = g.Load(at + 28);
+    uint vertices = counts & 255;
+    uint triangles = (counts >> 8) & 255;
+    o.SetCounts(vertices, triangles);
+    uint i = thread.x;
+    if (i < vertices)
+    {
+        uint v = g.Load(l.MeshletVertices + (vertexOffset + i) * 4);
+        float3 p = DecodePosition(g, mesh, l, v);
+        float4 world = float4(Apply(a.Transforms[row].Current, float4(p, 1)), 1);
+        o.Vertices[i] = VisVertex { Pos = a.View.Value.ViewProjection * world };
+    }
+    if (i < triangles)
+    {
+        uint t = l.MeshletTriangles + triangleOffset + i * 3;
+        o.Triangles[i] = uint3(ByteAt(g, t), ByteAt(g, t + 1), ByteAt(g, t + 2));
+        o.Primitives[i] = VisPrimitive { Id = (cluster << 7) | i };
+    }
+}
+
+[Pixel]
+public void VisPs([Position] float4 position, [PrimitiveId] uint id, [Push] in RasterArgs a)
+{
+    // Reverse-Z: the nearest has the largest depth, and a non-negative float's bits order as
+    // the float does.
+    ulong value = ((ulong)AsUInt(position.z) << 32) | (ulong)id;
+    a.Vis.AtomicMax((int2)position.xy, value);
+}
+
+public struct TargetArgs
+{
+    public StorageTexture2D<ulong> Vis;
+    public StorageTexture2D<float> Depth;
+    public uint Width;
+    public uint Height;
+}
+
+/// Clears the visibility buffer to depth 0 (the far plane under reverse-Z), cluster 0.
+[Compute(8, 8, 1)]
+public void VisClear([DispatchThreadId] uint3 id, [Push] in TargetArgs a)
+{
+    if (id.x >= a.Width || id.y >= a.Height)
+        return;
+    a.Vis[(int2)id.xy] = 0;
+}
+
+/// The depth half of the visibility buffer as a float texture.
+[Compute(8, 8, 1)]
+public void VisDepth([DispatchThreadId] uint3 id, [Push] in TargetArgs a)
+{
+    if (id.x >= a.Width || id.y >= a.Height)
+        return;
+    a.Depth[(int2)id.xy] = AsFloat((uint)(a.Vis[(int2)id.xy] >> 32));
+}

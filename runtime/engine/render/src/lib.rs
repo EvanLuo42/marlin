@@ -23,10 +23,12 @@ pub mod geometry;
 mod post;
 mod renderer;
 pub mod scene;
+pub mod visibility;
 
 pub use post::{HDR_FORMAT, PostOutput, PostProcess, PostSettings, PostShaders};
 pub use renderer::{
-    Camera, Environment, FORWARD_PUSH_BYTES, ForwardShaders, MeshHandle, RenderStats, Renderer,
-    RendererDesc,
+    Camera, Environment, FORWARD_PUSH_BYTES, ForwardOutput, ForwardShaders, MeshHandle,
+    RenderStats, Renderer, RendererDesc,
 };
 pub use scene::{GpuScene, RenderScene, ScatterShader, SceneIds, SceneUpdates};
+pub use visibility::{Visibility, VisibilityOutput, VisibilityShaders};

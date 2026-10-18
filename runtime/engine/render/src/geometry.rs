@@ -31,6 +31,7 @@ pub(crate) struct LodDraw {
     pub format: IndexFormat,
     /// Object-space simplification error (a distance).
     pub error: f32,
+    pub meshlets: u32,
 }
 
 /// The buffer's bytes and each LOD's draw. `pages` are the mesh's bulk blobs (indexed by
@@ -94,6 +95,7 @@ pub(crate) fn build(
                 IndexFormat::U32
             },
             error: lod.error,
+            meshlets: lod.meshlet_count,
         });
     }
     Ok((bytes, draws))

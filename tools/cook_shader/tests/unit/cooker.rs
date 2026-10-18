@@ -433,7 +433,7 @@ fn cooking_is_deterministic() {
 }
 
 /// The engine's own package (`content/engine/shaders/`) cooks, with the forward pass, the post
-/// chain and the GPU Scene's scatter in it.
+/// chain, the GPU Scene's scatter and the visibility pipeline in it.
 #[test]
 fn the_engine_package_cooks() {
     let p = Project::new("engine");
@@ -469,6 +469,8 @@ fn the_engine_package_cooks() {
         ("Marlin.Engine.ForwardVs", Stage::Vertex),
         ("Marlin.Engine.Post.TonemapPs", Stage::Pixel),
         ("Marlin.Engine.Scene.Scatter", Stage::Compute),
+        ("Marlin.Engine.Visibility.VisMesh", Stage::Mesh),
+        ("Marlin.Engine.Visibility.VisPs", Stage::Pixel),
     ] {
         let e = lib.entry(name).unwrap_or_else(|| panic!("{name}"));
         assert_eq!(e.reflection.entry.stage, stage);

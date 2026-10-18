@@ -8,8 +8,8 @@ namespace Marlin.Engine.Scene;
 /// A row of the GPU Scene's mesh table.
 public struct MeshEntry
 {
-    /// The geometry buffer's view.
-    public uint Geometry;
+    /// The geometry buffer.
+    public ReadOnlyByteBuffer Geometry;
     public uint Lods;
     /// `MeshFlags`: 1 float positions, 2 skin, 4 color.
     public uint Flags;

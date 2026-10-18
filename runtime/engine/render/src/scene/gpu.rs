@@ -158,14 +158,23 @@ impl RenderScene {
         let fresh_instances = data.fresh || transforms.fresh || bounds.fresh;
         let mut instance_rows = self.instances_dirty.take();
         if fresh_instances {
+            // Every row: dead ones are written hidden.
             instance_rows = (0..self.instance_rows.len() as u32)
-                .filter(|&r| self.instance_rows.alive[r as usize])
                 .map(|r| (r, dirty::DATA | dirty::BOTH | dirty::BOUNDS))
                 .collect();
         }
         for (row, bits) in instance_rows {
             let i = row as usize;
             if !self.instance_rows.alive[i] {
+                // A removed row: hidden, so the visibility passes skip it.
+                if bits & dirty::DATA != 0 {
+                    ops.push(
+                        DATA,
+                        WRITE,
+                        row,
+                        &[0, super::flags::HIDDEN, 0, 0, 0, 0, 0, 0],
+                    );
+                }
                 continue;
             }
             if bits & dirty::DATA != 0 {

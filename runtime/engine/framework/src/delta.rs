@@ -162,10 +162,12 @@ impl RenderSide {
             TextureDesc::new_2d(size.width, size.height, HDR_FORMAT)
                 .with_clear(ClearValue::Color(self.scene.environment().clear_color)),
         );
-        let (scene, stats) = self
+        let forward = self
             .renderer
             .add_passes(g, scene, &self.scene, gpu, self.camera);
-        let out = self.post.add_passes(g, scene, target, MAIN_VIEW, self.dt);
-        (out.output, stats)
+        let out = self
+            .post
+            .add_passes(g, forward.color, target, MAIN_VIEW, self.dt);
+        (out.output, forward.stats)
     }
 }

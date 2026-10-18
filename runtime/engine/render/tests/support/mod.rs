@@ -10,7 +10,7 @@ use marlin_math::{Transform, Vec3};
 use marlin_render::scene::{InstanceDesc, InstanceId, InstanceUpdate, MeshId, MeshUpdate};
 use marlin_render::{
     Camera, Environment, ForwardShaders, GpuScene, MeshHandle, RenderScene, RenderStats, Renderer,
-    RendererDesc, ScatterShader, SceneUpdates,
+    RendererDesc, ScatterShader, SceneUpdates, Visibility,
 };
 use marlin_render_graph::{FrameContext, FrameContextDesc, Readback, TextureDesc};
 use marlin_rhi::{ClearValue, Device, Format};
@@ -126,7 +126,8 @@ impl Harness {
                     TextureDesc::new_2d(SIZE, SIZE, Format::Rgba8Unorm)
                         .with_clear(ClearValue::Color(clear)),
                 );
-                let (target, stats) = renderer.add_passes(g, target, scene, gpu, camera);
+                let forward = renderer.add_passes(g, target, scene, gpu, camera);
+                let (target, stats) = (forward.color, forward.stats);
                 let ticket: Readback = g.readback_texture(target);
                 let extra = read(g, gpu);
                 ((ticket, stats), extra)
@@ -135,6 +136,60 @@ impl Harness {
         let pixels = self.frame.wait_readback(ticket).unwrap();
         assert_eq!(self.device.validation_errors(), 0);
         (Image::new(SIZE, SIZE, pixels), stats, extra)
+    }
+
+    /// Applies the pending updates and renders one frame with both the forward pass and the
+    /// visibility passes of `vis`, reading back what the visibility tests compare.
+    #[allow(dead_code, reason = "only the gpu binary runs the visibility passes")]
+    pub fn visibility_frame(&mut self, vis: &'static Visibility) -> VisFrame {
+        let updates = core::mem::take(&mut self.updates);
+        self.scene.apply(&updates);
+        let (renderer, scene, scatter) = (&self.renderer, &mut self.scene, &self.scatter);
+        let camera = self.camera.expect("a camera");
+        let (tickets, capacity) = self
+            .frame
+            .execute(self.device, |g, _| {
+                let gpu = scene.add_passes(g, scatter);
+                let clear = scene.environment().clear_color;
+                let target = g.create_texture(
+                    "Target",
+                    TextureDesc::new_2d(SIZE, SIZE, Format::Rgba8Unorm)
+                        .with_clear(ClearValue::Color(clear)),
+                );
+                let forward = renderer.add_passes(g, target, scene, gpu, Some(camera));
+                let out = vis.add_passes(g, renderer, scene, gpu, camera, SIZE, SIZE);
+                (
+                    [
+                        g.readback_texture(forward.color),
+                        g.readback_texture(forward.depth),
+                        g.readback_texture(out.visbuffer),
+                        g.readback_texture(out.depth),
+                        g.readback(out.counters),
+                        g.readback(out.clusters),
+                    ],
+                    out.capacity,
+                )
+            })
+            .unwrap();
+        let [color, depth, visbuffer, vis_depth, counters, clusters] =
+            tickets.map(|t| self.frame.wait_readback(t).unwrap());
+        assert_eq!(self.device.validation_errors(), 0);
+        let floats = |b: &[u8]| words(b).into_iter().map(f32::from_bits).collect::<Vec<_>>();
+        let clusters = words(&clusters);
+        VisFrame {
+            color: words(&color),
+            depth: floats(&depth),
+            visbuffer: visbuffer
+                .as_chunks::<8>()
+                .0
+                .iter()
+                .map(|b| u64::from_le_bytes(*b))
+                .collect(),
+            vis_depth: floats(&vis_depth),
+            counters: words(&counters)[..3].try_into().unwrap(),
+            clusters: clusters.as_chunks::<2>().0.to_vec(),
+            capacity,
+        }
     }
 
     /// Renders a frame and reads it back.
@@ -188,4 +243,19 @@ fn upload(
     let resident = renderer.resident_mesh(handle).unwrap();
     updates.meshes.push(id, MeshUpdate::Resident(resident));
     (id, handle)
+}
+
+/// One frame of [`Harness::visibility_frame`]: every image row-major, `SIZE` × `SIZE`.
+#[allow(dead_code, reason = "only the gpu binary runs the visibility passes")]
+pub struct VisFrame {
+    /// The forward pass's color (RGBA8, R lowest) and depth.
+    pub color: Vec<u32>,
+    pub depth: Vec<f32>,
+    pub visbuffer: Vec<u64>,
+    pub vis_depth: Vec<f32>,
+    /// Visible instances, visible clusters found, clusters drawn.
+    pub counters: [u32; 3],
+    /// Instance row, meshlet | LOD << 24, for each of the buffer's entries.
+    pub clusters: Vec<[u32; 2]>,
+    pub capacity: u32,
 }
