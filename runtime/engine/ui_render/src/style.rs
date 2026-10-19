@@ -236,3 +236,138 @@ impl Default for ImageStyle {
         }
     }
 }
+
+/// A 2D affine transform: `(x, y)` → `(a x + c y + e, b x + d y + f)`, as `[a, b, c, d, e, f]`.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Affine2(pub [f32; 6]);
+
+impl Default for Affine2 {
+    fn default() -> Self {
+        Self::IDENTITY
+    }
+}
+
+impl Affine2 {
+    pub const IDENTITY: Self = Self([1.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
+
+    pub const fn translate(x: f32, y: f32) -> Self {
+        Self([1.0, 0.0, 0.0, 1.0, x, y])
+    }
+
+    pub const fn scale(sx: f32, sy: f32) -> Self {
+        Self([sx, 0.0, 0.0, sy, 0.0, 0.0])
+    }
+
+    /// A rotation by `radians`, clockwise on screen (y down).
+    pub fn rotate(radians: f32) -> Self {
+        let (s, c) = marlin_math::scalar::sin_cos(radians);
+        Self([c, s, -s, c, 0.0, 0.0])
+    }
+
+    /// `self`, then `outer`: `outer(self(p))`.
+    pub fn then(self, outer: Self) -> Self {
+        outer * self
+    }
+}
+
+impl core::ops::Mul for Affine2 {
+    type Output = Self;
+
+    /// `self(o(p))`.
+    fn mul(self, o: Self) -> Self {
+        let [a, b, c, d, e, f] = self.0;
+        let [oa, ob, oc, od, oe, of] = o.0;
+        Self([
+            a * oa + c * ob,
+            b * oa + d * ob,
+            a * oc + c * od,
+            b * oc + d * od,
+            a * oe + c * of + e,
+            b * oe + d * of + f,
+        ])
+    }
+}
+
+impl Affine2 {
+    pub fn apply(&self, p: Vec2) -> Vec2 {
+        let [a, b, c, d, e, f] = self.0;
+        Vec2::new(a * p.x + c * p.y + e, b * p.x + d * p.y + f)
+    }
+
+    pub fn determinant(&self) -> f32 {
+        self.0[0] * self.0[3] - self.0[1] * self.0[2]
+    }
+
+    /// The inverse; a singular transform gives a transform to nowhere (all zero).
+    pub fn inverse(&self) -> Self {
+        let [a, b, c, d, e, f] = self.0;
+        let det = self.determinant();
+        if det == 0.0 || !det.is_finite() {
+            return Self([0.0; 6]);
+        }
+        let k = 1.0 / det;
+        let (ia, ib, ic, id) = (d * k, -b * k, -c * k, a * k);
+        Self([ia, ib, ic, id, -(ia * e + ic * f), -(ib * e + id * f)])
+    }
+
+    /// Only translation and a uniform scale (no rotation, skew or mirroring per axis).
+    pub fn is_uniform_scale_translate(&self) -> bool {
+        let [a, b, c, d, ..] = self.0;
+        b == 0.0 && c == 0.0 && a == d && a > 0.0
+    }
+
+    /// Axis-aligned: no rotation or skew.
+    pub fn is_axis_aligned(&self) -> bool {
+        self.0[1] == 0.0 && self.0[2] == 0.0
+    }
+
+    /// A rotation and uniform scale (a similarity, possibly mirrored).
+    pub fn is_similarity(&self) -> bool {
+        let [a, b, c, d, ..] = self.0;
+        (a == d && b == -c) || (a == -d && b == c)
+    }
+}
+
+/// A drop shadow of a group's combined shape (§4.3).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Shadow {
+    /// Logical pixels, on screen.
+    pub offset: Vec2,
+    /// The blur's radius, logical pixels.
+    pub blur: f32,
+    pub color: Color,
+}
+
+/// A glow around a group's combined shape (§4.3): a shadow without an offset, fading
+/// exponentially.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Glow {
+    pub radius: f32,
+    pub color: Color,
+}
+
+/// A group of primitives (§2.2): a transform and an opacity for every member, and a shadow and a
+/// glow of their combined shape.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct GroupDesc {
+    /// From the group's space into its parent's, in logical pixels.
+    pub transform: Affine2,
+    pub opacity: f32,
+    pub shadow: Option<Shadow>,
+    pub glow: Option<Glow>,
+    /// Shadow and glow use the members' bounding box as a rounded rectangle of this radius
+    /// instead of their combined shape; groups of more than 16 members always do.
+    pub approximate: Option<f32>,
+}
+
+impl Default for GroupDesc {
+    fn default() -> Self {
+        Self {
+            transform: Affine2::IDENTITY,
+            opacity: 1.0,
+            shadow: None,
+            glow: None,
+            approximate: None,
+        }
+    }
+}

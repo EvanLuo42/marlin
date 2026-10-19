@@ -19,7 +19,7 @@ use crate::support::{CpuTexture, CpuTextures, Pages, inter, scene};
 use crate::{finish, renderer};
 
 /// The checker of [`CpuTexture::checker`] as an `Rgba8UnormSrgb` texture and its view.
-fn checker_texture() -> (Texture, ShaderView) {
+pub fn checker_texture() -> (Texture, ShaderView) {
     let device = hardware_device();
     let cpu = CpuTexture::checker();
     let desc = marlin_rhi::TextureDesc::new_2d(
@@ -60,7 +60,7 @@ fn checker_texture() -> (Texture, ShaderView) {
 
 /// One frame of `list` on a `width` × `height` surface: the GPU's UI target and the reference's
 /// image. `pages` keeps the glyph pages across frames, as the GPU does.
-fn draw(
+pub fn draw(
     r: &mut UiRenderer,
     frames: &mut FrameContext,
     pages: &mut Pages,
@@ -100,7 +100,7 @@ fn draw(
 }
 
 /// Every channel within `limit`, and at most `ratio` of pixels off by more than 1.
-fn close(gpu: &Image, cpu: &Image, limit: u8, ratio: f32) {
+pub fn close(gpu: &Image, cpu: &Image, limit: u8, ratio: f32) {
     let (mut worst, mut off) = (0u8, 0usize);
     let mut at = (0, 0);
     for y in 0..gpu.height {

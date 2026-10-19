@@ -5,7 +5,7 @@ use marlin_font::{GlyphCache, GlyphCacheConfig};
 use marlin_math::Vec2;
 use marlin_ui_render::command::{Chunk, OPAQUE, TILE};
 use marlin_ui_render::reference::{RefTile, bin, rasterize, tile_counts};
-use marlin_ui_render::shape::{over, shade};
+use marlin_ui_render::shape::{Scene, over, shade};
 use marlin_ui_render::{Color, Rect, RectStyle, StrokeStyle, UiDrawList};
 
 use crate::support::{CpuTexture, CpuTextures, Pages, TEXTURE_VIEW, prepared, scene};
@@ -46,9 +46,7 @@ fn commands_are_listed_wherever_they_have_ink() {
             for (i, c) in chunk.commands.iter().enumerate() {
                 let a = shade(
                     c,
-                    &chunk.payload,
-                    &chunk.paints,
-                    &glyphs,
+                    &Scene::new(&chunk, &glyphs),
                     &textures,
                     x as f32 + 0.5,
                     y as f32 + 0.5,
@@ -120,9 +118,7 @@ fn opaque_panels_drop_what_they_hide_without_changing_the_image() {
             for c in &chunk.commands {
                 let src = shade(
                     c,
-                    &chunk.payload,
-                    &chunk.paints,
-                    &glyphs,
+                    &Scene::new(&chunk, &glyphs),
                     &textures,
                     x as f32 + 0.5,
                     y as f32 + 0.5,

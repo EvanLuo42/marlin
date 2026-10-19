@@ -3,7 +3,7 @@
 use marlin_font::GlyphIds;
 use marlin_math::Vec2;
 use marlin_ui_render::command::Chunk;
-use marlin_ui_render::shape::{Textures, segment_distance, shade, triangle_distance};
+use marlin_ui_render::shape::{Scene, Textures, segment_distance, shade, triangle_distance};
 use marlin_ui_render::{
     Color, Corners, Dash, LineCap, Rect, RectStyle, ShapeStyle, StrokeStyle, UiDrawList,
 };
@@ -35,9 +35,7 @@ fn compare(chunk: &Chunk, inside: impl Fn(f32, f32) -> bool) -> (f32, f32) {
         for px in 0..64 {
             let a = shade(
                 &chunk.commands[0],
-                &chunk.payload,
-                &chunk.paints,
-                &[],
+                &Scene::new(chunk, &[]),
                 &NoTextures,
                 px as f32 + 0.5,
                 py as f32 + 0.5,

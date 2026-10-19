@@ -7,8 +7,8 @@
 //! |---|---|---|
 //! | 0 | 0–5 | kind ([`Kind`]) |
 //! | 0 | 6–15 | flags ([`OPAQUE`], image flags) |
-//! | 0 | 16–31 | group (U2; 0 now) |
-//! | 1 | 0–15 | clip (U2; 0 now) |
+//! | 0 | 16–31 | group ([`GROUP_WORDS`]; 0: the screen) |
+//! | 1 | 0–15 | clip ([`CLIP_WORDS`]; 0: none) |
 //! | 2 | | paint index |
 //! | 3 | | payload offset, in words |
 //!
@@ -94,12 +94,103 @@ pub const IMAGE_SRGB_PREMULTIPLIED: u32 = 1 << 7;
 pub type CommandWords = [u32; 4];
 pub type PaintWords = [u32; 4];
 
-/// A run of commands with its payload and paints, indices local to it.
-#[derive(Clone, Default, Debug, PartialEq)]
+/// Words of a group record (§2.2, §3.1):
+///
+/// | words | meaning |
+/// |---|---|
+/// | 0–5 | the transform from the group's space to the screen (physical pixels), [`Affine2`] order |
+/// | 6–11 | its inverse |
+/// | 12 | opacity (`f32`) |
+/// | 13 | group units per screen pixel (`f32`): the inverse's scale, exact for similarities |
+/// | 14 | flags: [`GROUP_NONUNIFORM`], [`GROUP_AXIS_ALIGNED`] |
+/// | 15, 16 | shadow and glow: the first member command and the member count |
+/// | 17–20 | shadow offset x, y and blur radius (screen pixels, `f32`), shadow color |
+/// | 21, 22 | glow radius (screen pixels, `f32`), glow color |
+/// | 23 | the most group units one screen pixel spans (`f32`, the inverse's largest singular value) |
+///
+/// Group 0 is the screen itself: the identity, opacity 1. Its commands' coordinates are physical
+/// pixels; every other group's commands are in its own space.
+///
+/// [`Affine2`]: crate::style::Affine2
+pub const GROUP_WORDS: usize = 24;
+pub type GroupWords = [u32; GROUP_WORDS];
+/// The transform is not a similarity: coverage measures its distance gradient per pixel.
+pub const GROUP_NONUNIFORM: u32 = 1;
+/// No rotation or skew: opaque interiors map to screen rectangles.
+pub const GROUP_AXIS_ALIGNED: u32 = 2;
+
+/// Words of a clip record (§3.1): a rounded rectangle in a group's space and its parent clip.
+///
+/// | words | meaning |
+/// |---|---|
+/// | 0–3 | x0 y0 x1 y1 in the group's space (`f32`) |
+/// | 4–7 | corner radii, as a rectangle's (`f32`) |
+/// | 8 | its group |
+/// | 9 | the parent clip (0: none) |
+/// | 10–13 | the chain's screen bounding box (`f32`), its own and every parent's intersected |
+/// | 14–17 | a screen rectangle the chain fully covers (`f32`; empty when unknown) |
+///
+/// Clip 0 is no clip.
+pub const CLIP_WORDS: usize = 20;
+pub type ClipWords = [u32; CLIP_WORDS];
+
+/// The identity group record.
+pub fn identity_group() -> GroupWords {
+    let mut g = [0u32; GROUP_WORDS];
+    for (i, v) in [1.0f32, 0.0, 0.0, 1.0, 0.0, 0.0].into_iter().enumerate() {
+        g[i] = v.to_bits();
+        g[6 + i] = v.to_bits();
+    }
+    g[12] = 1.0f32.to_bits();
+    g[13] = 1.0f32.to_bits();
+    g[14] = GROUP_AXIS_ALIGNED;
+    g[23] = 1.0f32.to_bits();
+    g
+}
+
+/// The empty clip record: no clip, covering everything.
+pub fn no_clip() -> ClipWords {
+    let mut c = [0u32; CLIP_WORDS];
+    for i in [10, 11, 14, 15] {
+        c[i] = (-1.0e30f32).to_bits();
+    }
+    for i in [12, 13, 16, 17] {
+        c[i] = 1.0e30f32.to_bits();
+    }
+    c
+}
+
+/// The group index of a command.
+pub const fn group_of(c: &CommandWords) -> u32 {
+    c[0] >> 16
+}
+
+/// The clip index of a command.
+pub const fn clip_of(c: &CommandWords) -> u32 {
+    c[1] & 0xFFFF
+}
+
+/// A run of commands with its payload, paints, groups and clips, indices local to it. Group 0
+/// and clip 0 are the sentinels ([`identity_group`], [`no_clip`]), always there.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Chunk {
     pub commands: Vec<CommandWords>,
     pub payload: Vec<u32>,
     pub paints: Vec<PaintWords>,
+    pub groups: Vec<GroupWords>,
+    pub clips: Vec<ClipWords>,
+}
+
+impl Default for Chunk {
+    fn default() -> Self {
+        Self {
+            commands: Vec::new(),
+            payload: Vec::new(),
+            paints: Vec::new(),
+            groups: alloc::vec![identity_group()],
+            clips: alloc::vec![no_clip()],
+        }
+    }
 }
 
 impl Chunk {
@@ -109,12 +200,6 @@ impl Chunk {
 
     pub fn is_empty(&self) -> bool {
         self.commands.is_empty()
-    }
-
-    pub fn clear(&mut self) {
-        self.commands.clear();
-        self.payload.clear();
-        self.paints.clear();
     }
 
     /// The paint index of a solid `color`; consecutive commands of one color share it.
@@ -134,22 +219,56 @@ impl Chunk {
         self.paints.len() as u32 - 1
     }
 
-    pub(crate) fn push(&mut self, kind: Kind, flags: u32, paint: u32, payload: &[u32]) {
+    pub(crate) fn push(
+        &mut self,
+        kind: Kind,
+        flags: u32,
+        group: u32,
+        clip: u32,
+        paint: u32,
+        payload: &[u32],
+    ) {
         debug_assert_eq!(payload.len() as u32, kind.payload_words());
-        self.commands
-            .push([kind as u32 | flags, 0, paint, self.payload.len() as u32]);
+        self.commands.push([
+            kind as u32 | flags | group << 16,
+            clip,
+            paint,
+            self.payload.len() as u32,
+        ]);
         self.payload.extend_from_slice(payload);
     }
 
-    /// Appends `other`, its indices rebased.
-    pub(crate) fn append(&mut self, other: &Chunk) {
+    /// Appends `other`, its indices rebased; its commands without a clip take `clip` (an index
+    /// of `self`), and so do its root clips.
+    pub(crate) fn append_clipped(&mut self, other: &Chunk, clip: u32) {
         let (payload, paints) = (self.payload.len() as u32, self.paints.len() as u32);
-        self.commands.extend(
-            other
-                .commands
-                .iter()
-                .map(|c| [c[0], c[1], c[2] + paints, c[3] + payload]),
-        );
+        let commands = self.commands.len() as u32;
+        // Other's group or clip `i` (from 1) lands at `base + i - 1`.
+        let gb = self.groups.len() as u32 - 1;
+        let cb = self.clips.len() as u32 - 1;
+        let group = |g: u32| if g == 0 { 0 } else { g + gb };
+        let rebase_clip = |c: u32| if c == 0 { clip } else { c + cb };
+        self.groups.extend(other.groups[1..].iter().map(|g| {
+            let mut g = *g;
+            if g[16] != 0 {
+                g[15] += commands;
+            }
+            g
+        }));
+        self.clips.extend(other.clips[1..].iter().map(|c| {
+            let mut c = *c;
+            c[8] = group(c[8]);
+            c[9] = rebase_clip(c[9]);
+            c
+        }));
+        self.commands.extend(other.commands.iter().map(|c| {
+            [
+                (c[0] & 0xFFFF) | group(c[0] >> 16) << 16,
+                rebase_clip(c[1] & 0xFFFF),
+                c[2] + paints,
+                c[3] + payload,
+            ]
+        }));
         self.payload.extend_from_slice(&other.payload);
         self.paints.extend_from_slice(&other.paints);
     }

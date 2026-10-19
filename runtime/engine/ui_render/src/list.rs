@@ -1,37 +1,70 @@
 //! Recording: the [`Painter`] writes commands into a [`UiDrawList`] (0012 §2).
 //!
-//! A draw list is an ordered sequence of chunks. [`Painter::chunk`] reserves the next place in
-//! the order and returns a [`ChunkSlot`], a list of its own that another job can record into;
-//! [`UiDrawList::fill`] puts it back in its place. A recorded chunk can be kept as a
-//! [`RetainedChunk`] and replayed in a later frame at an offset: a copy of its words, with the
-//! coordinates moved. Replay offsets snap to whole physical pixels, so text keeps its subpixel
-//! positions (and with them its glyph ids) and stays as crisp as it was recorded.
+//! A draw list is an ordered sequence of parts. [`Painter::chunk`] reserves the next place in
+//! the order and returns a [`ChunkSlot`], a list of its own that another job can record into
+//! (in the group and under the clip current where it was reserved); [`UiDrawList::fill`] puts
+//! it back in its place. A recorded chunk can be kept as a [`RetainedChunk`] and replayed in a
+//! later frame at an offset, under the clip current there: its words are copied when the list
+//! is flattened, the coordinates moved. Replay offsets snap to whole physical pixels, so text
+//! keeps its subpixel positions (and with them its glyph ids) and stays as crisp as it was
+//! recorded.
+//!
+//! Groups ([`Painter::begin_group`]) nest: the painter multiplies their transforms and
+//! opacities, so the GPU sees each group's transform to the screen. Commands in a group keep
+//! the group's own coordinates; outside any group they are physical pixels. Text is always
+//! placed on the screen: a group's translation and uniform scale move and size its glyphs
+//! (they are rasterized at the scaled size); rotation and skew leave glyphs upright until text
+//! can be drawn as paths (U3, §6.4).
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::ops::Range;
 
 use marlin_font::{GlyphIds, GlyphKey, SUBPIXEL_POSITIONS, TextLayout};
 use marlin_math::Vec2;
-use marlin_math::scalar::{floor, round};
+use marlin_math::scalar::{floor, round, sqrt};
 
-use crate::command::{Chunk, DEFAULT_SAMPLER, IMAGE_SRGB_PREMULTIPLIED, Kind, OPAQUE, f};
+use crate::command::{
+    CLIP_WORDS, Chunk, ClipWords, DEFAULT_SAMPLER, GROUP_AXIS_ALIGNED, GROUP_NONUNIFORM,
+    GROUP_WORDS, GroupWords, IMAGE_SRGB_PREMULTIPLIED, Kind, OPAQUE, f,
+};
 use crate::style::{
-    Color, Corners, ImageColor, ImageSource, ImageStyle, LineCap, Rect, RectStyle, ShapeStyle,
-    StrokeStyle,
+    Affine2, Color, Corners, GroupDesc, ImageColor, ImageSource, ImageStyle, LineCap, Rect,
+    RectStyle, ShapeStyle, StrokeStyle,
 };
 
 enum Part {
-    Own(Chunk),
+    /// Commands of the list's own chunk.
+    Own(Range<usize>),
     /// A slot handed out and not filled yet: draws nothing.
     Reserved,
     Filled(UiDrawList),
+    /// A retained chunk moved by whole physical pixels, under one of the list's clips.
+    Replay {
+        chunk: RetainedChunk,
+        dx: f32,
+        dy: f32,
+        clip: u32,
+    },
+}
+
+#[derive(Clone, Copy)]
+struct Scope {
+    group: u32,
+    /// From the group's space to logical screen pixels.
+    transform: Affine2,
+    opacity: f32,
 }
 
 /// One surface's commands for a frame, in drawing order.
 pub struct UiDrawList {
     /// Physical pixels per logical pixel.
     scale: f32,
+    /// Everything this list records itself; the parts say in which order.
+    own: Chunk,
     parts: Vec<Part>,
+    groups: Vec<Scope>,
+    clips: Vec<u32>,
 }
 
 impl UiDrawList {
@@ -40,7 +73,10 @@ impl UiDrawList {
     pub fn new(scale: f32) -> Self {
         Self {
             scale,
+            own: Chunk::default(),
             parts: Vec::new(),
+            groups: Vec::new(),
+            clips: Vec::new(),
         }
     }
 
@@ -61,24 +97,15 @@ impl UiDrawList {
         }
     }
 
-    fn own(&mut self) -> &mut Chunk {
-        if !matches!(self.parts.last(), Some(Part::Own(_))) {
-            self.parts.push(Part::Own(Chunk::default()));
-        }
-        match self.parts.last_mut() {
-            Some(Part::Own(c)) => c,
-            _ => unreachable!(),
-        }
-    }
-
-    /// Commands recorded, slots included.
+    /// Commands recorded, slots and replays included.
     pub fn len(&self) -> usize {
         self.parts
             .iter()
             .map(|p| match p {
-                Part::Own(c) => c.len(),
+                Part::Own(r) => r.len(),
                 Part::Reserved => 0,
                 Part::Filled(l) => l.len(),
+                Part::Replay { chunk, .. } => chunk.len(),
             })
             .sum()
     }
@@ -95,12 +122,201 @@ impl UiDrawList {
     }
 
     pub fn flatten_into(&self, out: &mut Chunk) {
+        let own = &self.own;
+        // The own chunk's groups, clips, payload and paints go in first; its commands follow in
+        // their parts' places.
+        let gb = out.groups.len() as u32 - 1;
+        let cb = out.clips.len() as u32 - 1;
+        let (pb, yb) = (out.paints.len() as u32, out.payload.len() as u32);
+        let group = |g: u32| if g == 0 { 0 } else { g + gb };
+        let clip = |c: u32| if c == 0 { 0 } else { c + cb };
+        let first_group = out.groups.len();
+        out.groups.extend_from_slice(&own.groups[1..]);
+        out.clips.extend(own.clips[1..].iter().map(|c| {
+            let mut c = *c;
+            c[8] = group(c[8]);
+            c[9] = clip(c[9]);
+            c
+        }));
+        out.payload.extend_from_slice(&own.payload);
+        out.paints.extend_from_slice(&own.paints);
+        // Where each own range landed, for the groups' member ranges.
+        let mut landed: Vec<(Range<usize>, usize)> = Vec::new();
         for p in &self.parts {
             match p {
-                Part::Own(c) => out.append(c),
+                Part::Own(r) => {
+                    landed.push((r.clone(), out.commands.len()));
+                    out.commands.extend(own.commands[r.clone()].iter().map(|c| {
+                        [
+                            (c[0] & 0xFFFF) | group(c[0] >> 16) << 16,
+                            clip(c[1] & 0xFFFF),
+                            c[2] + pb,
+                            c[3] + yb,
+                        ]
+                    }));
+                }
                 Part::Reserved => {}
                 Part::Filled(l) => l.flatten_into(out),
+                Part::Replay {
+                    chunk,
+                    dx,
+                    dy,
+                    clip: c,
+                } => {
+                    if *dx == 0.0 && *dy == 0.0 {
+                        out.append_clipped(&chunk.chunk, clip(*c));
+                    } else {
+                        let mut moved = (*chunk.chunk).clone();
+                        translate(&mut moved, *dx, *dy);
+                        out.append_clipped(&moved, clip(*c));
+                    }
+                }
             }
+        }
+        // Member ranges: within the own range they started in.
+        for g in &mut out.groups[first_group..first_group + own.groups.len() - 1] {
+            if g[16] == 0 {
+                continue;
+            }
+            let (first, count) = (g[15] as usize, g[16] as usize);
+            match landed.iter().find(|(r, _)| r.contains(&first)) {
+                Some((r, at)) => {
+                    g[15] = (at + first - r.start) as u32;
+                    g[16] = count.min(r.end - first) as u32;
+                }
+                None => g[16] = 0,
+            }
+        }
+    }
+
+    fn extend_own(&mut self) {
+        let end = self.own.commands.len();
+        match self.parts.last_mut() {
+            Some(Part::Own(r)) if r.end + 1 == end => r.end = end,
+            _ => self.parts.push(Part::Own(end - 1..end)),
+        }
+    }
+
+    fn scope(&self) -> Scope {
+        self.groups.last().copied().unwrap_or(Scope {
+            group: 0,
+            transform: Affine2::IDENTITY,
+            opacity: 1.0,
+        })
+    }
+
+    fn clip(&self) -> u32 {
+        self.clips.last().copied().unwrap_or(0)
+    }
+
+    /// A new list starting in this one's current group and clip: copies of their records.
+    fn inherit(&self) -> Self {
+        let mut list = Self::new(self.scale);
+        let scope = self.scope();
+        // Every group the clip chain and the current scope use, copied once.
+        let mut map: Vec<(u32, u32)> = Vec::new();
+        let mut copy_group = |list: &mut Self, g: u32| -> u32 {
+            if g == 0 {
+                return 0;
+            }
+            if let Some(&(_, n)) = map.iter().find(|(o, _)| *o == g) {
+                return n;
+            }
+            let mut words = self.own.groups[g as usize];
+            words[16] = 0;
+            list.own.groups.push(words);
+            let n = list.own.groups.len() as u32 - 1;
+            map.push((g, n));
+            n
+        };
+        let mut chain = Vec::new();
+        let mut c = self.clip();
+        while c != 0 {
+            chain.push(c);
+            c = self.own.clips[c as usize][9];
+        }
+        let mut parent = 0;
+        for &c in chain.iter().rev() {
+            let mut words = self.own.clips[c as usize];
+            words[8] = copy_group(&mut list, words[8]);
+            words[9] = parent;
+            list.own.clips.push(words);
+            parent = list.own.clips.len() as u32 - 1;
+        }
+        if parent != 0 {
+            list.clips.push(parent);
+        }
+        if scope.group != 0 {
+            let g = copy_group(&mut list, scope.group);
+            list.groups.push(Scope { group: g, ..scope });
+        }
+        list
+    }
+}
+
+/// Moves `chunk`'s screen-space content by whole pixels: commands of group 0 and glyphs, group
+/// transforms, and the clips' rectangles and screen boxes.
+fn translate(chunk: &mut Chunk, dx: f32, dy: f32) {
+    let mv = |w: &mut u32, d: f32| *w = f(f32::from_bits(*w) + d);
+    for c in &chunk.commands {
+        let p = &mut chunk.payload[c[3] as usize..];
+        let kind = Kind::from_word(c[0]);
+        if kind == Some(Kind::Glyph) {
+            p[0] = (p[0] as i32 + dx as i32) as u32;
+            p[1] = (p[1] as i32 + dy as i32) as u32;
+            continue;
+        }
+        if c[0] >> 16 != 0 {
+            continue;
+        }
+        match kind {
+            Some(Kind::Rect | Kind::Line | Kind::Image) => {
+                mv(&mut p[0], dx);
+                mv(&mut p[1], dy);
+                mv(&mut p[2], dx);
+                mv(&mut p[3], dy);
+            }
+            Some(Kind::Circle) => {
+                mv(&mut p[0], dx);
+                mv(&mut p[1], dy);
+            }
+            Some(Kind::Triangle) => {
+                for k in 0..3 {
+                    mv(&mut p[2 * k], dx);
+                    mv(&mut p[2 * k + 1], dy);
+                }
+            }
+            _ => {}
+        }
+    }
+    for g in &mut chunk.groups[1..] {
+        let mut t = Affine2(core::array::from_fn(|i| f32::from_bits(g[i])));
+        t.0[4] += dx;
+        t.0[5] += dy;
+        let inv = t.inverse();
+        for i in 0..6 {
+            g[i] = f(t.0[i]);
+            g[6 + i] = f(inv.0[i]);
+        }
+    }
+    for c in &mut chunk.clips[1..] {
+        if c[8] == 0 {
+            mv(&mut c[0], dx);
+            mv(&mut c[1], dy);
+            mv(&mut c[2], dx);
+            mv(&mut c[3], dy);
+        }
+        for (i, d) in [
+            (10, dx),
+            (11, dy),
+            (12, dx),
+            (13, dy),
+            (14, dx),
+            (15, dy),
+            (16, dx),
+            (17, dy),
+        ] {
+            mv(&mut c[i], d);
         }
     }
 }
@@ -154,19 +370,198 @@ impl RetainedChunk {
 }
 
 /// Writes commands (§2.1). Coordinates are logical pixels; the surface's scale is applied as
-/// they are written.
+/// they are written (or by the group's transform, inside a group).
 pub struct Painter<'a> {
     list: &'a mut UiDrawList,
     ids: &'a GlyphIds,
 }
 
+fn bits(v: [f32; 4]) -> [u32; 4] {
+    v.map(f)
+}
+
 impl Painter<'_> {
+    /// Logical units to what commands store: physical pixels outside groups, the group's own
+    /// units inside one.
+    fn k(&self) -> f32 {
+        if self.list.groups.is_empty() {
+            self.list.scale
+        } else {
+            1.0
+        }
+    }
+
     fn s(&self, v: f32) -> u32 {
-        f(v * self.list.scale)
+        f(v * self.k())
     }
 
     fn corners(&self, c: &Corners) -> [u32; 4] {
         [c.top_left, c.top_right, c.bottom_right, c.bottom_left].map(|r| self.s(r.max(0.0)))
+    }
+
+    fn push(
+        &mut self,
+        kind: Kind,
+        flags: u32,
+        paint: impl FnOnce(&mut Chunk) -> u32,
+        payload: &[u32],
+    ) {
+        let scope = self.list.scope();
+        let clip = self.list.clip();
+        // Opaque only at full opacity.
+        let flags = if scope.opacity < 1.0 {
+            flags & !OPAQUE
+        } else {
+            flags
+        };
+        let chunk = &mut self.list.own;
+        let paint = paint(chunk);
+        chunk.push(kind, flags, scope.group, clip, paint, payload);
+        self.list.extend_own();
+    }
+
+    /// The transform from the current group's space to physical screen pixels.
+    fn to_screen(&self) -> Affine2 {
+        let s = self.list.scale;
+        Affine2::scale(s, s) * self.list.scope().transform
+    }
+
+    /// Starts a group (§2.2): what follows until [`end_group`](Self::end_group) is drawn in
+    /// `desc`'s space, at its opacity.
+    pub fn begin_group(&mut self, desc: &GroupDesc) {
+        let parent = self.list.scope();
+        let transform = parent.transform * desc.transform;
+        let opacity = parent.opacity * desc.opacity.clamp(0.0, 1.0);
+        let s = self.list.scale;
+        let forward = Affine2::scale(s, s) * transform;
+        let inverse = forward.inverse();
+        let [ia, ib, ic, id, ..] = inverse.0;
+        let mut g: GroupWords = [0; GROUP_WORDS];
+        for i in 0..6 {
+            g[i] = f(forward.0[i]);
+            g[6 + i] = f(inverse.0[i]);
+        }
+        g[12] = f(opacity);
+        g[13] = f(sqrt(inverse.determinant().abs()));
+        g[14] = if forward.is_similarity() {
+            0
+        } else {
+            GROUP_NONUNIFORM
+        } | if forward.is_axis_aligned() {
+            GROUP_AXIS_ALIGNED
+        } else {
+            0
+        };
+        g[15] = self.list.own.commands.len() as u32;
+        if let Some(sh) = desc.shadow {
+            g[17] = f(sh.offset.x * s);
+            g[18] = f(sh.offset.y * s);
+            g[19] = f(sh.blur.max(0.0) * s);
+            g[20] = sh.color.packed();
+        }
+        if let Some(gl) = desc.glow {
+            g[21] = f(gl.radius.max(0.0) * s);
+            g[22] = gl.color.packed();
+        }
+        // The inverse's largest singular value: the most group units a screen pixel spans.
+        let sum = ia * ia + ib * ib + ic * ic + id * id;
+        let det = inverse.determinant();
+        g[23] = f(sqrt(
+            (sum + sqrt((sum * sum - 4.0 * det * det).max(0.0))) * 0.5,
+        ));
+        self.list.own.groups.push(g);
+        let group = self.list.own.groups.len() as u32 - 1;
+        self.list.groups.push(Scope {
+            group,
+            transform,
+            opacity,
+        });
+    }
+
+    pub fn end_group(&mut self) {
+        let scope = self
+            .list
+            .groups
+            .pop()
+            .expect("end_group without begin_group");
+        let g = &mut self.list.own.groups[scope.group as usize];
+        g[16] = self.list.own.commands.len() as u32 - g[15];
+    }
+
+    /// Clips what follows to a rounded rectangle in the current space, inside the current clip,
+    /// until [`pop_clip`](Self::pop_clip).
+    pub fn push_clip(&mut self, r: Rect, corners: Corners) {
+        let parent = self.list.clip();
+        let pw = self.list.own.clips[parent as usize];
+        let pf = |i: usize| f32::from_bits(pw[i]);
+        let k = self.k();
+        let rect = [r.min.x * k, r.min.y * k, r.max.x * k, r.max.y * k];
+        let radii = [
+            corners.top_left,
+            corners.top_right,
+            corners.bottom_right,
+            corners.bottom_left,
+        ]
+        .map(|v| v.max(0.0) * k);
+        // Group 0's coordinates are already the screen's.
+        let to_screen = if self.list.groups.is_empty() {
+            Affine2::IDENTITY
+        } else {
+            self.to_screen()
+        };
+        let corners_screen = [
+            Vec2::new(rect[0], rect[1]),
+            Vec2::new(rect[2], rect[1]),
+            Vec2::new(rect[0], rect[3]),
+            Vec2::new(rect[2], rect[3]),
+        ]
+        .map(|p| to_screen.apply(p));
+        let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+        for p in corners_screen {
+            x0 = x0.min(p.x);
+            y0 = y0.min(p.y);
+            x1 = x1.max(p.x);
+            y1 = y1.max(p.y);
+        }
+        let aabb = [
+            x0.max(pf(10)),
+            y0.max(pf(11)),
+            x1.min(pf(12)),
+            y1.min(pf(13)),
+        ];
+        let inner = if to_screen.is_axis_aligned() {
+            let m = radii.iter().cloned().fold(0.0f32, f32::max);
+            let a = to_screen.apply(Vec2::new(rect[0] + m, rect[1] + m));
+            let b = to_screen.apply(Vec2::new(rect[2] - m, rect[3] - m));
+            let i = [
+                a.x.min(b.x).max(pf(14)),
+                a.y.min(b.y).max(pf(15)),
+                a.x.max(b.x).min(pf(16)),
+                a.y.max(b.y).min(pf(17)),
+            ];
+            if i[0] < i[2] && i[1] < i[3] {
+                i
+            } else {
+                [0.0; 4]
+            }
+        } else {
+            [0.0; 4]
+        };
+        let mut c: ClipWords = [0; CLIP_WORDS];
+        c[0..4].copy_from_slice(&bits(rect));
+        c[4..8].copy_from_slice(&bits(radii));
+        c[8] = self.list.scope().group;
+        c[9] = parent;
+        c[10..14].copy_from_slice(&bits(aabb));
+        c[14..18].copy_from_slice(&bits(inner));
+        self.list.own.clips.push(c);
+        let index = self.list.own.clips.len() as u32 - 1;
+        assert!(index <= 0xFFFF, "more than 65535 clips in one draw list");
+        self.list.clips.push(index);
+    }
+
+    pub fn pop_clip(&mut self) {
+        self.list.clips.pop().expect("pop_clip without push_clip");
     }
 
     /// A rectangle: filled, rounded per corner, optionally outlined.
@@ -188,9 +583,8 @@ impl Painter<'_> {
             self.s(sw),
             sc.packed(),
         ];
-        let chunk = self.list.own();
-        let paint = chunk.solid(style.fill);
-        chunk.push(Kind::Rect, if opaque { OPAQUE } else { 0 }, paint, &payload);
+        let flags = if opaque { OPAQUE } else { 0 };
+        self.push(Kind::Rect, flags, |c| c.solid(style.fill), &payload);
     }
 
     pub fn circle(&mut self, center: Vec2, radius: f32, style: &ShapeStyle) {
@@ -205,14 +599,8 @@ impl Painter<'_> {
             self.s(sw),
             sc.packed(),
         ];
-        let chunk = self.list.own();
-        let paint = chunk.solid(style.fill);
-        chunk.push(
-            Kind::Circle,
-            if opaque { OPAQUE } else { 0 },
-            paint,
-            &payload,
-        );
+        let flags = if opaque { OPAQUE } else { 0 };
+        self.push(Kind::Circle, flags, |c| c.solid(style.fill), &payload);
     }
 
     /// A line segment of `style.width`, with caps and dashes.
@@ -237,9 +625,7 @@ impl Painter<'_> {
             self.s(gap),
             self.s(phase),
         ];
-        let chunk = self.list.own();
-        let paint = chunk.solid(style.color);
-        chunk.push(Kind::Line, 0, paint, &payload);
+        self.push(Kind::Line, 0, |c| c.solid(style.color), &payload);
     }
 
     pub fn triangle(&mut self, p: [Vec2; 3], style: &ShapeStyle) {
@@ -256,37 +642,43 @@ impl Painter<'_> {
             self.s(sw),
             sc.packed(),
         ];
-        let chunk = self.list.own();
-        let paint = chunk.solid(style.fill);
-        chunk.push(Kind::Triangle, 0, paint, &payload);
+        self.push(Kind::Triangle, 0, |c| c.solid(style.fill), &payload);
     }
 
-    /// Laid-out text with its top-left at `origin`, rasterized at the surface's pixel size
+    /// Laid-out text with its top-left at `origin`, rasterized at the size it has on screen
     /// (§6.2): each glyph's pen is snapped to whole pixels vertically and to quarter pixels
     /// horizontally.
     pub fn text(&mut self, layout: &TextLayout, origin: Vec2, color: Color) {
-        let scale = self.list.scale;
-        let size = layout.size * scale;
+        let to_screen = self.to_screen();
+        let size = layout.size * sqrt(to_screen.determinant().abs());
         let ids = self.ids;
-        let chunk = self.list.own();
-        let paint = chunk.solid(color);
+        let scope = self.list.scope();
+        let clip = self.list.clip();
+        let mut color = color;
+        // Glyphs are on the screen, not in the group: they take its opacity here.
+        color.a = (f32::from(color.a) * scope.opacity + 0.5) as u8;
+        let list = &mut *self.list;
+        let paint = list.own.solid(color);
         ids.with(|id| {
             for g in &layout.glyphs {
-                let x = (origin.x + g.x) * scale;
-                let y = round((origin.y + g.y) * scale);
-                let mut xi = floor(x);
-                let mut q = round((x - xi) * SUBPIXEL_POSITIONS as f32) as u32;
+                let pen = to_screen.apply(Vec2::new(origin.x + g.x, origin.y + g.y));
+                let y = round(pen.y);
+                let mut xi = floor(pen.x);
+                let mut q = round((pen.x - xi) * SUBPIXEL_POSITIONS as f32) as u32;
                 if q == SUBPIXEL_POSITIONS {
                     xi += 1.0;
                     q = 0;
                 }
                 let glyph = id(GlyphKey::new(layout.font, g.glyph, size), q);
-                chunk.push(
+                list.own.push(
                     Kind::Glyph,
                     0,
+                    0,
+                    clip,
                     paint,
                     &[xi as i32 as u32, y as i32 as u32, glyph.0],
                 );
+                list.extend_own();
             }
         });
     }
@@ -319,62 +711,39 @@ impl Painter<'_> {
             r2,
             r3,
         ];
-        let chunk = self.list.own();
-        let paint = chunk.image(style.tint, view, style.sampler.unwrap_or(DEFAULT_SAMPLER));
-        chunk.push(Kind::Image, flags, paint, &payload);
+        let sampler = style.sampler.unwrap_or(DEFAULT_SAMPLER);
+        self.push(
+            Kind::Image,
+            flags,
+            |c| c.image(style.tint, view, sampler),
+            &payload,
+        );
     }
 
-    /// Reserves the next place in the order for a chunk recorded elsewhere.
+    /// Reserves the next place in the order for a chunk recorded elsewhere, in the current
+    /// group and under the current clip.
     pub fn chunk(&mut self) -> ChunkSlot {
         let index = self.list.parts.len();
         self.list.parts.push(Part::Reserved);
         ChunkSlot {
             index,
-            list: UiDrawList::new(self.list.scale),
+            list: self.list.inherit(),
         }
     }
 
     /// Inserts a retained chunk moved by `offset` (logical pixels, snapped to whole physical
-    /// pixels). A chunk recorded for another scale is replayed unscaled.
+    /// pixels), under the current clip. The chunk keeps its own groups: the current group does
+    /// not apply to it.
     pub fn replay(&mut self, chunk: &RetainedChunk, offset: Vec2) {
         debug_assert_eq!(chunk.scale, self.list.scale, "replayed at another scale");
         let dx = round(offset.x * self.list.scale);
         let dy = round(offset.y * self.list.scale);
-        let own = self.list.own();
-        let base = own.payload.len();
-        own.append(&chunk.chunk);
-        if dx == 0.0 && dy == 0.0 {
-            return;
-        }
-        let start = own.commands.len() - chunk.chunk.len();
-        for c in &own.commands[start..] {
-            let at = c[3] as usize;
-            debug_assert!(at >= base);
-            let p = &mut own.payload[at..];
-            let mv = |w: &mut u32, d: f32| *w = f(f32::from_bits(*w) + d);
-            match Kind::from_word(c[0]) {
-                Some(Kind::Rect | Kind::Line | Kind::Image) => {
-                    mv(&mut p[0], dx);
-                    mv(&mut p[1], dy);
-                    mv(&mut p[2], dx);
-                    mv(&mut p[3], dy);
-                }
-                Some(Kind::Circle) => {
-                    mv(&mut p[0], dx);
-                    mv(&mut p[1], dy);
-                }
-                Some(Kind::Triangle) => {
-                    for k in 0..3 {
-                        mv(&mut p[2 * k], dx);
-                        mv(&mut p[2 * k + 1], dy);
-                    }
-                }
-                Some(Kind::Glyph) => {
-                    p[0] = (p[0] as i32 + dx as i32) as u32;
-                    p[1] = (p[1] as i32 + dy as i32) as u32;
-                }
-                None => {}
-            }
-        }
+        let clip = self.list.clip();
+        self.list.parts.push(Part::Replay {
+            chunk: chunk.clone(),
+            dx,
+            dy,
+            clip,
+        });
     }
 }

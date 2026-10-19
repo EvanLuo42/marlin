@@ -15,7 +15,7 @@ use crate::support::{inter, scene};
 use crate::{finish, renderer};
 
 /// The tile lists the GPU builds for `list` on a `width` × `height` surface.
-fn gpu_lists(
+pub fn gpu_lists(
     r: &mut UiRenderer,
     frames: &mut FrameContext,
     list: &UiDrawList,
@@ -50,7 +50,7 @@ fn gpu_lists(
     (lists, data)
 }
 
-fn compare(
+pub fn compare(
     r: &mut UiRenderer,
     frames: &mut FrameContext,
     list: &UiDrawList,

@@ -54,7 +54,7 @@ fn chunks_recorded_in_parallel_keep_their_order() {
         list.fill(slot);
     }
     assert_eq!(list.len(), serial.len());
-    assert_eq!(list.flatten(), serial.flatten());
+    assert_eq!(resolved(&list.flatten()), resolved(&serial.flatten()));
 }
 
 #[test]
@@ -91,7 +91,7 @@ fn retained_chunks_replay_at_an_offset() {
         .replay(&retained, Vec2::new(10.5, -1.0));
     let mut direct = UiDrawList::new(2.0);
     draw(&mut direct.painter(&ids), Vec2::new(13.5, 3.0));
-    assert_eq!(replayed.flatten(), direct.flatten());
+    assert_eq!(resolved(&replayed.flatten()), resolved(&direct.flatten()));
     assert_eq!(retained.len(), 4 + "Retained".len());
 }
 
@@ -200,4 +200,45 @@ fn the_scene_records_every_kind() {
     }
     // Consecutive commands of one color share a paint.
     assert!(chunk.paints.len() < chunk.commands.len());
+}
+
+/// A command: kind and flags, paint, payload, group record, clip chain.
+pub type Resolved = (u32, [u32; 4], Vec<u32>, Vec<u32>, Vec<u32>);
+
+/// Every command with what it refers to resolved: header, paint, payload, group and clip
+/// records. Two lists that draw the same give the same, however their buffers are laid out.
+pub fn resolved(c: &marlin_ui_render::command::Chunk) -> Vec<Resolved> {
+    use marlin_ui_render::command::{clip_of, group_of};
+    c.commands
+        .iter()
+        .map(|cmd| {
+            let kind = Kind::from_word(cmd[0]).unwrap();
+            let at = cmd[3] as usize;
+            let payload = c.payload[at..at + kind.payload_words() as usize].to_vec();
+            // Without the shadow's member range (words 15, 16): positions, not content.
+            let mut group = c.groups[group_of(cmd) as usize].to_vec();
+            group[15] = 0;
+            group[16] = 0;
+            // A clip chain, its records without their parent links.
+            let mut clip = Vec::new();
+            let mut k = clip_of(cmd);
+            while k != 0 {
+                let r = c.clips[k as usize];
+                clip.extend_from_slice(&r[..8]);
+                let mut g = c.groups[r[8] as usize];
+                g[15] = 0;
+                g[16] = 0;
+                clip.extend_from_slice(&g);
+                clip.extend_from_slice(&r[10..]);
+                k = r[9];
+            }
+            (
+                cmd[0] & 0xFFFF,
+                c.paints[cmd[2] as usize],
+                payload,
+                group,
+                clip,
+            )
+        })
+        .collect()
 }

@@ -62,6 +62,11 @@ const uint BlockCommands = 31;
 /// Half a tile's diagonal.
 const float TileRadius = 11.313708;
 
+const uint GroupWords = 24;
+const uint ClipWords = 20;
+const uint GroupNonuniform = 1;
+const uint GroupAxisAligned = 2;
+
 float P(ReadOnlyBuffer<uint> p, uint at) => AsFloat(p[at]);
 
 /// floor/ceil of a box, clamped to the surface: x0 y0 x1 y1.
@@ -88,6 +93,31 @@ int4 Inside(float x0, float y0, float x1, float y1, in UiFrame f)
         (int)Clamp(Floor(y1), 0, h));
 }
 
+int4 Intersect(int4 a, int4 b) => int4(Max(a.x, b.x), Max(a.y, b.y), Min(a.z, b.z), Min(a.w, b.w));
+
+/// Group `g`'s transform (`at` 0: to the screen; 6: from it) applied to `q`.
+float2 Apply(ReadOnlyBuffer<uint> groups, uint g, uint at, float2 q)
+{
+    uint b = g * GroupWords + at;
+    return float2(
+        P(groups, b) * q.x + P(groups, b + 2) * q.y + P(groups, b + 4),
+        P(groups, b + 1) * q.x + P(groups, b + 3) * q.y + P(groups, b + 5));
+}
+
+/// The screen box of a local box in group `g`.
+float4 ScreenBox(ReadOnlyBuffer<uint> groups, uint g, float4 l)
+{
+    float2 a = Apply(groups, g, 0, float2(l.x, l.y));
+    float2 b = Apply(groups, g, 0, float2(l.z, l.y));
+    float2 c = Apply(groups, g, 0, float2(l.x, l.w));
+    float2 d = Apply(groups, g, 0, float2(l.z, l.w));
+    return float4(
+        Min(Min(a.x, b.x), Min(c.x, d.x)),
+        Min(Min(a.y, b.y), Min(c.y, d.y)),
+        Max(Max(a.x, b.x), Max(c.x, d.x)),
+        Max(Max(a.y, b.y), Max(c.y, d.y)));
+}
+
 /// A rectangle payload's radii (at `r`), each at most half the shorter side of the box at `at`.
 float4 Radii(ReadOnlyBuffer<uint> p, uint at, uint r)
 {
@@ -111,22 +141,34 @@ int Low16(uint v) => ((int)(v << 16)) >> 16;
 int High16(uint v) => ((int)v) >> 16;
 
 /// x0 | y0 << 16, x1 | y1 << 16 of the bounding box; the same of the opaque interior.
-uint4 CommandBounds(uint4 c, ReadOnlyBuffer<uint> p, ReadOnlyBuffer<uint4> glyphs, in UiFrame f)
+uint4 CommandBounds(
+    uint4 c,
+    ReadOnlyBuffer<uint> p,
+    ReadOnlyBuffer<uint4> glyphs,
+    ReadOnlyBuffer<uint> groups,
+    ReadOnlyBuffer<uint> clips,
+    in UiFrame f)
 {
     uint kind = c.x & 63;
     uint at = c.w;
-    bool opaque = (c.x & FlagOpaque) != 0;
-    int4 box = int4(0, 0, 0, 0);
-    int4 inner = int4(0, 0, 0, 0);
+    uint g = c.x >> 16;
+    uint cb = (c.y & 65535) * ClipWords;
+    int4 clipBox = Pixels(P(clips, cb + 10), P(clips, cb + 11), P(clips, cb + 12), P(clips, cb + 13), f);
+    bool opaque = (c.x & FlagOpaque) != 0 && (groups[g * GroupWords + 14] & GroupAxisAligned) != 0;
+    float aa = P(groups, g * GroupWords + 13);
+    float4 local = float4(0, 0, 0, 0);
+    float4 inner = float4(0, 0, 0, 0);
+    bool hasInner = false;
     if (kind == KindRect)
     {
-        float e = P(p, at + 8) * 0.5 + 0.5;
-        box = Pixels(P(p, at) - e, P(p, at + 1) - e, P(p, at + 2) + e, P(p, at + 3) + e, f);
+        float e = P(p, at + 8) * 0.5;
+        local = float4(P(p, at) - e, P(p, at + 1) - e, P(p, at + 2) + e, P(p, at + 3) + e);
         if (opaque)
         {
             float4 r = Radii(p, at, at + 4);
-            float m = Max(Max(r.x, r.y), Max(r.z, r.w));
-            inner = Inside(P(p, at) + m, P(p, at + 1) + m, P(p, at + 2) - m, P(p, at + 3) - m, f);
+            float m = Max(Max(r.x, r.y), Max(r.z, r.w)) + aa * 0.5;
+            inner = float4(P(p, at) + m, P(p, at + 1) + m, P(p, at + 2) - m, P(p, at + 3) - m);
+            hasInner = true;
         }
     }
     else if (kind == KindCircle)
@@ -134,51 +176,69 @@ uint4 CommandBounds(uint4 c, ReadOnlyBuffer<uint> p, ReadOnlyBuffer<uint4> glyph
         float cx = P(p, at);
         float cy = P(p, at + 1);
         float r = P(p, at + 2);
-        float e = r + P(p, at + 3) * 0.5 + 0.5;
-        box = Pixels(cx - e, cy - e, cx + e, cy + e, f);
+        float e = r + P(p, at + 3) * 0.5;
+        local = float4(cx - e, cy - e, cx + e, cy + e);
         if (opaque)
         {
-            float h = (r - 0.5) * 0.70710678;
-            inner = Inside(cx - h - 0.5, cy - h - 0.5, cx + h + 0.5, cy + h + 0.5, f);
+            float h = (r - aa * 0.5) * 0.70710678;
+            inner = float4(cx - h, cy - h, cx + h, cy + h);
+            hasInner = true;
         }
     }
     else if (kind == KindLine)
     {
-        float e = LineReach(p, at) + 0.5;
+        float e = LineReach(p, at);
         float ax = P(p, at);
         float ay = P(p, at + 1);
         float bx = P(p, at + 2);
         float by = P(p, at + 3);
-        box = Pixels(Min(ax, bx) - e, Min(ay, by) - e, Max(ax, bx) + e, Max(ay, by) + e, f);
+        local = float4(Min(ax, bx) - e, Min(ay, by) - e, Max(ax, bx) + e, Max(ay, by) + e);
     }
     else if (kind == KindTriangle)
     {
-        float e = P(p, at + 6) * 0.5 + 0.5;
+        float e = P(p, at + 6) * 0.5;
         float x0 = Min(Min(P(p, at), P(p, at + 2)), P(p, at + 4));
         float y0 = Min(Min(P(p, at + 1), P(p, at + 3)), P(p, at + 5));
         float x1 = Max(Max(P(p, at), P(p, at + 2)), P(p, at + 4));
         float y1 = Max(Max(P(p, at + 1), P(p, at + 3)), P(p, at + 5));
-        box = Pixels(x0 - e, y0 - e, x1 + e, y1 + e, f);
-    }
-    else if (kind == KindGlyph)
-    {
-        uint4 g = glyphs[p[at + 2]];
-        int x0 = (int)p[at] + Low16(g.z);
-        int y0 = (int)p[at + 1] + High16(g.z);
-        int w = (int)f.Width;
-        int h = (int)f.Height;
-        box = int4(
-            Clamp(x0, 0, w),
-            Clamp(y0, 0, h),
-            Clamp(x0 + (int)(g.y & 65535), 0, w),
-            Clamp(y0 + (int)(g.y >> 16), 0, h));
+        local = float4(x0 - e, y0 - e, x1 + e, y1 + e);
     }
     else if (kind == KindImage)
     {
-        box = Pixels(P(p, at) - 0.5, P(p, at + 1) - 0.5, P(p, at + 2) + 0.5, P(p, at + 3) + 0.5, f);
+        local = float4(P(p, at), P(p, at + 1), P(p, at + 2), P(p, at + 3));
+    }
+    int4 box = int4(0, 0, 0, 0);
+    int4 interior = int4(0, 0, 0, 0);
+    if (kind == KindGlyph)
+    {
+        // Glyphs are placed on the screen.
+        uint4 gr = glyphs[p[at + 2]];
+        int x0 = (int)p[at] + Low16(gr.z);
+        int y0 = (int)p[at + 1] + High16(gr.z);
+        int w = (int)f.Width;
+        int h = (int)f.Height;
+        box = Intersect(
+            int4(
+                Clamp(x0, 0, w),
+                Clamp(y0, 0, h),
+                Clamp(x0 + (int)(gr.y & 65535), 0, w),
+                Clamp(y0 + (int)(gr.y >> 16), 0, h)),
+            clipBox);
+    }
+    else if (kind >= KindRect && kind <= KindImage)
+    {
+        float4 sb = ScreenBox(groups, g, local);
+        box = Intersect(Pixels(sb.x - 0.5, sb.y - 0.5, sb.z + 0.5, sb.w + 0.5, f), clipBox);
+        if (hasInner)
+        {
+            float4 si = ScreenBox(groups, g, inner);
+            interior = Intersect(
+                Inside(si.x - 0.5, si.y - 0.5, si.z + 0.5, si.w + 0.5, f),
+                Inside(P(clips, cb + 14), P(clips, cb + 15), P(clips, cb + 16), P(clips, cb + 17), f));
+        }
     }
     uint4 u = (uint4)box;
-    uint4 v = (uint4)inner;
+    uint4 v = (uint4)interior;
     return uint4(u.x | (u.y << 16), u.z | (u.w << 16), v.x | (v.y << 16), v.z | (v.w << 16));
 }
 
@@ -188,6 +248,8 @@ public struct BoundsArgs
     public ReadOnlyBuffer<uint4> Commands;
     public ReadOnlyBuffer<uint> Payload;
     public ReadOnlyBuffer<uint4> Glyphs;
+    public ReadOnlyBuffer<uint> Groups;
+    public ReadOnlyBuffer<uint> Clips;
     public Buffer<uint4> Bounds;
 }
 
@@ -197,7 +259,7 @@ public void Bounds([DispatchThreadId] uint3 id, [Push] in BoundsArgs a)
     UiFrame f = a.Frame.Value;
     if (id.x >= f.Commands)
         return;
-    a.Bounds[id.x] = CommandBounds(a.Commands[id.x], a.Payload, a.Glyphs, f);
+    a.Bounds[id.x] = CommandBounds(a.Commands[id.x], a.Payload, a.Glyphs, a.Groups, a.Clips, f);
 }
 
 public struct BinArgs
@@ -245,11 +307,12 @@ float SegmentDistance(float2 p, float2 a, float2 b)
     return Sqrt(q.x * q.x + q.y * q.y);
 }
 
-/// Negative or zero: the line's reach includes the tile centered at `t`.
-float LineTouchesTile(ReadOnlyBuffer<uint> p, uint at, float2 t)
+/// Negative or zero: the line's reach includes the tile centered at `t`, measured in its group.
+float LineTouchesTile(ReadOnlyBuffer<uint> p, uint at, ReadOnlyBuffer<uint> groups, uint g, float2 t)
 {
-    float d = SegmentDistance(t, float2(P(p, at), P(p, at + 1)), float2(P(p, at + 2), P(p, at + 3)));
-    return d - (LineReach(p, at) + TileRadius + 0.5);
+    float2 q = Apply(groups, g, 6, t);
+    float d = SegmentDistance(q, float2(P(p, at), P(p, at + 1)), float2(P(p, at + 2), P(p, at + 3)));
+    return d - (LineReach(p, at) + (TileRadius + 0.5) * P(groups, g * GroupWords + 23));
 }
 
 public struct CoarseArgs
@@ -257,6 +320,7 @@ public struct CoarseArgs
     public Uniform<UiFrame> Frame;
     public ReadOnlyBuffer<uint4> Commands;
     public ReadOnlyBuffer<uint> Payload;
+    public ReadOnlyBuffer<uint> Groups;
     public ReadOnlyBuffer<uint4> Bounds;
     public ReadOnlyBuffer<uint> Masks;
     /// Per tile: first block, command count.
@@ -301,7 +365,7 @@ public void Coarse([GroupId] uint3 group, [GroupThreadId] uint3 thread, [Push] i
                 if (x0 + 16 <= bx0 || x0 >= bx1 || y0 + 16 <= by0 || y0 >= by1)
                     continue;
                 uint4 cmd = a.Commands[i];
-                if ((cmd.x & 63) == KindLine && LineTouchesTile(a.Payload, cmd.w, center) > 0)
+                if ((cmd.x & 63) == KindLine && LineTouchesTile(a.Payload, cmd.w, a.Groups, cmd.x >> 16, center) > 0)
                     continue;
                 int ix0 = (int)(b.z & 65535);
                 int iy0 = (int)(b.z >> 16);
@@ -450,13 +514,74 @@ float LinearToSrgb(float x) => x <= 0.0031308 ? x * 12.92 : 1.055 * Pow(x, 1.0 /
 
 float SrgbToLinear(float x) => x <= 0.04045 ? x / 12.92 : Pow((x + 0.055) / 1.055, 2.4);
 
-/// The fill under the stroke, both straddling the edge at distance `d`.
-float4 FillAndStroke(float4 fill, float d, float strokeWidth, uint stroke)
+/// The fill under the stroke, both straddling the edge at distance `d` (group units; `k` screen
+/// pixels per unit).
+float4 FillAndStroke(float4 fill, float d, float k, float strokeWidth, uint stroke)
 {
-    float4 f = fill * Coverage(d);
+    float4 f = fill * Coverage(d * k);
     if (strokeWidth <= 0)
         return f;
-    return Over(Premultiplied(stroke) * Coverage(Abs(d) - strokeWidth * 0.5), f);
+    return Over(Premultiplied(stroke) * Coverage((Abs(d) - strokeWidth * 0.5) * k), f);
+}
+
+/// The signed distance of a command's shape at `q` (group units): rectangles, circles, lines,
+/// triangles and images; `p` holds its payload at `at`.
+float Distance(uint kind, ReadOnlyBuffer<uint> p, uint at, float2 q)
+{
+    if (kind == KindRect)
+        return RectDistance(p, at, at + 4, q);
+    if (kind == KindCircle)
+    {
+        float2 d = q - float2(P(p, at), P(p, at + 1));
+        return Sqrt(d.x * d.x + d.y * d.y) - P(p, at + 2);
+    }
+    if (kind == KindLine)
+        return LineDistance(p, at, q);
+    if (kind == KindTriangle)
+        return TriangleDistance(
+            q,
+            float2(P(p, at), P(p, at + 1)),
+            float2(P(p, at + 2), P(p, at + 3)),
+            float2(P(p, at + 4), P(p, at + 5)));
+    // An image's rounded rectangle: radii after the UV rectangle and the size.
+    return RectDistance(p, at, at + 9, q);
+}
+
+/// Screen pixels per unit of group `g` for the shape at `px` whose distance there is `d`: the
+/// transform's scale, or for a non-uniform transform the distance's gradient.
+float PixelsPerUnit(ReadOnlyBuffer<uint> groups, uint g, uint kind, ReadOnlyBuffer<uint> p, uint at, float2 px, float d)
+{
+    uint b = g * GroupWords;
+    if ((groups[b + 14] & GroupNonuniform) == 0)
+        return 1 / P(groups, b + 13);
+    float dx = Distance(kind, p, at, Apply(groups, g, 6, px + float2(1, 0))) - d;
+    float dy = Distance(kind, p, at, Apply(groups, g, 6, px + float2(0, 1))) - d;
+    float grad = Sqrt(dx * dx + dy * dy);
+    return grad > 0.000001 ? 1 / grad : 1 / P(groups, b + 13);
+}
+
+/// The coverage of clip `clip`'s chain at screen pixel `px`.
+float ClipCoverage(ReadOnlyBuffer<uint> clips, ReadOnlyBuffer<uint> groups, uint clip, float2 px)
+{
+    float cov = 1;
+    uint c = clip;
+    while (c != 0)
+    {
+        uint b = c * ClipWords;
+        uint g = clips[b + 8];
+        float d = RectDistance(clips, b, b + 4, Apply(groups, g, 6, px));
+        float k = 1 / P(groups, g * GroupWords + 13);
+        if ((groups[g * GroupWords + 14] & GroupNonuniform) != 0)
+        {
+            float dx = RectDistance(clips, b, b + 4, Apply(groups, g, 6, px + float2(1, 0))) - d;
+            float dy = RectDistance(clips, b, b + 4, Apply(groups, g, 6, px + float2(0, 1))) - d;
+            float grad = Sqrt(dx * dx + dy * dy);
+            k = grad > 0.000001 ? 1 / grad : k;
+        }
+        cov = cov * Coverage(d * k);
+        c = clips[b + 9];
+    }
+    return cov;
 }
 
 public struct FineArgs
@@ -466,6 +591,8 @@ public struct FineArgs
     public ReadOnlyBuffer<uint> Payload;
     public ReadOnlyBuffer<UiPaint> Paints;
     public ReadOnlyBuffer<uint4> Glyphs;
+    public ReadOnlyBuffer<uint> Groups;
+    public ReadOnlyBuffer<uint> Clips;
     public ReadOnlyBuffer<uint2> Heads;
     public ReadOnlyBuffer<uint> Pool;
     /// The glyph cache's pages: R8 coverage.
@@ -473,56 +600,51 @@ public struct FineArgs
     public StorageTexture2D<float4> Output;
 }
 
-/// Command `c`'s premultiplied color at the pixel centered at `px`.
-float4 Shade(uint4 c, in FineArgs a, float2 px)
+/// Command `c`'s premultiplied color at the pixel centered at `px`, before its group's opacity
+/// and its clip.
+float4 ShadeUnclipped(uint4 c, in FineArgs a, float2 px)
 {
     uint kind = c.x & 63;
     uint at = c.w;
+    uint g = c.x >> 16;
     ReadOnlyBuffer<uint> p = a.Payload;
     UiPaint paint = a.Paints[c.z];
     float4 color = Premultiplied(paint.Color);
-    if (kind == KindRect)
-        return FillAndStroke(color, RectDistance(p, at, at + 4, px), P(p, at + 8), p[at + 9]);
-    if (kind == KindCircle)
-    {
-        float2 d = px - float2(P(p, at), P(p, at + 1));
-        return FillAndStroke(color, Sqrt(d.x * d.x + d.y * d.y) - P(p, at + 2), P(p, at + 3), p[at + 4]);
-    }
-    if (kind == KindLine)
-        return color * Coverage(LineDistance(p, at, px));
-    if (kind == KindTriangle)
-    {
-        float d = TriangleDistance(
-            px,
-            float2(P(p, at), P(p, at + 1)),
-            float2(P(p, at + 2), P(p, at + 3)),
-            float2(P(p, at + 4), P(p, at + 5)));
-        return FillAndStroke(color, d, P(p, at + 6), p[at + 7]);
-    }
     if (kind == KindGlyph)
     {
-        uint4 g = a.Glyphs[p[at + 2]];
-        int gw = (int)(g.y & 65535);
-        int gh = (int)(g.y >> 16);
-        int gx = (int)Floor(px.x) - ((int)p[at] + Low16(g.z));
-        int gy = (int)Floor(px.y) - ((int)p[at + 1] + High16(g.z));
+        uint4 gr = a.Glyphs[p[at + 2]];
+        int gw = (int)(gr.y & 65535);
+        int gh = (int)(gr.y >> 16);
+        int gx = (int)Floor(px.x) - ((int)p[at] + Low16(gr.z));
+        int gy = (int)Floor(px.y) - ((int)p[at + 1] + High16(gr.z));
         if (gx < 0 || gy < 0 || gx >= gw || gy >= gh)
             return float4(0, 0, 0, 0);
-        int2 texel = int2((int)(g.x & 65535) + gx, (int)(g.x >> 16) + gy);
-        return color * a.GlyphPages.Load(texel, layer: (int)g.w);
+        int2 texel = int2((int)(gr.x & 65535) + gx, (int)(gr.x >> 16) + gy);
+        return color * a.GlyphPages.Load(texel, layer: (int)gr.w);
     }
+    float2 q = Apply(a.Groups, g, 6, px);
+    float d = Distance(kind, p, at, q);
+    float k = PixelsPerUnit(a.Groups, g, kind, p, at, px, d);
+    if (kind == KindRect)
+        return FillAndStroke(color, d, k, P(p, at + 8), p[at + 9]);
+    if (kind == KindCircle)
+        return FillAndStroke(color, d, k, P(p, at + 3), p[at + 4]);
+    if (kind == KindLine)
+        return color * Coverage(d * k);
+    if (kind == KindTriangle)
+        return FillAndStroke(color, d, k, P(p, at + 6), p[at + 7]);
     if (kind == KindImage)
     {
-        float cov = Coverage(RectDistance(p, at, at + 9, px));
+        float cov = Coverage(d * k);
         if (cov <= 0)
             return float4(0, 0, 0, 0);
         float x0 = P(p, at);
         float y0 = P(p, at + 1);
         float du = (P(p, at + 6) - P(p, at + 4)) / (P(p, at + 2) - x0);
         float dv = (P(p, at + 7) - P(p, at + 5)) / (P(p, at + 3) - y0);
-        float2 uv = float2(P(p, at + 4) + (px.x - x0) * du, P(p, at + 5) + (px.y - y0) * dv);
+        float2 uv = float2(P(p, at + 4) + (q.x - x0) * du, P(p, at + 5) + (q.y - y0) * dv);
         uint size = p[at + 8];
-        float texels = Max(Abs(du) * (float)(size & 65535), Abs(dv) * (float)(size >> 16));
+        float texels = Max(Abs(du) * (float)(size & 65535), Abs(dv) * (float)(size >> 16)) * P(a.Groups, g * GroupWords + 13);
         float lod = Max(Log2(Max(texels, 0.000001)), 0);
         float4 t = paint.Texture.Sample(paint.Sampler, uv, lod: lod);
         if ((c.x & FlagImageSrgbPremultiplied) == 0)
@@ -530,6 +652,14 @@ float4 Shade(uint4 c, in FineArgs a, float2 px)
         return t * color * cov;
     }
     return float4(0, 0, 0, 0);
+}
+
+/// Command `c`'s premultiplied color at the pixel centered at `px`.
+float4 Shade(uint4 c, in FineArgs a, float2 px)
+{
+    float4 color = ShadeUnclipped(c, a, px);
+    float k = P(a.Groups, (c.x >> 16) * GroupWords + 12) * ClipCoverage(a.Clips, a.Groups, c.y & 65535, px);
+    return color * k;
 }
 
 [Compute(16, 16, 1)]

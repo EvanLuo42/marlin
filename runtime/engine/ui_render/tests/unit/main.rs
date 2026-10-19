@@ -7,5 +7,6 @@
 mod support;
 
 mod binning;
+mod groups;
 mod recording;
 mod sdf;

@@ -13,7 +13,7 @@ use alloc::vec::Vec;
 use marlin_font::GlyphRecord;
 
 use crate::command::{Chunk, Kind, TILE};
-use crate::shape::{Bounds, Textures, bounds, line_touches_tile, over, shade};
+use crate::shape::{Bounds, Scene, Textures, bounds, line_touches_tile, over, shade};
 
 /// Pixels of slack around a line's reach where the GPU's rounding may decide differently.
 pub const BORDERLINE: f32 = 1.0 / 64.0;
@@ -51,7 +51,7 @@ pub fn all_bounds(chunk: &Chunk, glyphs: &[GlyphRecord], width: u32, height: u32
     chunk
         .commands
         .iter()
-        .map(|c| bounds(c, &chunk.payload, glyphs, width, height))
+        .map(|c| bounds(c, &Scene::new(chunk, glyphs), width, height))
         .collect()
 }
 
@@ -60,18 +60,19 @@ pub fn bin(chunk: &Chunk, glyphs: &[GlyphRecord], width: u32, height: u32) -> Ve
     let (tx, ty) = tile_counts(width, height);
     let mut tiles = vec![RefTile::default(); (tx * ty) as usize];
     let t = TILE as i32;
+    let scene = Scene::new(chunk, glyphs);
     for (i, c) in chunk.commands.iter().enumerate() {
-        let b = bounds(c, &chunk.payload, glyphs, width, height);
+        let b = bounds(c, &scene, width, height);
         if b.is_empty() {
             continue;
         }
         let line = Kind::from_word(c[0]) == Some(Kind::Line);
-        let p = &chunk.payload[c[3] as usize..];
         for y in b.bbox[1] / t..=(b.bbox[3] - 1) / t {
             for x in b.bbox[0] / t..=(b.bbox[2] - 1) / t {
                 let mut optional = false;
                 if line {
-                    let m = line_touches_tile(p, (x * t) as f32 + 8.0, (y * t) as f32 + 8.0);
+                    let m =
+                        line_touches_tile(c, &scene, (x * t) as f32 + 8.0, (y * t) as f32 + 8.0);
                     if m > BORDERLINE {
                         continue;
                     }
@@ -103,6 +104,7 @@ pub fn rasterize(
 ) -> Vec<u8> {
     let tiles = bin(chunk, glyphs, width, height);
     let (tx, _) = tile_counts(width, height);
+    let scene = Scene::new(chunk, glyphs);
     let mut out = vec![0u8; (width * height * 4) as usize];
     for y in 0..height {
         for x in 0..width {
@@ -110,15 +112,7 @@ pub fn rasterize(
             let mut color = clear;
             for &i in &tile.commands {
                 let c = &chunk.commands[i as usize];
-                let src = shade(
-                    c,
-                    &chunk.payload,
-                    &chunk.paints,
-                    glyphs,
-                    textures,
-                    x as f32 + 0.5,
-                    y as f32 + 0.5,
-                );
+                let src = shade(c, &scene, textures, x as f32 + 0.5, y as f32 + 0.5);
                 color = over(src, color);
             }
             let at = ((y * width + x) * 4) as usize;

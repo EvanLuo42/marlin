@@ -106,6 +106,8 @@ struct BoundsArgs {
     commands: u32,
     payload: u32,
     glyphs: u32,
+    groups: u32,
+    clips: u32,
     bounds: u32,
 }
 
@@ -123,6 +125,7 @@ struct CoarseArgs {
     frame: u32,
     commands: u32,
     payload: u32,
+    groups: u32,
     bounds: u32,
     masks: u32,
     heads: u32,
@@ -138,6 +141,8 @@ struct FineArgs {
     payload: u32,
     paints: u32,
     glyphs: u32,
+    groups: u32,
+    clips: u32,
     heads: u32,
     pool: u32,
     glyph_pages: u32,
@@ -389,6 +394,9 @@ impl UiRenderer {
         } else {
             &data.chunk.payload
         };
+        // Never empty: group 0 and clip 0 are always there.
+        let groups: &'g [u32] = data.chunk.groups.as_flattened();
+        let clips: &'g [u32] = data.chunk.clips.as_flattened();
 
         let pages = g.import_texture("UiGlyphPages", &self.pages);
         let pages = if data.uploads.is_empty() {
@@ -433,6 +441,8 @@ impl UiRenderer {
                     commands: ctx.upload_slice(cmds),
                     payload: ctx.upload_slice(payload),
                     glyphs: ctx.upload_slice(glyphs),
+                    groups: ctx.upload_slice(groups),
+                    clips: ctx.upload_slice(clips),
                     bounds: ctx.uav(out),
                 };
                 ctx.set_pipeline(pipeline);
@@ -469,6 +479,7 @@ impl UiRenderer {
                     frame: ctx.upload(&frame),
                     commands: ctx.upload_slice(cmds),
                     payload: ctx.upload_slice(payload),
+                    groups: ctx.upload_slice(groups),
                     bounds: ctx.srv(bd),
                     masks: ctx.srv(m),
                     heads: ctx.uav(h),
@@ -530,6 +541,8 @@ impl UiRenderer {
                     payload: ctx.upload_slice(payload),
                     paints: ctx.upload_slice(paints),
                     glyphs: ctx.upload_slice(glyphs),
+                    groups: ctx.upload_slice(groups),
+                    clips: ctx.upload_slice(clips),
                     heads: ctx.srv(h),
                     pool: ctx.srv(p),
                     glyph_pages: ctx.srv(gp),

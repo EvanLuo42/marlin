@@ -24,6 +24,6 @@ pub use renderer::{
     UiShaders,
 };
 pub use style::{
-    Color, Corners, Dash, ImageColor, ImageSource, ImageStyle, LineCap, Rect, RectStyle,
-    ShapeStyle, Stroke, StrokeStyle,
+    Affine2, Color, Corners, Dash, Glow, GroupDesc, ImageColor, ImageSource, ImageStyle, LineCap,
+    Rect, RectStyle, Shadow, ShapeStyle, Stroke, StrokeStyle,
 };
