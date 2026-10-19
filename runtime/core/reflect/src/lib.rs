@@ -63,7 +63,7 @@ mod traits;
 mod value;
 
 pub use access::{Mut, PathError, PathErrorKind, Ref, get_path, set_path};
-pub use data::{Proxied, ReflectProxy, ReflectTrait};
+pub use data::{DynamicHolder, Proxied, ReflectDynamic, ReflectProxy, ReflectTrait};
 pub use id::{ConstArg, TypeId, TypeName, name_hash};
 pub use info::{
     ArrayInfo, EnumInfo, FieldAttrs, FieldInfo, ListInfo, MapInfo, OptionInfo, PointerInfo,

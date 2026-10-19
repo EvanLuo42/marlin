@@ -3,6 +3,7 @@
 //! Run alone with `cargo test -p marlin-serial --test unit`.
 
 mod cooked;
+mod dynamic;
 mod header;
 mod kinds;
 mod migrate;

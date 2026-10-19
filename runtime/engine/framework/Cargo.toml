@@ -31,6 +31,7 @@ marlin-serial.workspace = true
 marlin-shader = { workspace = true, features = ["rhi"] }
 marlin-sync.workspace = true
 marlin-time.workspace = true
+marlin-world.workspace = true
 
 [dev-dependencies]
 marlin-test-support.workspace = true

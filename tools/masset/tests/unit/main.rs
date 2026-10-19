@@ -3,5 +3,6 @@
 //! Run alone with `cargo test -p marlin-masset --test unit`.
 
 mod bind;
+mod dynamic;
 mod extract;
 mod syntax;

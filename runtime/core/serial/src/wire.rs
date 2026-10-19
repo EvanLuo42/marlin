@@ -344,7 +344,8 @@ pub(crate) fn compatible(info: &'static TypeInfo, sig: Sig<'_>) -> bool {
         TypeKind::Pointer(p) => return compatible((p.pointee)(), sig),
         TypeKind::Opaque => {
             return if sig.kind() == CUSTOM {
-                sig.custom_id() == info.id.0 && custom::serial_fns(info).is_some()
+                sig.custom_id() == info.id.0
+                    && (custom::serial_fns(info).is_some() || custom::dynamic(info).is_some())
             } else {
                 custom::proxy(info).is_some_and(|p| compatible((p.proxy)(), sig))
             };

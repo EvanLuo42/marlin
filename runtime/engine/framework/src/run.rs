@@ -216,7 +216,7 @@ pub fn run(boot: &Boot, title: &str) -> Result<(), RunError> {
             reported = 2;
             info!(
                 "level loaded: {} entities, {} meshes",
-                engine.world.entity_count(),
+                engine.world.ecs().entity_count(),
                 render.mesh_count()
             );
         } else if reported == 0 && engine.is_ready() {

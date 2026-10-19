@@ -6,9 +6,12 @@
 //! 1. with its [`SerialFns`], if it has them: static type data in its `TypeInfo`, or added to the
 //!    global registry with [`register_custom`]. The value is opaque bytes, prefixed by their
 //!    length and tagged with the type's id, so only the same type reads it back.
-//! 2. else as its [`ReflectProxy`] value (a `Name` as a `String`, a `Handle` as a `u64`), exactly
+//! 2. if it is a [`ReflectDynamic`] holder, as the held value: its type's id, then its signature
+//!    and value, all inside the same length prefix (an id of 0 for an empty holder). Readers
+//!    leave the holder as it was when the id names no registered type it accepts;
+//! 3. else as its [`ReflectProxy`] value (a `Name` as a `String`, a `Handle` as a `u64`), exactly
 //!    like a value of the proxy type, so a field can change between the type and its proxy.
-//! 3. else not at all: [`Error::Unsupported`].
+//! 4. else not at all: [`Error::Unsupported`].
 //!
 //! Custom serializers only apply to opaque types; other kinds always use the format's own
 //! encoding, which is what makes schema evolution work.
@@ -16,7 +19,7 @@
 use alloc::vec::Vec;
 
 use marlin_reflect::{
-    IdCollision, Mut, Ref, Reflect, ReflectProxy, TypeInfo, find_data, type_info,
+    IdCollision, Mut, Ref, Reflect, ReflectDynamic, ReflectProxy, TypeInfo, find_data, type_info,
 };
 
 use crate::Error;
@@ -81,4 +84,8 @@ pub(crate) fn serial_fns(info: &'static TypeInfo) -> Option<&'static SerialFns> 
 
 pub(crate) fn proxy(info: &'static TypeInfo) -> Option<&'static ReflectProxy> {
     find_data::<ReflectProxy>(info)
+}
+
+pub(crate) fn dynamic(info: &'static TypeInfo) -> Option<&'static ReflectDynamic> {
+    find_data::<ReflectDynamic>(info)
 }

@@ -12,30 +12,51 @@
 //! - [`EntityGuid`]: an entity's identity in data; [`EntityRef`] refers to one, and the world's
 //!   [`GuidIndex`] resolves it to the live [`Entity`](marlin_ecs::Entity).
 //!
+//! - Levels: [`Level`] and [`Prefab`] as authored ([`EntityDesc`]s of [`ComponentData`],
+//!   [`PrefabInstance`]s with [`Override`]s), [`flatten`]ed and cooked to [`CookedLevel`]s, which
+//!   the world spawns as sublevels ([`World::spawn_level`], [`World::load_sublevel`],
+//!   [`World::unload_sublevel`]) or Prefab instances ([`World::spawn_prefab`]).
+//!
 //! Subsystems (render, physics, audio, scripts) depend on this crate, never the reverse: they
 //! register their components and put their systems in tick groups.
 #![cfg_attr(not(test), no_std)]
 
 extern crate alloc;
 
+mod component_data;
 mod guid;
+mod level;
+mod levels;
 mod registry;
 mod schedule;
 mod time;
 mod transform;
 mod world;
 
+pub use component_data::{ComponentData, IsComponent};
 pub use guid::{EntityGuid, EntityRef, GuidIndex};
+pub use level::{
+    CookedArchetype, CookedEntity, CookedLevel, EntityDesc, FlatEntity, FlattenError, Level,
+    NoPrefabs, Override, Prefab, PrefabInstance, PrefabSource, flatten, flatten_prefab,
+};
+pub use levels::{
+    EntityName, InLevel, LevelRequest, Levels, SublevelId, SublevelState, W_SPAWN_BUDGET_MS,
+};
 pub use registry::{ComponentFlags, ComponentRegistration, ComponentRegistry};
 pub use schedule::{TickGroup, WorldSchedule};
 pub use time::{FixedTime, Interpolated, T_FIXED_HZ, T_MAX_DT, T_MAX_SUBSTEPS, Time, TimeSettings};
 pub use transform::{GlobalTransform, Transform, propagate_transforms};
 pub use world::{NetRole, World, WorldKind};
 
-/// Registers the world's cvars (`t.*`) with `marlin-config`; once per process.
+/// Registers the world's cvars (`t.*`, `w.*`) with `marlin-config`; once per process.
 pub fn register_cvars() {
     static ONCE: marlin_sync::Once = marlin_sync::Once::new();
     ONCE.call_once(|| {
-        let _ = marlin_config::register_all(&[&T_MAX_DT, &T_FIXED_HZ, &T_MAX_SUBSTEPS]);
+        let _ = marlin_config::register_all(&[
+            &T_MAX_DT,
+            &T_FIXED_HZ,
+            &T_MAX_SUBSTEPS,
+            &W_SPAWN_BUDGET_MS,
+        ]);
     });
 }

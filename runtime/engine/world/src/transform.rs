@@ -70,6 +70,17 @@ impl Transform {
         }
     }
 
+    /// `child` (relative to this transform) relative to this one's parent: placing a sublevel's
+    /// roots, composing a Prefab's.
+    pub fn mul_transform(&self, child: &Transform) -> Self {
+        Self {
+            translation: self.translation
+                + child.translation.scale(self.scale).rotate(self.rotation),
+            rotation: (self.rotation * child.rotation).normalize(),
+            scale: self.scale * child.scale,
+        }
+    }
+
     pub fn forward(&self) -> Vec3 {
         self.rotation * Vec3::FORWARD
     }

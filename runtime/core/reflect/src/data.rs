@@ -4,10 +4,12 @@
 //! `#[reflect(impl_trait(...))]` and `#[reflect(data(...))]`); the
 //! [`Registry`](crate::Registry) attaches more at run time, for types whose description cannot be
 //! changed. [`find_data`](crate::find_data) looks in both. Any `'static + Send + Sync` value can
-//! be type data; this module has the two that reflection itself uses:
+//! be type data; this module has the ones reflection and its serializers use:
 //!
 //! - [`ReflectTrait<dyn T>`]: casts a reflected value to `&dyn T` (like Bevy's `ReflectTrait`
 //!   type data). [`Ref::cast`] / [`Mut::cast`] use it.
+//! - [`ReflectDynamic`]: an opaque holder of one value of a type chosen at run time (a list of
+//!   components of any types), which serializers write with the held type's id or name.
 //! - [`ReflectProxy`]: a by-value representation of an opaque type as another reflected type, for
 //!   serializers and editors.
 
@@ -105,5 +107,62 @@ fn from_proxy_shim<T: Proxied>(value: Mut<'_>, proxy: Ref<'_>) -> bool {
     match (value.downcast::<T>(), proxy.downcast::<T::Proxy>()) {
         (Some(value), Some(proxy)) => value.set_from_proxy(proxy),
         _ => false,
+    }
+}
+
+/// An opaque type holding at most one value of a reflected type chosen at run time, such as a
+/// component of any type in a level's entity description. Its [`ReflectDynamic`] lets
+/// serializers write the held value with its type's id (binary) or name (text) and read it back.
+pub trait DynamicHolder: Reflect {
+    /// The held value, if any.
+    fn held(&self) -> Option<Ref<'_>>;
+    /// Holds `value` instead of the current one; gives it back if its type is not
+    /// [`accepted`](Self::accepts).
+    fn hold(&mut self, value: Value) -> Result<(), Value>;
+    /// Whether values of `info`'s type may be held. Readers check it before constructing one.
+    fn accepts(info: &'static TypeInfo) -> bool;
+}
+
+/// Type data of a [`DynamicHolder`].
+pub struct ReflectDynamic {
+    held: for<'a> fn(Ref<'a>) -> Option<Ref<'a>>,
+    hold: fn(Mut<'_>, Value) -> Result<(), Value>,
+    accepts: fn(&'static TypeInfo) -> bool,
+}
+
+impl ReflectDynamic {
+    pub const fn of<T: DynamicHolder>() -> Self {
+        Self {
+            held: held_shim::<T>,
+            hold: hold_shim::<T>,
+            accepts: T::accepts,
+        }
+    }
+
+    /// The value `holder` holds; `None` if it holds none or is not of the type this data
+    /// belongs to.
+    pub fn held<'a>(&self, holder: Ref<'a>) -> Option<Ref<'a>> {
+        (self.held)(holder)
+    }
+
+    /// Makes `holder` hold `value`; gives it back if the type is not accepted or `holder` is not
+    /// of the type this data belongs to.
+    pub fn hold(&self, holder: Mut<'_>, value: Value) -> Result<(), Value> {
+        (self.hold)(holder, value)
+    }
+
+    pub fn accepts(&self, info: &'static TypeInfo) -> bool {
+        (self.accepts)(info)
+    }
+}
+
+fn held_shim<T: DynamicHolder>(holder: Ref<'_>) -> Option<Ref<'_>> {
+    holder.downcast::<T>()?.held()
+}
+
+fn hold_shim<T: DynamicHolder>(holder: Mut<'_>, value: Value) -> Result<(), Value> {
+    match holder.downcast::<T>() {
+        Some(holder) => holder.hold(value),
+        None => Err(value),
     }
 }

@@ -1,136 +1,339 @@
 //! The simulation side of a running game: assets, the world, the entry level and the engine's
 //! systems. Each [`Engine::frame`] advances it and returns the frame's [`RenderDelta`].
+//!
+//! The world runs the systems in its tick groups (0019 §4.2): [`RotatingMovement`] and
+//! [`SpectatorMovement`] in `PrePhysics`, the render extract in `Extract`. The extract turns
+//! what changed since the last frame into scene updates in the [`RenderExtract`] resource; the
+//! engine then loads the meshes it asked for and sends their geometry once loaded.
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use marlin_asset::{AssetServer, BlobStreamer, Handle, LoadState, Uuid, Vfs};
 use marlin_containers::{HashMap, HashMapExt};
-use marlin_ecs::{Changed, Entity, With, World};
+use marlin_ecs::{Changed, Entity, IntoSystem, With, Without};
 use marlin_input::{InputState, Key, MouseButton};
 use marlin_io::IoQueue;
-use marlin_jobs::JobSystem;
+use marlin_jobs::{Config, JobSystem};
 use marlin_material::DefaultMaterial;
-use marlin_math::{Quat, Transform, Vec3};
+use marlin_math::{DVec3, Quat, Vec3};
 use marlin_render::scene::{
     InstanceDesc, InstanceId, InstanceUpdate, LightDesc, LightId, LightKind, LightUpdate,
     MaterialId, MaterialUpdate, MeshId, MeshUpdate,
 };
-use marlin_render::{Camera, SceneIds, SceneUpdates};
+use marlin_render::{SceneIds, SceneUpdates};
+use marlin_world::{
+    CookedLevel, GlobalTransform, SublevelId, TickGroup, Time, Transform, World, WorldKind,
+};
 
+use crate::components::{
+    Camera, LevelSettings, MeshRenderer, PointLight, RotatingBase, RotatingMovement, SpectatorLook,
+    SpectatorMovement, SpotLight, engine_components,
+};
 use crate::delta::{MeshUpload, RenderDelta};
-use crate::level::{Component, DEFAULT_LIGHT_RANGE, DEFAULT_SPOT_ANGLE, Level};
 use crate::loaders::{LoadedMesh, engine_loaders};
 
-/// Draws a mesh asset at the entity's transform (the simulation side of a static mesh).
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub struct StaticMesh {
-    pub mesh: Uuid,
-    pub color: [f32; 4],
-}
+/// The frame's input, for the systems that read it (a world resource).
+#[derive(Clone, Copy, Default)]
+pub struct FrameInput(pub Option<InputState>);
 
-/// Turns the entity about `axis`, `speed` radians per second, from its authored rotation.
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub struct Spin {
-    pub axis: Vec3,
-    pub speed: f32,
-    pub base: Quat,
-}
-
-/// Look and move with mouse and keyboard or a gamepad.
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub struct FlyCamera {
-    pub speed: f32,
-    pub yaw: f32,
-    pub pitch: f32,
-}
-
-/// A point or spot light at the entity's transform (the simulation side of a light), in the
-/// renderer's units.
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub struct Light {
-    pub kind: LightKind,
-    /// Luminous intensity in candela times the linear color.
-    pub intensity: [f32; 3],
-    /// The emitting sphere's radius, in meters.
-    pub radius: f32,
-    /// Where its light fades out, in meters.
-    pub range: f32,
-    /// A spot light's cone: cosines of the inner and outer half angles.
-    pub cone: [f32; 2],
-}
-
-impl Light {
-    /// A level's point or spot light component: lumens to candela (Φ / 4π, a spot's as a point
-    /// light's), angles to cosines, zeros to their defaults.
-    pub fn from_component(component: &Component) -> Option<Self> {
-        let (kind, color, lumens, radius, range, angles) = match *component {
-            Component::PointLight {
-                color,
-                intensity,
-                radius,
-                range,
-            } => (LightKind::Point, color, intensity, radius, range, [0.0; 2]),
-            Component::SpotLight {
-                color,
-                intensity,
-                radius,
-                range,
-                inner_angle,
-                outer_angle,
-            } => (
-                LightKind::Spot,
-                color,
-                intensity,
-                radius,
-                range,
-                [inner_angle, outer_angle],
-            ),
-            _ => return None,
-        };
-        let color = if color == [0.0; 3] { [1.0; 3] } else { color };
-        let candela = lumens.max(0.0) / (4.0 * core::f32::consts::PI);
-        let outer = if angles[1] > 0.0 {
-            angles[1]
-        } else {
-            DEFAULT_SPOT_ANGLE
-        };
-        let inner = angles[0].clamp(0.0, outer);
-        Some(Self {
-            kind,
-            intensity: color.map(|c| c * candela),
-            radius: radius.max(0.0),
-            range: if range > 0.0 {
-                range
-            } else {
-                DEFAULT_LIGHT_RANGE
-            },
-            cone: [
-                marlin_math::scalar::cos(inner.to_radians()),
-                marlin_math::scalar::cos(outer.to_radians()),
-            ],
-        })
+/// A point or spot light in the render scene's units, at `transform`: lumens to candela
+/// (Φ / 4π, a spot's as a point light's), angles to cosines. A spot light shines down -Z.
+fn light_desc(
+    kind: LightKind,
+    color: [f32; 3],
+    lumens: f32,
+    radius: f32,
+    range: f32,
+    angles: [f32; 2],
+    transform: &marlin_math::Transform,
+) -> LightDesc {
+    let candela = lumens.max(0.0) / (4.0 * core::f32::consts::PI);
+    let outer = angles[1].clamp(0.0, 90.0);
+    let inner = angles[0].clamp(0.0, outer);
+    let p = transform.translation;
+    let d = transform.rotation.mul_vec3(-Vec3::Z).normalize_or_zero();
+    LightDesc {
+        kind,
+        radiance: color.map(|c| c * candela),
+        radius: radius.max(0.0),
+        position: [p.x, p.y, p.z],
+        direction: [d.x, d.y, d.z],
+        range: range.max(0.01),
+        cone: [
+            marlin_math::scalar::cos(inner.to_radians()),
+            marlin_math::scalar::cos(outer.to_radians()),
+        ],
     }
+}
 
-    /// The render scene's description of it at `transform`: a spot light shines down -Z.
-    pub fn desc(&self, transform: &Transform) -> LightDesc {
-        let p = transform.translation;
-        let d = transform.rotation.mul_vec3(-Vec3::Z).normalize_or_zero();
-        LightDesc {
-            kind: self.kind,
-            radiance: self.intensity,
-            radius: self.radius,
-            position: [p.x, p.y, p.z],
-            direction: [d.x, d.y, d.z],
-            range: self.range,
-            cone: self.cone,
+/// A point light's description at `transform`.
+pub fn point_light_desc(light: &PointLight, transform: &marlin_math::Transform) -> LightDesc {
+    light_desc(
+        LightKind::Point,
+        light.color,
+        light.intensity,
+        light.radius,
+        light.range,
+        [0.0; 2],
+        transform,
+    )
+}
+
+/// A spot light's description at `transform`.
+pub fn spot_light_desc(light: &SpotLight, transform: &marlin_math::Transform) -> LightDesc {
+    light_desc(
+        LightKind::Spot,
+        light.color,
+        light.intensity,
+        light.radius,
+        light.range,
+        [light.inner_angle, light.outer_angle],
+        transform,
+    )
+}
+
+/// Positions in the render scene are relative to this (0019 §6: a tiled origin comes later).
+const RENDER_ORIGIN: DVec3 = DVec3::ZERO;
+
+/// What the render scene has of the world, and the frame's changes to it (a world resource the
+/// extract system fills).
+pub struct RenderExtract {
+    /// Where the scene's rows come from: the render side's scene shares them.
+    ids: SceneIds,
+    /// Mesh assets in use, by UUID: their row.
+    meshes: HashMap<Uuid, MeshId>,
+    /// Mesh assets first used this frame: the engine loads them.
+    new_meshes: Vec<(Uuid, MeshId)>,
+    instances: HashMap<Entity, InstanceEntry>,
+    lights: HashMap<Entity, LightId>,
+    /// What meshes draw with until they name materials.
+    default_material: MaterialId,
+    /// The changes since the last delta.
+    updates: SceneUpdates,
+    camera: Option<(marlin_math::Transform, marlin_render::Camera)>,
+}
+
+/// What the render scene has of a drawn entity.
+struct InstanceEntry {
+    id: InstanceId,
+    mesh: MeshId,
+    color: [f32; 4],
+}
+
+/// `PrePhysics`: turns rotating entities, from the rotation each had when it started.
+fn rotate(world: &mut marlin_ecs::World) {
+    let new: Vec<(Entity, Quat)> = world
+        .query_ref_filtered::<(Entity, &Transform), (With<RotatingMovement>, Without<RotatingBase>)>()
+        .map(|(e, t)| (e, t.rotation))
+        .collect();
+    for (e, rotation) in new {
+        world.insert(e, RotatingBase(rotation));
+    }
+    let time = world.resource::<Time>().map_or(0.0, Time::elapsed) as f32;
+    for (mut transform, spin, base) in
+        world.query::<(&mut Transform, &RotatingMovement, &RotatingBase)>()
+    {
+        let axis = spin.axis.normalize_or_zero();
+        let axis = if axis == Vec3::ZERO { Vec3::Y } else { axis };
+        transform.rotation = base.0 * Quat::from_axis_angle(axis, spin.speed.to_radians() * time);
+    }
+}
+
+/// `PrePhysics`: flies spectators with the frame's input.
+fn spectate(world: &mut marlin_ecs::World) {
+    let new: Vec<(Entity, Quat)> = world
+        .query_ref_filtered::<(Entity, &Transform), (With<SpectatorMovement>, Without<SpectatorLook>)>()
+        .map(|(e, t)| (e, t.rotation))
+        .collect();
+    for (e, rotation) in new {
+        // The yaw and pitch of where it looks (roll is dropped).
+        let f = rotation.mul_vec3(Vec3::FORWARD);
+        let look = SpectatorLook {
+            yaw: marlin_math::scalar::atan2(-f.x, -f.z),
+            pitch: marlin_math::scalar::asin(f.y.clamp(-1.0, 1.0)),
+        };
+        world.insert(e, look);
+    }
+    let Some(state) = world.resource::<FrameInput>().and_then(|i| i.0) else {
+        return;
+    };
+    let dt = world.resource::<Time>().map_or(0.0, Time::delta);
+    let pad = state.gamepad(0);
+    let mut look = pad.right_stick().map(|v| v * 2.5 * dt);
+    if state.mouse().down(MouseButton::Right) {
+        let [dx, dy] = state.mouse().delta();
+        look[0] += dx * 0.003;
+        look[1] -= dy * 0.003;
+    }
+    let key = |k| if state.key_down(k) { 1.0 } else { 0.0 };
+    let [stick_x, stick_y] = pad.left_stick();
+    let right = key(Key::D) - key(Key::A) + stick_x;
+    let forward = key(Key::W) - key(Key::S) + stick_y;
+    let up = key(Key::E) - key(Key::Q) + pad.right_trigger() - pad.left_trigger();
+    let boost = if state.shift() { 3.0 } else { 1.0 };
+    for (mut transform, mut fly, spectator) in
+        world.query::<(&mut Transform, &mut SpectatorLook, &SpectatorMovement)>()
+    {
+        if look != [0.0; 2] {
+            fly.yaw -= look[0];
+            fly.pitch = (fly.pitch + look[1]).clamp(-1.5, 1.5);
+        }
+        let rotation = Quat::from_euler_yxz(fly.yaw, fly.pitch, 0.0);
+        let movement = rotation.mul_vec3(Vec3::new(right, 0.0, -forward)) + Vec3::Y * up;
+        if look != [0.0; 2] || movement != Vec3::ZERO {
+            transform.rotation = rotation;
+            transform.translation += movement * (spectator.speed * boost * dt);
         }
     }
 }
 
-/// Marks entities a level spawned, so a reload of the level replaces them.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct FromLevel;
+/// `Extract`: the scene's changes since the last frame (0009 §1.2), into [`RenderExtract`].
+/// Instances are entities with a [`GlobalTransform`] and a [`MeshRenderer`]; only those added,
+/// changed or removed this frame produce updates, and a moved entity sends just its transform.
+fn extract(world: &mut marlin_ecs::World) {
+    let Some(mut x) = world.remove_resource::<RenderExtract>() else {
+        return;
+    };
+    let x_ref = &mut x;
+    let render = |g: &GlobalTransform| g.relative_to(RENDER_ORIGIN);
+
+    // Entities that lost their mesh, or are gone.
+    let gone: Vec<Entity> = world
+        .removed::<MeshRenderer>()
+        .filter(|&e| !world.has::<MeshRenderer>(e))
+        .collect();
+    for e in gone {
+        if let Some(entry) = x_ref.instances.remove(&e) {
+            x_ref
+                .updates
+                .instances
+                .push(entry.id, InstanceUpdate::Remove);
+        }
+    }
+    // New entities, and changed meshes or colors.
+    let mut added: Vec<Entity> = Vec::new();
+    for (e, g, m) in world
+        .query_ref_filtered::<(Entity, &GlobalTransform, &MeshRenderer), Changed<MeshRenderer>>()
+    {
+        let mesh = match x_ref.meshes.get(&m.mesh.target) {
+            Some(&id) => id,
+            None => {
+                let id = x_ref.ids.meshes.reserve();
+                x_ref.updates.meshes.push(id, MeshUpdate::Add);
+                x_ref.meshes.insert(m.mesh.target, id);
+                x_ref.new_meshes.push((m.mesh.target, id));
+                id
+            }
+        };
+        match x_ref.instances.get_mut(&e) {
+            None => {
+                let id = x_ref.ids.instances.reserve();
+                x_ref.updates.instances.push(
+                    id,
+                    InstanceUpdate::Add(InstanceDesc {
+                        mesh,
+                        material: x_ref.default_material,
+                        transform: render(g),
+                        color: m.color,
+                        flags: marlin_render::scene::flags::SHADOW,
+                    }),
+                );
+                x_ref.instances.insert(
+                    e,
+                    InstanceEntry {
+                        id,
+                        mesh,
+                        color: m.color,
+                    },
+                );
+                added.push(e);
+            }
+            Some(entry) => {
+                if entry.mesh != mesh {
+                    entry.mesh = mesh;
+                    x_ref
+                        .updates
+                        .instances
+                        .push(entry.id, InstanceUpdate::Mesh(mesh));
+                }
+                if entry.color != m.color {
+                    entry.color = m.color;
+                    x_ref
+                        .updates
+                        .instances
+                        .push(entry.id, InstanceUpdate::Color(m.color));
+                }
+            }
+        }
+    }
+    // Moved entities (new ones were added where they are).
+    for (e, g) in world
+        .query_ref_filtered::<(Entity, &GlobalTransform), (Changed<GlobalTransform>, With<MeshRenderer>)>()
+    {
+        if let Some(entry) = x_ref.instances.get(&e)
+            && !added.contains(&e)
+        {
+            x_ref
+                .updates
+                .instances
+                .push(entry.id, InstanceUpdate::Transform(render(g)));
+        }
+    }
+
+    // Lights: those that lost theirs (or are gone) leave the table; new ones, and those whose
+    // light or transform changed, are sent whole.
+    let has_light = |e| world.has::<PointLight>(e) || world.has::<SpotLight>(e);
+    let gone: Vec<Entity> = world
+        .removed::<PointLight>()
+        .chain(world.removed::<SpotLight>())
+        .filter(|&e| !has_light(e))
+        .collect();
+    for e in gone {
+        if let Some(id) = x_ref.lights.remove(&e) {
+            x_ref.updates.lights.push(id, LightUpdate::Remove);
+        }
+    }
+    let mut changed: Vec<Entity> = world
+        .query_ref_filtered::<Entity, Changed<PointLight>>()
+        .chain(world.query_ref_filtered::<Entity, Changed<SpotLight>>())
+        .chain(world.query_ref_filtered::<Entity, (Changed<GlobalTransform>, With<PointLight>)>())
+        .chain(world.query_ref_filtered::<Entity, (Changed<GlobalTransform>, With<SpotLight>)>())
+        .collect();
+    changed.sort_unstable();
+    changed.dedup();
+    for e in changed {
+        let Some(g) = world.get::<GlobalTransform>(e) else {
+            continue;
+        };
+        let t = render(g);
+        let desc = match (world.get::<PointLight>(e), world.get::<SpotLight>(e)) {
+            (_, Some(spot)) => spot_light_desc(spot, &t),
+            (Some(point), None) => point_light_desc(point, &t),
+            (None, None) => continue,
+        };
+        match x_ref.lights.get(&e) {
+            Some(&id) => x_ref.updates.lights.push(id, LightUpdate::Set(desc)),
+            None => {
+                let id = x_ref.ids.lights.reserve();
+                x_ref.updates.lights.push(id, LightUpdate::Add(desc));
+                x_ref.lights.insert(e, id);
+            }
+        }
+    }
+
+    if let Some(settings) = world
+        .query_ref_filtered::<&LevelSettings, Changed<LevelSettings>>()
+        .next()
+    {
+        x_ref.updates.environment = Some(settings.to_render());
+    }
+    x_ref.camera = world
+        .query_ref::<(&GlobalTransform, &Camera)>()
+        .next()
+        .map(|(g, c)| (render(g), c.to_render()));
+    world.insert_resource(x);
+}
 
 pub struct Engine<'v> {
     vfs: &'v Vfs,
@@ -140,23 +343,24 @@ pub struct Engine<'v> {
     pub streamer: Arc<BlobStreamer>,
     stream_io: IoQueue<'v>,
     pub world: World,
-    level: Option<Handle<Level>>,
-    /// The level version whose entities are in the world.
+    level: Option<Handle<CookedLevel>>,
+    /// The level version spawned (`None` until the level loads, or after another is asked for).
     spawned: Option<u32>,
-    /// Where the scene's rows come from: the render side's scene shares them.
-    ids: SceneIds,
-    /// Meshes the level uses: their scene row and the version last sent to the render side.
+    /// The sublevel the level spawned as.
+    sublevel: Option<SublevelId>,
+    /// Mesh assets the scene uses: their row and the version last sent to the render side.
     meshes: HashMap<Uuid, MeshEntry>,
-    /// Entities drawn, with what the render scene has of them.
-    instances: HashMap<Entity, InstanceEntry>,
-    /// Entities lit, with their row in the render scene's light table.
-    lights: HashMap<Entity, LightId>,
-    /// What static meshes draw with until they name materials.
-    default_material: MaterialId,
-    /// Changes made outside extract (spawning a level), sent with the next delta.
-    updates: SceneUpdates,
-    frame: u64,
-    time: f32,
+    ids: SceneIds,
+    /// For callers that pass no job system.
+    own_jobs: Option<JobSystem>,
+}
+
+/// A mesh asset the scene uses.
+struct MeshEntry {
+    handle: Handle<LoadedMesh>,
+    id: MeshId,
+    /// The version last sent to the render side.
+    sent: Option<u32>,
 }
 
 #[derive(Debug, marlin_error::Error)]
@@ -164,7 +368,7 @@ pub struct Engine<'v> {
 pub struct EngineError(#[from] pub marlin_io::Error);
 
 impl<'v> Engine<'v> {
-    /// An engine loading from `vfs`, with the engine's loaders.
+    /// An engine loading from `vfs`, with the engine's loaders and components.
     pub fn new(vfs: &'v Vfs) -> Result<Self, EngineError> {
         let ids = SceneIds::new();
         let default_material = ids.materials.reserve();
@@ -173,6 +377,31 @@ impl<'v> Engine<'v> {
             default_material,
             MaterialUpdate::Add(DefaultMaterial::default().desc()),
         );
+        let mut world = World::new(WorldKind::Game, engine_components());
+        world.ecs_mut().insert_resource(FrameInput(None));
+        world.ecs_mut().insert_resource(RenderExtract {
+            ids: ids.clone(),
+            meshes: HashMap::new(),
+            new_meshes: Vec::new(),
+            instances: HashMap::new(),
+            lights: HashMap::new(),
+            default_material,
+            updates,
+            camera: None,
+        });
+        world
+            .add_system(
+                TickGroup::PrePhysics,
+                (rotate as fn(&mut marlin_ecs::World)).named("rotate"),
+            )
+            .add_system(
+                TickGroup::PrePhysics,
+                (spectate as fn(&mut marlin_ecs::World)).named("spectate"),
+            )
+            .add_system(
+                TickGroup::Extract,
+                (extract as fn(&mut marlin_ecs::World)).named("render_extract"),
+            );
         let streamer = Arc::new(BlobStreamer::new());
         Ok(Self {
             vfs,
@@ -180,17 +409,13 @@ impl<'v> Engine<'v> {
             assets: AssetServer::new(engine_loaders(&streamer)),
             streamer,
             stream_io: IoQueue::new(64)?,
-            world: World::new(),
+            world,
             level: None,
             spawned: None,
-            ids,
-            default_material,
+            sublevel: None,
             meshes: HashMap::new(),
-            instances: HashMap::new(),
-            lights: HashMap::new(),
-            updates,
-            frame: 0,
-            time: 0.0,
+            ids,
+            own_jobs: None,
         })
     }
 
@@ -207,7 +432,7 @@ impl<'v> Engine<'v> {
         }
     }
 
-    /// Whether the level and every mesh it uses have loaded and been handed to the renderer.
+    /// Whether the level and every mesh in use have loaded and been handed to the renderer.
     pub fn is_ready(&self) -> bool {
         self.spawned.is_some()
             && self.meshes.values().all(|m| {
@@ -216,19 +441,17 @@ impl<'v> Engine<'v> {
     }
 
     pub fn frame_count(&self) -> u64 {
-        self.frame
+        self.world.time().frame()
     }
 
-    /// One frame: loads, (re)spawns the level, runs the systems and takes the render delta.
-    /// `input` drives fly cameras; `jobs` decompresses loads in parallel.
+    /// One frame: loads, (re)spawns the level, runs the world and takes the render delta.
+    /// `input` drives spectators; `jobs` runs the world's systems and decompresses loads.
     pub fn frame(
         &mut self,
         dt: f32,
         input: Option<&InputState>,
         jobs: Option<&JobSystem>,
     ) -> RenderDelta {
-        self.frame += 1;
-        self.time += dt;
         self.assets.update(self.vfs, &mut self.io, jobs);
         self.streamer.update(self.vfs, &mut self.stream_io);
 
@@ -238,204 +461,49 @@ impl<'v> Engine<'v> {
             if self.spawned != Some(version)
                 && let Some(l) = self.assets.get(level)
             {
-                let l = l.clone();
-                self.spawn(&l);
+                let l = Arc::new(l.clone());
+                if let Some(old) = self.sublevel.take() {
+                    self.world.unload_sublevel(old);
+                }
+                self.sublevel = Some(self.world.spawn_level(l, Transform::IDENTITY));
                 self.spawned = Some(version);
             }
         }
 
-        self.spin();
-        if let Some(input) = input {
-            self.fly(input, dt);
-        }
-        let mut delta = self.extract();
-        delta.dt = dt;
-        // The frame's changes have been extracted: start the next change-detection period.
-        self.world.clear_trackers();
-        delta
-    }
+        self.world
+            .ecs_mut()
+            .insert_resource(FrameInput(input.copied()));
+        let jobs = match jobs {
+            Some(jobs) => jobs,
+            None => self.own_jobs.get_or_insert_with(|| {
+                JobSystem::new(Config {
+                    workers: 1,
+                    ..Config::default()
+                })
+                .expect("a job system")
+            }),
+        };
+        self.world.frame(dt, jobs);
 
-    fn spawn(&mut self, level: &Level) {
-        let old: Vec<Entity> = self
+        let x = self
             .world
-            .query_ref::<(Entity, &FromLevel)>()
-            .map(|(e, _)| e)
-            .collect();
-        for e in old {
-            self.world.despawn(e);
+            .ecs_mut()
+            .resource_mut::<RenderExtract>()
+            .expect("the engine's world has a RenderExtract");
+        let updates = core::mem::take(&mut x.updates);
+        let camera = x.camera;
+        let new_meshes = core::mem::take(&mut x.new_meshes);
+        for (uuid, id) in new_meshes {
+            let handle = self.assets.load(uuid);
+            self.meshes.insert(
+                uuid,
+                MeshEntry {
+                    handle,
+                    id,
+                    sent: None,
+                },
+            );
         }
-        self.updates.environment = Some(level.environment.to_render());
-        let mut used: Vec<Uuid> = Vec::new();
-        for desc in &level.entities {
-            let transform = desc.transform.to_transform();
-            let entity = self.world.spawn((transform, FromLevel));
-            for c in &desc.components {
-                match *c {
-                    Component::StaticMesh { mesh, color } => {
-                        used.push(mesh.target);
-                        self.world.insert(
-                            entity,
-                            StaticMesh {
-                                mesh: mesh.target,
-                                color,
-                            },
-                        );
-                    }
-                    Component::Camera { fov_y, near } => {
-                        let camera = Camera {
-                            fov_y: if fov_y > 0.0 {
-                                fov_y.to_radians()
-                            } else {
-                                Camera::default().fov_y
-                            },
-                            near: if near > 0.0 {
-                                near
-                            } else {
-                                Camera::default().near
-                            },
-                            ..Camera::default()
-                        };
-                        self.world.insert(entity, camera);
-                    }
-                    Component::Spin { axis, speed } => {
-                        let axis = Vec3::new(axis[0], axis[1], axis[2]).normalize_or_zero();
-                        self.world.insert(
-                            entity,
-                            Spin {
-                                axis: if axis == Vec3::ZERO { Vec3::Y } else { axis },
-                                speed: speed.to_radians(),
-                                base: transform.rotation,
-                            },
-                        );
-                    }
-                    Component::FlyCamera { speed } => {
-                        let [yaw, pitch, _] = desc.transform.rotation.map(f32::to_radians);
-                        self.world.insert(
-                            entity,
-                            FlyCamera {
-                                speed: if speed > 0.0 { speed } else { 10.0 },
-                                yaw,
-                                pitch,
-                            },
-                        );
-                    }
-                    Component::PointLight { .. } | Component::SpotLight { .. } => {
-                        if let Some(light) = Light::from_component(c) {
-                            self.world.insert(entity, light);
-                        }
-                    }
-                }
-            }
-        }
-        // Keep exactly the meshes the level uses.
-        used.sort_unstable();
-        used.dedup();
-        let gone: Vec<Uuid> = self
-            .meshes
-            .keys()
-            .copied()
-            .filter(|m| used.binary_search(m).is_err())
-            .collect();
-        for m in gone {
-            if let Some(entry) = self.meshes.remove(&m) {
-                self.updates.meshes.push(entry.id, MeshUpdate::Remove);
-            }
-        }
-        for m in used {
-            if !self.meshes.contains_key(&m) {
-                let id = self.ids.meshes.reserve();
-                self.updates.meshes.push(id, MeshUpdate::Add);
-                let handle = self.assets.load(m);
-                self.meshes.insert(
-                    m,
-                    MeshEntry {
-                        handle,
-                        id,
-                        sent: None,
-                    },
-                );
-            }
-        }
-    }
-
-    fn spin(&mut self) {
-        let time = self.time;
-        for (mut transform, spin) in self.world.query::<(&mut Transform, &Spin)>() {
-            transform.rotation = spin.base * Quat::from_axis_angle(spin.axis, spin.speed * time);
-        }
-    }
-
-    fn fly(&mut self, state: &InputState, dt: f32) {
-        let pad = state.gamepad(0);
-        let mut look = pad.right_stick().map(|v| v * 2.5 * dt);
-        if state.mouse().down(MouseButton::Right) {
-            let [dx, dy] = state.mouse().delta();
-            look[0] += dx * 0.003;
-            look[1] -= dy * 0.003;
-        }
-        let key = |k| if state.key_down(k) { 1.0 } else { 0.0 };
-        let [stick_x, stick_y] = pad.left_stick();
-        let right = key(Key::D) - key(Key::A) + stick_x;
-        let forward = key(Key::W) - key(Key::S) + stick_y;
-        let up = key(Key::E) - key(Key::Q) + pad.right_trigger() - pad.left_trigger();
-        let boost = if state.shift() { 3.0 } else { 1.0 };
-        for (mut transform, mut fly) in self.world.query::<(&mut Transform, &mut FlyCamera)>() {
-            fly.yaw -= look[0];
-            fly.pitch = (fly.pitch + look[1]).clamp(-1.5, 1.5);
-            let rotation = Quat::from_euler_yxz(fly.yaw, fly.pitch, 0.0);
-            let movement = rotation.mul_vec3(Vec3::new(right, 0.0, -forward)) + Vec3::Y * up;
-            transform.rotation = rotation;
-            transform.translation += movement * (fly.speed * boost * dt);
-        }
-    }
-
-    /// The lights' changes since the last delta, into `updates`: entities that lost their
-    /// [`Light`] (or are gone) leave the light table; new ones, and those whose light or
-    /// transform changed, are sent whole.
-    fn extract_lights(&mut self, updates: &mut SceneUpdates) {
-        let world = &self.world;
-        let gone: Vec<Entity> = world
-            .removed::<Light>()
-            .filter(|&e| !world.has::<Light>(e))
-            .collect();
-        for e in gone {
-            if let Some(id) = self.lights.remove(&e) {
-                updates.lights.push(id, LightUpdate::Remove);
-            }
-        }
-        let mut changed: Vec<Entity> = world
-            .query_ref_filtered::<(Entity, &Light), Changed<Light>>()
-            .map(|(e, _)| e)
-            .chain(
-                world
-                    .query_ref_filtered::<(Entity, &Transform), (Changed<Transform>, With<Light>)>()
-                    .map(|(e, _)| e),
-            )
-            .collect();
-        changed.sort_unstable();
-        changed.dedup();
-        for e in changed {
-            let (Some(light), Some(transform)) = (world.get::<Light>(e), world.get::<Transform>(e))
-            else {
-                continue;
-            };
-            let desc = light.desc(transform);
-            match self.lights.get(&e) {
-                Some(&id) => updates.lights.push(id, LightUpdate::Set(desc)),
-                None => {
-                    let id = self.ids.lights.reserve();
-                    updates.lights.push(id, LightUpdate::Add(desc));
-                    self.lights.insert(e, id);
-                }
-            }
-        }
-    }
-
-    /// The render delta: changes since the last one (0009 §1.2). Instances are entities with a
-    /// [`Transform`] and a [`StaticMesh`]; only those added, changed or removed since the last
-    /// [`World::clear_trackers`] produce updates, and a moved entity sends just its transform.
-    fn extract(&mut self) -> RenderDelta {
-        let mut updates = core::mem::take(&mut self.updates);
         let mut uploads = Vec::new();
         for entry in self.meshes.values_mut() {
             if let Some(loaded) = self.assets.get(&entry.handle) {
@@ -451,103 +519,12 @@ impl<'v> Engine<'v> {
             }
         }
         uploads.sort_unstable_by_key(|u| u.mesh.index());
-
-        // Entities that lost their mesh, or are gone.
-        let world = &self.world;
-        let gone: Vec<Entity> = world
-            .removed::<StaticMesh>()
-            .filter(|&e| !world.has::<StaticMesh>(e))
-            .collect();
-        for e in gone {
-            if let Some(entry) = self.instances.remove(&e) {
-                updates.instances.push(entry.id, InstanceUpdate::Remove);
-            }
-        }
-        // New entities, and changed meshes or colors.
-        let frame = self.frame;
-        for (e, transform, m) in self
-            .world
-            .query_ref_filtered::<(Entity, &Transform, &StaticMesh), Changed<StaticMesh>>()
-        {
-            // A mesh the level did not list (game code spawned it): load it now.
-            let mesh = match self.meshes.get(&m.mesh) {
-                Some(entry) => entry.id,
-                None => {
-                    let id = self.ids.meshes.reserve();
-                    updates.meshes.push(id, MeshUpdate::Add);
-                    let handle = self.assets.load(m.mesh);
-                    self.meshes.insert(
-                        m.mesh,
-                        MeshEntry {
-                            handle,
-                            id,
-                            sent: None,
-                        },
-                    );
-                    id
-                }
-            };
-            match self.instances.get_mut(&e) {
-                None => {
-                    let id = self.ids.instances.reserve();
-                    updates.instances.push(
-                        id,
-                        InstanceUpdate::Add(InstanceDesc {
-                            mesh,
-                            material: self.default_material,
-                            transform: *transform,
-                            color: m.color,
-                            flags: marlin_render::scene::flags::SHADOW,
-                        }),
-                    );
-                    self.instances.insert(
-                        e,
-                        InstanceEntry {
-                            id,
-                            mesh,
-                            color: m.color,
-                            added: frame,
-                        },
-                    );
-                }
-                Some(entry) => {
-                    if entry.mesh != mesh {
-                        entry.mesh = mesh;
-                        updates.instances.push(entry.id, InstanceUpdate::Mesh(mesh));
-                    }
-                    if entry.color != m.color {
-                        entry.color = m.color;
-                        updates
-                            .instances
-                            .push(entry.id, InstanceUpdate::Color(m.color));
-                    }
-                }
-            }
-        }
-        // Moved entities (new ones were added where they are).
-        for (e, transform) in self
-            .world
-            .query_ref_filtered::<(Entity, &Transform), (Changed<Transform>, With<StaticMesh>)>()
-        {
-            if let Some(entry) = self.instances.get(&e)
-                && entry.added != frame
-            {
-                updates
-                    .instances
-                    .push(entry.id, InstanceUpdate::Transform(*transform));
-            }
-        }
-        self.extract_lights(&mut updates);
         RenderDelta {
-            frame: self.frame,
-            dt: 0.0,
+            frame: self.world.time().frame(),
+            dt: self.world.time().delta(),
             updates,
             uploads,
-            camera: self
-                .world
-                .query_ref::<(&Transform, &Camera)>()
-                .next()
-                .map(|(t, c)| (*t, *c)),
+            camera,
         }
     }
 
@@ -559,24 +536,9 @@ impl<'v> Engine<'v> {
 
     /// Instances the render scene has, as of the last delta.
     pub fn instance_count(&self) -> usize {
-        self.instances.len()
+        self.world
+            .ecs()
+            .resource::<RenderExtract>()
+            .map_or(0, |x| x.instances.len())
     }
-}
-
-/// A mesh the level uses.
-struct MeshEntry {
-    handle: Handle<LoadedMesh>,
-    /// Its row in the render scene.
-    id: MeshId,
-    /// The version last sent to the render side.
-    sent: Option<u32>,
-}
-
-/// What the render scene has of a drawn entity.
-struct InstanceEntry {
-    id: InstanceId,
-    mesh: MeshId,
-    color: [f32; 4],
-    /// The frame it was added in.
-    added: u64,
 }

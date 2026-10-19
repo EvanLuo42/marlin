@@ -2,6 +2,7 @@
 //! `marlin_containers`.
 //!
 //! - Math types are structs with named fields (`x`, `y`, ..., `x_axis`, ..., `translation`, ...).
+//!   Vectors and quaternions carry `meta(text = "tuple")`: text formats write them `(x, y, z)`.
 //!   `Vec4` and `Quat` hold a SIMD `f32x4`, which has the layout of `[f32; 4]`, so their `x`/`y`/
 //!   `z`/`w` fields are real `f32`s at offsets 0, 4, 8 and 12, exactly what their `Deref` to
 //!   `Xyzw` exposes.
@@ -25,7 +26,8 @@ use marlin_text::{InlineString, Name};
 use crate::data::{Proxied, ReflectProxy};
 use crate::id::{ConstArg, TypeName};
 use crate::info::{
-    FieldInfo, ListInfo, MapInfo, SetInfo, StringInfo, StructInfo, StructStyle, TypeInfo, TypeKind,
+    FieldInfo, ListInfo, MapInfo, SetInfo, StringInfo, StructInfo, StructStyle, TypeAttrs,
+    TypeInfo, TypeKind,
 };
 use crate::traits::{
     Reflect, ReflectList, ReflectMap, ReflectSet, ReflectString, grow_with_defaults, type_info,
@@ -33,26 +35,39 @@ use crate::traits::{
 
 /// `Reflect` for a `Copy` struct of public fields, described field by field. `via Xyzw` takes the
 /// offsets from `Xyzw`, for the SIMD-backed types.
+/// `meta(text = "tuple")`: text formats write the type as a tuple of its fields in order, `(1.0, 2.0,
+/// 3.0)`, rather than by name: vectors and quaternions.
+const TUPLE: &[(&str, &str)] = &[("text", "tuple")];
+
 macro_rules! plain_struct {
     ($ty:ident = $name:literal, default $default:expr, { $($field:ident: $fty:ty),* $(,)? }) => {
-        plain_struct!(@impl $ty, $name, $default, $ty, { $($field: $fty),* });
+        plain_struct!(@impl $ty, $name, $default, $ty, &[], { $($field: $fty),* });
     };
-    ($ty:ident = $name:literal via Xyzw, default $default:expr) => {
-        plain_struct!(@impl $ty, $name, $default, Xyzw, { x: f32, y: f32, z: f32, w: f32 });
+    ($ty:ident = $name:literal as tuple, default $default:expr, { $($field:ident: $fty:ty),* $(,)? }) => {
+        plain_struct!(@impl $ty, $name, $default, $ty, TUPLE, { $($field: $fty),* });
     };
-    (@impl $ty:ident, $name:literal, $default:expr, $layout:ident, { $($field:ident: $fty:ty),* }) => {
+    ($ty:ident = $name:literal via Xyzw as tuple, default $default:expr) => {
+        plain_struct!(@impl $ty, $name, $default, Xyzw, TUPLE, { x: f32, y: f32, z: f32, w: f32 });
+    };
+    (@impl $ty:ident, $name:literal, $default:expr, $layout:ident, $meta:expr, { $($field:ident: $fty:ty),* }) => {
         // SAFETY: every field is at its `offset_of!` offset with its declared type (for
         // `via Xyzw`, the `f32x4` inside has the layout of `Xyzw`, as its `Deref` relies on).
         unsafe impl Reflect for $ty {
             const TYPE_NAME: TypeName = TypeName::simple($name);
-            const TYPE_INFO: TypeInfo = TypeInfo::new::<Self>(TypeKind::Struct(StructInfo {
-                style: StructStyle::Named,
-                fields: &[$(FieldInfo::new(
-                    stringify!($field),
-                    offset_of!($layout, $field),
-                    type_info::<$fty>,
-                )),*],
-            }));
+            const TYPE_INFO: TypeInfo = TypeInfo {
+                attrs: TypeAttrs {
+                    meta: $meta,
+                    ..TypeAttrs::NONE
+                },
+                ..TypeInfo::new::<Self>(TypeKind::Struct(StructInfo {
+                    style: StructStyle::Named,
+                    fields: &[$(FieldInfo::new(
+                        stringify!($field),
+                        offset_of!($layout, $field),
+                        type_info::<$fty>,
+                    )),*],
+                }))
+            };
 
             fn reflect_default() -> Option<Self> {
                 Some($default)
@@ -65,14 +80,14 @@ macro_rules! plain_struct {
     };
 }
 
-plain_struct!(Vec2 = "marlin_math::Vec2", default Vec2::ZERO, { x: f32, y: f32 });
-plain_struct!(Vec3 = "marlin_math::Vec3", default Vec3::ZERO, { x: f32, y: f32, z: f32 });
-plain_struct!(Vec4 = "marlin_math::Vec4" via Xyzw, default Vec4::ZERO);
-plain_struct!(Quat = "marlin_math::Quat" via Xyzw, default Quat::IDENTITY);
-plain_struct!(IVec2 = "marlin_math::IVec2", default IVec2::ZERO, { x: i32, y: i32 });
-plain_struct!(IVec3 = "marlin_math::IVec3", default IVec3::ZERO, { x: i32, y: i32, z: i32 });
-plain_struct!(DVec3 = "marlin_math::DVec3", default DVec3::ZERO, { x: f64, y: f64, z: f64 });
-plain_struct!(UVec2 = "marlin_math::UVec2", default UVec2::ZERO, { x: u32, y: u32 });
+plain_struct!(Vec2 = "marlin_math::Vec2" as tuple, default Vec2::ZERO, { x: f32, y: f32 });
+plain_struct!(Vec3 = "marlin_math::Vec3" as tuple, default Vec3::ZERO, { x: f32, y: f32, z: f32 });
+plain_struct!(Vec4 = "marlin_math::Vec4" via Xyzw as tuple, default Vec4::ZERO);
+plain_struct!(Quat = "marlin_math::Quat" via Xyzw as tuple, default Quat::IDENTITY);
+plain_struct!(IVec2 = "marlin_math::IVec2" as tuple, default IVec2::ZERO, { x: i32, y: i32 });
+plain_struct!(IVec3 = "marlin_math::IVec3" as tuple, default IVec3::ZERO, { x: i32, y: i32, z: i32 });
+plain_struct!(DVec3 = "marlin_math::DVec3" as tuple, default DVec3::ZERO, { x: f64, y: f64, z: f64 });
+plain_struct!(UVec2 = "marlin_math::UVec2" as tuple, default UVec2::ZERO, { x: u32, y: u32 });
 plain_struct!(Mat3 = "marlin_math::Mat3", default Mat3::IDENTITY, {
     x_axis: Vec3,
     y_axis: Vec3,

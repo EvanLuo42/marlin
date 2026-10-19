@@ -1,9 +1,11 @@
 //! marlin-world's tests (quick tier, docs/design/0014-testing.md §5): transform propagation,
-//! tick groups and fixed steps, the component registry and entity guids. Platform-independent.
+//! tick groups and fixed steps, the component registry, entity guids, and levels: Prefab
+//! flattening, cooked archetypes, spawning and sublevel streaming. Platform-independent.
 //! Run alone with `cargo test -p marlin-world --test unit`.
 
 mod frame;
 mod guid;
+mod level;
 mod registry;
 mod transform;
 

@@ -7,9 +7,19 @@
 //!
 //! Writing omits every field equal to its default (relative to the enclosing value's default, as
 //! reading reconstructs it), so text holds only what differs from code.
+//!
+//! Types marked `meta(text = "tuple")` (vectors, quaternions) are written as tuples of their
+//! fields in order: `Translation = (1.0, 2.0, 3.0)`.
+//!
+//! Opaque values are written through their type data: a [`ReflectDynamic`] holder as the held
+//! value tagged with its type's name (`Light { Intensity = 800.0 }`; the type must be in the
+//! schema), a [`ReflectProxy`] type as its proxy.
 
 use marlin_asset::Uuid;
-use marlin_reflect::{Mut, Primitive, Ref, StructStyle, TypeInfo, TypeKind, TypeName, Value};
+use marlin_reflect::{
+    Mut, Primitive, Ref, ReflectDynamic, ReflectProxy, StructStyle, TypeInfo, TypeKind, TypeName,
+    Value, find_data,
+};
 
 use crate::ast::{Attr, Document, FileRef, LinkRef, Node, NodeKind, Object, SOURCE_SCHEME, Span};
 use crate::case::{short_type_name, to_pascal};
@@ -179,6 +189,14 @@ impl Reader<'_> {
             TypeKind::Struct(s) => match s.style {
                 StructStyle::Named => match &node.kind {
                     NodeKind::Record(None, attrs) => self.read_fields(m, attrs, None),
+                    NodeKind::Tuple(items)
+                        if is_tuple_text(info) && items.len() == s.fields.len() =>
+                    {
+                        self.read_items(m, items);
+                    }
+                    _ if is_tuple_text(info) => {
+                        self.mismatch(node, format_args!("a tuple of {}", s.fields.len()));
+                    }
                     _ => self.mismatch(node, "a struct `{ … }`"),
                 },
                 StructStyle::Tuple if s.fields.len() == 1 => {
@@ -321,10 +339,83 @@ impl Reader<'_> {
                     info.name
                 ),
             )),
-            TypeKind::Opaque => self.diagnostics.push(Diagnostic::error(
+            TypeKind::Opaque => {
+                if let Some(dynamic) = find_data::<ReflectDynamic>(info) {
+                    self.read_held(m, dynamic, node);
+                } else if let Some(proxy) = find_data::<ReflectProxy>(info) {
+                    self.read_proxied(m, proxy, node);
+                } else {
+                    self.diagnostics.push(Diagnostic::error(
+                        node.span,
+                        format!("`{}` cannot be read from text", info.name),
+                    ));
+                }
+            }
+        }
+    }
+
+    /// A dynamic holder's value: `Type { … }`, `Type(…)`, `Type` (a unit struct, or all
+    /// defaults) or `None` (empty).
+    fn read_held(&mut self, m: Mut<'_>, dynamic: &ReflectDynamic, node: &Node) {
+        let (tag, inner) = match &node.kind {
+            NodeKind::Ident(word) if word == "None" => return,
+            NodeKind::Ident(tag) => (tag, NodeKind::Record(None, Vec::new())),
+            NodeKind::Record(Some(tag), attrs) => (tag, NodeKind::Record(None, attrs.clone())),
+            NodeKind::Call(tag, items) if items.len() == 1 => (tag, items[0].kind.clone()),
+            NodeKind::Call(tag, items) => (tag, NodeKind::Tuple(items.clone())),
+            _ => {
+                self.mismatch(node, "a typed value `Type { … }`");
+                return;
+            }
+        };
+        let Some(held) = self
+            .schema
+            .object_type(tag)
+            .filter(|&info| dynamic.accepts(info))
+        else {
+            self.diagnostics.push(Diagnostic::error(
                 node.span,
-                format!("`{}` cannot be read from text", info.name),
-            )),
+                format!("`{tag}` is not a type that can be used here"),
+            ));
+            return;
+        };
+        let Some(mut value) = Value::default_of(held) else {
+            self.diagnostics.push(Diagnostic::error(
+                node.span,
+                format!("`{tag}` cannot be default-constructed"),
+            ));
+            return;
+        };
+        self.read(
+            value.as_mut(),
+            &Node {
+                kind: inner,
+                span: node.span,
+            },
+        );
+        if dynamic.hold(m, value).is_err() {
+            self.diagnostics.push(Diagnostic::error(
+                node.span,
+                format!("`{tag}` cannot be held here"),
+            ));
+        }
+    }
+
+    fn read_proxied(&mut self, m: Mut<'_>, proxy: &ReflectProxy, node: &Node) {
+        let info = m.info();
+        // Start from the current value, so a struct proxy keeps fields the text omits.
+        let Some(mut value) = proxy
+            .to_proxy(m.as_ref())
+            .or_else(|| Value::default_of((proxy.proxy)()))
+        else {
+            return;
+        };
+        self.read(value.as_mut(), node);
+        if !proxy.from_proxy(m, value.as_ref()) {
+            self.diagnostics.push(Diagnostic::error(
+                node.span,
+                format!("not a valid `{}`", info.name),
+            ));
         }
     }
 
@@ -523,6 +614,7 @@ impl Writer<'_> {
             TypeKind::Primitive(p) => primitive(r, *p),
             TypeKind::String(_) => NodeKind::Str(r.as_str().unwrap_or_default().to_owned()),
             TypeKind::Struct(s) => match s.style {
+                StructStyle::Named if is_tuple_text(info) => NodeKind::Tuple(self.items(r, None)?),
                 StructStyle::Named => NodeKind::Record(None, self.fields(r, default)?),
                 StructStyle::Tuple if s.fields.len() == 1 => {
                     let field_default = default.and_then(|d| d.field_at(0)).map(|(_, d)| d);
@@ -591,9 +683,47 @@ impl Writer<'_> {
             TypeKind::Map(_) | TypeKind::Set(_) => {
                 return Err(WriteError::Collection(info.name.to_string()));
             }
-            TypeKind::Opaque => return Err(WriteError::Opaque(info.name.to_string())),
+            TypeKind::Opaque => {
+                if let Some(dynamic) = find_data::<ReflectDynamic>(info) {
+                    return self.held_node(dynamic, r);
+                }
+                if let Some(proxy) = find_data::<ReflectProxy>(info) {
+                    let value = proxy
+                        .to_proxy(r)
+                        .ok_or_else(|| WriteError::Opaque(info.name.to_string()))?;
+                    let default = default.and_then(|d| proxy.to_proxy(d));
+                    return self.node(value.as_ref(), default.as_ref().map(Value::as_ref));
+                }
+                return Err(WriteError::Opaque(info.name.to_string()));
+            }
         };
         Ok(Node::new(kind))
+    }
+
+    /// A dynamic holder: the held value tagged with its type's text name, its fields relative to
+    /// that type's default.
+    fn held_node(&self, dynamic: &ReflectDynamic, r: Ref<'_>) -> Result<Node, WriteError> {
+        let Some(held) = dynamic.held(r) else {
+            return Ok(Node::new(NodeKind::Ident("None".into())));
+        };
+        let info = held.info();
+        let name = Schema::text_name(info);
+        if !self
+            .schema
+            .object_type(name)
+            .is_some_and(|t| t.same_type(info))
+        {
+            return Err(WriteError::UnknownType(info.name.to_string()));
+        }
+        let default = Value::default_of(info);
+        let node = self.node(held, default.as_ref().map(Value::as_ref))?;
+        let name = name.to_owned();
+        Ok(Node::new(match node.kind {
+            NodeKind::Record(None, attrs) if attrs.is_empty() => NodeKind::Ident(name),
+            NodeKind::Record(None, attrs) => NodeKind::Record(Some(name), attrs),
+            NodeKind::Tuple(items) => NodeKind::Call(name, items),
+            other => NodeKind::Call(name, vec![Node::new(other)]),
+        }))
     }
 
     fn items(&self, r: Ref<'_>, default: Option<Ref<'_>>) -> Result<Vec<Node>, WriteError> {
@@ -824,4 +954,10 @@ impl Links for LocalPaths<'_> {
             name,
         ))
     }
+}
+
+/// Types marked `meta(text = "tuple")` (vectors, quaternions) are written as a tuple of their
+/// fields, `(1.0, 2.0, 3.0)`; reading takes that form too.
+fn is_tuple_text(info: &TypeInfo) -> bool {
+    info.attrs.meta_value("text") == Some("tuple")
 }

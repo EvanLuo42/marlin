@@ -4,7 +4,7 @@
 
 use alloc::vec::Vec;
 
-use marlin_reflect::{Mut, Primitive, Reflect, TypeKind, Value};
+use marlin_reflect::{Mut, Primitive, Reflect, ReflectDynamic, TypeId, TypeKind, Value};
 
 use crate::migrate::{self, Migrate, OldFields};
 use crate::wire::{
@@ -326,9 +326,13 @@ impl Reader {
     ) -> Result<(), Error> {
         let info = dst.info();
         if sig.kind() == CUSTOM {
-            let fns = custom::serial_fns(info).ok_or(Error::Incompatible)?;
             let len = input.u32()? as usize;
-            return (fns.read)(dst, input.take(len)?);
+            let bytes = input.take(len)?;
+            if let Some(fns) = custom::serial_fns(info) {
+                return (fns.read)(dst, bytes);
+            }
+            let dynamic = custom::dynamic(info).ok_or(Error::Incompatible)?;
+            return self.decode_held(dynamic, dst, bytes, depth);
         }
         let proxy = custom::proxy(info).ok_or(Error::Incompatible)?;
         // Start from the current value, so a struct proxy keeps fields the data lacks.
@@ -342,6 +346,36 @@ impl Reader {
         } else {
             Err(Error::Incompatible)
         }
+    }
+
+    /// A [`ReflectDynamic`] holder's value: the held type's id, then its signature and value
+    /// (see [`custom`]). An id of no registered type the holder accepts, or a value that no
+    /// longer fits the type, leaves the holder as it was.
+    fn decode_held(
+        &self,
+        dynamic: &ReflectDynamic,
+        dst: Mut<'_>,
+        bytes: &[u8],
+        depth: u32,
+    ) -> Result<(), Error> {
+        let mut body = Input::new(bytes);
+        let id = body.u64()?;
+        if id == 0 {
+            return Ok(());
+        }
+        let Some(held) = marlin_reflect::find(TypeId(id)).filter(|&i| dynamic.accepts(i)) else {
+            return Ok(());
+        };
+        let sig = body.sig(self.max_depth)?;
+        if !wire::compatible(held, sig) {
+            return Ok(());
+        }
+        let mut value = Value::default_of(held).ok_or(Error::NoDefault)?;
+        self.decode(&mut body, value.as_mut(), sig, depth)?;
+        if body.remaining() != 0 {
+            return Err(Error::InvalidLength);
+        }
+        dynamic.hold(dst, value).map_err(|_| Error::Incompatible)
     }
 
     fn count(&self, input: &mut Input<'_>, sig: Sig<'_>) -> Result<usize, Error> {

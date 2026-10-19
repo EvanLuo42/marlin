@@ -1,6 +1,6 @@
 //! The engine's asset loaders: what each cooked type becomes at runtime.
 //!
-//! - [`Level`]: as authored (marlin-serial).
+//! - `Level` and `Prefab` → `CookedLevel` (marlin-serial): instances expanded, by archetype.
 //! - `ShaderLibrary` (a cooked `ShaderPackage`): as cooked (marlin-serial); see [`crate::shaders`].
 //! - `Mesh` → [`LoadedMesh`]: the cooked mesh in place with its root pages, shared with the
 //!   render side through an `Arc`; its other pages stream from disk when the renderer wants them.
@@ -24,7 +24,7 @@ use marlin_render::asset::{Mesh, PairingPattern, PairingPatternView, Texture};
 use marlin_shader::asset::ShaderLibrary;
 use marlin_sync::Mutex;
 
-use crate::level::Level;
+use marlin_world::CookedLevel;
 
 /// A loaded `Mesh`: its cooked payload and resident pages, checked but for the pages' contents
 /// (the renderer checks those when it uploads them), and its streamed pages, read through the
@@ -190,7 +190,7 @@ fn load_mesh(
 pub fn engine_loaders(streamer: &Arc<BlobStreamer>) -> Loaders {
     let streamer = streamer.clone();
     let mut l = Loaders::new();
-    l.register_serial::<Level>();
+    l.register_serial::<CookedLevel>();
     l.register_serial::<crate::scalability::Scalability>();
     l.register_serial::<crate::scalability::DeviceProfile>();
     l.register_serial::<ShaderLibrary>();

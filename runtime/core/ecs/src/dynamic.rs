@@ -306,6 +306,45 @@ impl World {
         Ok(())
     }
 
+    /// Adds clones of reflected values as the components of their Rust types, all in one
+    /// archetype move: how levels spawn entities from loaded data. Returns false, adding
+    /// nothing, if the entity is not alive, a type is not a registered component or appears
+    /// twice, or a value cannot be cloned.
+    pub fn insert_cloned(&mut self, entity: Entity, values: &[marlin_reflect::Ref<'_>]) -> bool {
+        if !self.is_alive(entity) {
+            return false;
+        }
+        let mut ids = Vec::with_capacity(values.len());
+        for value in values {
+            let Some(id) = self.components.id_of_type((value.info().ops.rust_id)()) else {
+                return false;
+            };
+            if ids.contains(&id) {
+                return false;
+            }
+            ids.push(id);
+        }
+        let mut storage = ErasedValues::new();
+        for (value, &id) in values.iter().zip(&ids) {
+            let dst = storage.push(self.components.info(id));
+            // SAFETY: `value` is a live value of the component's Rust type (its id came from
+            // that type) and `dst` is storage for one.
+            if !unsafe { (value.info().ops.clone)(value.as_ptr(), dst) } {
+                return false;
+            }
+            storage.mark_initialized();
+        }
+        let ptrs = storage.ptrs();
+        // SAFETY: each pointer holds a valid value of the matching component, handed over on
+        // success.
+        if unsafe { self.insert_by_ids(entity, &ids, &ptrs) } {
+            storage.handed_over();
+            true
+        } else {
+            false
+        }
+    }
+
     /// The entity's reflected components, for serializers and inspectors.
     pub fn reflect_components(
         &self,

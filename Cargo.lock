@@ -393,6 +393,18 @@ dependencies = [
 [[package]]
 name = "marlin-cook-level"
 version = "0.1.0"
+dependencies = [
+ "marlin-asset",
+ "marlin-asset-db",
+ "marlin-containers",
+ "marlin-cook-core",
+ "marlin-masset",
+ "marlin-math",
+ "marlin-reflect",
+ "marlin-serial",
+ "marlin-test-support",
+ "marlin-world",
+]
 
 [[package]]
 name = "marlin-cook-mesh"
@@ -670,6 +682,7 @@ dependencies = [
  "marlin-test-support",
  "marlin-time",
  "marlin-ui-render",
+ "marlin-world",
 ]
 
 [[package]]
@@ -1247,16 +1260,20 @@ version = "0.1.0"
 name = "marlin-world"
 version = "0.1.0"
 dependencies = [
+ "marlin-asset",
  "marlin-config",
  "marlin-containers",
  "marlin-diag",
  "marlin-ecs",
+ "marlin-error",
  "marlin-jobs",
  "marlin-math",
  "marlin-profile",
  "marlin-reflect",
+ "marlin-serial",
  "marlin-sync",
  "marlin-test-support",
+ "marlin-time",
 ]
 
 [[package]]

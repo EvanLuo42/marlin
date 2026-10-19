@@ -223,7 +223,7 @@ FrameEnd          清理 change tracker、应用剩余的 Commands
 - Prefab 是一个资产：一棵 entity 子树（每个 entity 带 guid、名字、父子关系、组件）。
 - 关卡和 Prefab 里都可以放 **Prefab 实例**：`PrefabInstance { Prefab = <link>, Transform, Overrides = [...] }`。
 - 覆盖（override）的种类：
-  - 按反射路径设置属性（`"Children/Door/Light.Intensity" = 1200.0`）；
+  - 设置组件的字段：`Set { Entity = <Prefab 里的 guid>, Component = Light { Intensity = 1200.0 }, Fields = ["intensity"] }`（具体规则见 §17 W2）；
   - 增加或删除组件；
   - 增加子 entity；
   - 删除 Prefab 里的某个 entity。
@@ -449,3 +449,54 @@ W6 之后再回到 render（R4f 剩下的部分、R5）。physics、audio、anim
   - `EntityGuid`（128 位；`derive(instance, inner)` 属于 cooked 数据格式，测试里固定了一个参考值）、`EntityRef`、`GuidIndex`：由 `EntityGuid` 的 `on_insert` / `on_replace` hook 维护，每次结构操作返回后就是最新的；重复的 guid 保留第一个并记录警告。
 - 测试：`cargo test -p marlin-world --test unit`（传播、精度、只写移动过的实体、换父节点、tick 顺序、暂停和 editor、固定步长、插值、guid 索引、注册表）；`marlin-math` 的 `dvec` 测试。
 - 还没做：模块接口（W3）会把 `ComponentRegistry` 和 system 的登记接到 `Module::register` 上；现在由调用方直接调用 `World::add_system`。
+
+### W2（2026-10-19）：关卡、Prefab 和子关卡
+
+- **通用的组件值**：
+  - `marlin-reflect` 新增 `ReflectDynamic` 类型数据（`DynamicHolder`）：一个 opaque 类型可以装一个运行时才确定类型的值。
+  - `marlin-serial` 把它写成 CUSTOM：holder 的类型 id + 长度，里面是被装值的类型 id、签名和值；类型 id 为 0 表示空。读的时候遇到没注册或 holder 不接受的类型，就保持原值不变，后面的数据照常读。
+  - `.masset` 把它写成 `Light { Intensity = 800.0 }`（unit struct 写成 `Tag`，空的写成 `None`），类型名必须在 schema 里。`.masset` 也支持 `ReflectProxy`。
+  - `marlin-world::ComponentData` 就是这样一个容器，只接受 `ComponentRegistry` 登记过（带 `IsComponent` 类型数据）的类型，所以里面的值一定是 `Send + Sync`。
+- **数学类型的文本形式**：`Vec2/3/4`、`IVec*`、`UVec2`、`DVec3`、`Quat` 带 `meta(text = "tuple")`，`.masset` 写成 `(x, y, z)`。`Transform` 的旋转在文本里是四元数 `(x, y, z, w)`；编辑器负责显示欧拉角。
+- **`EntityGuid` 包一个 `marlin_asset::Uuid`**，文本里是 UUID 字符串。
+- **源数据**（`marlin-world::level`）：
+  - `Level` / `Prefab` = `Entities`（`EntityDesc`：`Guid`、`Name`、`Parent`、`Components`）加 `Instances`（`PrefabInstance`：`Guid`、`Name`、`Parent`、`Prefab`、`Transform`、`Overrides`）。
+  - 覆盖有三种：
+    - `Set { Entity, Component, Fields }`：`Fields` 是反射路径（`"intensity"`、`"translation.x"`）；`Fields` 为空时整个组件替换；目标实体没有这个组件时整个加上。
+    - `RemoveComponent { Entity, Component }`：按反射名匹配，完整名或短名都可以。
+    - `RemoveEntity { Entity }`：连同子孙一起删除。
+  - 覆盖里的 `Entity` 是 Prefab 自己看到的 guid（嵌套实例里的实体用派生 guid）。
+  - Prefab 必须正好有一个根。实例的根实体使用实例的 guid、parent、transform（以及非空的 name），其余实体使用 `EntityGuid::derive(实例, 内部 guid)`。
+  - 给实例"增加子实体"不需要单独的覆盖：在关卡里放一个 parent 指向派生 guid 的实体就行。
+- **`flatten`** 先展开嵌套实例（内层的覆盖先应用），再应用外层的覆盖。会报的错误：Prefab 缺失、循环引用、根不止一个、guid 重复、同一实体有两个同类型组件、覆盖的目标或路径不存在。cooker 和以后的 PIE 共用这段代码。
+- **`CookedLevel`**：按组件类型集合分成 archetype，每个 archetype 按列存 `ComponentData`；Prefab 的 cooked 结果带上根实体的 guid。
+  - 运行时每个实体用 `marlin-ecs` 新增的 `insert_cloned` 插入：克隆所有组件后一次 archetype 移动。
+  - 列里的每个元素都带自己的类型 id。等需要时再换成按列的 Pod 布局。
+- **运行时**（`marlin-world::levels`）：
+  - `World::spawn_level`（立即）、`load_sublevel` → host 调用 `provide_level` → `FrameStart` 里按 `w.spawn_budget_ms` 分帧 spawn、`unload_sublevel`、`spawn_prefab`。
+  - 实体带上 `EntityGuid`、`InLevel`，以及非空的 `EntityName`。
+  - 子实体比父实体先 spawn 时，等整个关卡 spawn 完再挂到父实体上；父实体不在这个关卡里时记录警告。
+  - 子关卡的放置变换只作用在根实体上。
+- **Cook**（`marlin-cook-level`）：
+  - `register(cookers, registry)` 登记 `Level`、`Prefab` 两个 cooker，并把 SAVED 组件类型加进文本 schema。
+  - 所有 SAVED 组件的反射结构指纹放进 cook key：组件结构一变，关卡就会重新 cook。
+  - Prefab 是 build dependency，cook 时递归读取。Prefab 改了，放置它的关卡（包括间接放置的）都会重新 cook。
+  - parent 指向关卡外的实体时，cook 记录警告。
+- **Framework 过渡**（W3 会把这些移进各自的模块）：
+  - `Engine` 改用 `marlin_world::World`，组件改为带反射、在 `Default` 里给默认值的类型：
+    - `StaticMesh` → `MeshRenderer`；
+    - `Spin` → `RotatingMovement`（加上运行时的 `RotatingBase`）；
+    - `FlyCamera` → `SpectatorMovement`（加上运行时的 `SpectatorLook`）；
+    - `Camera` 改用度数；
+    - `PointLight` / `SpotLight` 用流明和度数，不再用"0 表示默认值"；
+    - 关卡的 `Environment` → 一个带 `LevelSettings` 组件的实体。
+  - rotate 和 spectate 挂在 `PrePhysics`，render extract 挂在 `Extract`，extract 读的是 `GlobalTransform`。
+  - 网格资源一旦被用过就一直保留，关卡重载时不会重新上传。
+  - `engine_components()` 同时给 World 和 cooker 用。
+- **样例迁移**：`samples/basic`、`samples/lights` 的关卡用一次性脚本转换成新格式：
+  - guid 是确定的：`<样例前缀>-8001-<序号>`；
+  - 原来的欧拉角换算成四元数；
+  - 环境参数移到 `LevelSettings` 实体上。
+- **验证**：
+  - 单元测试：`marlin-world`（展开、覆盖、错误、archetype、spawn、流式加载、卸载、Prefab）、`marlin-cook-level`（完整 cook 流程、嵌套覆盖、改 Prefab 后重新 cook、错误）、`marlin-masset`（动态值、元组、proxy）、`marlin-serial`、`marlin-ecs` 都通过。
+  - GPU 测试：framework 的 end-to-end 测试全部通过，包括 golden image（basic 样例的画面和迁移前一致）和改文本后画面实时更新；editor 的 GPU 测试通过。

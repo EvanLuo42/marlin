@@ -8,6 +8,7 @@ use marlin_jobs::JobSystem;
 use marlin_profile::profile_scope;
 
 use crate::guid::{self, EntityGuid, GuidIndex};
+use crate::levels::{Levels, stream_sublevels};
 use crate::registry::ComponentRegistry;
 use crate::schedule::{TickGroup, WorldSchedule};
 use crate::time::{FixedTime, Interpolated, Time, TimeSettings};
@@ -64,7 +65,7 @@ pub struct World {
 
 impl World {
     /// A world of `kind` knowing the components of `registry`, with the world's own systems and
-    /// resources: [`Time`], [`FixedTime`], [`TimeSettings`] (from the `t.*` cvars) and
+    /// resources: [`Time`], [`FixedTime`], [`TimeSettings`] (from the `t.*` cvars), [`Levels`] and
     /// [`GuidIndex`].
     pub fn new(kind: WorldKind, registry: Arc<ComponentRegistry>) -> Self {
         let mut ecs = marlin_ecs::World::new();
@@ -79,8 +80,13 @@ impl World {
         ecs.insert_resource(FixedTime::new(settings.fixed_step));
         ecs.insert_resource(settings);
         ecs.insert_resource(GuidIndex::new());
+        ecs.insert_resource(Levels::new());
 
         let mut schedule = WorldSchedule::new();
+        schedule.add_system(
+            TickGroup::FrameStart,
+            (stream_sublevels as fn(&mut marlin_ecs::World)).named("stream_sublevels"),
+        );
         schedule.add_system(
             TickGroup::TransformPropagate,
             (propagate_transforms as fn(&mut marlin_ecs::World)).named("propagate_transforms"),

@@ -1,11 +1,23 @@
 [package]
 name = "marlin-cook-level"
-description = "Level and world data cooking into streaming cells."
+description = "Level and Prefab cooking: instances expanded, entities grouped by component set."
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+marlin-asset.workspace = true
+marlin-containers.workspace = true
+marlin-cook-core.workspace = true
+marlin-masset.workspace = true
+marlin-reflect.workspace = true
+marlin-serial.workspace = true
+marlin-world.workspace = true
+
+[dev-dependencies]
+marlin-asset-db.workspace = true
+marlin-math.workspace = true
+marlin-test-support.workspace = true
 
 [lints]
 workspace = true

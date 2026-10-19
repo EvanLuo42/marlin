@@ -241,6 +241,50 @@ fn snapshots_and_values_round_trip() {
 }
 
 #[test]
+fn cloned_values_insert_in_one_move() {
+    let mut world = World::new();
+    world.register_reflected::<Pos>();
+    world.register_reflected::<Name>();
+    let pos = Pos { x: 3.0, y: 4.0 };
+    let name = Name {
+        text: "door".into(),
+    };
+    let e = world.spawn_empty();
+    assert!(world.insert_cloned(
+        e,
+        &[
+            marlin_reflect::Ref::new(&pos),
+            marlin_reflect::Ref::new(&name)
+        ]
+    ));
+    assert_eq!(world.get::<Pos>(e), Some(&pos));
+    assert_eq!(world.get::<Name>(e).unwrap().text, "door");
+    assert_eq!(
+        world.archetypes().len(),
+        2,
+        "empty, then Pos + Name: no stop in between"
+    );
+    assert_eq!(name.text, "door", "the sources are cloned, not moved");
+
+    let f = world.spawn_empty();
+    assert!(
+        !world.insert_cloned(
+            f,
+            &[
+                marlin_reflect::Ref::new(&pos),
+                marlin_reflect::Ref::new(&pos)
+            ]
+        ),
+        "a type twice"
+    );
+    assert!(
+        !world.insert_cloned(f, &[marlin_reflect::Ref::new(&7u32)]),
+        "not a component"
+    );
+    assert!(!world.has::<Pos>(f), "nothing is added on failure");
+}
+
+#[test]
 fn entities_clone_within_and_across_worlds() {
     let mut world = World::new();
     world.register_cloneable::<Hidden>();

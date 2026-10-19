@@ -10,6 +10,7 @@ use marlin_ecs::{Children, Component, ComponentId, Parent, StorageType};
 use marlin_reflect::{Reflect, TypeInfo};
 
 use crate::guid::EntityGuid;
+use crate::levels::{EntityName, InLevel};
 use crate::time::Interpolated;
 use crate::transform::{GlobalTransform, Transform};
 
@@ -91,7 +92,8 @@ impl Default for ComponentRegistry {
 
 impl ComponentRegistry {
     /// The world's own components: [`Transform`], [`EntityGuid`] and [`Interpolated`] (saved),
-    /// [`GlobalTransform`] and the hierarchy's `Parent`/`Children` (runtime).
+    /// [`GlobalTransform`], [`EntityName`], [`InLevel`] and the hierarchy's `Parent`/`Children`
+    /// (runtime).
     pub fn new() -> Self {
         let mut r = Self {
             entries: Vec::new(),
@@ -102,6 +104,8 @@ impl ComponentRegistry {
             .add::<EntityGuid>(ComponentFlags::SAVED)
             .add::<Interpolated>(ComponentFlags::SAVED)
             .add::<GlobalTransform>(ComponentFlags::TRANSIENT)
+            .add::<EntityName>(ComponentFlags::TRANSIENT)
+            .add::<InLevel>(ComponentFlags::TRANSIENT)
             .add_runtime::<Parent>(StorageType::Table)
             .add_runtime::<Children>(StorageType::Table);
         r
@@ -122,6 +126,9 @@ impl ComponentRegistry {
         storage: StorageType,
     ) -> &mut Self {
         let info = marlin_reflect::type_info::<T>();
+        // Data finds component types by id (binary) and checks they are components.
+        let _ = marlin_reflect::register::<T>();
+        crate::component_data::mark_component(info);
         self.push(ComponentRegistration {
             name: info.name.to_string(),
             type_id: TypeId::of::<T>(),

@@ -6,17 +6,21 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+marlin-asset.workspace = true
 marlin-config.workspace = true
 marlin-containers.workspace = true
 marlin-diag.workspace = true
+marlin-error.workspace = true
 marlin-ecs.workspace = true
 marlin-jobs.workspace = true
 marlin-math.workspace = true
 marlin-profile.workspace = true
 marlin-reflect.workspace = true
 marlin-sync.workspace = true
+marlin-time.workspace = true
 
 [dev-dependencies]
+marlin-serial.workspace = true
 marlin-test-support.workspace = true
 
 

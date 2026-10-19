@@ -77,6 +77,8 @@ Texture
 | 对象链接 | `<相对资产根的路径不含扩展名:对象名 #uuid>` |
 | 文件链接 | `` `source:路径` `` |
 | 注释 | `//` 和 `/* */` |
+| 向量、四元数 | `(x, y, z)`：带 `meta(text = "tuple")` 的类型（`Vec3`、`DVec3`、`Quat`……）按字段顺序写成元组；读的时候也接受 `{ X = … }` |
+| 任意类型的值 | `Type { … }`、`Type(…)`、`Type` 或 `None`：`ReflectDynamic` 容器（例如关卡里的 `ComponentData`），`Type` 必须是 schema 里登记过的类型 |
 
 ### 1.2 与 Rust 的绑定
 

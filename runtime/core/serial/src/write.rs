@@ -51,7 +51,7 @@ pub(crate) fn write_sig(out: &mut Vec<u8>, info: &'static TypeInfo) -> Result<()
         }
         TypeKind::Pointer(p) => write_sig(out, (p.pointee)())?,
         TypeKind::Opaque => {
-            if custom::serial_fns(info).is_some() {
+            if custom::serial_fns(info).is_some() || custom::dynamic(info).is_some() {
                 out.push(CUSTOM);
                 out.extend_from_slice(&info.id.0.to_le_bytes());
             } else if let Some(proxy) = custom::proxy(info) {
@@ -202,6 +202,19 @@ pub(crate) fn write_value(out: &mut Vec<u8>, value: Ref<'_>) -> Result<(), Error
                 let len_at = out.len();
                 out.extend_from_slice(&[0; 4]);
                 (fns.write)(value, out)?;
+                let len = len_u32(out.len() - len_at - 4)?;
+                out[len_at..len_at + 4].copy_from_slice(&len.to_le_bytes());
+            } else if let Some(dynamic) = custom::dynamic(info) {
+                let len_at = out.len();
+                out.extend_from_slice(&[0; 4]);
+                match dynamic.held(value) {
+                    Some(held) => {
+                        out.extend_from_slice(&held.info().id.0.to_le_bytes());
+                        write_sig(out, held.info())?;
+                        write_value(out, held)?;
+                    }
+                    None => out.extend_from_slice(&0u64.to_le_bytes()),
+                }
                 let len = len_u32(out.len() - len_at - 4)?;
                 out[len_at..len_at + 4].copy_from_slice(&len.to_le_bytes());
             } else if let Some(proxy) = custom::proxy(info) {

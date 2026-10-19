@@ -3,6 +3,7 @@
 
 use core::fmt;
 
+use marlin_asset::Uuid;
 use marlin_containers::{HashMap, HashMapExt};
 use marlin_ecs::{Entity, HookContext};
 use marlin_reflect::Reflect;
@@ -12,13 +13,21 @@ use marlin_reflect::Reflect;
 /// Prefab instance makes get [`derive`](Self::derive)d ones.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Reflect)]
 #[reflect(name = "marlin_world::EntityGuid")]
-pub struct EntityGuid(pub u128);
+pub struct EntityGuid(pub Uuid);
 
 impl EntityGuid {
-    pub const NIL: Self = Self(0);
+    pub const NIL: Self = Self(Uuid::NIL);
+
+    pub const fn from_u128(value: u128) -> Self {
+        Self(Uuid::from_u128(value))
+    }
+
+    pub const fn as_u128(self) -> u128 {
+        self.0.as_u128()
+    }
 
     pub const fn is_nil(self) -> bool {
-        self.0 == 0
+        self.0.is_nil()
     }
 
     /// The guid of the entity `inner` (a guid inside a Prefab) in the Prefab instance
@@ -27,11 +36,12 @@ impl EntityGuid {
     /// Cooked data stores derived guids, so this function is part of the data format: it must
     /// never change.
     pub const fn derive(instance: Self, inner: Self) -> Self {
-        let (ih, il) = ((instance.0 >> 64) as u64, instance.0 as u64);
-        let (nh, nl) = ((inner.0 >> 64) as u64, inner.0 as u64);
+        let (instance, inner) = (instance.as_u128(), inner.as_u128());
+        let (ih, il) = ((instance >> 64) as u64, instance as u64);
+        let (nh, nl) = ((inner >> 64) as u64, inner as u64);
         let lo = mix(il ^ mix(nl ^ 0x9e37_79b9_7f4a_7c15));
         let hi = mix(ih ^ mix(nh ^ 0xc2b2_ae3d_27d4_eb4f) ^ lo);
-        Self(((hi as u128) << 64) | lo as u128)
+        Self::from_u128(((hi as u128) << 64) | lo as u128)
     }
 }
 
@@ -46,7 +56,7 @@ const fn mix(mut x: u64) -> u64 {
 
 impl fmt::Debug for EntityGuid {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "EntityGuid({:032x})", self.0)
+        write!(f, "EntityGuid({})", self.0)
     }
 }
 
