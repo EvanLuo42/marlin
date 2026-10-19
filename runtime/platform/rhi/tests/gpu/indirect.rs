@@ -334,6 +334,25 @@ fn indirect_arguments_stay_in_the_buffer() {
 }
 
 #[test]
+#[should_panic(expected = "max_count of a counted indirect command above")]
+fn counted_indirect_commands_stay_within_the_device_limit() {
+    let device = support::hardware_device();
+    let limit = device.features().max_indirect_count;
+    let args = buffer(device, 64, BufferUsage::INDIRECT, MemoryLocation::GpuOnly);
+    let mut pool = device.create_command_pool().unwrap();
+    let mut list = device.create_command_list(&pool).unwrap();
+    list.begin(&mut pool).unwrap();
+    // Checked before the buffer's size, so a small buffer is enough.
+    list.dispatch_indirect(&IndirectArgs {
+        buffer: &args,
+        offset: 0,
+        max_count: limit.saturating_add(1),
+        count: Some((&args, 0)),
+        constant: true,
+    });
+}
+
+#[test]
 #[should_panic(expected = "count out of range")]
 fn indirect_counts_do_not_wrap() {
     let device = support::hardware_device();

@@ -539,7 +539,7 @@ impl CommandList {
         Backend::dispatch_mesh(&mut self.raw, x, y, z);
     }
 
-    fn check_indirect(args: &IndirectArgs<'_>, stride: u64) {
+    fn check_indirect(&self, args: &IndirectArgs<'_>, stride: u64) {
         let b = &args.buffer.desc;
         assert!(
             b.usage.contains(BufferUsage::INDIRECT),
@@ -548,6 +548,12 @@ impl CommandList {
         assert!(
             args.offset.is_multiple_of(4),
             "argument offset not a multiple of 4"
+        );
+        // One execution runs a count of at most this many records; the device would not clamp a
+        // larger count to it (0016 §6).
+        assert!(
+            args.count.is_none() || args.max_count <= self.features.max_indirect_count,
+            "max_count of a counted indirect command above Features::max_indirect_count"
         );
         assert!(
             (args.max_count as u64)
@@ -571,7 +577,7 @@ impl CommandList {
     /// Draws as [`draw`](Self::draw) does, once per [`DrawIndirectArgs`] record.
     pub fn draw_indirect(&mut self, args: &IndirectArgs<'_>) {
         self.graphics("a draw");
-        Self::check_indirect(args, size_of::<DrawIndirectArgs>() as u64);
+        self.check_indirect(args, size_of::<DrawIndirectArgs>() as u64);
         Backend::draw_indirect(&mut self.raw, args);
     }
 
@@ -579,21 +585,21 @@ impl CommandList {
     /// record.
     pub fn draw_indexed_indirect(&mut self, args: &IndirectArgs<'_>) {
         self.graphics("a draw");
-        Self::check_indirect(args, size_of::<DrawIndexedIndirectArgs>() as u64);
+        self.check_indirect(args, size_of::<DrawIndexedIndirectArgs>() as u64);
         Backend::draw_indexed_indirect(&mut self.raw, args);
     }
 
     /// Dispatches once per [`DispatchIndirectArgs`] record.
     pub fn dispatch_indirect(&mut self, args: &IndirectArgs<'_>) {
         self.compute("a dispatch");
-        Self::check_indirect(args, size_of::<DispatchIndirectArgs>() as u64);
+        self.check_indirect(args, size_of::<DispatchIndirectArgs>() as u64);
         Backend::dispatch_indirect(&mut self.raw, args);
     }
 
     /// Mesh-dispatches once per [`DispatchIndirectArgs`] record.
     pub fn dispatch_mesh_indirect(&mut self, args: &IndirectArgs<'_>) {
         self.graphics("a mesh dispatch");
-        Self::check_indirect(args, size_of::<DispatchIndirectArgs>() as u64);
+        self.check_indirect(args, size_of::<DispatchIndirectArgs>() as u64);
         Backend::dispatch_mesh_indirect(&mut self.raw, args);
     }
 

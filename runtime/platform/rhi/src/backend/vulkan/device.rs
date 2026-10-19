@@ -197,6 +197,8 @@ pub(crate) struct Properties {
     pub(crate) subgroup_size: u32,
     pub(crate) min_subgroup_size: u32,
     pub(crate) max_subgroup_size: u32,
+    /// `maxIndirectSequenceCount`: the most records one generated-commands execution runs.
+    pub(crate) max_indirect_sequences: u32,
     pub(crate) pipeline_cache_uuid: [u8; VK_UUID_SIZE],
     pub(crate) vendor_id: u32,
     pub(crate) device_id: u32,
@@ -475,7 +477,11 @@ fn properties(
 ) -> Properties {
     let mut heap = VkPhysicalDeviceDescriptorHeapPropertiesEXT::default();
     let mut shading_rate = VkPhysicalDeviceFragmentShadingRatePropertiesKHR::default();
-    let mut v11 = VkPhysicalDeviceVulkan11Properties::default();
+    let mut dgc = VkPhysicalDeviceDeviceGeneratedCommandsPropertiesEXT::default();
+    let mut v11 = VkPhysicalDeviceVulkan11Properties {
+        pNext: (&raw mut dgc).cast(),
+        ..Default::default()
+    };
     let mut v13 = VkPhysicalDeviceVulkan13Properties {
         pNext: (&raw mut v11).cast(),
         ..Default::default()
@@ -501,6 +507,7 @@ fn properties(
         subgroup_size: v11.subgroupSize,
         min_subgroup_size: v13.minSubgroupSize,
         max_subgroup_size: v13.maxSubgroupSize,
+        max_indirect_sequences: dgc.maxIndirectSequenceCount.max(1),
         pipeline_cache_uuid: p.pipelineCacheUUID,
         vendor_id: p.vendorID,
         device_id: p.deviceID,
@@ -616,6 +623,7 @@ fn report_features(
             && on(chain.image_int64.shaderImageInt64Atomics),
         copy_queue_timestamps,
         mixed_heaps: true,
+        max_indirect_count: props.max_indirect_sequences,
         wave_size_range: match subgroup_control {
             true => (props.min_subgroup_size, props.max_subgroup_size),
             false => (props.subgroup_size, props.subgroup_size),

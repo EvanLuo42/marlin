@@ -580,33 +580,14 @@ const PREPROCESS_CHUNK: u64 = 1 << 20;
 
 /// What indirect commands keep across recordings: a layout per kind, and preprocess memory
 /// handed out from `cursor` (chunk, offset) on, a fresh region per command.
+#[derive(Default)]
 struct Indirect {
-    /// `maxIndirectSequenceCount`: the most records one execution runs.
-    max_sequences: u32,
     layouts: [Option<Layout>; 4],
     chunks: Vec<(Buffer, u64)>,
     cursor: (usize, u64),
 }
 
 impl Indirect {
-    fn new(shared: &Shared) -> Self {
-        let mut dgc = VkPhysicalDeviceDeviceGeneratedCommandsPropertiesEXT::default();
-        let mut props = VkPhysicalDeviceProperties2 {
-            pNext: (&raw mut dgc).cast(),
-            ..Default::default()
-        };
-        // SAFETY: the device's physical device and a valid output chain.
-        unsafe {
-            (shared.instance.fns.vkGetPhysicalDeviceProperties2)(shared.physical, &mut props)
-        };
-        Self {
-            max_sequences: dgc.maxIndirectSequenceCount.max(1),
-            layouts: Default::default(),
-            chunks: Vec::new(),
-            cursor: (0, 0),
-        }
-    }
-
     fn layout(&mut self, shared: &Arc<Shared>, kind: Kind) -> VkIndirectCommandsLayoutEXT {
         if let Some(layout) = &self.layouts[kind as usize] {
             return layout.raw;
@@ -764,27 +745,20 @@ fn preprocess_buffer(shared: &Arc<Shared>, size: u64, types: u32) -> Option<Buff
 /// bound `pipeline`.
 ///
 /// One execution runs at most `maxIndirectSequenceCount` records: longer runs without a count
-/// split into several executions; with a count, the count is clamped to that limit.
+/// split into several executions; runs with a count fit one, as `CommandList` checks
+/// (`Features::max_indirect_count`), since the device would not clamp a larger count to its
+/// preprocess memory (0016 §6).
 fn execute(list: &mut CommandList, kind: Kind, pipeline: VkPipeline, args: &IndirectArgs<'_>) {
     if !args.constant && native(list, kind, args) {
         return;
     }
-    let shared = list.shared.clone();
-    let limit = list
-        .draw
-        .indirect
-        .get_or_insert_with(|| Indirect::new(&shared))
-        .max_sequences;
+    let limit = list.shared.properties.max_indirect_sequences;
+    list.draw.indirect.get_or_insert_with(Indirect::default);
     let address = args.buffer.raw.address() + args.offset;
     let count = args
         .count
         .map(|(buffer, offset)| buffer.raw.address() + offset);
-    if count.is_some() && args.max_count > limit {
-        marlin_diag::warn!(
-            "indirect count clamped to the device's {limit} records (max_count {})",
-            args.max_count
-        );
-    }
+    debug_assert!(count.is_none() || args.max_count <= limit);
     let mut first = 0;
     while first < args.max_count {
         let records = (args.max_count - first).min(limit);

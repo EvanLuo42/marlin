@@ -256,6 +256,10 @@ pub struct Features {
     /// Heaps may hold buffers and every kind of texture together (always on Vulkan; D3D12
     /// resource heap tier 2). Otherwise each heap takes one [`HeapKind`].
     pub mixed_heaps: bool,
+    /// The largest [`IndirectArgs::max_count`] of an indirect command with a count buffer
+    /// (Vulkan `maxIndirectSequenceCount`; `u32::MAX` on D3D12). Commands without a count take
+    /// any `max_count`.
+    pub max_indirect_count: u32,
     /// The smallest and largest wave (subgroup) sizes, for shaders that pick one with
     /// `[WaveSize]`.
     pub wave_size_range: (u32, u32),
@@ -2065,7 +2069,8 @@ pub struct DispatchIndirectArgs {
 ///
 /// The count must not exceed `max_count`. A larger one is undefined: Vulkan says it is clamped,
 /// but NVIDIA's device-generated commands run that many records, reading past the `max_count`
-/// given (0016 §6).
+/// given (0016 §6). With a count buffer, `max_count` must not exceed
+/// [`Features::max_indirect_count`] either.
 #[derive(Clone, Copy, Debug)]
 pub struct IndirectArgs<'a> {
     /// [`BufferUsage::INDIRECT`].

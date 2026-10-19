@@ -135,6 +135,8 @@ pub(super) fn query_features(
         texture_atomic_int64: options9.AtomicInt64OnTypedResourceSupported != 0,
         copy_queue_timestamps: options3.CopyQueueTimestampQueriesSupported != 0,
         mixed_heaps: options.ResourceHeapTier >= D3D12_RESOURCE_HEAP_TIER_2,
+        // ExecuteIndirect's MaxCommandCount has no device limit.
+        max_indirect_count: u32::MAX,
         wave_size_range: (options1.WaveLaneCountMin, options1.WaveLaneCountMax),
         shader_float16_int16: options4.Native16BitShaderOpsSupported != 0,
         shader_int64: options1.Int64ShaderOps != 0,
