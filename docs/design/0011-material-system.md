@@ -719,11 +719,12 @@ impl ParameterCollection { pub fn set(&mut self, name: ParamId, v: f32); }
 
 ### 9.2 运行时烘焙
 
-- 材质实例加载或参数改变时，调度一次 `BakeSimple<M>`：在简化材质图集里给这个实例分一块（按它的纹理尺寸取 32² 到 128²），在 UV0 的网格上对每个纹素求值 `Surface` → `Emit` → 像素 proxy → `Simplify`，写进图集。
-- 在运行时烘焙而不是在 cook 时烘焙：cook 不需要 GPU，动态实例的参数改了也能更新。
-- 不按 UV 映射的材质（世界空间、三平面投影）：`Bake = SimpleBake.Constant`，在几个位置上求值后取平均，得到一个常量。
-- 每实例数据和全局参数不会烘进图集，所以简化材质看不到受击闪白、湿度这类变化（§13）。
-- 命中点：实例 → section 的材质槽 → 图集矩形；UV 由 RT LOD 的顶点 UV0 和重心坐标插值得到，然后采样图集。
+- 材质行加入或参数改变时，调度一次 `BakeSimple<M>`（`Material/Simple.mshader`，每个材质类型一个 permutation，和解算的 permutation 一起注册）：材质行 r 在图集里固定占第 r 块 32²（图集 2048²，一行 64 块，最多 4096 个材质行），在 UV0 的网格上对每个纹素求值 `Surface` → `Emit`（放在朝 +Z 的平面上），把合成的 proxy lobe 写进图集。
+- 图集是三张持久纹理：`SimpleAlbedo`（平方根反照率 + 粗糙度，RGBA8）、`SimpleSpecular`（平方根 F0 + 不透明度，RGBA8）、`SimpleEmission`（自发光，RGBA16F）。`ClosureWriter` 为此多了 `Emission`，合成方式和反照率一样按权重求和。
+- 在运行时烘焙而不是在 cook 时烘焙：cook 不需要 GPU，动态实例的参数改了也能更新。只烘焙这一帧变化的行（`RenderScene::simple_changes`），图集或系数表是新建的那一帧全部重烘。
+- **每实例数据用一个常量系数**（用户的选择）：每个实例行在 `SimpleFactors` 里有两个 `float4`，反照率系数和自发光系数，等于在 4 个 UV 上用它的 `CustomData` 求值、除以用 (1,1,1,1) 求值的结果（分母接近 0 的通道取 1）。命中点读出的值 = 图集 × 系数。对"基色乘实例颜色"这类线性用法是精确的，非线性的用法（比如按 `CustomData` 切换贴图）只是近似。全局参数不进图集，简化材质看不到湿度这类全局变化（§13）。
+- 不按 UV 映射的材质（世界空间、三平面投影）：现在在 `Position = 0` 处求值，得到的只是原点那一点的值；`SimpleBake.Constant`（几个位置取平均）以后需要时再加。
+- 命中点：`SimpleOfHit(hit, sources, simple)`：实例行 → 材质行 → 图集块，UV 由 RT LOD 的顶点 UV0 和重心坐标插值得到（`SurfaceOfHit`，0009 §3.1），按最近纹素读。没有材质的实例是中灰（反照率 0.18）。每个 section 的材质槽等网格 section 接上再做。
 
 ### 9.3 波前式完整材质
 
@@ -827,7 +828,7 @@ public interface IUiEffect<TSelf> where TSelf : IUiEffect<TSelf>
   - `Only_T` 和 `All` 两种分发对同一个 tile 的输出一致；
   - Toon 示例：只在测试的 shader 包里定义 `ToonBsdf`，不改引擎代码，渲染结果和 CPU 上用同一套公式算出的参考图一致；
   - 溢出池耗尽时像素退化成 proxy，不出现垃圾数据；
-  - 简化材质图集：烘焙结果和在命中点逐点求值 `Surface` 再 `Simplify` 的结果一致（在纹素中心采样）。
+  - 简化材质图集：主射线命中点读出的简化材质和材质 pass 在同一像素写出的 proxy lobe 一致，实例改变后增量烘焙仍然一致（§14 的 R4a 记录）。
 
 ## 13. 待定
 
@@ -871,3 +872,8 @@ R1k（0008 §8，材质最小集）做完时（2026-10-18）定下的细节：
   - `marlin-gpu-test-support` 的测试 shader 能给泛型入口传类型实参，session 里多了 `Marlin.Substrate`。
 - **驱动问题**：NVIDIA 驱动经 descriptor heap 读 buffer 时，忽略类型是 struct 的成员的 offset（0016 §4.2）。`InstanceTransforms` 因此改成 6 个 `float4` 字段，`Current`、`Previous` 是拼出 `Rows3x4` 的属性。之后 SPIR-V 后端绕开了这个问题，`InstanceTransforms` 恢复成两个 `Rows3x4` 字段（0016 §4.2）。
 - **测试**（`marlin-material/tests/gpu/materials.rs`，两种材质：默认材质和测试包里的 `Material.Stripes`，所以有两个 permutation）：每个被覆盖的像素恰好进一个 bin、恰好解算一次，closure 数为 1 且走快路径，反照率、F0、粗糙度是各自材质给的值（8 位编码的误差内）；天空全 0；正对相机的面法线正确；静止时速度为 0，实例右移 0.1 时速度和投影算出的一致，相机转动时天空的速度和 tan(θ)·P00/2 一致。三张调试视图（反照率、法线、粗糙度/F0/快路径）有 golden。GPU Scene 的测试（render crate）检查材质表和每个 permutation 的参数表，包括换 permutation 和删除。3 张前向 golden 和 `sample_first_frame` 不变。开窗口跑 `samples/basic` 10 秒，没有报错。
+
+R4a（0008 §8，光线命中和简化材质）做完时（2026-10-19）定下的细节：
+- **命中点的表面**（`Scene/RayTracing.mshader`）：几何池多了一张 RT 网格表（`RtMeshTable`，每个 mesh slot 8 个字：RT LOD 的位置、属性、索引在几何池里的偏移，每顶点属性的字节数，UV 套数，顶点数，三角形数）。`SurfaceOfHit(hit, ray, sources)` 从它和 GPU Scene 的实例、网格、变换表读出三角形，按重心坐标插值世界位置、着色法线（八面体编码）、几何法线（都翻到射线这一侧）和 UV0（f16）。`HitSources` 是这些表的 bindless 索引，`RtScene::read_hits` 声明它们的读取。
+- **简化材质**：见 §9.2。host 端是 `Materials::add_simple_passes(g, scene, gpu) -> SimpleOutput`，`register` 改成同时接收解算和烘焙两个模块；framework 按名字加载默认材质的烘焙变体（`DEFAULT_BAKE`，`content/engine/shaders/DefaultMaterialBake.masset`），`RenderSide` 每帧在 GPU Scene 之后调度烘焙。现在还没有 pass 读它，R4b（SHaRC）开始用。
+- **测试**：render crate 的 `raytracing.rs`：命中点的位置和法线、压扁的立方体保持面法线、UV0 插值。marlin-material 的 `simple.rs`：从相机穿过每个像素中心发射主射线，在表面内部（四邻的 proxy lobe 相同）的像素上，命中点读出的简化材质和材质 pass 写出的 proxy lobe 一致（反照率、F0、粗糙度，8 位编码误差内；一个带颜色的电介质立方体和一个金属立方体）；改实例颜色后只重烘这个实例的系数，结果仍然一致（把增量烘焙去掉时这个测试会失败）。

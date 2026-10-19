@@ -4,12 +4,14 @@
 
 use marlin_cook_render::cook_pairing;
 use marlin_gpu_test_support::{Image, Shader, engine_shaders, hardware_device};
-use marlin_material::{DefaultMaterial, MaterialDebug, MaterialShaders, Materials, RESOLVE};
+use marlin_material::{
+    BAKE, DefaultMaterial, MaterialDebug, MaterialShaders, Materials, RESOLVE, SimpleSources,
+};
 use marlin_math::{Transform, Vec3};
 use marlin_render::asset::{PairingPattern, PairingPatternView};
 use marlin_render::denoise::{DenoiseInputs, DenoiseShaders, Denoiser};
 use marlin_render::lights::LightTiles;
-use marlin_render::raytracing::{RtShaders, Tlas};
+use marlin_render::raytracing::{HitSources, Ray, RtShaders, Tlas};
 use marlin_render::restir::{RestirDi, RestirInputs, RestirShaders};
 use marlin_render::scene::{
     InstanceDesc, InstanceId, InstanceUpdate, MaterialDesc, MaterialId, MaterialUpdate, MeshId,
@@ -21,10 +23,12 @@ use marlin_render::{
     StreamingShaders, Visibility, VisibilityShaders,
 };
 use marlin_render_graph::{
-    Access, FrameContext, FrameContextDesc, PassContext, TextureDesc as GraphTextureDesc,
+    Access, BufferDesc, FrameContext, FrameContextDesc, PassContext,
+    TextureDesc as GraphTextureDesc,
 };
 use marlin_rhi::{ComputePipeline, ComputePipelineDesc, Device, Format};
 use marlin_serial::cooked::Pod;
+use marlin_shader::bind::EntryDesc;
 
 /// The render crate's test meshes, cooked by the real cooker.
 #[path = "../../../render/tests/support/cook.rs"]
@@ -47,6 +51,7 @@ pub struct Harness {
     lighting: Lighting,
     unorm: &'static ComputePipeline,
     signal: &'static ComputePipeline,
+    probe: &'static ComputePipeline,
     /// The ray tracing scene, the light tiles and ReSTIR DI.
     pub tlas: Tlas,
     light_tiles: LightTiles,
@@ -98,23 +103,26 @@ impl Harness {
             &MaterialShaders::from_modules(engine_shaders(&MaterialShaders::ENTRIES)),
         )
         .unwrap();
-        let resolve = |ty: &'static str| {
-            let shader = Shader::new(RESOLVE.name)
+        // A type's permutation of a generic entry (`RESOLVE`, `BAKE`).
+        let permutation = |entry: &EntryDesc, ty: &'static str| {
+            let shader = Shader::new(entry.name)
                 .with_type_args(&[ty])
                 .in_crate(env!("CARGO_MANIFEST_DIR"));
-            RESOLVE.check(shader.reflection()).unwrap();
+            entry.check(shader.reflection()).unwrap();
             shader.module()
         };
-        let default = materials
-            .register(
-                device,
-                "Marlin.Engine.DefaultMaterial",
-                resolve("Marlin.Engine.DefaultMaterial"),
-            )
-            .unwrap();
-        let stripes = materials
-            .register(device, "Material.Stripes", resolve("Material.Stripes"))
-            .unwrap();
+        let mut register = |name: &'static str| {
+            materials
+                .register(
+                    device,
+                    name,
+                    permutation(&RESOLVE, name),
+                    permutation(&BAKE, name),
+                )
+                .unwrap()
+        };
+        let default = register("Marlin.Engine.DefaultMaterial");
+        let stripes = register("Material.Stripes");
         assert_eq!((default, stripes), (DEFAULT, STRIPES));
         let lighting = Lighting::new(device, engine_shaders(&[Lighting::ENTRY])[0]).unwrap();
         let tlas = Tlas::new(
@@ -140,6 +148,16 @@ impl Harness {
             PairingPatternView::new(pairing).unwrap(),
         )
         .unwrap();
+        let probe = Box::leak(Box::new(
+            device
+                .create_compute_pipeline(&ComputePipelineDesc {
+                    shader: Shader::new("Material.ProbeSimple")
+                        .in_crate(env!("CARGO_MANIFEST_DIR"))
+                        .module(),
+                    cache: None,
+                })
+                .unwrap(),
+        ));
         let signal = Box::leak(Box::new(
             device
                 .create_compute_pipeline(&ComputePipelineDesc {
@@ -184,6 +202,7 @@ impl Harness {
             lighting,
             unorm,
             signal,
+            probe,
             tlas,
             light_tiles,
             restir,
@@ -760,6 +779,104 @@ impl Harness {
                     marlin_render::asset::mesh::f16_to_f32(u16::from_le_bytes([p[i], p[i + 1]]))
                 };
                 [h(0), h(2), h(4)]
+            })
+            .collect()
+    }
+}
+
+/// What [`Harness::probe_simple`] read where a ray hit.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct SimpleHit {
+    /// The instance row.
+    pub row: u32,
+    pub albedo: [f32; 3],
+    pub roughness: f32,
+    pub f0: [f32; 3],
+    pub opacity: f32,
+    pub emission: [f32; 3],
+}
+
+/// `Material.ProbeArgs`.
+#[repr(C)]
+#[derive(Pod, Clone, Copy)]
+struct ProbeArgs {
+    tlas: u32,
+    rays: u32,
+    out: u32,
+    count: u32,
+    sources: HitSources,
+    simple: SimpleSources,
+}
+
+impl Harness {
+    /// Applies the pending updates, bakes the simplified materials and traces `rays`: the
+    /// simplified material each one hit (`SimpleOfHit`), `None` for misses.
+    pub fn probe_simple(&mut self, rays: Vec<Ray>) -> Vec<Option<SimpleHit>> {
+        let updates = core::mem::take(&mut self.updates);
+        self.scene.apply(&updates);
+        self.meshes.prepare_rt(self.device).unwrap();
+        let rows = self.scene.instance_rows();
+        self.tlas.prepare(self.device, rows).unwrap();
+        self.tlas.release(&mut self.frame);
+        let uploads = self.meshes.take_uploads();
+        let (meshes, scene, scatter, materials, tlas, probe) = (
+            &self.meshes,
+            &mut self.scene,
+            &self.scatter,
+            &self.materials,
+            &self.tlas,
+            self.probe,
+        );
+        let count = rays.len() as u32;
+        let ticket = self
+            .frame
+            .execute(self.device, |g, _| {
+                let pool = meshes.add_passes(g, uploads);
+                let gpu = scene.add_passes(g, scatter);
+                let simple = materials.add_simple_passes(g, scene, gpu);
+                let rt = tlas.add_passes(g, gpu, &pool, rows);
+                let out = g.create_buffer(
+                    "ProbeOut",
+                    BufferDesc::structured::<[f32; 4]>(3 * u64::from(count)),
+                );
+                let out = g.add_compute("ProbeSimple", |b| {
+                    rt.read(b);
+                    let sources = rt.read_hits(b);
+                    let views = simple.read(b);
+                    let out = b.write_buffer(out, Access::ComputeWrite);
+                    (out, move |ctx: &mut PassContext<'_>| {
+                        ctx.set_pipeline(probe);
+                        let args = ProbeArgs {
+                            tlas: rt.index,
+                            rays: ctx.upload_slice(&rays),
+                            out: ctx.uav(out),
+                            count,
+                            sources: sources.bind(ctx),
+                            simple: views.bind(ctx),
+                        };
+                        ctx.push(&args);
+                        ctx.dispatch(count.div_ceil(64), 1, 1);
+                    })
+                });
+                g.readback(out)
+            })
+            .unwrap();
+        let bytes = self.frame.wait_readback(ticket).unwrap();
+        assert_eq!(self.device.validation_errors(), 0);
+        let f: Vec<f32> = words(&bytes).into_iter().map(f32::from_bits).collect();
+        f.as_chunks::<12>()
+            .0
+            .iter()
+            .map(|p| {
+                let row = p[11].to_bits();
+                (row != u32::MAX).then(|| SimpleHit {
+                    row,
+                    albedo: [p[0], p[1], p[2]],
+                    roughness: p[3],
+                    f0: [p[4], p[5], p[6]],
+                    opacity: p[7],
+                    emission: [p[8], p[9], p[10]],
+                })
             })
             .collect()
     }

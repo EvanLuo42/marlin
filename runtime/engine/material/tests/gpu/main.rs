@@ -9,5 +9,6 @@ mod denoise;
 mod materials;
 mod restir;
 mod scenes;
+mod simple;
 mod support;
 mod tsr;

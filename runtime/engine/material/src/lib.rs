@@ -10,8 +10,13 @@ mod default;
 
 pub use default::{DEFAULT_PERMUTATION, DefaultMaterial};
 mod passes;
+mod simple;
 
 pub use passes::{
     MATERIAL_FORMAT, MaterialDebug, MaterialOutput, MaterialShaders, MaterialType, Materials,
     RESOLVE, VELOCITY_FORMAT,
+};
+pub use simple::{
+    BAKE, SIMPLE_ATLAS, SIMPLE_MATERIALS, SIMPLE_TILE, SIMPLE_TILES_PER_ROW, SimpleOutput,
+    SimpleSources, SimpleViews,
 };

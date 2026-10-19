@@ -24,8 +24,8 @@ use marlin_cooker::{engine_cookers, open_ddc};
 use marlin_diag::{error, info};
 use marlin_framework::loaders::engine_loaders;
 use marlin_framework::{
-    ContentSettings, Engine, RenderSide, load_default_resolve, load_engine_shaders,
-    load_pairing_pattern, load_ui_font, mount,
+    ContentSettings, Engine, RenderSide, load_default_bake, load_default_resolve,
+    load_engine_shaders, load_pairing_pattern, load_ui_font, mount,
 };
 use marlin_jobs::{Config, JobSystem};
 use marlin_math::Vec2;
@@ -164,6 +164,8 @@ fn run(
         .map_err(|e| format!("engine shaders: {e}"))?;
     let resolve = load_default_resolve(&mut assets, &boot.vfs, Some(&jobs))
         .map_err(|e| format!("the default material: {e}"))?;
+    let bake = load_default_bake(&mut assets, &boot.vfs, Some(&jobs))
+        .map_err(|e| format!("the default material's bake: {e}"))?;
     let pairing = load_pairing_pattern(&mut assets, &boot.vfs, Some(&jobs))
         .map_err(|e| format!("the pairing patterns: {e:?}"))?;
     let font = load_ui_font(&mut assets, &boot.vfs, Some(&jobs))
@@ -172,6 +174,9 @@ fn run(
     let resolve = assets
         .get(&resolve)
         .ok_or("the default material: not loaded")?;
+    let bake = assets
+        .get(&bake)
+        .ok_or("the default material's bake: not loaded")?;
     let font = assets.get(&font).ok_or("the UI font: not loaded")?.view();
     let pairing = assets
         .get(&pairing)
@@ -233,6 +238,7 @@ fn run(
                     &device,
                     library,
                     resolve,
+                    bake,
                     pairing,
                     VIEWPORT_FORMAT,
                     engine.scene_ids(),

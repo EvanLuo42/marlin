@@ -1,0 +1,166 @@
+namespace Marlin.Engine.Material;
+
+// Simplified materials (0011 §9.1–9.2): what ray hits shade with (GI paths, reflections, the
+// world cache's updates). A material row's simplified material is baked at runtime into a tile
+// of the atlas, evaluating its `Surface` over the tile's UVs; a hit samples its material's tile
+// at its UV0. Per-instance data (`CustomData`) is not in the atlas: each instance row has a
+// constant factor instead (the user's choice, 0011 §9.2), its material evaluated at a few UVs
+// with its data over the same without it. marlin-material's `SimpleMaterials` declares the
+// bakes; `SimpleOfHit` reads them.
+
+using Marlin.Engine.Scene;
+using Marlin.Substrate;
+
+/// A simplified material: what a hit shades with.
+public struct SimpleMaterial
+{
+    /// The diffuse albedo and the specular reflectance at normal incidence (linear).
+    public float3 Albedo;
+    public float Roughness;
+    public float3 F0;
+    public float Opacity;
+    /// Emitted luminance, cd/m².
+    public float3 Emission;
+}
+
+/// Texels a side of a material's tile, and tiles a row of the atlas.
+const uint SimpleTile = 32;
+const uint SimpleTilesPerRow = 64;
+
+/// The atlas and the per-instance factors, in a pass's arguments (marlin-material's
+/// `SimpleSources`).
+public struct SimpleSources
+{
+    /// Square-root albedo and roughness; square-root F0 and opacity; emission.
+    public Texture2D<float4> Albedo;
+    public Texture2D<float4> Specular;
+    public Texture2D<float4> Emission;
+    /// Two a row: the albedo factor, the emission factor.
+    public ReadOnlyBuffer<float4> Factors;
+}
+
+/// The texel of material row `material`'s tile at `uv` (wrapped).
+int2 SimpleTexel(uint material, float2 uv)
+{
+    float2 f = uv - Floor(uv);
+    uint2 tile = uint2(material % SimpleTilesPerRow, material / SimpleTilesPerRow) * SimpleTile;
+    uint2 inside = Min((uint2)(f * (float)SimpleTile), uint2(SimpleTile - 1, SimpleTile - 1));
+    return (int2)(tile + inside);
+}
+
+/// The simplified material of instance row `row` at `uv`: its material's tile there, times the
+/// instance's factors. An instance without a material is a mid grey.
+public SimpleMaterial SimpleAt(in SimpleSources s, ReadOnlyBuffer<InstanceData> instances, uint row, float2 uv)
+{
+    uint material = instances[row].Material;
+    if (material == 0xFFFFFFFF)
+        return SimpleMaterial { Albedo = float3(0.18, 0.18, 0.18), Roughness = 0.5, F0 = float3(0.04, 0.04, 0.04), Opacity = 1, Emission = float3(0, 0, 0) };
+    int2 texel = SimpleTexel(material, uv);
+    float4 a = s.Albedo.Load(texel);
+    float4 b = s.Specular.Load(texel);
+    float4 e = s.Emission.Load(texel);
+    float4 albedoFactor = s.Factors[row * 2];
+    float4 emissionFactor = s.Factors[row * 2 + 1];
+    return SimpleMaterial
+    {
+        Albedo = a.xyz * a.xyz * albedoFactor.xyz,
+        Roughness = a.w,
+        F0 = b.xyz * b.xyz,
+        Opacity = b.w,
+        Emission = e.xyz * emissionFactor.xyz,
+    };
+}
+
+/// What a ray hit, simplified: `SimpleAt` the hit's instance and UV0.
+public SimpleMaterial SimpleOfHit(in HitSurface hit, in HitSources h, in SimpleSources s) =>
+    SimpleAt(s, h.Instances, hit.Row, hit.Uv0);
+
+public struct SimpleBakeArgs<M>
+{
+    public ReadOnlyBuffer<InstanceData> Instances;
+    public ReadOnlyBuffer<MaterialEntry> Materials;
+    /// The permutation's parameter table.
+    public ReadOnlyBuffer<M> Params;
+    /// The rows to bake: `MaterialCount` material rows (their tiles), then `InstanceCount`
+    /// instance rows (their factors), all of this permutation.
+    public ReadOnlyBuffer<uint> Rows;
+    public uint MaterialCount;
+    public uint InstanceCount;
+    public StorageTexture2D<float4> Albedo;
+    public StorageTexture2D<float4> Specular;
+    public StorageTexture2D<float4> Emission;
+    public Buffer<float4> Factors;
+}
+
+/// A merged closure of `m` at `uv` with per-instance data `custom`: its `Surface`, emitted as
+/// the material pass does (the proxy lobe, 0011 §4.2), on a flat patch facing +Z.
+ClosureWriter EvaluateSimple<M>(in M m, float2 uv, float4 custom) where M : ISurfaceMaterial<M>
+{
+    SurfaceContext ctx = SurfaceContext
+    {
+        Position = float3(0, 0, 0),
+        Normal = float3(0, 0, 1),
+        GeometricNormal = float3(0, 0, 1),
+        Uv0 = uv,
+        InstanceId = 0,
+        CustomData = custom,
+    };
+    M.Tree tree = m.Surface(ctx);
+    ClosureWriter w = ClosureWriter.Open();
+    tree.Emit(ref w, float3(1, 1, 1), EmitContext { Normal = float3(0, 0, 1), Wo = float3(0, 0, 1) });
+    return w;
+}
+
+/// Bakes the simplified materials of permutation `M`: a thread a texel of the listed materials'
+/// tiles, then a thread a listed instance's factors.
+[Compute(64, 1, 1)]
+public void BakeSimple<M>([DispatchThreadId] uint3 id, [Push] in SimpleBakeArgs<M> a)
+    where M : ISurfaceMaterial<M>
+{
+    uint texels = SimpleTile * SimpleTile;
+    uint i = id.x;
+    if (i < a.MaterialCount * texels)
+    {
+        uint material = a.Rows[i / texels];
+        uint t = i % texels;
+        uint2 inTile = uint2(t % SimpleTile, t / SimpleTile);
+        float2 uv = ((float2)inTile + 0.5) / (float)SimpleTile;
+        M tile = a.Params[a.Materials[material].Slot];
+        ClosureWriter w = EvaluateSimple(tile, uv, float4(1, 1, 1, 1));
+        float roughness = w.SpecularSum > 0 ? w.RoughnessSum / w.SpecularSum : 0.5;
+        int2 texel = SimpleTexel(material, uv);
+        a.Albedo[texel] = float4(Sqrt(Saturate(w.Albedo)), Saturate(roughness));
+        a.Specular[texel] = float4(Sqrt(Saturate(w.F0)), 1);
+        a.Emission[texel] = float4(w.Emission, 1);
+        return;
+    }
+    i -= a.MaterialCount * texels;
+    if (i >= a.InstanceCount)
+        return;
+    uint row = a.Rows[a.MaterialCount + i];
+    InstanceData instance = a.Instances[row];
+    M m = a.Params[a.Materials[instance.Material].Slot];
+    // Its data against none, averaged over a few points of the surface.
+    float3 albedo = float3(0, 0, 0);
+    float3 albedoBase = float3(0, 0, 0);
+    float3 emission = float3(0, 0, 0);
+    float3 emissionBase = float3(0, 0, 0);
+    for (uint k = 0; k < 4; k++)
+    {
+        float2 uv = float2(k % 2 == 0 ? 0.25 : 0.75, k / 2 == 0 ? 0.25 : 0.75);
+        ClosureWriter mine = EvaluateSimple(m, uv, instance.Color);
+        ClosureWriter none = EvaluateSimple(m, uv, float4(1, 1, 1, 1));
+        albedo += mine.Albedo;
+        albedoBase += none.Albedo;
+        emission += mine.Emission;
+        emissionBase += none.Emission;
+    }
+    a.Factors[row * 2] = float4(Ratio(albedo, albedoBase), 0);
+    a.Factors[row * 2 + 1] = float4(Ratio(emission, emissionBase), 0);
+}
+
+/// `x / none` per channel; 1 where `none` is (nearly) zero, which a factor cannot scale.
+float3 Ratio(float3 x, float3 none) => float3(
+    none.x > 1e-5 ? x.x / none.x : 1,
+    none.y > 1e-5 ? x.y / none.y : 1,
+    none.z > 1e-5 ? x.z / none.z : 1);

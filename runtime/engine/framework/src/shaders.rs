@@ -17,6 +17,8 @@ use marlin_render::asset::PairingPattern;
 pub const ENGINE_SHADERS: &str = "Marlin.Engine";
 /// The default material's resolve permutation (`content/engine/shaders/DefaultMaterialResolve.masset`).
 pub const DEFAULT_RESOLVE: &str = "Marlin.Engine.DefaultMaterial.Resolve";
+/// The default material's simplified-material bake (`content/engine/shaders/DefaultMaterialBake.masset`).
+pub const DEFAULT_BAKE: &str = "Marlin.Engine.DefaultMaterial.Bake";
 
 #[derive(Debug)]
 pub enum ShaderError {
@@ -59,6 +61,16 @@ pub fn load_default_resolve(
     jobs: Option<&JobSystem>,
 ) -> Result<Handle<ShaderLibrary>, ShaderError> {
     load_named(assets, vfs, DEFAULT_RESOLVE, jobs)
+}
+
+/// Loads the default material's simplified-material bake (a cooked `Shader`, found by name
+/// [`DEFAULT_BAKE`]), blocking as [`load_engine_shaders`] does.
+pub fn load_default_bake(
+    assets: &mut AssetServer,
+    vfs: &Vfs,
+    jobs: Option<&JobSystem>,
+) -> Result<Handle<ShaderLibrary>, ShaderError> {
+    load_named(assets, vfs, DEFAULT_BAKE, jobs)
 }
 
 fn load_named(

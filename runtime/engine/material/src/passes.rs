@@ -139,6 +139,8 @@ pub enum MaterialDebug {
 pub struct MaterialType {
     pub name: String,
     pipeline: ComputePipeline,
+    /// Its `BakeSimple` permutation (`crate::simple`).
+    pub(crate) bake: ComputePipeline,
 }
 
 /// What [`Materials::add_passes`] makes.
@@ -182,13 +184,16 @@ impl Materials {
     }
 
     /// Adds a material type: its resolve permutation (`Marlin.Engine.Material.ResolvePixel`
-    /// instantiated with the type). Returns the permutation, the registration order: register
+    /// instantiated with the type, [`RESOLVE`]) and its simplified-material bake (`BakeSimple`, the
+    /// same, [`crate::BAKE`]).
+    /// Returns the permutation, the registration order: register
     /// `Marlin.Engine.DefaultMaterial` first ([`crate::DEFAULT_PERMUTATION`]).
     pub fn register(
         &mut self,
         device: &Device,
         name: &str,
         resolve: ShaderModule<'_>,
+        bake: ShaderModule<'_>,
     ) -> Result<u32> {
         let pipeline = device.create_compute_pipeline(&ComputePipelineDesc {
             shader: resolve,
@@ -197,6 +202,10 @@ impl Materials {
         self.types.push(MaterialType {
             name: name.into(),
             pipeline,
+            bake: device.create_compute_pipeline(&ComputePipelineDesc {
+                shader: bake,
+                cache: None,
+            })?,
         });
         Ok(self.types.len() as u32 - 1)
     }

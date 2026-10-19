@@ -24,7 +24,7 @@ use crate::delta::{RenderDelta, RenderSide, RenderSideError};
 use crate::dev::DevTools;
 use crate::engine::{Engine, EngineError};
 use crate::shaders::{
-    ShaderError, load_default_resolve, load_engine_shaders, load_pairing_pattern,
+    ShaderError, load_default_bake, load_default_resolve, load_engine_shaders, load_pairing_pattern,
 };
 
 #[derive(Debug, marlin_error::Error)]
@@ -101,6 +101,7 @@ pub fn run(boot: &Boot, title: &str) -> Result<(), RunError> {
     // The renderer's shaders, cooked from content/engine like any asset.
     let library = load_engine_shaders(&mut engine.assets, &boot.vfs, Some(&jobs))?;
     let resolve = load_default_resolve(&mut engine.assets, &boot.vfs, Some(&jobs))?;
+    let bake = load_default_bake(&mut engine.assets, &boot.vfs, Some(&jobs))?;
     let pairing = load_pairing_pattern(&mut engine.assets, &boot.vfs, Some(&jobs))
         .map_err(ShaderError::Load)?;
     let shaders = engine
@@ -111,6 +112,10 @@ pub fn run(boot: &Boot, title: &str) -> Result<(), RunError> {
         .assets
         .get(&resolve)
         .ok_or(ShaderError::Load(marlin_asset::AssetError::NotFound))?;
+    let bake = engine
+        .assets
+        .get(&bake)
+        .ok_or(ShaderError::Load(marlin_asset::AssetError::NotFound))?;
     let pairing = engine
         .assets
         .get(&pairing)
@@ -119,6 +124,7 @@ pub fn run(boot: &Boot, title: &str) -> Result<(), RunError> {
         &device,
         shaders,
         resolve,
+        bake,
         pairing.view(),
         swapchain.format(),
         engine.scene_ids(),

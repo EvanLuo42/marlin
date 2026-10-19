@@ -1,0 +1,38 @@
+namespace Material;
+
+// The simplified materials where given rays hit: what GI paths will shade with, read back so
+// the tests can hold them against the material pass's proxy lobes.
+
+using Marlin.Engine.Scene;
+using Marlin.Engine.Material;
+
+public struct ProbeArgs
+{
+    public AccelerationStructure Tlas;
+    public ReadOnlyBuffer<Ray> Rays;
+    /// Per ray, 3 entries: albedo and roughness; F0 and opacity; emission and the instance row
+    /// (its bits; `0xFFFFFFFF` for a miss).
+    public Buffer<float4> Out;
+    public uint Count;
+    public HitSources Sources;
+    public SimpleSources Simple;
+}
+
+[Compute(64, 1, 1)]
+public void ProbeSimple([DispatchThreadId] uint3 id, [Push] in ProbeArgs a)
+{
+    if (id.x >= a.Count)
+        return;
+    Ray ray = a.Rays[id.x];
+    RayHit hit = a.Tlas.TraceClosest(ray);
+    if (hit.Kind == HitKind.None)
+    {
+        a.Out[id.x * 3 + 2] = float4(0, 0, 0, AsFloat(0xFFFFFFFF));
+        return;
+    }
+    HitSurface s = SurfaceOfHit(hit, ray, a.Sources);
+    SimpleMaterial m = SimpleOfHit(s, a.Sources, a.Simple);
+    a.Out[id.x * 3] = float4(m.Albedo, m.Roughness);
+    a.Out[id.x * 3 + 1] = float4(m.F0, m.Opacity);
+    a.Out[id.x * 3 + 2] = float4(m.Emission, AsFloat(s.Row));
+}

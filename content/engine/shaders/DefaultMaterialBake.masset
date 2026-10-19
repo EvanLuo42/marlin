@@ -1,0 +1,13 @@
+!Version 1
+
+// The default material's simplified-material bake (docs/design/0011-material-system.md §9.2): the
+// generic `Marlin.Engine.Material.BakeSimple` for `Marlin.Engine.DefaultMaterial`, which the
+// package's library cannot hold. The engine finds it by name.
+Shader
+{
+    !Uuid = "019a4d52-6b18-7c33-9e21-4f8a0c6d2b73"
+    !Name = "Marlin.Engine.DefaultMaterial.Bake"
+    Package = <shaders/package:Marlin.Engine #01a14e23-41a7-7240-a3d8-65abdeb55b0e>
+    Entry = "Marlin.Engine.Material.BakeSimple"
+    TypeArgs = ["Marlin.Engine.DefaultMaterial"]
+}

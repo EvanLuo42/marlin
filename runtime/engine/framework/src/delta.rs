@@ -13,7 +13,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use marlin_containers::{HashMap, HashMapExt};
-use marlin_material::{DEFAULT_PERMUTATION, MaterialShaders, Materials, RESOLVE};
+use marlin_material::{BAKE, DEFAULT_PERMUTATION, MaterialShaders, Materials, RESOLVE};
 use marlin_math::{Transform, UVec2, Vec2};
 use marlin_render::asset::PairingPatternView;
 use marlin_render::denoise::{DenoiseInputs, DenoiseShaders, Denoiser};
@@ -109,13 +109,15 @@ pub struct RenderSide {
 
 impl RenderSide {
     /// The passes made with the engine's shaders (`engine`, the `Marlin.Engine` library), the
-    /// default material's resolve permutation (`default_resolve`, `DEFAULT_RESOLVE`) and ReSTIR's
+    /// default material's resolve permutation (`default_resolve`, `DEFAULT_RESOLVE`) and its
+    /// simplified-material bake (`default_bake`, `DEFAULT_BAKE`) and ReSTIR's
     /// pairing patterns (`pairing`, `PAIRING_PATTERN`); the post chain writes `output`. The
     /// scene's rows come from `ids`, the allocators the simulation reserves them from.
     pub fn new(
         device: &Device,
         engine: &ShaderLibrary,
         default_resolve: &ShaderLibrary,
+        default_bake: &ShaderLibrary,
         pairing: PairingPatternView<'_>,
         output: Format,
         ids: SceneIds,
@@ -125,6 +127,7 @@ impl RenderSide {
             device,
             "Marlin.Engine.DefaultMaterial",
             bind_one(default_resolve, &RESOLVE)?,
+            bind_one(default_bake, &BAKE)?,
         )?;
         debug_assert_eq!(default, DEFAULT_PERMUTATION);
         Ok(Self {
@@ -273,6 +276,7 @@ impl RenderSide {
         let meshes: &'g Meshes = meshes;
         let pool = meshes.add_passes(g, uploads);
         let gpu = scene.add_passes(g, scatter);
+        let _simple = materials.add_simple_passes(g, scene, gpu);
         let rows = scene.instance_rows();
         let rt = tlas.add_passes(g, gpu, &pool, rows);
         let seed = *frame as u32;

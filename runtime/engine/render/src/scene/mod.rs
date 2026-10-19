@@ -169,6 +169,11 @@ pub struct RenderScene {
     /// Light rows added, changed or removed in the last applied frame: what reused samples of
     /// them must not trust (0010 §2.4).
     light_changes: Vec<u32>,
+    /// Material rows added or changed, and instance rows whose material (or its parameters) or
+    /// per-instance data changed, in the last applied frame: what the simplified materials
+    /// rebake (0011 §9.2). Sorted, without repeats.
+    simple_materials: Vec<u32>,
+    simple_instances: Vec<u32>,
     /// Rows changed this frame, whose new spheres join `shadow_changes` once the frame's
     /// updates are in; per row, the frame it last changed in.
     shadow_rows: Vec<u32>,
@@ -213,6 +218,8 @@ impl RenderScene {
             moved_last: Vec::new(),
             shadow_changes: Vec::new(),
             light_changes: Vec::new(),
+            simple_materials: Vec::new(),
+            simple_instances: Vec::new(),
             shadow_rows: Vec::new(),
             shadow_at: Vec::new(),
         }
@@ -243,6 +250,8 @@ impl RenderScene {
         self.moved_last = core::mem::take(&mut self.moved);
         self.shadow_changes.clear();
         self.light_changes.clear();
+        self.simple_materials.clear();
+        self.simple_instances.clear();
         for updates in sets {
             for (id, update) in updates.meshes.iter() {
                 self.apply_mesh(*id, update);
@@ -270,6 +279,10 @@ impl RenderScene {
             if let Some(sphere) = self.casting_sphere(row as usize) {
                 self.shadow_changes.push(sphere);
             }
+        }
+        for list in [&mut self.simple_materials, &mut self.simple_instances] {
+            list.sort_unstable();
+            list.dedup();
         }
     }
 
@@ -320,6 +333,7 @@ impl RenderScene {
                 self.material_slot[i] = self.slots(desc.permutation).take();
                 self.material_desc[i] = desc.clone();
                 self.materials_dirty.mark(id.index, dirty::DATA);
+                self.simple_materials.push(id.index);
                 self.instances_using(id);
             }
             MaterialUpdate::Set(desc) if self.material_rows.live(id) => {
@@ -331,6 +345,13 @@ impl RenderScene {
                 }
                 self.material_desc[i] = desc.clone();
                 self.materials_dirty.mark(id.index, dirty::DATA);
+                self.simple_materials.push(id.index);
+                // Their simplified factors follow the parameters.
+                for row in 0..self.instance_rows.len() {
+                    if self.instance_rows.alive[row] && self.instance_material[row] == id {
+                        self.simple_instances.push(row as u32);
+                    }
+                }
             }
             MaterialUpdate::Remove if self.material_rows.live(id) => {
                 self.material_rows.alive[i] = false;
@@ -360,6 +381,7 @@ impl RenderScene {
         for row in 0..self.instance_rows.len() {
             if self.instance_rows.alive[row] && self.instance_material[row] == material {
                 self.instances_dirty.mark(row as u32, dirty::DATA);
+                self.simple_instances.push(row as u32);
             }
         }
     }
@@ -416,6 +438,7 @@ impl RenderScene {
                 self.instance_color[i] = desc.color;
                 self.instance_flags[i] = desc.flags;
                 self.shadow_change(i);
+                self.simple_instances.push(id.index);
                 self.instances_dirty
                     .mark(id.index, dirty::DATA | dirty::BOTH | dirty::BOUNDS);
             }
@@ -441,6 +464,7 @@ impl RenderScene {
             }
             InstanceUpdate::Material(material) => {
                 self.instance_material[i] = material;
+                self.simple_instances.push(id.index);
                 self.instances_dirty.mark(id.index, dirty::DATA);
             }
             InstanceUpdate::Mesh(mesh) => {
@@ -451,6 +475,7 @@ impl RenderScene {
             }
             InstanceUpdate::Color(c) => {
                 self.instance_color[i] = c;
+                self.simple_instances.push(id.index);
                 self.instances_dirty.mark(id.index, dirty::DATA);
             }
             InstanceUpdate::Flags(f) => {
@@ -544,6 +569,35 @@ impl RenderScene {
     /// The light rows added, changed or removed in the last applied frame.
     pub fn light_changes(&self) -> &[u32] {
         &self.light_changes
+    }
+
+    /// What the simplified materials rebake after the last applied frame (0011 §9.2): material
+    /// rows added or changed, and instance rows whose per-instance factors are stale (their
+    /// material, its parameters or their per-instance data changed). Sorted, without repeats.
+    pub fn simple_changes(&self) -> (&[u32], &[u32]) {
+        (&self.simple_materials, &self.simple_instances)
+    }
+
+    /// The resolve permutation of material row `row`, if it is live.
+    pub fn material_permutation(&self, row: u32) -> Option<u32> {
+        let i = row as usize;
+        (i < self.material_rows.alive.len() && self.material_rows.alive[i])
+            .then(|| self.material_desc[i].permutation)
+    }
+
+    /// The material row of instance row `row`, if the instance is live and its material is.
+    pub fn instance_material_row(&self, row: u32) -> Option<u32> {
+        let i = row as usize;
+        if i >= self.instance_rows.alive.len() || !self.instance_rows.alive[i] {
+            return None;
+        }
+        let material = self.instance_material[i];
+        self.material_rows.live(material).then_some(material.index)
+    }
+
+    /// Material rows, live or not: the material table's rows in use.
+    pub fn material_rows(&self) -> u32 {
+        self.material_rows.alive.len() as u32
     }
 
     /// The world spheres of the drawable instances of the renderer meshes `meshes`.
