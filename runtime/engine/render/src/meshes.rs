@@ -305,6 +305,8 @@ pub struct Meshes {
     tables: BTreeMap<u32, (u32, MeshHandle)>,
     meshes: SlotMap<Mesh>,
     writes: Vec<Write>,
+    /// The meshes whose resident pages the last [`take_uploads`](Self::take_uploads) changed.
+    changed: Vec<MeshHandle>,
     /// The frame the next [`add_passes`](Self::add_passes) declares.
     frame: u64,
     /// The newest frame whose feedback was applied.
@@ -351,6 +353,7 @@ impl Meshes {
             tables: BTreeMap::new(),
             meshes: SlotMap::new(),
             writes: Vec::new(),
+            changed: Vec::new(),
             frame: 1,
             seen: 0,
             wanted: 0,
@@ -820,6 +823,12 @@ impl Meshes {
         self.take_arrivals();
     }
 
+    /// The meshes whose resident pages (and so their LOD cuts) the last
+    /// [`take_uploads`](Self::take_uploads) changed: shadows cached from them are stale.
+    pub fn changed_meshes(&self) -> &[MeshHandle] {
+        &self.changed
+    }
+
     /// Whether streaming has caught up: no writes pending, no page being read, and the last
     /// feedback asked for no page it could not load.
     pub fn streaming_idle(&self) -> bool {
@@ -833,6 +842,7 @@ impl Meshes {
         self.frame += 1;
         let mut pages: BTreeMap<u32, (MeshHandle, u32, Option<Vec<u8>>)> = BTreeMap::new();
         let mut entries: BTreeMap<u32, u32> = BTreeMap::new();
+        self.changed.clear();
         for w in core::mem::take(&mut self.writes) {
             match w {
                 Write::Page {
@@ -843,8 +853,11 @@ impl Meshes {
                 } => {
                     pages.insert(slot, (mesh, page, bytes));
                 }
-                Write::Entry { entry, value, .. } => {
+                Write::Entry { mesh, entry, value } => {
                     entries.insert(entry, value);
+                    if !self.changed.contains(&mesh) {
+                        self.changed.push(mesh);
+                    }
                 }
             }
         }

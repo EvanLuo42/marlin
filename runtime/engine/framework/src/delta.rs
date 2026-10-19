@@ -238,6 +238,7 @@ impl RenderSide {
                 .material;
             let shadow = vsm.add_passes(
                 g,
+                MAIN_VIEW,
                 visibility,
                 meshes,
                 scene,

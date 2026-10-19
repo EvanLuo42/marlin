@@ -162,6 +162,14 @@ pub struct RenderScene {
     /// Instances that moved this frame and last frame.
     moved: Vec<u32>,
     moved_last: Vec<u32>,
+    /// World spheres whose shadow changed this frame (0010 §5.3): instances that moved,
+    /// appeared, vanished, were hidden or shown, or changed mesh (or their mesh its GPU copy),
+    /// at their old places and their new ones.
+    shadow_changes: Vec<[f32; 4]>,
+    /// Rows changed this frame, whose new spheres join `shadow_changes` once the frame's
+    /// updates are in; per row, the frame it last changed in.
+    shadow_rows: Vec<u32>,
+    shadow_at: Vec<u64>,
 }
 
 static NEXT_SCENE: AtomicU64 = AtomicU64::new(1);
@@ -200,6 +208,9 @@ impl RenderScene {
             moved_at: Vec::new(),
             moved: Vec::new(),
             moved_last: Vec::new(),
+            shadow_changes: Vec::new(),
+            shadow_rows: Vec::new(),
+            shadow_at: Vec::new(),
         }
     }
 
@@ -226,6 +237,7 @@ impl RenderScene {
         // A new frame: instances that moved last frame and not again come to rest.
         self.frame += 1;
         self.moved_last = core::mem::take(&mut self.moved);
+        self.shadow_changes.clear();
         for updates in sets {
             for (id, update) in updates.meshes.iter() {
                 self.apply_mesh(*id, update);
@@ -249,6 +261,11 @@ impl RenderScene {
                 self.instances_dirty.mark(row, dirty::STOPPED);
             }
         }
+        for row in core::mem::take(&mut self.shadow_rows) {
+            if let Some(sphere) = self.casting_sphere(row as usize) {
+                self.shadow_changes.push(sphere);
+            }
+        }
     }
 
     fn apply_mesh(&mut self, id: MeshId, update: &MeshUpdate) {
@@ -264,6 +281,7 @@ impl RenderScene {
                 }
             }
             MeshUpdate::Resident(resident) if self.mesh_rows.live(id) => {
+                self.mesh_changes_shadows(id);
                 self.mesh_resident[i] = Some(resident);
                 self.meshes_dirty.mark(id.index, dirty::DATA);
                 // Instances of the mesh get its bounds.
@@ -274,6 +292,7 @@ impl RenderScene {
                 }
             }
             MeshUpdate::Remove if self.mesh_rows.live(id) => {
+                self.mesh_changes_shadows(id);
                 self.mesh_rows.alive[i] = false;
                 self.mesh_resident[i] = None;
                 self.ids.meshes.release(id);
@@ -386,17 +405,20 @@ impl RenderScene {
                 self.instance_previous[i] = desc.transform;
                 self.instance_color[i] = desc.color;
                 self.instance_flags[i] = desc.flags;
+                self.shadow_change(i);
                 self.instances_dirty
                     .mark(id.index, dirty::DATA | dirty::BOTH | dirty::BOUNDS);
             }
             _ if !self.instance_rows.live(id) => {}
             InstanceUpdate::Remove => {
+                self.shadow_change(i);
                 self.instance_rows.alive[i] = false;
                 self.ids.instances.release(id);
                 // The GPU row reads as hidden from now on.
                 self.instances_dirty.mark(id.index, dirty::DATA);
             }
             InstanceUpdate::Transform(t) => {
+                self.shadow_change(i);
                 if self.moved_at[i] != self.frame {
                     self.moved_at[i] = self.frame;
                     // The transform the last frame drew with.
@@ -412,6 +434,7 @@ impl RenderScene {
                 self.instances_dirty.mark(id.index, dirty::DATA);
             }
             InstanceUpdate::Mesh(mesh) => {
+                self.shadow_change(i);
                 self.instance_mesh[i] = mesh;
                 self.instances_dirty
                     .mark(id.index, dirty::DATA | dirty::BOUNDS);
@@ -421,6 +444,7 @@ impl RenderScene {
                 self.instances_dirty.mark(id.index, dirty::DATA);
             }
             InstanceUpdate::Flags(f) => {
+                self.shadow_change(i);
                 self.instance_flags[i] = f;
                 self.instances_dirty.mark(id.index, dirty::DATA);
             }
@@ -493,6 +517,54 @@ impl RenderScene {
             self.mesh_resident[mesh.index as usize]
                 .map(|m| (row as u32, m.handle, self.instance_transform[row]))
         })
+    }
+
+    /// The world spheres whose shadow changed in the last applied frame (see the field).
+    pub fn shadow_changes(&self) -> &[[f32; 4]] {
+        &self.shadow_changes
+    }
+
+    /// The world spheres of the drawable instances of the renderer meshes `meshes`.
+    pub fn spheres_of(&self, meshes: &[MeshHandle]) -> impl Iterator<Item = [f32; 4]> + '_ {
+        let meshes = meshes.to_vec();
+        self.drawable()
+            .filter(move |(_, mesh, _)| meshes.contains(mesh))
+            .map(|(row, _, _)| self.world_sphere(row as usize))
+    }
+
+    /// Instance row `row` changes its shadow this frame: its sphere as it was (the first time
+    /// this frame), and its new one once the frame's updates are in.
+    fn shadow_change(&mut self, row: usize) {
+        if self.shadow_at.len() <= row {
+            self.shadow_at.resize(row + 1, 0);
+        }
+        if self.shadow_at[row] == self.frame {
+            return;
+        }
+        self.shadow_at[row] = self.frame;
+        if let Some(sphere) = self.casting_sphere(row) {
+            self.shadow_changes.push(sphere);
+        }
+        self.shadow_rows.push(row as u32);
+    }
+
+    /// Every instance of mesh `id` changes its shadow.
+    fn mesh_changes_shadows(&mut self, id: MeshId) {
+        for row in 0..self.instance_rows.len() {
+            if self.instance_rows.alive[row] && self.instance_mesh[row] == id {
+                self.shadow_change(row);
+            }
+        }
+    }
+
+    /// The world sphere of instance row `row` if it is drawn: alive, not hidden, its mesh
+    /// resident.
+    fn casting_sphere(&self, row: usize) -> Option<[f32; 4]> {
+        let drawn = self.instance_rows.alive[row]
+            && self.instance_flags[row] & flags::HIDDEN == 0
+            && self.mesh_rows.live(self.instance_mesh[row])
+            && self.mesh_resident[self.instance_mesh[row].index as usize].is_some();
+        drawn.then(|| self.world_sphere(row))
     }
 
     /// The world-space bounding sphere of instance row `row` (zero until its mesh is resident).

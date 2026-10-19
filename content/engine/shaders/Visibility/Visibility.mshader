@@ -91,15 +91,17 @@ public struct View
     /// `Orthographic` for a shadow view.
     public uint Mode;
     /// A shadow view's page table: the physical page of each of its `ShadowPagesPerSide`² pages
-    /// (row-major, from `ShadowPageBase`) or `0xFFFFFFFF` if nothing samples it; and the
-    /// physical pool its depths go to, `ShadowPageSize`² texels a page,
-    /// `ShadowPoolPagesPerRow` pages a row.
+    /// (from `ShadowPageBase`; page p in row-major slot `(p + ShadowPageOffset) mod
+    /// ShadowPagesPerSide`), `| ShadowRender` if it is drawn this frame, or `0xFFFFFFFF` if
+    /// nothing samples it; and the physical pool its depths go to, `ShadowPageSize`² texels a
+    /// page, `ShadowPoolPagesPerRow` pages a row.
     public ReadOnlyBuffer<uint> ShadowPages;
     public StorageTexture2D<uint> ShadowPool;
     public uint ShadowPageBase;
     public uint ShadowPagesPerSide;
     public uint ShadowPageSize;
     public uint ShadowPoolPagesPerRow;
+    public uint2 ShadowPageOffset;
 }
 
 public struct CullArgs
@@ -425,9 +427,22 @@ bool Software(in View v, float3 center, float radius, uint triangles)
     return diameter * Sqrt(2 / (float)Max(triangles, 1)) < v.SwEdgePixels;
 }
 
-/// Whether a shadow view maps any page under the world sphere (`center`, `radius`); true for
+/// A shadow page table entry's bit: the page is drawn this frame.
+const uint ShadowRender = 2147483648;
+
+/// A shadow view's page table entry of its page `page`.
+uint ShadowEntry(in View v, uint2 page)
+{
+    uint2 s = (page + v.ShadowPageOffset) % v.ShadowPagesPerSide;
+    return v.ShadowPages[v.ShadowPageBase + s.y * v.ShadowPagesPerSide + s.x];
+}
+
+/// Whether a page table entry is a page drawn this frame.
+bool ShadowDrawn(uint entry) => entry != NoChild && (entry & ShadowRender) != 0;
+
+/// Whether a shadow view draws any page under the world sphere (`center`, `radius`); true for
 /// spheres over more than 64 pages, which are not worth the look.
-bool ShadowPagesMapped(in View v, float3 center, float radius)
+bool ShadowPagesDrawn(in View v, float3 center, float radius)
 {
     float4 c = v.ViewProjection * float4(center, 1);
     float2 px = float2((c.x * 0.5 + 0.5) * (float)v.Width, (0.5 - c.y * 0.5) * (float)v.Height);
@@ -442,7 +457,7 @@ bool ShadowPagesMapped(in View v, float3 center, float radius)
     {
         for (uint x = (uint)lo.x; x <= (uint)hi.x; x++)
         {
-            if (v.ShadowPages[v.ShadowPageBase + y * v.ShadowPagesPerSide + x] != NoChild)
+            if (ShadowDrawn(ShadowEntry(v, uint2(x, y))))
                 return true;
         }
     }
@@ -511,8 +526,8 @@ public void ClusterCull([GroupId] uint3 group, [GroupThreadId] uint3 thread, [Pu
             if (Dot(d, axis) >= cutoff * Length(d) + radius)
                 continue;
         }
-        // A shadow view draws only into pages something samples.
-        if ((v.Mode & Orthographic) != 0 && !ShadowPagesMapped(v, center, radius))
+        // A shadow view draws only into the pages it draws this frame.
+        if ((v.Mode & Orthographic) != 0 && !ShadowPagesDrawn(v, center, radius))
             continue;
         uint address = (slot << 12) | cluster;
         bool software = Software(v, center, radius, c.TriangleCount);
@@ -644,16 +659,17 @@ public void VisPs([Position] float4 position, [PrimitiveId] uint id, [Push] in R
 
 /// A shadow view's pixel: its virtual texel goes through the page table to the physical pool,
 /// which keeps the depth nearest the light (the largest) with an atomic max. Texels of pages
-/// nothing samples are dropped.
+/// not drawn this frame (nothing samples them, or they are cached) are dropped.
 [Pixel]
 public void ShadowPs([Position] float4 position, [Push] in RasterArgs a)
 {
     View v = a.View.Value;
     uint2 texel = uint2((uint)position.x, (uint)position.y);
     uint2 page = texel / v.ShadowPageSize;
-    uint physical = v.ShadowPages[v.ShadowPageBase + page.y * v.ShadowPagesPerSide + page.x];
-    if (physical == NoChild)
+    uint entry = ShadowEntry(v, page);
+    if (!ShadowDrawn(entry))
         return;
+    uint physical = entry - ShadowRender;
     uint2 origin = uint2(physical % v.ShadowPoolPagesPerRow, physical / v.ShadowPoolPagesPerRow) * v.ShadowPageSize;
     uint2 at = origin + texel % v.ShadowPageSize;
     v.ShadowPool.AtomicMax(int2((int)at.x, (int)at.y), AsUInt(Saturate(position.z)));

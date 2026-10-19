@@ -449,8 +449,8 @@ impl Harness {
                 let out = vis.add_passes(g, meshes, scene, gpu, pool, &view);
                 let env = *scene.environment();
                 let s = vsm.add_passes(
-                    g, vis, meshes, scene, gpu, out.pages, out.used, out.depth, None, &env, camera,
-                    SIZE, SIZE,
+                    g, 0, vis, meshes, scene, gpu, out.pages, out.used, out.depth, None, &env,
+                    camera, SIZE, SIZE,
                 );
                 [
                     g.readback_texture(s.mask),
@@ -472,7 +472,8 @@ impl Harness {
                 .collect(),
             depth: words(&depth).into_iter().map(f32::from_bits).collect(),
             page_table: words(&page_table),
-            marked: words(&counters)[0],
+            drawn: words(&counters)[0],
+            cached: words(&counters)[3],
         }
     }
 
@@ -636,8 +637,10 @@ pub struct ShadowFrame {
     /// The sun's visibility: 1 lit, 0 in shadow.
     pub mask: Vec<f32>,
     pub depth: Vec<f32>,
-    /// A word per virtual page of every level: its physical page or `u32::MAX`.
+    /// A word per virtual page of every level: its physical page (with
+    /// [`RENDER_BIT`](marlin_render::shadows::RENDER_BIT) if drawn this frame) or `u32::MAX`.
     pub page_table: Vec<u32>,
-    /// Pages marked (taken from the pool, or not if it ran out).
-    pub marked: u32,
+    /// Marked pages drawn this frame (as far as the pool had room), and found cached.
+    pub drawn: u32,
+    pub cached: u32,
 }

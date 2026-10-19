@@ -1,9 +1,10 @@
-//! The sun's virtual shadow maps (R2f): the shadow mask against shadows the CPU finds by casting
-//! a ray from each pixel's surface toward the sun through the scene's boxes, and the pages the
-//! frame marks.
+//! The sun's virtual shadow maps (R2f, R2g): the shadow mask against shadows the CPU finds by
+//! casting a ray from each pixel's surface toward the sun through the scene's boxes, the pages
+//! the frame marks, and the pages it keeps across frames.
 
 use marlin_math::{Mat4, Quat, Transform, Vec3, Vec4};
-use marlin_render::scene::{InstanceId, InstanceUpdate};
+use marlin_render::scene::{InstanceId, InstanceUpdate, flags};
+use marlin_render::shadows::RENDER_BIT;
 use marlin_render::{Camera, Environment};
 
 use crate::support::{Harness, SHADOW_SETTINGS, SIZE, ShadowFrame};
@@ -34,16 +35,20 @@ fn hits(b: &Box3, origin: Vec3, dir: Vec3) -> bool {
     near <= far
 }
 
-/// A camera above and in front of the origin, looking down at it.
-fn camera() -> (Transform, Camera) {
+/// A camera above and in front of the origin, looking down at it, moved by `offset`.
+fn camera_at(offset: Vec3) -> (Transform, Camera) {
     (
         Transform {
-            translation: Vec3::new(0.0, 2.6, 3.2),
+            translation: Vec3::new(0.0, 2.6, 3.2) + offset,
             rotation: Quat::from_rotation_x(-0.65),
             scale: Vec3::ONE,
         },
         Camera::default(),
     )
+}
+
+fn camera() -> (Transform, Camera) {
+    camera_at(Vec3::ZERO)
 }
 
 /// A ground slab and a box floating above it: the boxes, for the CPU, and their instances.
@@ -76,9 +81,14 @@ fn scene(h: &mut Harness) -> (Vec<Box3>, Vec<InstanceId>) {
     (boxes.to_vec(), ids)
 }
 
-/// What the CPU expects of each pixel: `None` for the sky, else whether the sun is hidden.
-fn expected(f: &ShadowFrame, boxes: &[Box3], light: Vec3) -> Vec<Option<bool>> {
-    let (eye, cam) = camera();
+/// What the CPU expects of each pixel seen from `eye`: `None` for the sky, else whether the sun
+/// is hidden.
+fn expected(
+    f: &ShadowFrame,
+    boxes: &[Box3],
+    light: Vec3,
+    (eye, cam): (Transform, Camera),
+) -> Vec<Option<bool>> {
     let vp =
         Mat4::perspective_infinite_rh(cam.fov_y, 1.0, cam.near) * eye.to_matrix().inverse_affine();
     let inverse = vp.inverse();
@@ -125,34 +135,142 @@ fn compare(f: &ShadowFrame, want: &[Option<bool>]) -> (usize, usize) {
     (wrong, shadowed)
 }
 
-#[test]
-fn the_shadow_mask_matches_rays_to_the_sun() {
-    let mut h = Harness::new(Environment::default());
-    h.vis.lod_error_pixels = 0.0;
-    let (boxes, _) = scene(&mut h);
-    settle(&mut h);
-    let f = h.shadow_frame();
-    let want = expected(&f, &boxes, Environment::default().light_direction);
-    let (wrong, shadowed) = compare(&f, &want);
+/// Checks `f`'s mask against rays to the sun `light` through `boxes`, seen from `eye`.
+fn check(f: &ShadowFrame, boxes: &[Box3], light: Vec3, eye: (Transform, Camera)) {
+    let want = expected(f, boxes, light, eye);
+    let (wrong, shadowed) = compare(f, &want);
     assert!(shadowed > 50, "{shadowed} shadowed pixels to look at");
     assert_eq!(wrong, 0, "pixels off the edges the mask gets wrong");
+}
+
+/// Marked pages: drawn or cached.
+fn marked(f: &ShadowFrame) -> u32 {
+    f.drawn + f.cached
+}
+
+/// A settled harness with the box scene and its first shadow frame.
+fn first_frame() -> (Harness, Vec<Box3>, Vec<InstanceId>, ShadowFrame) {
+    let mut h = Harness::new(Environment::default());
+    h.vis.lod_error_pixels = 0.0;
+    let (boxes, ids) = scene(&mut h);
+    settle(&mut h);
+    let f = h.shadow_frame();
+    (h, boxes, ids, f)
+}
+
+#[test]
+fn the_shadow_mask_matches_rays_to_the_sun() {
+    let (_, boxes, _, f) = first_frame();
+    let light = Environment::default().light_direction;
+    check(&f, &boxes, light, camera());
     // The ground in the open is lit, not shadowed by itself (acne).
+    let want = expected(&f, &boxes, light, camera());
     let lit_ground = want
         .iter()
         .zip(&f.mask)
         .filter(|(w, _)| **w == Some(false))
         .all(|(_, &m)| m > 0.0);
     assert!(lit_ground, "no texel of open ground fully shadowed");
+    // Nothing was cached yet: every marked page is drawn.
+    assert!(
+        f.drawn > 0 && f.cached == 0,
+        "{} drawn, {} cached",
+        f.drawn,
+        f.cached
+    );
+}
+
+#[test]
+fn a_still_frame_draws_no_page_and_keeps_its_shadow() {
+    let (mut h, boxes, _, first) = first_frame();
+    let next = h.shadow_frame();
+    assert_eq!(next.drawn, 0, "pages drawn again");
+    assert_eq!(next.cached, marked(&first));
+    assert_eq!(next.mask, first.mask);
+    check(
+        &next,
+        &boxes,
+        Environment::default().light_direction,
+        camera(),
+    );
+}
+
+#[test]
+fn moving_the_camera_draws_only_the_pages_it_newly_marks() {
+    let (mut h, boxes, _, first) = first_frame();
+    // A step sideways: the levels follow the camera, most pages stay where they were.
+    let moved = camera_at(Vec3::new(0.7, 0.0, 0.0));
+    h.camera = Some(moved);
+    let next = h.shadow_frame();
+    assert!(next.cached > 0, "no page kept");
+    assert!(
+        next.drawn < marked(&next) / 2,
+        "{} of {} pages drawn",
+        next.drawn,
+        marked(&next)
+    );
+    assert!(marked(&first) > 0);
+    check(&next, &boxes, Environment::default().light_direction, moved);
+}
+
+#[test]
+fn a_moving_box_redraws_only_the_pages_under_it() {
+    let (mut h, mut boxes, ids, _) = first_frame();
+    boxes[1].center = Vec3::new(0.3, 0.6, -0.4);
+    h.set(
+        ids[1],
+        InstanceUpdate::Transform(Transform {
+            translation: boxes[1].center,
+            rotation: Quat::IDENTITY,
+            scale: boxes[1].half * 2.0,
+        }),
+    );
+    let next = h.shadow_frame();
+    assert!(next.drawn > 0, "the box's pages drawn again");
+    assert!(next.cached > 0, "pages away from the box kept");
+    check(
+        &next,
+        &boxes,
+        Environment::default().light_direction,
+        camera(),
+    );
+    // At rest again: nothing to draw.
+    let rest = h.shadow_frame();
+    assert_eq!(rest.drawn, 0);
+    assert_eq!(rest.mask, next.mask);
+}
+
+#[test]
+fn cached_pages_outlive_frames_that_do_not_mark_them() {
+    let (mut h, boxes, _, first) = first_frame();
+    // Looking up at the sky marks nothing.
+    let (eye, cam) = camera();
+    h.camera = Some((
+        Transform {
+            rotation: Quat::from_rotation_x(1.2),
+            ..eye
+        },
+        cam,
+    ));
+    let sky = h.shadow_frame();
+    assert_eq!(marked(&sky), 0);
+    h.camera = Some(camera());
+    let back = h.shadow_frame();
+    assert_eq!(back.drawn, 0, "pages drawn again");
+    assert_eq!(back.cached, marked(&first));
+    check(
+        &back,
+        &boxes,
+        Environment::default().light_direction,
+        camera(),
+    );
 }
 
 #[test]
 fn the_shadow_follows_the_sun_and_the_box() {
-    let mut h = Harness::new(Environment::default());
-    h.vis.lod_error_pixels = 0.0;
-    let (mut boxes, ids) = scene(&mut h);
-    settle(&mut h);
-    // The sun from the other side, the box moved: the next frame's shadow is the new one
-    // (nothing is kept across frames yet).
+    let (mut h, mut boxes, ids, _) = first_frame();
+    // The sun from the other side, the box moved: the next frame's shadow is the new one, and
+    // the new sun draws every page again.
     let light = Vec3::new(0.7, -1.0, 0.2);
     h.updates.environment = Some(Environment {
         light_direction: light,
@@ -168,7 +286,8 @@ fn the_shadow_follows_the_sun_and_the_box() {
         }),
     );
     let f = h.shadow_frame();
-    let want = expected(&f, &boxes, light);
+    assert_eq!(f.cached, 0, "pages of the old sun kept");
+    let want = expected(&f, &boxes, light, camera());
     let (wrong, shadowed) = compare(&f, &want);
     assert!(shadowed > 100, "{shadowed} shadowed pixels to look at");
     assert_eq!(wrong, 0, "pixels off the edges the mask gets wrong");
@@ -176,40 +295,63 @@ fn the_shadow_follows_the_sun_and_the_box() {
 
 #[test]
 fn only_the_pages_the_surfaces_sample_are_mapped() {
-    let mut h = Harness::new(Environment::default());
-    h.vis.lod_error_pixels = 0.0;
-    scene(&mut h);
-    settle(&mut h);
-    let f = h.shadow_frame();
-    let mapped = f.page_table.iter().filter(|&&p| p != u32::MAX).count();
+    let (_, _, _, f) = first_frame();
+    let mapped: Vec<u32> = f
+        .page_table
+        .iter()
+        .copied()
+        .filter(|&p| p != u32::MAX)
+        .collect();
     let per_level = (SHADOW_SETTINGS.pages_per_side() * SHADOW_SETTINGS.pages_per_side()) as usize;
     assert_eq!(
         f.page_table.len(),
         per_level * SHADOW_SETTINGS.levels as usize
     );
     assert!(
-        mapped > 0 && mapped as u32 == f.marked,
-        "{mapped} mapped, {} marked",
-        f.marked
+        !mapped.is_empty() && mapped.len() as u32 == marked(&f),
+        "{} mapped, {} marked",
+        mapped.len(),
+        marked(&f)
     );
     assert!(
-        mapped < f.page_table.len() / 2,
-        "{mapped} of {}",
+        mapped.len() < f.page_table.len() / 2,
+        "{} of {}",
+        mapped.len(),
         f.page_table.len()
     );
-    // Every mapped page has its own physical page.
-    let mut physical: Vec<u32> = f
-        .page_table
-        .iter()
-        .copied()
-        .filter(|&p| p != u32::MAX)
-        .collect();
+    // A first frame draws every mapped page, each into its own physical page.
+    assert!(mapped.iter().all(|&p| p & RENDER_BIT != 0));
+    let mut physical: Vec<u32> = mapped.iter().map(|&p| p & !RENDER_BIT).collect();
     physical.sort_unstable();
     physical.dedup();
-    assert_eq!(physical.len(), mapped);
+    assert_eq!(physical.len(), mapped.len());
     assert!(
         physical
             .iter()
-            .all(|&p| p < SHADOW_SETTINGS.pool_pages[0] * SHADOW_SETTINGS.pool_pages[1])
+            .all(|&p| p < SHADOW_SETTINGS.physical_pages())
     );
+}
+
+#[test]
+fn a_new_color_keeps_every_page() {
+    let (mut h, _, ids, first) = first_frame();
+    h.set(ids[1], InstanceUpdate::Color([0.2, 0.9, 0.2, 1.0]));
+    let next = h.shadow_frame();
+    assert_eq!(next.drawn, 0, "pages drawn for a color");
+    assert_eq!(next.mask, first.mask);
+}
+
+#[test]
+fn hiding_the_box_takes_its_shadow_away() {
+    let (mut h, boxes, ids, _) = first_frame();
+    h.set(ids[1], InstanceUpdate::Flags(flags::HIDDEN));
+    let next = h.shadow_frame();
+    assert!(next.drawn > 0 && next.cached > 0);
+    let want = expected(
+        &next,
+        &boxes[..1],
+        Environment::default().light_direction,
+        camera(),
+    );
+    assert_eq!(compare(&next, &want), (0, 0), "a shadow left behind");
 }

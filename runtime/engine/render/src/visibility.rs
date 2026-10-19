@@ -189,6 +189,7 @@ struct View {
     shadow_pages_per_side: u32,
     shadow_page_size: u32,
     shadow_pool_pages_per_row: u32,
+    shadow_page_offset: [u32; 2],
 }
 
 #[repr(C)]
@@ -562,6 +563,7 @@ impl Visibility {
             shadow_pages_per_side: 0,
             shadow_page_size: 0,
             shadow_pool_pages_per_row: 0,
+            shadow_page_offset: [0; 2],
         };
 
         let structured = |n: u32| BufferDesc::structured::<[u32; 2]>(u64::from(n));
@@ -682,11 +684,11 @@ impl Visibility {
         }
     }
 
-    /// The `CullArgs` of a pass, from the views the pass context made of the declared handles.
     /// Declares a shadow view (`Vsm`'s levels, 0010 §5.3): the passes cull the drawable
     /// instances of `scene` against `view`'s orthographic box, pick their LOD cut at its texel
-    /// size and draw the clusters over its mapped pages (`page_table`) into the physical pool
-    /// `shadow_pool` (depth nearest the light, by atomic max), on the hardware. No occlusion
+    /// size and draw the clusters over the pages it draws this frame (`page_table` entries with
+    /// the render bit, `crate::shadows`) into the physical pool `shadow_pool` (depth nearest
+    /// the light, by atomic max), on the hardware. No occlusion
     /// test and no page requests; the slots read are marked in `used`. Returns `used` and
     /// `shadow_pool` after the passes.
     #[allow(clippy::too_many_arguments, reason = "one shadow view's inputs")]
@@ -741,6 +743,7 @@ impl Visibility {
             shadow_pages_per_side: desc.pages_per_side,
             shadow_page_size: desc.page_size,
             shadow_pool_pages_per_row: desc.pool_pages_per_row,
+            shadow_page_offset: desc.page_offset,
         };
         let structured = |n: u32| BufferDesc::structured::<[u32; 2]>(u64::from(n));
         let mut lists = Lists {
@@ -814,6 +817,7 @@ impl Visibility {
         (lists.used, shadow_pool)
     }
 
+    /// The `CullArgs` of a pass, from the views the pass context made of the declared handles.
     /// An indirect pass reads its record from the arguments and does not see them.
     fn args(
         ctx: &PassContext<'_>,
@@ -1157,4 +1161,7 @@ pub struct ShadowView {
     pub page_base: u32,
     /// Physical pages per row of the pool.
     pub pool_pages_per_row: u32,
+    /// Where the view's first page sits in its table (pages wrap around, so a page keeps its
+    /// slot while the view moves): page p is in slot `(p + page_offset) mod pages_per_side`.
+    pub page_offset: [u32; 2],
 }
