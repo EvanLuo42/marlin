@@ -18,7 +18,7 @@ Level
         },
         {
             Name = "Sphere"
-            Transform = { Translation = (0.0, 0.6, 0.0), Scale = (2.2, 2.2, 2.2) }
+            Transform = { Translation = (0.0, 0.6, 0.0), Scale = (1.8, 1.8, 1.8) }
             Components = [StaticMesh { Mesh = <meshes/sphere:Sphere #01992d00-0000-7000-8000-000000000102>, Color = (0.9, 0.55, 0.2, 1.0) }]
         },
         {
