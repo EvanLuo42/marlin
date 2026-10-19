@@ -68,8 +68,6 @@ const uint PathRecordWords = 8;
 /// Words of a path tile: the backdrop (`int`; a delta before the prefix sum), its segments, its
 /// first entry, the entries written.
 const uint PathTileWords = 4;
-/// A path tile entry's bit: the segment crosses the tile's left side.
-const uint PathEdge = 2147483648;
 /// Fixed-point units of path coverage (`marlin_ui_render::path::COVERAGE_UNIT`).
 const float CoverageUnit = 1048576;
 
@@ -495,8 +493,8 @@ public struct PathTilesArgs
     public Buffer<uint> Tiles;
     /// 0: entries taken. Cleared before.
     public Buffer<uint> Counter;
-    /// Per tile, its segments' indices, `PathEdge` set for those crossing its left side.
-    public Buffer<uint> Entries;
+    /// Per tile, the segments it shades (`PathEntries`), as `float` bits.
+    public Buffer<int4> Entries;
     public uint EntryCapacity;
     /// 0: count each tile's segments and backdrop deltas; 1: sum the backdrops along each tile
     /// row and give each tile its entries; 2: write the entries.
@@ -508,6 +506,35 @@ public struct PathTilesArgs
 /// The tile column (or row) holding coordinate `v`: everything before tile `lo` in `lo - 1`,
 /// everything from `hi` on in `hi`.
 int PathCell(float v, int lo, int hi) => (int)Clamp(Floor(v * 0.0625), (float)(lo - 1), (float)hi);
+
+/// Writes what tile `(x, y)` (its words at `t`) shades for segment `s`: `s`, or when it crosses
+/// the tile's left side, its part right of the side and a vertical segment on the side from the
+/// crossing to the tile's bottom (`marlin_ui_render::path::entries`).
+void PathEntries(in PathTilesArgs a, uint t, float4 s, bool crosses, int x, int y)
+{
+    uint n = crosses ? 2u : 1u;
+    uint at = a.Tiles[t + 2] + a.Tiles.AtomicAdd(t + 3, n);
+    if (at + n > a.EntryCapacity)
+        return;
+    if (!crosses)
+    {
+        a.Entries[at] = AsInt(s);
+        return;
+    }
+    float x0 = (float)(x * 16);
+    float bottom = (float)((y + 1) * 16);
+    float ye = s.y + (s.w - s.y) * ((x0 - s.x) / (s.z - s.x));
+    if (s.x < x0)
+    {
+        a.Entries[at] = AsInt(float4(x0, ye, s.z, s.w));
+        a.Entries[at + 1] = AsInt(float4(x0, bottom, x0, ye));
+    }
+    else
+    {
+        a.Entries[at] = AsInt(float4(s.x, s.y, x0, ye));
+        a.Entries[at + 1] = AsInt(float4(x0, ye, x0, bottom));
+    }
+}
 
 /// Walks segment `index` of the path whose record is at `rec` through the tiles of its grid
 /// (`marlin_ui_render::path::walk`), counting (mode 0) or listing (mode 2) it in each.
@@ -553,14 +580,11 @@ void PathWalk(in PathTilesArgs a, uint rec, uint index)
         if (c >= gx0 && c < gx1 && r >= gy0 && r < gy1)
         {
             uint t = (firstTile + (uint)((r - gy0) * (gx1 - gx0) + (c - gx0))) * PathTileWords;
+            bool crosses = edge || (xStep && sx < 0);
             if (a.Mode == 0)
-                a.Tiles.AtomicAdd(t + 1, 1);
+                a.Tiles.AtomicAdd(t + 1, crosses ? 2u : 1u);
             else
-            {
-                uint at = a.Tiles[t + 2] + a.Tiles.AtomicAdd(t + 3, 1);
-                if (at < a.EntryCapacity)
-                    a.Entries[at] = index | (edge || (xStep && sx < 0) ? PathEdge : 0u);
-            }
+                PathEntries(a, t, float4(x0, y0, x1, y1), crosses, c, r);
         }
         if (k == steps)
             break;
@@ -829,7 +853,7 @@ public struct FineArgs
     /// Per path: its record; its tiles; their segments (`PathTiles`).
     public ReadOnlyBuffer<uint> Paths;
     public ReadOnlyBuffer<uint> PathTiles;
-    public ReadOnlyBuffer<uint> PathEntries;
+    public ReadOnlyBuffer<int4> PathEntries;
 }
 
 /// The signed area segment `s` sweeps to the right inside the pixel cell at `cell` (its top-left
@@ -852,27 +876,8 @@ float CellArea(float4 s, float2 cell)
     return dir * avg * (yb - ya);
 }
 
-/// What segment `s` adds to the pixel cell at `cell` of a tile whose left side is at `x0`, in
-/// coverage units: its signed area right of the tile's side, and when it crosses that side
-/// (`edge`), the change of winding number the crossing makes below it
-/// (`marlin_ui_render::path::segment_coverage`).
-int SegmentCoverage(float4 s, bool edge, float x0, float2 cell)
-{
-    float4 q = s;
-    float area = 0;
-    if (edge)
-    {
-        float ye = s.y + (s.w - s.y) * ((x0 - s.x) / (s.z - s.x));
-        float d = s.z > s.x ? -1.0 : 1.0;
-        area = d * Clamp(cell.y + 1 - ye, 0, 1);
-        q = s.x < x0 ? float4(x0, ye, s.z, s.w) : float4(s.x, s.y, x0, ye);
-    }
-    area = area + CellArea(q, cell);
-    return (int)Floor(area * CoverageUnit + 0.5);
-}
-
-/// A path's coverage of the pixel centered at `px`: its tile's backdrop and the signed area its
-/// tile's segments sweep to the pixel's right (§4.2), by its fill rule.
+/// A path's coverage of the pixel centered at `px`: its tile's backdrop and the signed areas its
+/// tile's entries sweep to the pixel's right (§4.2), summed in coverage units, by its fill rule.
 float PathCoverage(in FineArgs a, uint at, float2 px)
 {
     ReadOnlyBuffer<uint> p = a.Payload;
@@ -890,13 +895,8 @@ float PathCoverage(in FineArgs a, uint at, float2 px)
     uint count = a.PathTiles[t + 1];
     uint first = a.PathTiles[t + 2];
     float2 cell = float2(Floor(px.x), Floor(px.y));
-    float x0 = (float)(tx * 16);
     for (uint k = 0; k < count; k++)
-    {
-        uint e = a.PathEntries[first + k];
-        uint s = at + PathSegments + 4 * (e & (PathEdge - 1));
-        acc = acc + SegmentCoverage(float4(P(p, s), P(p, s + 1), P(p, s + 2), P(p, s + 3)), e >= PathEdge, x0, cell);
-    }
+        acc = acc + (int)Floor(CellArea(AsFloat(a.PathEntries[first + k]), cell) * CoverageUnit + 0.5);
     float c = Abs((float)acc * (1 / CoverageUnit));
     if (p[at] == 0)
         return Min(c, 1);

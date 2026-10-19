@@ -317,24 +317,31 @@ pub fn tile(p: &[u32], x: i32, y: i32) -> PathTile {
 /// tile's pixels do not depend on the order the GPU listed its segments in.
 pub const COVERAGE_UNIT: f32 = 1_048_576.0;
 
-/// What segment `s` adds to the pixel cell `(px, py)` of a tile whose left side is at `x0`, in
-/// [`COVERAGE_UNIT`]s: its signed area right of the tile's side, and when it crosses that side
-/// (`edge`), the change of winding number the crossing makes below it.
-pub fn segment_coverage(s: [f32; 4], edge: bool, x0: f32, px: f32, py: f32) -> i32 {
-    let mut s = s;
-    let mut area = 0.0;
-    if edge {
-        let ye = s[1] + (s[3] - s[1]) * ((x0 - s[0]) / (s[2] - s[0]));
-        let d = if s[2] > s[0] { -1.0 } else { 1.0 };
-        area = d * (py + 1.0 - ye).clamp(0.0, 1.0);
-        s = if s[0] < x0 {
-            [x0, ye, s[2], s[3]]
-        } else {
-            [s[0], s[1], x0, ye]
-        };
+/// The segments tile `(x, y)` shades for segment `s`, which the walk listed there: `s` itself,
+/// or when it crosses the tile's left side (`edge`), its part right of that side, and a
+/// vertical segment on the side from the crossing to the tile's bottom that changes the
+/// winding number below the crossing as the part left of the side did. A pixel's coverage is
+/// its tile's backdrop and the signed areas these sweep to its right ([`cell_area`]).
+pub fn entries(s: [f32; 4], edge: bool, x: i32, y: i32, out: &mut Vec<[f32; 4]>) {
+    if !edge {
+        out.push(s);
+        return;
     }
-    area += cell_area(s, px, py);
-    floor(area * COVERAGE_UNIT + 0.5) as i32
+    let x0 = (x * TILE as i32) as f32;
+    let bottom = ((y + 1) * TILE as i32) as f32;
+    let ye = s[1] + (s[3] - s[1]) * ((x0 - s[0]) / (s[2] - s[0]));
+    if s[0] < x0 {
+        out.push([x0, ye, s[2], s[3]]);
+        out.push([x0, bottom, x0, ye]);
+    } else {
+        out.push([s[0], s[1], x0, ye]);
+        out.push([x0, ye, x0, bottom]);
+    }
+}
+
+/// What segment `s` (a tile's entry) adds to the pixel cell `(px, py)`, in [`COVERAGE_UNIT`]s.
+pub fn entry_coverage(s: [f32; 4], px: f32, py: f32) -> i32 {
+    floor(cell_area(s, px, py) * COVERAGE_UNIT + 0.5) as i32
 }
 
 /// The signed area segment `s` sweeps to the right inside pixel cell `(px, py)` (its top-left
@@ -376,11 +383,11 @@ pub fn cell_area(s: [f32; 4], px: f32, py: f32) -> f32 {
 /// first tile in the frame's path tiles, and its first segment and first tile row among the
 /// frame's (those of paths with tiles, in order).
 pub const PATH_RECORD_WORDS: usize = 8;
-/// Words of a path tile on the GPU: the backdrop (`i32`), its segments, its first entry, the
-/// entries written.
+/// Words of a path tile on the GPU: the backdrop (`i32`), its entries ([`entries`]), its first
+/// entry, the entries written.
 pub const PATH_TILE_WORDS: usize = 4;
-/// The most path tile entries a frame has room for (128 MiB).
-pub const MAX_PATH_ENTRIES: u64 = 1 << 25;
+/// The most path tile entries (four words each) a frame has room for (128 MiB).
+pub const MAX_PATH_ENTRIES: u64 = 1 << 23;
 
 /// Where a surface's frame keeps its paths' tiles (§4.2): per path a record, its tile grid the
 /// tiles its bounds touch. The GPU takes the segments of every path with tiles, and their tile
@@ -446,8 +453,9 @@ pub fn layout(
             .extend(core::iter::repeat_n(path, p[2] as usize));
         out.row_paths.extend(core::iter::repeat_n(path, h as usize));
         out.tiles += w * h;
-        // No segment visits more of the grid than a row and a column of it.
-        entries += u64::from(p[3]).min(u64::from(p[2]) * u64::from(w + h - 1));
+        // No segment visits more of the grid than a row and a column of it, and each visit
+        // writes at most two entries.
+        entries += 2 * u64::from(p[3]).min(u64::from(p[2]) * u64::from(w + h - 1));
     }
     out.entries = entries.min(MAX_PATH_ENTRIES) as u32;
     out

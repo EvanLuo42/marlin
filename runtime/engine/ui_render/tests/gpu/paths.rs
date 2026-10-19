@@ -203,7 +203,7 @@ fn text_as_paths_shades_like_the_reference() {
 }
 
 /// Every path tile the GPU builds, against the CPU's walk: the same backdrops, and the same
-/// segments with the same edge crossings (in any order). The walk compares products, not
+/// entries (in any order). The walk compares products, not
 /// quotients, so the two decide every corner alike.
 #[test]
 fn path_tiles_match_the_reference() {
@@ -258,21 +258,28 @@ fn path_tiles_match_the_reference() {
                 let cpu = path::tile(p, x, y);
                 let backdrop = word(&tiles, t) as i32;
                 let (count, first) = (word(&tiles, t + 1), word(&tiles, t + 2));
-                let mut gpu: Vec<(u32, bool)> = (first..first + count)
+                let mut gpu: Vec<[f32; 4]> = (first..first + count)
                     .map(|i| {
-                        let e = word(&entries, i as usize);
-                        (e & 0x7FFF_FFFF, e >> 31 != 0)
+                        [0, 1, 2, 3].map(|k| f32::from_bits(word(&entries, 4 * i as usize + k)))
                     })
                     .collect();
-                gpu.sort_unstable();
-                assert_eq!(
-                    (backdrop, &gpu[..]),
-                    (cpu.backdrop, &cpu.segments[..]),
-                    "path at {} tile ({x}, {y})",
-                    rec[0]
-                );
+                let mut want = Vec::new();
+                for &(i, edge) in &cpu.segments {
+                    path::entries(path::segment(p, i as usize), edge, x, y, &mut want);
+                }
+                let at = format!("path at {} tile ({x}, {y})", rec[0]);
+                assert_eq!((backdrop, gpu.len()), (cpu.backdrop, want.len()), "{at}");
+                // The same segments, but where one is cut at the tile's side the GPU divides
+                // by its own rounding.
+                for w in &want {
+                    let k = gpu
+                        .iter()
+                        .position(|g| (0..4).all(|j| (g[j] - w[j]).abs() <= 1e-3))
+                        .unwrap_or_else(|| panic!("{at}: {w:?} not in {gpu:?}"));
+                    gpu.swap_remove(k);
+                }
                 checked += 1;
-                listed += gpu.len();
+                listed += want.len();
             }
         }
     }

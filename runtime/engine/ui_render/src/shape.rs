@@ -774,17 +774,26 @@ fn effect(c: &CommandWords, s: &Scene<'_>, paint: [f32; 4], x: f32, y: f32) -> [
 pub fn path_coverage(p: &[u32], x: f32, y: f32) -> f32 {
     let t = crate::command::TILE as f32;
     let (tx, ty) = (floor(x / t) as i32, floor(y / t) as i32);
-    tile_coverage(p, &crate::path::tile(p, tx, ty), tx, x, y)
+    let tile = crate::path::tile(p, tx, ty);
+    let mut entries = alloc::vec::Vec::new();
+    for &(i, edge) in &tile.segments {
+        crate::path::entries(
+            crate::path::segment(p, i as usize),
+            edge,
+            tx,
+            ty,
+            &mut entries,
+        );
+    }
+    tile_coverage(p, tile.backdrop, &entries, x, y)
 }
 
-/// [`path_coverage`] at `(x, y)` in tile column `tx`, from the tile.
-pub fn tile_coverage(p: &[u32], tile: &crate::path::PathTile, tx: i32, x: f32, y: f32) -> f32 {
+/// [`path_coverage`] at `(x, y)` from its tile's backdrop and entries ([`crate::path::entries`]).
+pub fn tile_coverage(p: &[u32], backdrop: i32, entries: &[[f32; 4]], x: f32, y: f32) -> f32 {
     let (px, py) = (floor(x), floor(y));
-    let x0 = (tx * crate::command::TILE as i32) as f32;
-    let mut acc = tile.backdrop * crate::path::COVERAGE_UNIT as i32;
-    for &(i, edge) in &tile.segments {
-        let s = crate::path::segment(p, i as usize);
-        acc += crate::path::segment_coverage(s, edge, x0, px, py);
+    let mut acc = backdrop * crate::path::COVERAGE_UNIT as i32;
+    for &s in entries {
+        acc += crate::path::entry_coverage(s, px, py);
     }
     let a = (acc as f32 * (1.0 / crate::path::COVERAGE_UNIT)).abs();
     if p[0] == 0 {

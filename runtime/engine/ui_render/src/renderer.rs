@@ -960,7 +960,7 @@ impl UiRenderer {
                         },
                         None => FineArgs {
                             path_tiles: ctx.upload_slice(&[0u32; 4]),
-                            path_entries: ctx.upload_slice(&[0u32]),
+                            path_entries: ctx.upload_slice(&[[0u32; 4]]),
                             ..args
                         },
                     };
@@ -1044,7 +1044,7 @@ impl UiRenderer {
         );
         let entries = g.create_buffer(
             "UiPathEntries",
-            BufferDesc::structured::<u32>(u64::from(layout.entries.max(1))),
+            BufferDesc::structured::<[u32; 4]>(u64::from(layout.entries.max(1))),
         );
         let counter = g.create_buffer("UiPathCounter", BufferDesc::structured::<u32>(1));
         let (mut tiles, counter) = g.add_compute("UiPathClear", |b| {
