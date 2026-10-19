@@ -1,4 +1,34 @@
 //! The Marlin editor.
+//!
+//! `marlin-editor <project directory> [--frames N]`: opens the project, runs its cook service in-process (the
+//! engine's content with the project's, cooked on demand and reloaded live), and opens the
+//! editor's window, drawn by the UI renderer (docs/design/0012-ui-renderer.md, U1). The window
+//! shell is [`shell`]; panels, widgets and the viewport come with the editor UI framework and U2.
+//! `--frames N` quits after N frames (smoke tests).
+
+use marlin_editor::shell;
+
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
+
+use marlin_app::{App, Event, Surface, WindowDesc};
+use marlin_asset::{AssetServer, Uuid};
+use marlin_asset_db::{Options, Project};
+use marlin_cookd::{Cookd, CookdOptions, bind};
+use marlin_cooker::{engine_cookers, open_ddc};
+use marlin_diag::{error, info};
+use marlin_framework::loaders::engine_loaders;
+use marlin_framework::{ContentSettings, load_engine_shaders, load_ui_font, mount, ui_shaders};
+use marlin_jobs::{Config, JobSystem};
+use marlin_math::Vec2;
+use marlin_render_graph::FrameContext;
+use marlin_rhi::{
+    DeviceDesc, Instance, InstanceDesc, PresentStatus, SurfaceHandle, Swapchain, SwapchainDesc,
+};
+use marlin_ui_render::{Color, UiDrawList, UiRenderer, UiRendererDesc};
 
 // Link the whole runtime and every editor library.
 use marlin as _;
@@ -23,4 +53,226 @@ fn main() {
         let message = info.payload_as_str().unwrap_or("Box<dyn Any>");
         marlin_rt::hosted::report_panic(&message, info.location());
     }));
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let (project, frames) = match args.as_slice() {
+        [p] => (p, None),
+        [p, flag, n] if flag == "--frames" => match n.parse::<u64>() {
+            Ok(n) => (p, Some(n)),
+            Err(_) => usage(),
+        },
+        _ => usage(),
+    };
+    if let Err(e) = run(project, frames) {
+        error!("{e}");
+        std::process::exit(1);
+    }
+}
+
+/// The project's cook service on its own thread, until dropped.
+struct CookService {
+    addr: SocketAddr,
+    stop: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl CookService {
+    fn start(project: &Project) -> Result<Self, String> {
+        let (content, _) = project
+            .open_content(&Options::default())
+            .map_err(|e| format!("opening the project's content: {e}"))?;
+        let ddc = open_ddc(&project.ddc_dir(), None).map_err(|e| format!("the cache: {e}"))?;
+        let mut server = bind("127.0.0.1:0".parse().expect("an address"))
+            .map_err(|e| format!("the cook service: {e:?}"))?;
+        let addr = server.local_addr();
+        let stop = Arc::new(AtomicBool::new(false));
+        let flag = stop.clone();
+        let thread = std::thread::Builder::new()
+            .name("cookd".into())
+            .spawn(move || {
+                let mut cookd =
+                    Cookd::new(content, engine_cookers(), ddc, &CookdOptions::default());
+                if let Err(e) = cookd.serve(&mut server, &flag) {
+                    error!("cook service: {e:?}");
+                }
+            })
+            .map_err(|e| format!("the cook service's thread: {e}"))?;
+        Ok(Self {
+            addr,
+            stop,
+            thread: Some(thread),
+        })
+    }
+}
+
+impl Drop for CookService {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
+fn usage() -> ! {
+    eprintln!("usage: marlin-editor <project directory> [--frames N]");
+    std::process::exit(2);
+}
+
+fn run(project_dir: &str, max_frames: Option<u64>) -> Result<(), String> {
+    let project = Project::open(project_dir).map_err(|e| format!("{project_dir}: {e}"))?;
+    let cookd = CookService::start(&project)?;
+    let boot = mount(&ContentSettings {
+        packages: Vec::new(),
+        cookd: Some(cookd.addr),
+        platform: marlin_rt::PLATFORM.into(),
+        level: Uuid::default(),
+    })
+    .map_err(|e| format!("mounting the cook service: {e}"))?;
+    let jobs = JobSystem::new(Config::default()).map_err(|e| format!("jobs: {e:?}"))?;
+
+    // The engine's shaders and UI font, cooked from content/engine.
+    info!("cooking the engine's shaders and UI font");
+    let mut assets = AssetServer::new(engine_loaders());
+    let library = load_engine_shaders(&mut assets, &boot.vfs, Some(&jobs))
+        .map_err(|e| format!("engine shaders: {e}"))?;
+    let font = load_ui_font(&mut assets, &boot.vfs, Some(&jobs))
+        .map_err(|e| format!("the UI font: {e:?}"))?;
+    let library = assets.get(&library).ok_or("engine shaders: not loaded")?;
+    let font = assets.get(&font).ok_or("the UI font: not loaded")?.view();
+
+    let mut app = App::new().map_err(|e| format!("{e}"))?;
+    let window = app
+        .create_window(&WindowDesc {
+            title: "Marlin Editor",
+            width: 1600,
+            height: 900,
+            ..WindowDesc::default()
+        })
+        .map_err(|e| format!("{e}"))?;
+    let mut input = marlin_input::Input::new(&app).map_err(|e| format!("{e}"))?;
+    let instance = Instance::new(&InstanceDesc::default()).map_err(|e| format!("{e}"))?;
+    let device = instance
+        .create_device(&DeviceDesc::default())
+        .map_err(|e| format!("{e}"))?;
+    info!("adapter: {}", device.adapter_info().name());
+    let Surface::Win32 { hwnd, hinstance } = window.surface() else {
+        unreachable!("only Win32 windows exist on this platform")
+    };
+    let size = window.size();
+    // SAFETY: the window outlives the swapchain: locals drop in reverse order.
+    let mut swapchain = unsafe {
+        device.create_swapchain(
+            SurfaceHandle::Win32 { hwnd, hinstance },
+            &SwapchainDesc {
+                width: size.width,
+                height: size.height,
+                ..SwapchainDesc::default()
+            },
+        )
+    }
+    .map_err(|e| format!("{e}"))?;
+    let mut frames = FrameContext::new(&device, &Default::default()).map_err(|e| format!("{e}"))?;
+    let shaders = ui_shaders(library).map_err(|e| format!("UI shaders: {e}"))?;
+    let mut ui = UiRenderer::new(
+        &device,
+        &shaders,
+        &UiRendererDesc {
+            output_format: Some(swapchain.format()),
+            ..UiRendererDesc::default()
+        },
+    )
+    .map_err(|e| format!("the UI renderer: {e}"))?;
+
+    let mut minimized = false;
+    let mut frame = 0u64;
+    let mut status = String::from("Ready");
+    let (mut fps_start, mut fps_frames) = (Instant::now(), 0u32);
+    'main: loop {
+        let timeout = if minimized {
+            Duration::from_millis(100)
+        } else {
+            Duration::ZERO
+        };
+        for &event in app.pump_timeout(Some(timeout)) {
+            match event {
+                Event::CloseRequested(_) | Event::Quit => break 'main,
+                Event::Resized { size, .. } => {
+                    frames.wait_idle().map_err(|e| format!("{e}"))?;
+                    forget_images(&mut frames, &swapchain);
+                    swapchain
+                        .resize(size.width, size.height)
+                        .map_err(|e| format!("{e}"))?;
+                }
+                Event::Minimized(_) => minimized = true,
+                Event::Restored(_) => minimized = false,
+                _ => {}
+            }
+        }
+        input.update();
+        if minimized {
+            continue;
+        }
+        if max_frames.is_some_and(|n| frame >= n) {
+            break;
+        }
+        frame += 1;
+        let scale = window.scale_factor();
+        let size = window.size();
+        let cursor = input
+            .state()
+            .mouse()
+            .position()
+            .map(|[x, y]| Vec2::new(x / scale, y / scale));
+        let mut list = UiDrawList::new(scale);
+        shell::draw(
+            &mut list.painter(&ui.glyph_cache().ids),
+            font,
+            &shell::ShellState {
+                size: Vec2::new(size.width as f32 / scale, size.height as f32 / scale),
+                cursor,
+                status: &status,
+            },
+        );
+        let data = ui.prepare(&list, &[font], Some(&jobs));
+        let image = swapchain.acquire(None).map_err(|e| format!("{e}"))?;
+        let texture = swapchain.texture(image);
+        frames
+            .execute_on(&device, Some(&jobs), |g, _| {
+                let target = g.import_texture("Swapchain", texture);
+                let out = ui.add_passes(g, &data, size.width, size.height, Color::BLACK);
+                let target = ui.encode(g, out.target, target);
+                g.present(target);
+            })
+            .map_err(|e| format!("{e}"))?;
+        if swapchain.present().map_err(|e| format!("{e}"))? == PresentStatus::Occluded {
+            app.pump_timeout(Some(Duration::from_millis(16)));
+        }
+
+        fps_frames += 1;
+        let elapsed = fps_start.elapsed();
+        if elapsed >= Duration::from_secs(1) {
+            let fps = fps_frames as f32 / elapsed.as_secs_f32();
+            let occupancy = ui.glyph_cache().page_occupancy();
+            status = format!(
+                "Ready  ·  {fps:.0} fps  ·  {} commands  ·  glyph cache {:.1}% of {} page(s)  ·  {}",
+                data.commands().len(),
+                occupancy.iter().sum::<f32>() * 100.0 / occupancy.len().max(1) as f32,
+                occupancy.len(),
+                project.name,
+            );
+            (fps_start, fps_frames) = (Instant::now(), 0);
+        }
+    }
+    frames.wait_idle().map_err(|e| format!("{e}"))?;
+    forget_images(&mut frames, &swapchain);
+    ui.forget(&mut frames);
+    drop(cookd);
+    Ok(())
+}
+
+/// Makes the frame context forget the swapchain's images, before they are recreated or dropped.
+fn forget_images(frames: &mut FrameContext, swapchain: &Swapchain) {
+    for i in 0..swapchain.image_count() {
+        frames.forget_texture(swapchain.texture(i));
+    }
 }

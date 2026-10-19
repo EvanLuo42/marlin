@@ -7,8 +7,22 @@ publish.workspace = true
 
 [dependencies]
 marlin.workspace = true
+marlin-app.workspace = true
+marlin-asset.workspace = true
+marlin-asset-db.workspace = true
+marlin-cookd = { path = "../../tools/cookd" }
+marlin-cooker.workspace = true
+marlin-diag.workspace = true
+marlin-font.workspace = true
+marlin-framework.workspace = true
+marlin-input.workspace = true
+marlin-jobs.workspace = true
+marlin-math.workspace = true
 marlin-mem.workspace = true
+marlin-render-graph.workspace = true
+marlin-rhi.workspace = true
 marlin-rt.workspace = true
+marlin-ui-render.workspace = true
 marlin-editor-asset-tools.workspace = true
 marlin-editor-core.workspace = true
 marlin-editor-ui-core.workspace = true
@@ -19,3 +33,8 @@ marlin-editor-world-tools.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+marlin-cook-font.workspace = true
+marlin-gpu-test-support.workspace = true
+marlin-render-graph.workspace = true

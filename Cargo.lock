@@ -542,6 +542,13 @@ name = "marlin-editor"
 version = "0.1.0"
 dependencies = [
  "marlin",
+ "marlin-app",
+ "marlin-asset",
+ "marlin-asset-db",
+ "marlin-cook-font",
+ "marlin-cookd",
+ "marlin-cooker",
+ "marlin-diag",
  "marlin-editor-asset-tools",
  "marlin-editor-core",
  "marlin-editor-ui-core",
@@ -549,8 +556,17 @@ dependencies = [
  "marlin-editor-ui-widgets",
  "marlin-editor-viewport",
  "marlin-editor-world-tools",
+ "marlin-font",
+ "marlin-framework",
+ "marlin-gpu-test-support",
+ "marlin-input",
+ "marlin-jobs",
+ "marlin-math",
  "marlin-mem",
+ "marlin-render-graph",
+ "marlin-rhi",
  "marlin-rt",
+ "marlin-ui-render",
 ]
 
 [[package]]
