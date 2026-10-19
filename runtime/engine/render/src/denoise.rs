@@ -111,7 +111,8 @@ struct Constants {
     pixel_angle: f32,
     fast_frames: f32,
     taps: u32,
-    spare: [u32; 3],
+    target_error: f32,
+    spare: [u32; 2],
 }
 
 /// `Marlin.Engine.Lighting.DenoiseArgs`.
@@ -160,12 +161,15 @@ pub struct Denoiser {
     pub firefly_sigma: f32,
     /// The real frames the fast accumulation, which the slow one is held near, averages.
     pub fast_frames: f32,
+    /// The relative error (deviation over value, measured) at which a blur takes its full radius;
+    /// a more precise accumulation is blurred less. 0: the radius follows the samples alone.
+    pub target_error: f32,
 }
 
 impl Denoiser {
     /// Defaults: 32 independent samples' worth, a 4-frame fast accumulation the slow one is held
-    /// within 1.5 deviations of, a 32-pixel blur at 1080p shrinking with the samples, fireflies
-    /// above 4 deviations cut.
+    /// within 1.5 deviations of, a 32-pixel blur at 1080p shrinking with the samples and with the
+    /// error left (full at 10%), fireflies above 4 deviations cut.
     pub fn new(device: &Device, shaders: &DenoiseShaders<'_>) -> Result<Self> {
         let compute = |shader| {
             device.create_compute_pipeline(&ComputePipelineDesc {
@@ -184,6 +188,7 @@ impl Denoiser {
             clamp_sigma: 1.5,
             firefly_sigma: 4.0,
             fast_frames: 4.0,
+            target_error: 0.1,
         })
     }
 
@@ -244,7 +249,8 @@ impl Denoiser {
             pixel_angle: 2.0 * tan(camera.fov_y * 0.5) / height.max(1) as f32,
             fast_frames: self.fast_frames.max(1.0),
             taps: 16,
-            spare: [0; 3],
+            target_error: self.target_error.max(0.0),
+            spare: [0; 2],
         };
         let groups = (width.div_ceil(8), height.div_ceil(8));
         let texture = |g: &mut RenderGraph<'g>, name, format| {
@@ -402,7 +408,8 @@ impl Denoiser {
             pixel_angle: 0.0,
             fast_frames: 0.0,
             taps: 0,
-            spare: [0; 3],
+            target_error: 0.1,
+            spare: [0; 2],
         };
         g.add_compute("DenoiseCompose", |b| {
             let light = b.read_texture(light, Access::ComputeRead);

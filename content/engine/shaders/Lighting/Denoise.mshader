@@ -59,7 +59,8 @@ public struct DenoiseConstants
     public float FastFrames;
     /// Taps of this blur: 16 or 8.
     public uint Taps;
-    public uint Spare0;
+    /// The relative error at which a blur takes its full radius; less error, less radius. 0: off.
+    public float TargetError;
     public uint Spare1;
     public uint Spare2;
 }
@@ -327,13 +328,18 @@ public void DenoiseBlur([DispatchThreadId] uint3 id, [Push] in DenoiseArgs a)
     // Wide while few samples are behind it, never narrower than the noise's blobs then; both
     // shrink as samples gather.
     float radius = Max(c.MaxRadius, correlation) / Sqrt(1 + frames);
+    float deviation = Sqrt(Max(a.Variance.Load(px), 0));
+    float lc = DenoiseLuminance(center.xyz);
+    // And no wider than the error left needs: an accumulation already within `TargetError` of
+    // its value (relative, measured) is not blurred much, however few samples are behind it (a
+    // temporally reused signal is precise long before its independent samples add up).
+    if (c.TargetError > 0)
+        radius *= Saturate(deviation / (Max(lc, 1e-6) * c.TargetError));
     // Not past what the light's distance blurs: a light near the surface draws sharp shadows.
     float hit = a.Signal.Load(px).w;
     if (hit > 0)
         radius = Min(radius, Max(hit / Max(distance * c.PixelAngle, 1e-6), c.MinRadius));
     radius = Max(radius, c.MinRadius) * c.RadiusScale;
-    float deviation = Sqrt(Max(a.Variance.Load(px), 0));
-    float lc = DenoiseLuminance(center.xyz);
     float3 sum = center.xyz;
     float weights = 1;
     // Rotated per pixel and frame, so the taps' pattern does not stay.
