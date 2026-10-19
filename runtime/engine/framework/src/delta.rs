@@ -16,6 +16,7 @@ use marlin_containers::{HashMap, HashMapExt};
 use marlin_material::{DEFAULT_PERMUTATION, Materials};
 use marlin_math::Transform;
 use marlin_render::scene::{MeshId, MeshUpdate};
+use marlin_render::shadows::{Vsm, VsmSettings};
 use marlin_render::visibility::{ViewDesc, counters};
 use marlin_render::{
     Camera, Feedback, Lighting, MeshData, MeshHandle, Meshes, PagePoolDesc, PostProcess,
@@ -31,7 +32,7 @@ const MAIN_VIEW: u64 = 0;
 use crate::loaders::LoadedMesh;
 use crate::shaders::{
     ShaderError, lighting_shader, material_shaders, post_shaders, resolve_shader, scatter_shader,
-    streaming_shaders, visibility_shaders,
+    streaming_shaders, visibility_shaders, vsm_shaders,
 };
 
 /// A mesh the render side should have, at a version.
@@ -66,6 +67,8 @@ pub struct RenderSide {
     pub visibility: Visibility,
     pub materials: Materials,
     pub lighting: Lighting,
+    /// The sun's virtual shadow maps.
+    pub vsm: Vsm,
     /// Tonemaps the [`HDR_FORMAT`](marlin_render::HDR_FORMAT) scene into the output.
     pub post: PostProcess,
     pub scene: RenderScene,
@@ -107,6 +110,7 @@ impl RenderSide {
             visibility: Visibility::new(device, &visibility_shaders(engine)?)?,
             materials,
             lighting: Lighting::new(device, lighting_shader(engine)?)?,
+            vsm: Vsm::new(device, &vsm_shaders(engine)?, VsmSettings::DEFAULT)?,
             post: PostProcess::new(device, &post_shaders(engine)?, output)?,
             scene: RenderScene::with_ids(ids),
             scatter: ScatterShader::new(device, scatter_shader(engine)?)?,
@@ -195,6 +199,7 @@ impl RenderSide {
             visibility,
             materials,
             lighting,
+            vsm,
             post,
             scene,
             scatter,
@@ -208,7 +213,9 @@ impl RenderSide {
         let pool = meshes.add_passes(g, uploads);
         let gpu = scene.add_passes(g, scatter);
         let scene: &'g RenderScene = scene;
-        let material = camera.map(|camera| {
+        let visibility: &'g Visibility = visibility;
+        let env = *scene.environment();
+        let lit = camera.map(|camera| {
             let view = ViewDesc {
                 id: MAIN_VIEW,
                 camera,
@@ -217,20 +224,35 @@ impl RenderSide {
                 height,
             };
             let vis = visibility.add_passes(g, meshes, scene, gpu, pool, &view);
+            let material = materials
+                .add_passes(g, gpu, &vis, camera, *previous, width, height)
+                .material;
+            let shadow = vsm.add_passes(
+                g,
+                visibility,
+                meshes,
+                scene,
+                gpu,
+                vis.pages,
+                vis.used,
+                vis.depth,
+                Some(material),
+                &env,
+                camera,
+                width,
+                height,
+            );
             feedback.push_back((
                 pool.frame,
                 [
                     g.readback(vis.counters),
                     g.readback(vis.requests),
-                    g.readback(vis.used),
+                    g.readback(shadow.used),
                 ],
             ));
-            materials
-                .add_passes(g, gpu, &vis, camera, *previous, width, height)
-                .material
+            (material, shadow.mask)
         });
-        let env = *scene.environment();
-        let scene = lighting.add_passes(g, material, &env, width, height);
+        let scene = lighting.add_passes(g, lit.map(|l| l.0), lit.map(|l| l.1), &env, width, height);
         post.add_passes(g, scene, target, MAIN_VIEW, *dt).output
     }
 

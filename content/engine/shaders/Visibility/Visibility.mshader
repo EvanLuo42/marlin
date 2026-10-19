@@ -62,9 +62,10 @@ public struct View
     public float4x4 ViewProjection;
     /// The last frame's, which its HZB was drawn with.
     public float4x4 PreviousViewProjection;
-    /// World-space frustum planes (left, right, bottom, top, near): a point p is inside a plane
-    /// when `Dot(plane.xyz, p) + plane.w >= 0`. The far plane is at infinity.
-    public float4[5] Planes;
+    /// World-space frustum planes (left, right, bottom, top, near, far): a point p is inside a
+    /// plane when `Dot(plane.xyz, p) + plane.w >= 0`. A camera's far plane is at infinity
+    /// (`(0, 0, 0, 1)`).
+    public float4[6] Planes;
     /// xyz: the eye; w: pixels per world unit at distance 1.
     public float4 Eye;
     /// The screen-space error, in pixels, the cut may have.
@@ -87,7 +88,18 @@ public struct View
     /// The view's size in pixels.
     public uint Width;
     public uint Height;
-    public uint[3] Spare;
+    /// `Orthographic` for a shadow view.
+    public uint Mode;
+    /// A shadow view's page table: the physical page of each of its `ShadowPagesPerSide`² pages
+    /// (row-major, from `ShadowPageBase`) or `0xFFFFFFFF` if nothing samples it; and the
+    /// physical pool its depths go to, `ShadowPageSize`² texels a page,
+    /// `ShadowPoolPagesPerRow` pages a row.
+    public ReadOnlyBuffer<uint> ShadowPages;
+    public StorageTexture2D<uint> ShadowPool;
+    public uint ShadowPageBase;
+    public uint ShadowPagesPerSide;
+    public uint ShadowPageSize;
+    public uint ShadowPoolPagesPerRow;
 }
 
 public struct CullArgs
@@ -125,6 +137,9 @@ const uint TestHzb = 1;
 /// `CullArgs.Pass`: the second pass: the current view, what is occluded is dropped.
 const uint SecondPass = 2;
 
+/// `View.Mode`: an orthographic shadow view: no perspective, pages instead of a screen.
+const uint Orthographic = 1;
+
 /// Groups per row of a dispatch (the smallest maximum every device allows); more go to rows.
 const uint GroupsPerRow = 65535;
 
@@ -153,7 +168,7 @@ public void Reset([Push] in CullArgs a)
 
 bool InFrustum(in View v, float3 center, float radius)
 {
-    for (uint i = 0; i < 5; i++)
+    for (uint i = 0; i < 6; i++)
     {
         float4 p = v.Planes[i];
         if (Dot(p.xyz, center) + p.w < -radius)
@@ -240,6 +255,9 @@ bool UniformScale(in Rows3x4 m)
 /// children against one budget gives a consistent cut.
 float ProjectedError(in View v, in Rows3x4 t, float scale, float4 sphere, float error)
 {
+    // Orthographic: the same size at any distance.
+    if ((v.Mode & Orthographic) != 0)
+        return error * scale * v.Eye.w;
     float3 center = Apply(t, float4(sphere.xyz, 1));
     float distance = Max(Length(center - v.Eye.xyz) - sphere.w * scale, 0.0001);
     return error * scale * v.Eye.w / distance;
@@ -396,12 +414,39 @@ float Snorm8(uint w, uint shift)
 /// (software raster does not clip).
 bool Software(in View v, float3 center, float radius, uint triangles)
 {
+    // Shadow views draw on the hardware (their pixel shader writes through the page table).
+    if ((v.Mode & Orthographic) != 0)
+        return false;
     float4 near = v.Planes[4];
     float d = Dot(near.xyz, center) + near.w;
     if (d <= radius)
         return false;
     float diameter = 2 * radius * v.Eye.w / Max(Length(center - v.Eye.xyz) - radius, 0.0001);
     return diameter * Sqrt(2 / (float)Max(triangles, 1)) < v.SwEdgePixels;
+}
+
+/// Whether a shadow view maps any page under the world sphere (`center`, `radius`); true for
+/// spheres over more than 64 pages, which are not worth the look.
+bool ShadowPagesMapped(in View v, float3 center, float radius)
+{
+    float4 c = v.ViewProjection * float4(center, 1);
+    float2 px = float2((c.x * 0.5 + 0.5) * (float)v.Width, (0.5 - c.y * 0.5) * (float)v.Height);
+    float r = radius * v.Eye.w;
+    float size = (float)v.ShadowPageSize;
+    float last = (float)v.ShadowPagesPerSide - 1;
+    float2 lo = Clamp(Floor((px - r) / size), float2(0, 0), float2(last, last));
+    float2 hi = Clamp(Floor((px + r) / size), float2(0, 0), float2(last, last));
+    if ((hi.x - lo.x + 1) * (hi.y - lo.y + 1) > 64)
+        return true;
+    for (uint y = (uint)lo.y; y <= (uint)hi.y; y++)
+    {
+        for (uint x = (uint)lo.x; x <= (uint)hi.x; x++)
+        {
+            if (v.ShadowPages[v.ShadowPageBase + y * v.ShadowPagesPerSide + x] != NoChild)
+                return true;
+        }
+    }
+    return false;
 }
 
 /// Appends a visible cluster: hardware raster from the front of `Clusters`, software raster
@@ -440,7 +485,8 @@ public void ClusterCull([GroupId] uint3 group, [GroupThreadId] uint3 thread, [Pu
     uint slot = PageSlot(mesh.Pages, mesh.Dag, part.Page);
     a.Used[slot] = 1;
     Page page = LoadPage(mesh.Pages, slot);
-    bool cones = UniformScale(t);
+    // Normal cones face the eye; shadow views draw both sides.
+    bool cones = UniformScale(t) && (v.Mode & Orthographic) == 0;
     for (uint i = thread.x; i < part.ClusterCount; i += 32)
     {
         uint cluster = part.FirstCluster + i;
@@ -465,6 +511,9 @@ public void ClusterCull([GroupId] uint3 group, [GroupThreadId] uint3 thread, [Pu
             if (Dot(d, axis) >= cutoff * Length(d) + radius)
                 continue;
         }
+        // A shadow view draws only into pages something samples.
+        if ((v.Mode & Orthographic) != 0 && !ShadowPagesMapped(v, center, radius))
+            continue;
         uint address = (slot << 12) | cluster;
         bool software = Software(v, center, radius, c.TriangleCount);
         if (PassOccludes(a, v, center, radius))
@@ -591,6 +640,23 @@ public void VisPs([Position] float4 position, [PrimitiveId] uint id, [Push] in R
     // the float does.
     ulong value = ((ulong)AsUInt(position.z) << 32) | (ulong)id;
     a.Vis.AtomicMax((int2)position.xy, value);
+}
+
+/// A shadow view's pixel: its virtual texel goes through the page table to the physical pool,
+/// which keeps the depth nearest the light (the largest) with an atomic max. Texels of pages
+/// nothing samples are dropped.
+[Pixel]
+public void ShadowPs([Position] float4 position, [Push] in RasterArgs a)
+{
+    View v = a.View.Value;
+    uint2 texel = uint2((uint)position.x, (uint)position.y);
+    uint2 page = texel / v.ShadowPageSize;
+    uint physical = v.ShadowPages[v.ShadowPageBase + page.y * v.ShadowPagesPerSide + page.x];
+    if (physical == NoChild)
+        return;
+    uint2 origin = uint2(physical % v.ShadowPoolPagesPerRow, physical / v.ShadowPoolPagesPerRow) * v.ShadowPageSize;
+    uint2 at = origin + texel % v.ShadowPageSize;
+    v.ShadowPool.AtomicMax(int2((int)at.x, (int)at.y), AsUInt(Saturate(position.z)));
 }
 
 /// Sub-pixel bits of the software raster's fixed-point positions: what the hardware snaps to

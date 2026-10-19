@@ -16,6 +16,7 @@ use marlin_render::scene::{
     InstanceDesc, InstanceId, InstanceUpdate, MaterialDesc, MaterialId, MaterialUpdate, MeshId,
     MeshUpdate,
 };
+use marlin_render::shadows::{Vsm, VsmSettings, VsmShaders};
 use marlin_render::visibility::{ViewDesc, counters};
 use marlin_render::{
     Camera, Environment, Feedback, GpuScene, MeshData, MeshHandle, Meshes, PagePool, PagePoolDesc,
@@ -33,6 +34,19 @@ use cook::Cooked;
 
 pub const SIZE: u32 = 64;
 
+/// A small clipmap for the harness's small scenes: 4 levels of 1024² texels, 8 × 8 pages a
+/// level, level 0 4 units across; a 64-page pool.
+pub const SHADOW_SETTINGS: VsmSettings = VsmSettings {
+    levels: 4,
+    virtual_resolution: 1024,
+    page_size: 128,
+    first_texel: 4.0 / 1024.0,
+    depth_range: 200.0,
+    pool_pages: [8, 8],
+    normal_offset: 0.0,
+    depth_bias: 1.5,
+};
+
 /// Page pool slots the harness has.
 pub const POOL_PAGES: u32 = 256;
 
@@ -48,6 +62,8 @@ pub struct Harness {
     /// The visibility passes, with a budget of 0 (the finest clusters) unless a test sets one.
     pub vis: Visibility,
     reference: GraphicsPipeline,
+    /// The sun's virtual shadow maps, at [`SHADOW_SETTINGS`].
+    pub vsm: Vsm,
     /// The unit cube, in the scene and on the GPU.
     pub cube: MeshId,
     /// What instances draw with: a material row of permutation 0 (nothing here reads it).
@@ -103,6 +119,18 @@ impl Harness {
                 cache: None,
             })
             .unwrap();
+        let vsm = Vsm::new(
+            device,
+            &VsmShaders {
+                mark: shader("Marlin.Engine.Shadows.VsmMark"),
+                allocate: shader("Marlin.Engine.Shadows.VsmAllocate"),
+                clear_args: shader("Marlin.Engine.Shadows.VsmClearArgs"),
+                clear: shader("Marlin.Engine.Shadows.VsmClear"),
+                mask: shader("Marlin.Engine.Shadows.VsmMask"),
+            },
+            SHADOW_SETTINGS,
+        )
+        .unwrap();
         let frame = FrameContext::new(device, &FrameContextDesc::default()).unwrap();
         let scene = RenderScene::new();
         let mut updates = SceneUpdates {
@@ -131,6 +159,7 @@ impl Harness {
             scatter,
             vis,
             reference,
+            vsm,
             cube,
             material,
             updates,
@@ -399,6 +428,63 @@ impl Harness {
         }
     }
 
+    /// Applies the pending updates and draws one frame through the visibility passes and the
+    /// sun's shadow maps, reading back the shadow mask, the depth and the pages.
+    pub fn shadow_frame(&mut self) -> ShadowFrame {
+        let updates = core::mem::take(&mut self.updates);
+        self.scene.apply(&updates);
+        let uploads = self.meshes.take_uploads();
+        let camera = self.camera.expect("a camera");
+        let view = ViewDesc {
+            id: 0,
+            camera,
+            previous: self.previous,
+            width: SIZE,
+            height: SIZE,
+        };
+        self.previous = Some(camera);
+        let (meshes, scene, scatter, vis, vsm) = (
+            &self.meshes,
+            &mut self.scene,
+            &self.scatter,
+            &self.vis,
+            &self.vsm,
+        );
+        let tickets = self
+            .frame
+            .execute(self.device, |g, _| {
+                let pool = meshes.add_passes(g, uploads);
+                let gpu = scene.add_passes(g, scatter);
+                let out = vis.add_passes(g, meshes, scene, gpu, pool, &view);
+                let env = *scene.environment();
+                let s = vsm.add_passes(
+                    g, vis, meshes, scene, gpu, out.pages, out.used, out.depth, None, &env, camera,
+                    SIZE, SIZE,
+                );
+                [
+                    g.readback_texture(s.mask),
+                    g.readback_texture(out.depth),
+                    g.readback(s.page_table),
+                    g.readback(s.counters),
+                ]
+            })
+            .unwrap();
+        let [mask, depth, page_table, counters] =
+            tickets.map(|t| self.frame.wait_readback(t).unwrap());
+        assert_eq!(self.device.validation_errors(), 0);
+        ShadowFrame {
+            mask: mask
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|h| marlin_render::asset::mesh::f16_to_f32(u16::from_le_bytes(*h)))
+                .collect(),
+            depth: words(&depth).into_iter().map(f32::from_bits).collect(),
+            page_table: words(&page_table),
+            marked: words(&counters)[0],
+        }
+    }
+
     /// Waits for the readback `ticket` of the last frame.
     pub fn wait_readback(&mut self, ticket: Readback) -> Vec<u8> {
         self.frame.wait_readback(ticket).unwrap()
@@ -552,4 +638,15 @@ impl VisFrame {
         let sw = self.capacity + self.pass_first_sw_cluster..self.capacity + self.sw_drawn;
         hw.chain(sw).map(|i| self.clusters[i as usize]).collect()
     }
+}
+
+/// One frame of [`Harness::shadow_frame`]: images row-major, `SIZE` × `SIZE`.
+pub struct ShadowFrame {
+    /// The sun's visibility: 1 lit, 0 in shadow.
+    pub mask: Vec<f32>,
+    pub depth: Vec<f32>,
+    /// A word per virtual page of every level: its physical page or `u32::MAX`.
+    pub page_table: Vec<u32>,
+    /// Pages marked (taken from the pool, or not if it ran out).
+    pub marked: u32,
 }

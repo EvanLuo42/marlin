@@ -29,6 +29,7 @@ pub mod lighting;
 mod meshes;
 mod post;
 pub mod scene;
+pub mod shadows;
 pub mod visibility;
 
 pub use lighting::{LIGHTING_PUSH_BYTES, Lighting};

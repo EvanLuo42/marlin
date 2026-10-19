@@ -7,6 +7,7 @@ use core::fmt;
 use marlin_asset::{AssetError, AssetServer, Handle, LoadState, Vfs};
 use marlin_jobs::JobSystem;
 use marlin_material::MaterialShaders;
+use marlin_render::shadows::{VSM_PUSH_BYTES, VsmShaders};
 use marlin_render::{PostShaders, StreamingShaders, VisibilityShaders};
 use marlin_rhi::ShaderModule;
 use marlin_shader::asset::{LibraryEntry, ShaderLibrary};
@@ -196,7 +197,7 @@ pub fn streaming_shaders(library: &ShaderLibrary) -> Result<StreamingShaders<'_>
 
 /// The visibility pipeline's entries (`Marlin.Engine.Visibility`), in
 /// `VisibilityShaders::ENTRIES` order.
-pub const VISIBILITY: [&str; 18] = [
+pub const VISIBILITY: [&str; 19] = [
     "Marlin.Engine.Visibility.Reset",
     "Marlin.Engine.Visibility.InstanceCull",
     "Marlin.Engine.Visibility.InstanceRetestArgs",
@@ -215,6 +216,7 @@ pub const VISIBILITY: [&str; 18] = [
     "Marlin.Engine.Visibility.HzbFirst",
     "Marlin.Engine.Visibility.HzbDown",
     "Marlin.Engine.Visibility.SwRaster",
+    "Marlin.Engine.Visibility.ShadowPs",
 ];
 
 /// The visibility pipeline's shaders from the engine's library, checked for their stages and
@@ -227,7 +229,7 @@ pub fn visibility_shaders(library: &ShaderLibrary) -> Result<VisibilityShaders<'
         let short = name.rsplit('.').next().unwrap_or(name);
         let (stage, push) = match short {
             "VisMesh" => (Stage::Mesh, RASTER_PUSH_BYTES),
-            "VisPs" => (Stage::Pixel, RASTER_PUSH_BYTES),
+            "VisPs" | "ShadowPs" => (Stage::Pixel, RASTER_PUSH_BYTES),
             "VisClear" | "VisDepth" => (Stage::Compute, TARGET_PUSH_BYTES),
             "HzbFirst" | "HzbDown" => (Stage::Compute, HZB_PUSH_BYTES),
             "SwRaster" => (Stage::Compute, RASTER_PUSH_BYTES),
@@ -383,4 +385,41 @@ pub fn load_ui_font(
         LoadState::Failed(e) => Err(e),
         LoadState::Loading => Err(AssetError::NotFound),
     }
+}
+
+/// The virtual shadow maps' entries (`Marlin.Engine.Shadows`), in `VsmShaders::ENTRIES` order.
+pub const VSM: [&str; 5] = [
+    "Marlin.Engine.Shadows.VsmMark",
+    "Marlin.Engine.Shadows.VsmAllocate",
+    "Marlin.Engine.Shadows.VsmClearArgs",
+    "Marlin.Engine.Shadows.VsmClear",
+    "Marlin.Engine.Shadows.VsmMask",
+];
+
+/// The virtual shadow maps' shaders from the engine's library, checked for their stage and the
+/// push constants marlin-render's `Vsm` sets.
+pub fn vsm_shaders(library: &ShaderLibrary) -> Result<VsmShaders<'_>, ShaderError> {
+    let get = |name: &'static str| {
+        let e = library.entry(name).ok_or(ShaderError::MissingEntry(name))?;
+        let mismatch = |problem| ShaderError::Mismatch {
+            entry: name,
+            problem,
+        };
+        if e.reflection.entry.stage != Stage::Compute {
+            return Err(mismatch("not a compute shader"));
+        }
+        if e.reflection.push.as_ref().map(|p| p.size) != Some(VSM_PUSH_BYTES) {
+            return Err(mismatch(
+                "its push constants are not what the shadow passes set",
+            ));
+        }
+        Ok(module(e))
+    };
+    Ok(VsmShaders {
+        mark: get(VSM[0])?,
+        allocate: get(VSM[1])?,
+        clear_args: get(VSM[2])?,
+        clear: get(VSM[3])?,
+        mask: get(VSM[4])?,
+    })
 }

@@ -12,8 +12,8 @@ use marlin_serial::cooked::Pod;
 use crate::meshes::Environment;
 use crate::post::HDR_FORMAT;
 
-/// Bytes of push constants `DirectLight` takes: five 32-bit words.
-pub const LIGHTING_PUSH_BYTES: u32 = 20;
+/// Bytes of push constants `DirectLight` takes: seven 32-bit words.
+pub const LIGHTING_PUSH_BYTES: u32 = 28;
 
 #[repr(C)]
 #[derive(Pod, Clone, Copy)]
@@ -32,6 +32,8 @@ struct DirectArgs {
     output: u32,
     width: u32,
     height: u32,
+    shadow_mask: u32,
+    shadowed: u32,
 }
 
 /// The lighting pass's pipeline.
@@ -50,12 +52,14 @@ impl Lighting {
     }
 
     /// Declares the lighting of `material` (a material buffer, `marlin_material`'s
-    /// `MATERIAL_FORMAT`) into a new `width` × `height` [`HDR_FORMAT`] scene, and returns it.
+    /// `MATERIAL_FORMAT`) into a new `width` × `height` [`HDR_FORMAT`] scene, and returns it;
+    /// the sun is multiplied by `shadow` (a shadow mask, `crate::shadows`) if there is one.
     /// Without a material buffer (no camera), the scene is the clear color.
     pub fn add_passes<'g>(
         &'g self,
         g: &mut RenderGraph<'g>,
         material: Option<TextureHandle<'g>>,
+        shadow: Option<TextureHandle<'g>>,
         env: &Environment,
         width: u32,
         height: u32,
@@ -82,6 +86,7 @@ impl Lighting {
         };
         g.add_compute("DirectLight", |pass| {
             let material = pass.read_texture(material, Access::ComputeRead);
+            let shadow = shadow.map(|s| pass.read_texture(s, Access::ComputeRead));
             let scene = pass.write_texture(scene, Access::ComputeWrite);
             (scene, move |ctx: &mut PassContext<'_>| {
                 let light = ctx.upload(&light);
@@ -92,6 +97,8 @@ impl Lighting {
                     output: ctx.uav(scene),
                     width,
                     height,
+                    shadow_mask: shadow.map_or(0, |s| ctx.srv(s)),
+                    shadowed: u32::from(shadow.is_some()),
                 });
                 ctx.dispatch(width.div_ceil(8), height.div_ceil(8), 1);
             })

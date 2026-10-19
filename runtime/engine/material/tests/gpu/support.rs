@@ -328,7 +328,7 @@ impl Harness {
                 let v = vis.add_passes(g, meshes, scene, gpu, pool, &view);
                 let out = materials.add_passes(g, gpu, &v, camera, previous, width, height);
                 let env = *scene.environment();
-                let lit = lighting.add_passes(g, Some(out.material), &env, width, height);
+                let lit = lighting.add_passes(g, Some(out.material), None, &env, width, height);
                 let target = g.create_texture(
                     "Unorm",
                     GraphTextureDesc::new_2d(width, height, Format::Rgba8Unorm),

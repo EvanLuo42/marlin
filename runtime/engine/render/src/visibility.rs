@@ -28,7 +28,7 @@ use marlin_render_graph::{
     Access, BufferDesc, BufferHandle, PassContext, RenderGraph, TextureDesc, TextureHandle,
 };
 use marlin_rhi::{
-    ComputePipeline, ComputePipelineDesc, Device, Error, ErrorKind, Format, MeshPipeline,
+    ComputePipeline, ComputePipelineDesc, CullMode, Device, Error, ErrorKind, Format, MeshPipeline,
     MeshPipelineDesc, MultisampleState, RasterState, Result, ShaderModule,
 };
 use marlin_serial::cooked::Pod;
@@ -59,11 +59,12 @@ pub struct VisibilityShaders<'a> {
     pub hzb_first: ShaderModule<'a>,
     pub hzb_down: ShaderModule<'a>,
     pub sw_raster: ShaderModule<'a>,
+    pub shadow_pixel: ShaderModule<'a>,
 }
 
 impl<'a> VisibilityShaders<'a> {
     /// The entries' names in `Marlin.Engine.Visibility`, in field order.
-    pub const ENTRIES: [&'static str; 18] = [
+    pub const ENTRIES: [&'static str; 19] = [
         "Reset",
         "InstanceCull",
         "InstanceRetestArgs",
@@ -82,6 +83,7 @@ impl<'a> VisibilityShaders<'a> {
         "HzbFirst",
         "HzbDown",
         "SwRaster",
+        "ShadowPs",
     ];
 
     /// The shaders `module` gives for each of [`ENTRIES`](Self::ENTRIES).
@@ -105,6 +107,7 @@ impl<'a> VisibilityShaders<'a> {
             hzb_first,
             hzb_down,
             sw_raster,
+            shadow_pixel,
         ] = Self::ENTRIES.map(&mut module);
         Self {
             reset,
@@ -125,6 +128,7 @@ impl<'a> VisibilityShaders<'a> {
             hzb_first,
             hzb_down,
             sw_raster,
+            shadow_pixel,
         }
     }
 }
@@ -145,6 +149,8 @@ pub const MAX_CLUSTERS: u32 = 1 << 25;
 /// `CullArgs.Pass`: test against the HZB; the second pass.
 const TEST_HZB: u32 = 1;
 const SECOND_PASS: u32 = 2;
+/// `View.Mode`: an orthographic shadow view.
+const ORTHOGRAPHIC: u32 = 1;
 
 /// The HZB history's name.
 const HZB: &str = "VisHzb";
@@ -155,7 +161,7 @@ const HZB: &str = "VisHzb";
 struct View {
     view_projection: [f32; 16],
     previous_view_projection: [f32; 16],
-    planes: [[f32; 4]; 5],
+    planes: [[f32; 4]; 6],
     eye: [f32; 4],
     lod_error_pixels: f32,
     instance_rows: u32,
@@ -169,7 +175,13 @@ struct View {
     sw_edge_pixels: f32,
     width: u32,
     height: u32,
-    spare: [u32; 3],
+    mode: u32,
+    shadow_pages: u32,
+    shadow_pool: u32,
+    shadow_page_base: u32,
+    shadow_pages_per_side: u32,
+    shadow_page_size: u32,
+    shadow_pool_pages_per_row: u32,
 }
 
 #[repr(C)]
@@ -309,6 +321,8 @@ pub struct Visibility {
     cluster_retest: ComputePipeline,
     finish_args: ComputePipeline,
     raster: MeshPipeline,
+    /// `VisMesh` + `ShadowPs`, both sides of every triangle.
+    shadow_raster: MeshPipeline,
     clear: ComputePipeline,
     depth: ComputePipeline,
     hzb_first: ComputePipeline,
@@ -334,24 +348,30 @@ pub struct Visibility {
     pub sw_edge_pixels: f32,
 }
 
-/// World-space frustum planes of a view-projection (reverse-Z, infinite far): left, right,
-/// bottom, top, near, each normalized so `dot(xyz, p) + w` is a distance.
-fn planes(view_projection: &Mat4) -> [[f32; 4]; 5] {
+/// World-space frustum planes of a reverse-Z view-projection: left, right, bottom, top, near
+/// (z ≤ w), far (z ≥ 0), each normalized so `dot(xyz, p) + w` is a distance. A plane with no
+/// direction (an infinite far plane) is `(0, 0, 0, 1)`: everything is inside.
+pub(crate) fn planes(view_projection: &Mat4) -> [[f32; 4]; 6] {
     let m = view_projection.to_cols_array();
     let row = |r: usize| [m[r], m[4 + r], m[8 + r], m[12 + r]];
     let (r0, r1, r2, r3) = (row(0), row(1), row(2), row(3));
     let add = |a: [f32; 4], b: [f32; 4], s: f32| core::array::from_fn(|i| a[i] + s * b[i]);
     // Reverse-Z: the near plane is z = w.
-    let raw: [[f32; 4]; 5] = [
+    let raw: [[f32; 4]; 6] = [
         add(r3, r0, 1.0),
         add(r3, r0, -1.0),
         add(r3, r1, 1.0),
         add(r3, r1, -1.0),
         add(r3, r2, -1.0),
+        r2,
     ];
     raw.map(|p| {
         let l = marlin_math::scalar::sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]);
-        p.map(|c| c / l)
+        if l < 1e-20 {
+            [0.0, 0.0, 0.0, 1.0]
+        } else {
+            p.map(|c| c / l)
+        }
     })
 }
 
@@ -401,6 +421,8 @@ struct PassInputs<'g> {
     view: View,
     hzb: Option<TextureHandle<'g>>,
     pass: u32,
+    /// A shadow view's page table.
+    shadow_pages: Option<BufferHandle<'g>>,
 }
 
 impl Visibility {
@@ -432,6 +454,19 @@ impl Visibility {
                 mesh: shaders.mesh,
                 pixel: Some(shaders.pixel),
                 raster: RasterState::default(),
+                depth: None,
+                color_targets: &[],
+                multisample: MultisampleState::NONE,
+                cache: None,
+            })?,
+            shadow_raster: device.create_mesh_pipeline(&MeshPipelineDesc {
+                amplification: None,
+                mesh: shaders.mesh,
+                pixel: Some(shaders.shadow_pixel),
+                raster: RasterState {
+                    cull: CullMode::None,
+                    ..RasterState::default()
+                },
                 depth: None,
                 color_targets: &[],
                 multisample: MultisampleState::NONE,
@@ -513,7 +548,13 @@ impl Visibility {
             sw_edge_pixels: self.sw_edge_pixels,
             width,
             height,
-            spare: [0; 3],
+            mode: 0,
+            shadow_pages: 0,
+            shadow_pool: 0,
+            shadow_page_base: 0,
+            shadow_pages_per_side: 0,
+            shadow_page_size: 0,
+            shadow_pool_pages_per_row: 0,
         };
 
         let structured = |n: u32| BufferDesc::structured::<[u32; 2]>(u64::from(n));
@@ -588,6 +629,7 @@ impl Visibility {
             view,
             hzb: previous_hzb,
             pass: if two_pass { TEST_HZB } else { 0 },
+            shadow_pages: None,
         };
         lists = self.instance_cull(g, lists, first, rows);
         lists = self.traverse(g, lists, first, levels);
@@ -634,6 +676,137 @@ impl Visibility {
     }
 
     /// The `CullArgs` of a pass, from the views the pass context made of the declared handles.
+    /// Declares a shadow view (`Vsm`'s levels, 0010 §5.3): the passes cull the drawable
+    /// instances of `scene` against `view`'s orthographic box, pick their LOD cut at its texel
+    /// size and draw the clusters over its mapped pages (`page_table`) into the physical pool
+    /// `shadow_pool` (depth nearest the light, by atomic max), on the hardware. No occlusion
+    /// test and no page requests; the slots read are marked in `used`. Returns `used` and
+    /// `shadow_pool` after the passes.
+    #[allow(clippy::too_many_arguments, reason = "one shadow view's inputs")]
+    pub fn add_shadow_view<'g>(
+        &'g self,
+        g: &mut RenderGraph<'g>,
+        meshes: &Meshes,
+        scene: &RenderScene,
+        gpu: GpuScene<'g>,
+        pages: BufferHandle<'g>,
+        used: BufferHandle<'g>,
+        page_table: BufferHandle<'g>,
+        shadow_pool: TextureHandle<'g>,
+        desc: &ShadowView,
+    ) -> (BufferHandle<'g>, TextureHandle<'g>) {
+        let (mut nodes, mut parts, mut clusters, mut levels) = (0u64, 0u64, 0u64, 0u32);
+        for (_, mesh, _) in scene.drawable() {
+            let c = meshes.dag_counts(mesh);
+            nodes += u64::from(c.nodes);
+            parts += u64::from(c.parts);
+            clusters += u64::from(c.clusters);
+            levels = levels.max(c.depth);
+        }
+        let levels = levels.max(1);
+        let node_capacity = capacity(nodes, self.max_nodes);
+        let part_capacity = capacity(parts, self.max_parts);
+        let cluster_capacity = capacity(clusters, self.max_clusters.min(MAX_CLUSTERS / 2));
+        let rows = scene.instance_rows();
+        let vp = desc.view_projection;
+        let r = desc.resolution;
+        let view = View {
+            view_projection: vp.to_cols_array(),
+            previous_view_projection: vp.to_cols_array(),
+            planes: planes(&vp),
+            eye: [0.0, 0.0, 0.0, desc.texels_per_unit],
+            lod_error_pixels: self.lod_error_pixels,
+            instance_rows: rows,
+            node_capacity,
+            part_capacity,
+            cluster_capacity,
+            request_capacity: 0,
+            occluded_capacity: 1,
+            hzb_mips: 0,
+            hzb_size: [0; 2],
+            sw_edge_pixels: 0.0,
+            width: r,
+            height: r,
+            mode: ORTHOGRAPHIC,
+            shadow_pages: 0,
+            shadow_pool: 0,
+            shadow_page_base: desc.page_base,
+            shadow_pages_per_side: desc.pages_per_side,
+            shadow_page_size: desc.page_size,
+            shadow_pool_pages_per_row: desc.pool_pages_per_row,
+        };
+        let structured = |n: u32| BufferDesc::structured::<[u32; 2]>(u64::from(n));
+        let mut lists = Lists {
+            nodes: g.create_buffer("ShadowNodes", structured(node_capacity)),
+            parts: g.create_buffer("ShadowParts", structured(part_capacity)),
+            counters: g.create_buffer(
+                "ShadowCounters",
+                BufferDesc::structured::<u32>(counters::WORDS as u64),
+            ),
+            args: g.create_buffer("ShadowArgs", BufferDesc::structured::<u32>(24)),
+            clusters: g.create_buffer("ShadowClusters", structured(2 * cluster_capacity)),
+            requests: g.create_buffer("ShadowRequests", structured(1)),
+            used,
+            occluded_instances: g
+                .create_buffer("ShadowOccludedInstances", BufferDesc::structured::<u32>(1)),
+            occluded_clusters: g.create_buffer("ShadowOccludedClusters", structured(1)),
+        };
+        lists.counters = g.add_compute("ShadowReset", |b| {
+            let counters = b.write_buffer(lists.counters, Access::ComputeWrite);
+            (counters, move |ctx: &mut PassContext<'_>| {
+                ctx.set_pipeline(&self.reset);
+                ctx.push(&CullArgs {
+                    counters: ctx.uav(counters),
+                    ..CullArgs::default()
+                });
+                ctx.dispatch(1, 1, 1);
+            })
+        });
+        let p = PassInputs {
+            gpu,
+            pages,
+            view,
+            hzb: None,
+            pass: 0,
+            shadow_pages: Some(page_table),
+        };
+        lists = self.instance_cull(g, lists, p, rows);
+        lists = self.traverse(g, lists, p, levels);
+        lists = self.cluster_cull(g, lists, p);
+        lists = self.cull_pass(g, "ShadowMeshArgs", &self.finish_args, lists, p, None, 1);
+        let shadow_pool = g.add_raster("ShadowRaster", |b| {
+            b.area(r, r);
+            let dispatch = b.read_buffer(lists.args.range(32, 16), Access::Indirect);
+            let instances = b.read_buffer(gpu.instance_data, Access::MeshRead);
+            let transforms = b.read_buffer(gpu.instance_transforms, Access::MeshRead);
+            let meshes = b.read_buffer(gpu.meshes, Access::MeshRead);
+            let clusters = b.read_buffer(lists.clusters, Access::MeshRead);
+            let counters = b.read_buffer(lists.counters, Access::MeshRead);
+            // The clusters are read from the pool through the mesh table's view.
+            b.read_buffer(pages, Access::MeshRead);
+            let table = b.read_buffer(page_table, Access::PixelRead);
+            let pool = b.write_texture(shadow_pool, Access::PixelWrite);
+            (pool, move |ctx: &mut PassContext<'_>| {
+                let mut v = view;
+                v.shadow_pages = ctx.srv(table);
+                v.shadow_pool = ctx.uav(pool);
+                let view = ctx.upload(&v);
+                ctx.set_pipeline(&self.shadow_raster);
+                ctx.push(&RasterArgs {
+                    view,
+                    instances: ctx.srv(instances),
+                    transforms: ctx.srv(transforms),
+                    meshes: ctx.srv(meshes),
+                    clusters: ctx.srv(clusters),
+                    counters: ctx.srv(counters),
+                    vis: 0,
+                });
+                ctx.dispatch_mesh_indirect(dispatch, 1, None);
+            })
+        });
+        (lists.used, shadow_pool)
+    }
+
     /// An indirect pass reads its record from the arguments and does not see them.
     fn args(
         ctx: &PassContext<'_>,
@@ -689,6 +862,9 @@ impl Visibility {
             // The clusters are read from the pool through the mesh table's view.
             b.read_buffer(p.pages, Access::ComputeRead);
             let hzb = p.hzb.map(|h| b.read_texture(h, Access::ComputeRead));
+            let shadow_pages = p
+                .shadow_pages
+                .map(|t| b.read_buffer(t, Access::ComputeRead));
             let l = Lists {
                 nodes: b.write_buffer(lists.nodes, Access::ComputeWrite),
                 parts: b.write_buffer(lists.parts, Access::ComputeWrite),
@@ -705,9 +881,18 @@ impl Visibility {
                 occluded_instances: b.write_buffer(lists.occluded_instances, Access::ComputeWrite),
                 occluded_clusters: b.write_buffer(lists.occluded_clusters, Access::ComputeWrite),
             };
-            let inputs = PassInputs { gpu, hzb, ..p };
+            let inputs = PassInputs {
+                gpu,
+                hzb,
+                shadow_pages,
+                ..p
+            };
             (l, move |ctx: &mut PassContext<'_>| {
-                let view = ctx.upload(&inputs.view);
+                let mut view = inputs.view;
+                if let Some(t) = inputs.shadow_pages {
+                    view.shadow_pages = ctx.srv(t);
+                }
+                let view = ctx.upload(&view);
                 ctx.set_pipeline(pipeline);
                 let args = Self::args(ctx, view, &l, &inputs, dispatch.is_some());
                 ctx.push(&args);
@@ -947,4 +1132,22 @@ impl Visibility {
         }
         hzb
     }
+}
+
+/// One shadow view (a level of `Vsm`'s clipmap) for [`Visibility::add_shadow_view`].
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct ShadowView {
+    /// World to the view's clip space: orthographic, reverse-Z (nearer the light is larger).
+    pub view_projection: Mat4,
+    /// Texels per world unit: the LOD cut's scale.
+    pub texels_per_unit: f32,
+    /// Texels per side of the view.
+    pub resolution: u32,
+    /// Texels per side of a page, pages per side of the view, and the view's first entry in
+    /// the page table.
+    pub page_size: u32,
+    pub pages_per_side: u32,
+    pub page_base: u32,
+    /// Physical pages per row of the pool.
+    pub pool_pages_per_row: u32,
 }
