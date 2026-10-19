@@ -37,9 +37,10 @@ use marlin_rhi::{
 };
 use marlin_serial::cooked::Pod;
 
+use crate::blur::{self, BlurJob};
 use crate::command::{
-    BIN, BLOCK_WORDS, CHUNK_COMMANDS, Chunk, DEFAULT_SAMPLER, Kind, PAINT_EXTERNAL, PAINT_IMAGE,
-    TILE,
+    BIN, BLOCK_WORDS, CHUNK_COMMANDS, Chunk, DEFAULT_SAMPLER, Kind, PAINT_BACKDROP, PAINT_EXTERNAL,
+    PAINT_IMAGE, TILE,
 };
 use crate::damage::{command_hashes, frame_hash};
 use crate::list::UiDrawList;
@@ -61,10 +62,11 @@ pub struct UiShaders<'a> {
     pub fine: ShaderModule<'a>,
     pub encode_vs: ShaderModule<'a>,
     pub encode_ps: ShaderModule<'a>,
+    pub blur: ShaderModule<'a>,
 }
 
 /// The entries, in [`UiShaders`] order.
-pub const UI_ENTRIES: [&str; 7] = [
+pub const UI_ENTRIES: [&str; 8] = [
     "Marlin.Engine.Ui.GlyphUpload",
     "Marlin.Engine.Ui.Bounds",
     "Marlin.Engine.Ui.Bin",
@@ -72,11 +74,12 @@ pub const UI_ENTRIES: [&str; 7] = [
     "Marlin.Engine.Ui.Fine",
     "Marlin.Engine.Ui.EncodeVs",
     "Marlin.Engine.Ui.EncodePs",
+    "Marlin.Engine.Ui.Blur",
 ];
 
 /// Push constant bytes of each entry, in [`UI_ENTRIES`] order (the encode vertex shader has
 /// none).
-pub const UI_PUSH_BYTES: [Option<u32>; 7] = [
+pub const UI_PUSH_BYTES: [Option<u32>; 8] = [
     Some(size_of::<GlyphUploadArgs>() as u32),
     Some(size_of::<BoundsArgs>() as u32),
     Some(size_of::<BinArgs>() as u32),
@@ -84,6 +87,7 @@ pub const UI_PUSH_BYTES: [Option<u32>; 7] = [
     Some(size_of::<FineArgs>() as u32),
     None,
     Some(size_of::<EncodeArgs>() as u32),
+    Some(size_of::<BlurArgs>() as u32),
 ];
 
 #[repr(C)]
@@ -102,7 +106,8 @@ struct UiFrame {
     salt: u32,
     /// Nonzero: every tile is dirty (the target is new, or damage detection is off).
     force: u32,
-    spare: u32,
+    /// Layers the frame is drawn in (backdrop blurs, §5.6).
+    layers: u32,
     clear: [f32; 4],
 }
 
@@ -148,6 +153,7 @@ struct CoarseArgs {
     pool: u32,
     counters: u32,
     tile_hashes: u32,
+    layer_starts: u32,
 }
 
 #[repr(C)]
@@ -165,6 +171,23 @@ struct FineArgs {
     pool: u32,
     glyph_pages: u32,
     output: u32,
+    first: u32,
+    end: u32,
+    previous: u32,
+    backdrops: u32,
+}
+
+#[repr(C)]
+#[derive(Pod, Clone, Copy)]
+struct BlurArgs {
+    source: u32,
+    output: u32,
+    mode: u32,
+    scale: u32,
+    origin: u32,
+    size: u32,
+    source_size: u32,
+    sigma: f32,
 }
 
 #[repr(C)]
@@ -344,6 +367,7 @@ pub struct UiRenderer {
     bin: ComputePipeline,
     coarse: ComputePipeline,
     fine: ComputePipeline,
+    blur: ComputePipeline,
     encode: Option<(GraphicsPipeline, bool)>,
     sampler: Sampler,
     glyphs: GlyphCache,
@@ -404,6 +428,7 @@ impl UiRenderer {
             bin: compute(shaders.bin)?,
             coarse: compute(shaders.coarse)?,
             fine: compute(shaders.fine)?,
+            blur: compute(shaders.blur)?,
             encode,
             sampler: device.create_sampler(&SamplerDesc {
                 address_u: AddressMode::ClampToEdge,
@@ -438,8 +463,19 @@ impl UiRenderer {
         let mut used = Vec::new();
         for chunk in &mut chunks {
             for p in &mut chunk.paints {
-                if (p[0] == PAINT_IMAGE || p[0] == PAINT_EXTERNAL) && p[3] == DEFAULT_SAMPLER {
+                if matches!(p[0], PAINT_IMAGE | PAINT_EXTERNAL | PAINT_BACKDROP)
+                    && p[3] == DEFAULT_SAMPLER
+                {
                     p[3] = sampler;
+                }
+            }
+            // Backdrop blurs: their index among the frame's, in the payload and the paint.
+            let mut blurs = 0;
+            for c in &chunk.commands {
+                if Kind::from_word(c[0]) == Some(Kind::Blur) {
+                    chunk.payload[c[3] as usize + 9] = blurs;
+                    chunk.paints[c[2] as usize][2] = blurs;
+                    blurs += 1;
                 }
             }
             used.extend(
@@ -514,7 +550,11 @@ impl UiRenderer {
             TextureDesc::new_2d(width, height, UI_FORMAT),
         );
         let tile_hashes = g.persistent("UiTileHashes", key, BufferDesc::structured::<u32>(tiles));
-        let force = !self.damage || target.fresh || tile_hashes.fresh;
+        // Backdrop blurs draw the frame in layers (§5.6). What a blur shows depends on pixels
+        // outside its tiles, so a frame with blurs shades every tile.
+        let plan = blur::plan(&data.chunk, pages.glyphs, width, height);
+        let layers = plan.starts.len();
+        let force = !self.damage || target.fresh || tile_hashes.fresh || layers > 1;
         let frame = UiFrame {
             width,
             height,
@@ -527,7 +567,7 @@ impl UiRenderer {
             pool_blocks,
             salt: (frame_hash(&[], width, height, clear.packed()) as u32).max(1),
             force: u32::from(force),
-            spare: 0,
+            layers: layers as u32,
             clear: crate::shape::premultiplied(clear.packed()),
         };
         // Uploads need at least one element.
@@ -602,6 +642,7 @@ impl UiRenderer {
             })
         });
 
+        let starts = plan.starts.clone();
         let pipeline = &self.coarse;
         let (heads, pool, counters) = g.add_compute("UiCoarse", |b| {
             let bd = b.read_buffer(bounds, Access::ComputeRead);
@@ -623,6 +664,7 @@ impl UiRenderer {
                     pool: ctx.uav(p),
                     counters: ctx.uav(k),
                     tile_hashes: ctx.uav(th),
+                    layer_starts: ctx.upload_slice(&starts),
                 };
                 ctx.set_pipeline(pipeline);
                 ctx.push(&args);
@@ -665,55 +707,156 @@ impl UiRenderer {
             })
         });
 
-        let pipeline = &self.fine;
-        let externals: Vec<(ExternalImageId, TextureHandle<'g>)> = externals.to_vec();
-        let target = g.add_compute("UiFine", |b| {
-            let h = b.read_buffer(heads, Access::ComputeRead);
-            let p = b.read_buffer(pool, Access::ComputeRead);
-            let gp = b.read_texture(pages.pages, Access::ComputeRead);
-            let externals: Vec<(ExternalImageId, TextureHandle<'g>)> = externals
-                .iter()
-                .map(|&(id, t)| (id, b.read_texture(t, Access::ComputeRead)))
-                .collect();
-            let out = b.write_texture(target.handle, Access::ComputeWrite);
-            (out, move |ctx: &mut PassContext<'_>| {
-                // External images get their views now; one without a texture draws nothing.
-                let paints: Vec<[u32; 4]> = paints
-                    .iter()
-                    .map(|&p| {
-                        if p[0] != PAINT_EXTERNAL {
-                            return p;
-                        }
-                        match externals.iter().find(|(id, _)| id.0 == p[2]) {
-                            Some(&(_, t)) => [p[0], p[1], ctx.srv(t), p[3]],
-                            None => [p[0], 0, 0, p[3]],
-                        }
-                    })
-                    .collect();
-                let args = FineArgs {
-                    frame: ctx.upload(&frame),
-                    commands: ctx.upload_slice(cmds),
-                    payload: ctx.upload_slice(payload),
-                    paints: ctx.upload_slice(&paints),
-                    gradients: ctx.upload_slice(gradients),
-                    glyphs: ctx.upload_slice(glyphs),
-                    groups: ctx.upload_slice(groups),
-                    clips: ctx.upload_slice(clips),
-                    heads: ctx.srv(h),
-                    pool: ctx.srv(p),
-                    glyph_pages: ctx.srv(gp),
-                    output: ctx.uav(out),
-                };
-                ctx.set_pipeline(pipeline);
-                ctx.push(&args);
-                ctx.dispatch(tiles_x, tiles_y, 1);
+        // Per blur: where its image is, for the shading.
+        let backdrops: Vec<[u32; 4]> = plan
+            .jobs
+            .iter()
+            .map(|j| {
+                [
+                    j.origin[0] | j.origin[1] << 16,
+                    j.size[0] | j.size[1] << 16,
+                    j.scale,
+                    0,
+                ]
             })
-        });
+            .chain(core::iter::once([0; 4]))
+            .collect();
+        // Every layer but the last into a frame texture, the last into the target; each
+        // layer's blurs from the one below.
+        let externals: Vec<(ExternalImageId, TextureHandle<'g>)> = externals.to_vec();
+        let mut below: Option<TextureHandle<'g>> = None;
+        let mut target = target.handle;
+        for l in 0..layers {
+            let (first, end) = plan.range(l, commands);
+            let images: Vec<(u32, TextureHandle<'g>)> = match below {
+                Some(src) => plan
+                    .jobs
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, j)| j.layer as usize == l && j.size[0] > 0)
+                    .map(|(i, j)| (i as u32, self.add_blur(g, src, j, width, height)))
+                    .collect(),
+                None => Vec::new(),
+            };
+            let out = if l + 1 == layers {
+                target
+            } else {
+                g.create_texture("UiLayer", TextureDesc::new_2d(width, height, UI_FORMAT))
+            };
+            let backdrops = backdrops.clone();
+            let externals = externals.clone();
+            let pipeline = &self.fine;
+            let out = g.add_compute("UiFine", |b| {
+                let h = b.read_buffer(heads, Access::ComputeRead);
+                let p = b.read_buffer(pool, Access::ComputeRead);
+                let gp = b.read_texture(pages.pages, Access::ComputeRead);
+                let externals: Vec<(ExternalImageId, TextureHandle<'g>)> = externals
+                    .iter()
+                    .map(|&(id, t)| (id, b.read_texture(t, Access::ComputeRead)))
+                    .collect();
+                let images: Vec<(u32, TextureHandle<'g>)> = images
+                    .iter()
+                    .map(|&(i, t)| (i, b.read_texture(t, Access::ComputeRead)))
+                    .collect();
+                let previous = below.map(|t| b.read_texture(t, Access::ComputeRead));
+                let out = b.write_texture(out, Access::ComputeWrite);
+                (out, move |ctx: &mut PassContext<'_>| {
+                    // External images and blurred backdrops get their views now; one without a
+                    // texture draws nothing.
+                    let paints: Vec<[u32; 4]> = paints
+                        .iter()
+                        .map(|&p| match p[0] {
+                            PAINT_EXTERNAL => match externals.iter().find(|(id, _)| id.0 == p[2]) {
+                                Some(&(_, t)) => [p[0], p[1], ctx.srv(t), p[3]],
+                                None => [p[0], 0, 0, p[3]],
+                            },
+                            PAINT_BACKDROP => match images.iter().find(|(i, _)| *i == p[2]) {
+                                Some(&(_, t)) => [p[0], p[1], ctx.srv(t), p[3]],
+                                None => [p[0], p[1], 0, p[3]],
+                            },
+                            _ => p,
+                        })
+                        .collect();
+                    let args = FineArgs {
+                        frame: ctx.upload(&frame),
+                        commands: ctx.upload_slice(cmds),
+                        payload: ctx.upload_slice(payload),
+                        paints: ctx.upload_slice(&paints),
+                        gradients: ctx.upload_slice(gradients),
+                        glyphs: ctx.upload_slice(glyphs),
+                        groups: ctx.upload_slice(groups),
+                        clips: ctx.upload_slice(clips),
+                        heads: ctx.srv(h),
+                        pool: ctx.srv(p),
+                        glyph_pages: ctx.srv(gp),
+                        output: ctx.uav(out),
+                        first,
+                        end,
+                        previous: previous.map_or(0, |t| ctx.srv(t)),
+                        backdrops: ctx.upload_slice(&backdrops),
+                    };
+                    ctx.set_pipeline(pipeline);
+                    ctx.push(&args);
+                    ctx.dispatch(tiles_x, tiles_y, 1);
+                })
+            });
+            if l + 1 == layers {
+                target = out;
+            } else {
+                below = Some(out);
+            }
+        }
         UiOutput {
             target,
             heads,
             pool,
         }
+    }
+
+    /// `job`'s blurred image of `src` (§5.6): scaled down, then blurred along x and along y.
+    fn add_blur<'g>(
+        &'g self,
+        g: &mut RenderGraph<'g>,
+        src: TextureHandle<'g>,
+        job: &BlurJob,
+        width: u32,
+        height: u32,
+    ) -> TextureHandle<'g> {
+        let [w, h] = job.size;
+        let mut base = BlurArgs {
+            source: 0,
+            output: 0,
+            mode: 0,
+            scale: job.scale,
+            origin: job.origin[0] | job.origin[1] << 16,
+            size: w | h << 16,
+            source_size: width | height << 16,
+            sigma: job.sigma,
+        };
+        let mut texture = src;
+        for (mode, name) in [(0, "UiBlurDown"), (1, "UiBlurX"), (2, "UiBlurY")] {
+            base.mode = mode;
+            if mode == 1 {
+                base.source_size = base.size;
+            }
+            let args = base;
+            let out = g.create_texture(name, TextureDesc::new_2d(w, h, UI_FORMAT));
+            let pipeline = &self.blur;
+            texture = g.add_compute(name, |b| {
+                let s = b.read_texture(texture, Access::ComputeRead);
+                let o = b.write_texture(out, Access::ComputeWrite);
+                (o, move |ctx: &mut PassContext<'_>| {
+                    ctx.set_pipeline(pipeline);
+                    ctx.push(&BlurArgs {
+                        source: ctx.srv(s),
+                        output: ctx.uav(o),
+                        ..args
+                    });
+                    ctx.dispatch(w.div_ceil(8), h.div_ceil(8), 1);
+                })
+            });
+        }
+        texture
     }
 
     fn upload_glyphs<'g>(

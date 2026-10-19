@@ -26,8 +26,8 @@ use marlin_math::scalar::{floor, round, sqrt};
 
 use crate::command::{
     CLIP_WORDS, Chunk, ClipWords, DEFAULT_SAMPLER, GROUP_AXIS_ALIGNED, GROUP_NONUNIFORM,
-    GROUP_WORDS, GroupWords, IMAGE_SRGB_PREMULTIPLIED, Kind, OPAQUE, PAINT_EXTERNAL,
-    PAINT_GRADIENT, PAINT_IMAGE, f,
+    GROUP_WORDS, GroupWords, IMAGE_SRGB_PREMULTIPLIED, Kind, OPAQUE, PAINT_BACKDROP,
+    PAINT_EXTERNAL, PAINT_GRADIENT, PAINT_IMAGE, f,
 };
 use crate::path::{FillRule, Path};
 use crate::style::{
@@ -296,7 +296,7 @@ fn translate(chunk: &mut Chunk, dx: f32, dy: f32) {
             continue;
         }
         match kind {
-            Some(Kind::Rect | Kind::Line | Kind::Image) => {
+            Some(Kind::Rect | Kind::Line | Kind::Image | Kind::Blur) => {
                 mv(&mut p[0], dx);
                 mv(&mut p[1], dy);
                 mv(&mut p[2], dx);
@@ -906,6 +906,27 @@ impl<'a> Painter<'a> {
         }
     }
 
+    /// Blurs what is drawn under the rounded rectangle `r` (§5.6): inside it, the pixels below
+    /// become their Gaussian blur of `radius` logical pixels (σ is half of it, as for shadows),
+    /// at the group's opacity and clip. Draw a translucent fill over it for frosted glass.
+    pub fn backdrop_blur(&mut self, r: Rect, radius: f32, corners: Corners) {
+        let [r0, r1, r2, r3] = self.corners(&corners);
+        let payload = [
+            self.s(r.min.x),
+            self.s(r.min.y),
+            self.s(r.max.x),
+            self.s(r.max.y),
+            r0,
+            r1,
+            r2,
+            r3,
+            f(radius.max(0.0) * self.list.scale),
+            0,
+        ];
+        let paint = |c: &mut Chunk| c.image(PAINT_BACKDROP, Color::WHITE, 0, DEFAULT_SAMPLER);
+        self.push(Kind::Blur, 0, paint, &payload);
+    }
+
     /// A rectangle in any paint, rounded per corner (§2.1): in the current group, at its
     /// opacity.
     pub fn fill_rect(&mut self, r: Rect, corners: Corners, paint: &Paint) {
@@ -1062,7 +1083,7 @@ fn local_box(kind: Kind, p: &[u32]) -> Option<[f32; 4]> {
                 w(1).max(w(3)).max(w(5)) + e,
             ]
         }
-        Kind::Image => [w(0), w(1), w(2), w(3)],
+        Kind::Image | Kind::Blur => [w(0), w(1), w(2), w(3)],
         Kind::Glyph | Kind::Effect | Kind::Path => return None,
     })
 }

@@ -32,7 +32,8 @@ public struct UiFrame
     public uint Salt;
     /// Nonzero: every tile is dirty.
     public uint Force;
-    public uint Spare;
+    /// Layers the frame is drawn in (backdrop blurs, §5.6); `CoarseArgs.LayerStarts` holds them.
+    public uint Layers;
     /// Premultiplied, sRGB-encoded.
     public float4 Clear;
 }
@@ -55,6 +56,7 @@ const uint KindGlyph = 5;
 const uint KindImage = 6;
 const uint KindEffect = 7;
 const uint KindPath = 8;
+const uint KindBlur = 9;
 
 /// Rows of pixels a path band holds (`marlin_ui_render::path::BAND`).
 const float PathBand = 16;
@@ -213,7 +215,7 @@ uint4 CommandBounds(
         float y1 = Max(Max(P(p, at + 1), P(p, at + 3)), P(p, at + 5));
         local = float4(x0 - e, y0 - e, x1 + e, y1 + e);
     }
-    else if (kind == KindImage)
+    else if (kind == KindImage || kind == KindBlur)
     {
         local = float4(P(p, at), P(p, at + 1), P(p, at + 2), P(p, at + 3));
     }
@@ -257,7 +259,7 @@ uint4 CommandBounds(
                 Clamp(y0 + (int)(gr.y >> 16), 0, h)),
             clipBox);
     }
-    else if (kind >= KindRect && kind <= KindImage)
+    else if ((kind >= KindRect && kind <= KindImage) || kind == KindBlur)
     {
         float4 sb = ScreenBox(groups, g, local);
         box = Intersect(Pixels(sb.x - 0.5, sb.y - 0.5, sb.z + 0.5, sb.w + 0.5, f), clipBox);
@@ -364,6 +366,10 @@ public struct CoarseArgs
     public Buffer<uint> Counters;
     /// Per tile: the hash of its list last frame, this frame's after (§5.5).
     public Buffer<uint> TileHashes;
+    /// Every layer's first command (`Frame.Layers` of them, the first 0): an opaque command
+    /// empties a tile's list only of its own layer's commands, since a blur in a later layer
+    /// may read the tile (§5.6).
+    public ReadOnlyBuffer<uint> LayerStarts;
 }
 
 [Compute(16, 16, 1)]
@@ -383,6 +389,12 @@ public void Coarse([GroupId] uint3 group, [GroupThreadId] uint3 thread, [Push] i
     uint count = 0;
     bool full = false;
     uint hash = f.Salt;
+    // The layers seen, and the list as it stood when the current one began: an opaque command
+    // hides only its own layer's commands (§5.6).
+    uint layer = 0;
+    uint layerCount = 0;
+    uint layerCurrent = NoBlock;
+    uint layerHash = f.Salt;
     for (uint c = 0; c < f.Chunks; c++)
     {
         for (uint w = 0; w < 8; w++)
@@ -408,12 +420,20 @@ public void Coarse([GroupId] uint3 group, [GroupThreadId] uint3 thread, [Push] i
                 int iy0 = (int)(b.z >> 16);
                 int ix1 = (int)(b.w & 65535);
                 int iy1 = (int)(b.w >> 16);
+                if (layer < f.Layers && a.LayerStarts[layer] <= i)
+                {
+                    while (layer < f.Layers && a.LayerStarts[layer] <= i)
+                        layer++;
+                    layerCount = count;
+                    layerCurrent = current;
+                    layerHash = hash;
+                }
                 if (x0 >= ix0 && y0 >= iy0 && x0 + 16 <= ix1 && y0 + 16 <= iy1)
                 {
-                    // Hidden: start over, reusing the blocks.
-                    count = 0;
-                    current = head;
-                    hash = f.Salt;
+                    // Hidden: back to where the layer began, reusing the blocks.
+                    count = layerCount;
+                    current = layerCount == 0 ? head : layerCurrent;
+                    hash = layerHash;
                 }
                 uint slot = count % BlockCommands;
                 if (slot == 0)
@@ -588,6 +608,8 @@ float Distance(uint kind, ReadOnlyBuffer<uint> p, uint at, float2 q)
             float2(P(p, at), P(p, at + 1)),
             float2(P(p, at + 2), P(p, at + 3)),
             float2(P(p, at + 4), P(p, at + 5)));
+    if (kind == KindBlur)
+        return RectDistance(p, at, at + 4, q);
     // An image's rounded rectangle: radii after the UV rectangle and the size.
     return RectDistance(p, at, at + 9, q);
 }
@@ -645,6 +667,14 @@ public struct FineArgs
     /// The glyph cache's pages: R8 coverage.
     public Texture2DArray<float> GlyphPages;
     public StorageTexture2D<float4> Output;
+    /// The layer drawn (§5.6): its commands are `First` to `End`; past the first layer it starts
+    /// from `Previous`, the pixels the layers below drew.
+    public uint First;
+    public uint End;
+    public Texture2D<float4> Previous;
+    /// Per backdrop blur: its image's texel 0 on the screen (x | y << 16), its size (width |
+    /// height << 16), and screen pixels per texel.
+    public ReadOnlyBuffer<uint4> Backdrops;
 }
 
 /// The signed area segment `s` sweeps to the right inside the pixel cell at `cell` (its top-left
@@ -748,7 +778,7 @@ float MemberDistance(uint4 c, in FineArgs a, float2 px)
     uint kind = c.x & 63;
     uint at = c.w;
     ReadOnlyBuffer<uint> p = a.Payload;
-    if (kind == KindEffect || kind < KindRect || kind > KindPath)
+    if (kind == KindEffect || kind < KindRect || kind > KindBlur)
         return 3.4e38;
     if (kind == KindPath)
     {
@@ -827,6 +857,17 @@ float4 Effect(uint4 c, in FineArgs a, float4 color, float2 px)
     return color * alpha;
 }
 
+/// Backdrop blur `c`'s blurred image at screen pixel `px` (`marlin_ui_render::blur`).
+float4 Backdrop(uint4 c, in FineArgs a, float2 px)
+{
+    uint4 b = a.Backdrops[a.Payload[c.w + 9]];
+    float s = (float)b.z;
+    float2 t = float2((px.x - (float)(b.x & 65535)) / s, (px.y - (float)(b.x >> 16)) / s);
+    float2 uv = float2(t.x / (float)(b.y & 65535), t.y / (float)(b.y >> 16));
+    UiPaint paint = a.Paints[c.z];
+    return paint.Texture.Sample(paint.Sampler, uv, lod: 0);
+}
+
 /// Command `c`'s premultiplied color at the pixel centered at `px`, before its group's opacity
 /// and its clip.
 float4 ShadeUnclipped(uint4 c, in FineArgs a, float2 px)
@@ -839,6 +880,11 @@ float4 ShadeUnclipped(uint4 c, in FineArgs a, float2 px)
     float4 color = PaintColor(paint, a.Gradients, px);
     if (kind == KindPath)
         return color * PathCoverage(p, at, px);
+    if (kind == KindBlur)
+    {
+        float e = RectDistance(p, at, at + 4, Apply(a.Groups, g, 6, px));
+        return Backdrop(c, a, px) * Coverage(e * PixelsPerUnit(a.Groups, g, kind, p, at, px, e));
+    }
     if (kind == KindEffect)
         return Effect(c, a, color, px);
     if (kind == KindGlyph)
@@ -893,6 +939,21 @@ float4 Shade(uint4 c, in FineArgs a, float2 px)
     return color * k;
 }
 
+/// The pixel centered at `px` after command `c` is drawn over `dst`: `c`'s color over it, or for
+/// a backdrop blur, `dst` turned into the blurred image as far as the blur covers the pixel.
+float4 Composite(uint4 c, in FineArgs a, float2 px, float4 dst)
+{
+    if ((c.x & 63) != KindBlur)
+        return Over(Shade(c, a, px), dst);
+    uint g = c.x >> 16;
+    uint at = c.w;
+    float d = RectDistance(a.Payload, at, at + 4, Apply(a.Groups, g, 6, px));
+    float k = Coverage(d * PixelsPerUnit(a.Groups, g, KindBlur, a.Payload, at, px, d))
+        * P(a.Groups, g * GroupWords + 12)
+        * ClipCoverage(a.Clips, a.Groups, c.y & 65535, px);
+    return dst + (Backdrop(c, a, px) - dst) * k;
+}
+
 [Compute(16, 16, 1)]
 public void Fine([GroupId] uint3 group, [GroupThreadId] uint3 thread, [Push] in FineArgs a)
 {
@@ -903,18 +964,88 @@ public void Fine([GroupId] uint3 group, [GroupThreadId] uint3 thread, [Push] in 
     // A clean tile keeps last frame's pixels.
     if (h.z == 0)
         return;
+    bool inside = xy.x < f.Width && xy.y < f.Height;
     uint block = h.x;
     float4 color = f.Clear;
+    if (a.First > 0 && inside)
+        color = a.Previous.Load((int2)xy);
     for (uint k = 0; k < h.y; k++)
     {
         uint slot = k % BlockCommands;
         if (slot == 0 && k > 0)
             block = a.Pool[block * BlockWords + BlockCommands];
         uint i = a.Pool[block * BlockWords + slot];
-        color = Over(Shade(a.Commands[i], a, px), color);
+        if (i >= a.End)
+            break;
+        if (i >= a.First)
+            color = Composite(a.Commands[i], a, px, color);
     }
-    if (xy.x < f.Width && xy.y < f.Height)
+    if (inside)
         a.Output[(int2)xy] = color;
+}
+
+public struct BlurArgs
+{
+    public Texture2D<float4> Source;
+    public StorageTexture2D<float4> Output;
+    /// 0: each texel averages `Scale` × `Scale` source texels from `Origin` on; 1: a horizontal
+    /// Gaussian of σ `Sigma`; 2: a vertical one.
+    public uint Mode;
+    public uint Scale;
+    /// x | y << 16.
+    public uint Origin;
+    /// The output's size: width | height << 16.
+    public uint Size;
+    /// The source's size: width | height << 16.
+    public uint SourceSize;
+    public float Sigma;
+}
+
+/// Source texel `(x, y)`, clamped to the source.
+float4 BlurLoad(in BlurArgs a, int x, int y)
+{
+    int w = (int)(a.SourceSize & 65535);
+    int h = (int)(a.SourceSize >> 16);
+    return a.Source.Load(int2(Clamp(x, 0, w - 1), Clamp(y, 0, h - 1)));
+}
+
+/// A backdrop blur's image (§5.6), one step a dispatch: scaled down, then blurred along x, then
+/// along y (`marlin_ui_render::blur::blur`).
+[Compute(8, 8, 1)]
+public void Blur([DispatchThreadId] uint3 id, [Push] in BlurArgs a)
+{
+    if (id.x >= (a.Size & 65535) || id.y >= (a.Size >> 16))
+        return;
+    int x = (int)id.x;
+    int y = (int)id.y;
+    float4 acc = float4(0, 0, 0, 0);
+    if (a.Mode == 0)
+    {
+        int s = (int)a.Scale;
+        int ox = (int)(a.Origin & 65535);
+        int oy = (int)(a.Origin >> 16);
+        for (int j = 0; j < s; j++)
+        {
+            for (int i = 0; i < s; i++)
+                acc = acc + BlurLoad(a, ox + x * s + i, oy + y * s + j);
+        }
+        acc = acc / (float)(s * s);
+    }
+    else
+    {
+        int dx = a.Mode == 1 ? 1 : 0;
+        int dy = 1 - dx;
+        int n = (int)Ceil(a.Sigma * 3);
+        float total = 0;
+        for (int t = -n; t <= n; t++)
+        {
+            float w = a.Sigma > 0 ? Exp(-(float)(t * t) / (2 * a.Sigma * a.Sigma)) : 1.0;
+            acc = acc + BlurLoad(a, x + t * dx, y + t * dy) * w;
+            total = total + w;
+        }
+        acc = acc / total;
+    }
+    a.Output[int2(x, y)] = acc;
 }
 
 public struct EncodeArgs

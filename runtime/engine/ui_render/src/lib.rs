@@ -11,6 +11,7 @@
 
 extern crate alloc;
 
+pub mod blur;
 pub mod command;
 pub mod damage;
 pub mod gradient;

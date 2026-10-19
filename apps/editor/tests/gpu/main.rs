@@ -49,6 +49,7 @@ fn the_shell_draws_like_the_reference_and_its_golden() {
             fine: s(4),
             encode_vs: s(5),
             encode_ps: s(6),
+            blur: s(7),
         },
         &UiRendererDesc::default(),
     )

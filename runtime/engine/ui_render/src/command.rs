@@ -27,6 +27,7 @@
 //! | `Glyph` | pen x, pen y (whole pixels, `i32`), glyph id |
 //! | `Image` | x0 y0 x1 y1, u0 v0 u1 v1, texture width \| height << 16, radii ×4 |
 //! | `Effect` | 0 shadow / 1 glow, 0, the members' screen box x0 y0 x1 y1 (`f32`), and the radius of the box used instead of the members' shape (`f32`, negative: their shape) |
+//! | `Blur` | x0 y0 x1 y1, radii ×4, blur radius (screen pixels, `f32`), its index among the frame's blurs (set when the frame is prepared) |
 //! | `Path` | fill rule (0 non-zero, 1 even-odd), the payload's length, band origin y (`f32`), bands, segments, screen box x0 y0 x1 y1 (`f32`); per 16-pixel band from the origin, the offset (from the payload's start) and length of its segment list; the lists; the segments as x0 y0 x1 y1 (`f32`, screen pixels) |
 
 use alloc::vec::Vec;
@@ -55,6 +56,9 @@ pub const PAINT_GRADIENT: u32 = 2;
 /// An external image: the paint's third word is its `ExternalImageId` until the passes put the
 /// texture's view there.
 pub const PAINT_EXTERNAL: u32 = 3;
+/// What a backdrop blur draws (§5.6): the paint's third word is the blur's index among the
+/// frame's until the passes put its blurred texture's view there.
+pub const PAINT_BACKDROP: u32 = 4;
 
 /// Words of a gradient record: a header, then [`GRADIENT_TEXELS`] premultiplied RGBA8 texels.
 ///
@@ -82,6 +86,8 @@ pub enum Kind {
     Effect = 7,
     /// A filled path (§4.2).
     Path = 8,
+    /// A backdrop blur (§5.6): what is drawn under it, blurred, inside a rounded rectangle.
+    Blur = 9,
 }
 
 impl Kind {
@@ -95,6 +101,7 @@ impl Kind {
             6 => Self::Image,
             7 => Self::Effect,
             8 => Self::Path,
+            9 => Self::Blur,
             _ => return None,
         })
     }
@@ -118,6 +125,7 @@ impl Kind {
             Self::Image => 13,
             Self::Effect => 7,
             Self::Path => 0,
+            Self::Blur => 10,
         }
     }
 }

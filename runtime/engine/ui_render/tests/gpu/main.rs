@@ -8,6 +8,7 @@
 mod support;
 
 mod binning;
+mod blur;
 mod damage;
 mod gradients;
 mod groups;
@@ -105,6 +106,7 @@ pub fn shared_renderer(desc: &UiRendererDesc) -> UiRenderer {
             fine: s(4),
             encode_vs: s(5),
             encode_ps: s(6),
+            blur: s(7),
         },
         desc,
     )

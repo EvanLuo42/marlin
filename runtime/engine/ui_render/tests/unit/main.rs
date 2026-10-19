@@ -7,6 +7,7 @@
 mod support;
 
 mod binning;
+mod blur;
 mod damage;
 mod effects;
 mod gradients;

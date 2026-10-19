@@ -169,6 +169,7 @@ pub fn bounds(c: &CommandWords, s: &Scene<'_>, width: u32, height: u32) -> Bound
             ([x0 - e, y0 - e, x1 + e, y1 + e], None)
         }
         Some(Kind::Image) => ([w(p, 0), w(p, 1), w(p, 2), w(p, 3)], None),
+        Some(Kind::Blur) => ([w(p, 0), w(p, 1), w(p, 2), w(p, 3)], None),
         Some(Kind::Path) => {
             // Flattened onto the screen when recorded.
             let bbox = pixels(
@@ -504,6 +505,12 @@ pub trait Textures {
     fn glyph(&self, page: u32, x: u32, y: u32) -> f32;
     /// Texture `view` through `sampler` at `uv`, mip `lod`.
     fn sample(&self, view: u32, sampler: u32, uv: [f32; 2], lod: f32) -> [f32; 4];
+    /// Backdrop blur `job`'s blurred image at screen pixel `(x, y)` (premultiplied, sRGB-encoded):
+    /// the reference makes these itself ([`crate::blur`]).
+    fn backdrop(&self, job: u32, x: f32, y: f32) -> [f32; 4] {
+        let _ = (job, x, y);
+        [0.0; 4]
+    }
 }
 
 /// Command `c`'s premultiplied color (sRGB-encoded) at the pixel whose center is `(x, y)`.
@@ -512,6 +519,32 @@ pub fn shade(c: &CommandWords, s: &Scene<'_>, textures: &dyn Textures, x: f32, y
     let g = &s.groups[group_of(c) as usize];
     let k = w(g, 12) * clip_coverage(s, clip_of(c), x, y);
     scale4(color, k)
+}
+
+/// The pixel whose center is `(x, y)` after command `c` is drawn over `dst`: `c`'s color over
+/// it, or for a backdrop blur, `dst` turned into the blurred image as far as the blur covers the
+/// pixel (§5.6).
+pub fn composite(
+    c: &CommandWords,
+    s: &Scene<'_>,
+    textures: &dyn Textures,
+    x: f32,
+    y: f32,
+    dst: [f32; 4],
+) -> [f32; 4] {
+    if Kind::from_word(c[0]) != Some(Kind::Blur) {
+        return over(shade(c, s, textures, x, y), dst);
+    }
+    let p = &s.payload[c[3] as usize..];
+    let g = &s.groups[group_of(c) as usize];
+    let q = apply(g, 6, x, y);
+    let dist = |q: [f32; 2]| rect_distance(p, q[0], q[1]);
+    let d = dist(q);
+    let k = coverage(d * pixels_per_unit(g, x, y, d, &dist))
+        * w(g, 12)
+        * clip_coverage(s, clip_of(c), x, y);
+    let b = textures.backdrop(p[9], x, y);
+    core::array::from_fn(|i| dst[i] + (b[i] - dst[i]) * k)
 }
 
 fn shade_unclipped(
@@ -533,6 +566,10 @@ fn shade_unclipped(
     match Kind::from_word(c[0]) {
         Some(Kind::Path) => scale4(paint, path_coverage(p, x, y)),
         Some(Kind::Effect) => effect(c, s, paint, x, y),
+        Some(Kind::Blur) => {
+            let (d, k) = measure(&|q| rect_distance(p, q[0], q[1]));
+            scale4(textures.backdrop(p[9], x, y), coverage(d * k))
+        }
         Some(Kind::Rect) => {
             let (d, k) = measure(&|q| rect_distance(p, q[0], q[1]));
             fill_and_stroke(paint, d, k, w(p, 8), p[9])
@@ -633,6 +670,7 @@ fn member_distance(c: &CommandWords, s: &Scene<'_>, x: f32, y: f32) -> f32 {
     let k = 1.0 / w(g, 13);
     let d = match Kind::from_word(c[0]) {
         Some(Kind::Rect) => rect_distance(p, q[0], q[1]) - w(p, 8) * 0.5,
+        Some(Kind::Blur) => rect_distance(p, q[0], q[1]),
         Some(Kind::Circle) => length(q[0] - w(p, 0), q[1] - w(p, 1)) - w(p, 2) - w(p, 3) * 0.5,
         Some(Kind::Line) => line_distance(p, q[0], q[1]),
         Some(Kind::Triangle) => {
