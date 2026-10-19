@@ -16,7 +16,7 @@ use marlin_render::scene::{
     InstanceDesc, InstanceId, InstanceUpdate, MaterialDesc, MaterialId, MaterialUpdate, MeshId,
     MeshUpdate,
 };
-use marlin_render::shadows::{Vsm, VsmSettings, VsmShaders};
+use marlin_render::shadows::{Vsm, VsmFilter, VsmSettings, VsmShaders};
 use marlin_render::visibility::{ViewDesc, counters};
 use marlin_render::{
     Camera, Environment, Feedback, GpuScene, MeshData, MeshHandle, Meshes, PagePool, PagePoolDesc,
@@ -45,6 +45,7 @@ pub const SHADOW_SETTINGS: VsmSettings = VsmSettings {
     pool_pages: [8, 8],
     normal_offset: 0.0,
     depth_bias: 1.5,
+    filter: VsmFilter::SMRT,
 };
 
 /// Page pool slots the harness has.

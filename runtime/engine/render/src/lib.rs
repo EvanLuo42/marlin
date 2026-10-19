@@ -35,7 +35,7 @@ pub mod visibility;
 pub use lighting::Lighting;
 pub use meshes::{
     Camera, Environment, Feedback, MAX_POOL_SLOTS, MeshData, MeshHandle, Meshes, PagePool,
-    PagePoolDesc, StreamingShaders, Uploads,
+    PagePoolDesc, SUN_ANGULAR_DIAMETER_DEGREES, StreamingShaders, Uploads,
 };
 pub use post::{HDR_FORMAT, PostOutput, PostProcess, PostSettings, PostShaders};
 pub use scene::{GpuScene, RenderScene, ScatterShader, SceneIds, SceneUpdates};

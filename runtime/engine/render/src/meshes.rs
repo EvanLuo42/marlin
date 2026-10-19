@@ -83,7 +83,12 @@ pub struct Environment {
     pub ambient: [f32; 3],
     /// Linear RGBA.
     pub clear_color: [f32; 4],
+    /// The light's angular diameter, in radians: the sun's penumbra (0010 §5.3).
+    pub sun_angular_diameter: f32,
 }
+
+/// The sun's angular diameter seen from the earth, in degrees.
+pub const SUN_ANGULAR_DIAMETER_DEGREES: f32 = 0.53;
 
 impl Default for Environment {
     fn default() -> Self {
@@ -92,6 +97,7 @@ impl Default for Environment {
             light_color: [1.0, 0.96, 0.9],
             ambient: [0.08, 0.09, 0.12],
             clear_color: [0.02, 0.02, 0.03, 1.0],
+            sun_angular_diameter: SUN_ANGULAR_DIAMETER_DEGREES.to_radians(),
         }
     }
 }

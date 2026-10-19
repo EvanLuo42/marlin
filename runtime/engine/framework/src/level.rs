@@ -44,6 +44,8 @@ pub struct LevelEnvironment {
     pub ambient: [f32; 3],
     /// Linear RGBA.
     pub clear_color: [f32; 4],
+    /// The light's angular diameter, in degrees: how soft its shadows are.
+    pub sun_angular_diameter: f32,
 }
 
 impl Default for LevelEnvironment {
@@ -58,6 +60,7 @@ impl Default for LevelEnvironment {
             light_color: e.light_color,
             ambient: e.ambient,
             clear_color: e.clear_color,
+            sun_angular_diameter: marlin_render::SUN_ANGULAR_DIAMETER_DEGREES,
         }
     }
 }
@@ -70,6 +73,7 @@ impl LevelEnvironment {
             light_color: self.light_color,
             ambient: self.ambient,
             clear_color: self.clear_color,
+            sun_angular_diameter: self.sun_angular_diameter.to_radians(),
         }
     }
 }

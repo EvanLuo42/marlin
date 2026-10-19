@@ -27,7 +27,11 @@
 //! Free pages for new ones are those holding nothing valid first, then cached pages nothing
 //! marked this frame.
 //!
-//! Not yet (a later R2 step): SMRT soft shadows (a 3×3 PCF filters every level).
+//! # Filtering (R2h)
+//!
+//! The mask reads a pixel's level with [`VsmSettings::filter`]: a 3×3 PCF (L0), or rays marched
+//! toward the sun's disk (SMRT, L1–L2, [`Environment::sun_angular_diameter`]) for penumbrae
+//! that harden where an occluder meets the receiver.
 
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
@@ -125,6 +129,39 @@ pub struct VsmSettings {
     /// the light its depth is taken: in texels of its level.
     pub normal_offset: f32,
     pub depth_bias: f32,
+    /// How the mask filters the shadow map.
+    pub filter: VsmFilter,
+}
+
+/// How the sun shadow mask reads the shadow map (0010 §5.3).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum VsmFilter {
+    /// L0: a 3×3 percentage-closer filter of hard depth tests.
+    Pcf,
+    /// L1–L2: shadow map ray marching (SMRT): `rays` rays per pixel toward points on the sun's
+    /// disk, each tested at `steps` points; the fraction that reach the sun. An occluder near
+    /// the receiver blocks the rays before they spread, one far away after: contact hardening.
+    /// A ray is as long as makes its spread `penumbra_texels` texels of the receiver's level;
+    /// its last step tests everything beyond. Each ray starts up to `dither_texels` texels
+    /// from the receiver, so a shadow's edge is no harder than the shadow map's texels (with
+    /// the spread, at most half a page less two texels).
+    Smrt {
+        rays: u32,
+        steps: u32,
+        penumbra_texels: f32,
+        dither_texels: f32,
+    },
+}
+
+impl VsmFilter {
+    /// The desktop default: 8 rays of 8 steps, penumbrae up to 16 texels, starts dithered over
+    /// a texel.
+    pub const SMRT: Self = Self::Smrt {
+        rays: 8,
+        steps: 8,
+        penumbra_texels: 16.0,
+        dither_texels: 1.0,
+    };
 }
 
 impl VsmSettings {
@@ -139,6 +176,7 @@ impl VsmSettings {
         pool_pages: [64, 64],
         normal_offset: 2.0,
         depth_bias: 1.5,
+        filter: VsmFilter::SMRT,
     };
 
     /// Pages per side of a level.
@@ -200,6 +238,14 @@ struct Constants {
     normals: u32,
     generation: u32,
     invalidation_count: u32,
+    /// 0: PCF; else the SMRT rays per pixel, and steps per ray.
+    smrt_rays: u32,
+    smrt_steps: u32,
+    /// The texels of its level a ray spreads over, and the tangent of the sun's angular radius.
+    penumbra_texels: f32,
+    tan_sun_radius: f32,
+    /// How far from the receiver, in texels, a ray may start.
+    dither_texels: f32,
 }
 
 #[repr(C)]
@@ -427,6 +473,26 @@ impl Vsm {
         // The spheres whose shadows changed since the last frame.
         let mut invalidations: Vec<[f32; 4]> = scene.shadow_changes().to_vec();
         invalidations.extend(scene.spheres_of(meshes.changed_meshes()));
+        // A sun without size casts hard shadows: PCF.
+        let (smrt_rays, smrt_steps, penumbra_texels, dither_texels) = match s.filter {
+            VsmFilter::Smrt {
+                rays,
+                steps,
+                penumbra_texels,
+                dither_texels,
+            } if env.sun_angular_diameter > 0.0 && rays > 0 && steps > 0 => {
+                // The rays' reach, which marking covers, within half a page.
+                let room = (s.page_size / 2) as f32 - 2.0;
+                let dither = dither_texels.clamp(0.0, room);
+                (
+                    rays,
+                    steps,
+                    penumbra_texels.clamp(0.0, room - dither),
+                    dither,
+                )
+            }
+            _ => (0, 0, 0.0, 0.0),
+        };
         let p = eye.translation;
         let constants = Constants {
             inverse_view_projection: view_projection.inverse().to_cols_array(),
@@ -451,6 +517,11 @@ impl Vsm {
             normals: u32::from(material.is_some()),
             generation,
             invalidation_count: invalidations.len() as u32,
+            smrt_rays,
+            smrt_steps,
+            penumbra_texels,
+            dither_texels,
+            tan_sun_radius: marlin_math::scalar::tan(env.sun_angular_diameter * 0.5),
         };
 
         // Persistent: the pool, the cache table and the tags.
