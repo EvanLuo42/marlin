@@ -18,6 +18,7 @@
 | 维度 | 决定 | § |
 |---|---|---|
 | 总体 | **一个参数化的路径重采样框架**覆盖所有档位：DI 和 GI 放在同一个蓄水池里（PTE §6.1），档位只调分辨率、弹射数、终止 cache、shift 类型和邻居数 | 2 |
+| 路径归属 | 光按路径分成 `E`、`Dsun`、`Dnee`/`Dhit`、`I`、`S` 几类，每个档位给每一类指定负责者（蓄水池、VSM、镜面追踪、外部 GI、直接着色）；"只用 ReSTIR 做直接光"是其中一种配置，不另写一套 | 2.9 |
 | 最高档 | Cinematic（L4）就是完整的 ReSTIR PT Enhanced：hybrid shift，加 footprint 重连判据 | 2.3、3 |
 | 全档位通用的改进 | 配对空间复用、duplication map 去相关、向量权重去色噪、dual motion vector、只在初始采样做 Russian roulette、预采样 light tile | 2 |
 | target 函数 | 重采样用材质缓冲里的 proxy lobe，不按 closure 类型分发；只有最终着色用精确 BSDF（0011 §5） | 2.6 |
@@ -73,7 +74,7 @@
 每个蓄水池像素：
 
 1. 从材质缓冲读出 `x1` 的 proxy lobe（漫反射反照率、F0、粗糙度、法线，0011 §4.2）。
-2. **NEE**：从本 tile 分到的 light tile 里抽 C 个光源候选（C 按档位取 4–32，越往深的弹射越少，PTE §7：`32/2^b`），以 proxy lobe × 光源辐射亮度 × 几何项为 target 做 RIS。不含可见性。
+2. **NEE**：从本 tile 分到的 light tile 里抽 C 个光源候选（C 按档位取 4–32，越往深的弹射越少，PTE §7：`32/2^b`；Falcor 的代码是 `32/v²`，见 §2.10），以 proxy lobe × 光源辐射亮度 × 几何项为 target 做 RIS。不含可见性。
 3. **BSDF 采样**：按 proxy lobe 采样方向，发射线得到 `x2`。
 4. 在 `x2`：
    - L0、L1：直接查世界 radiance cache 作为入射辐射亮度，路径到此为止；
@@ -146,6 +147,75 @@ PTE §3：像素 A 从 B 复用时，A 要把 B 的样本 shift 过来，还要�
 - L4 强制在 NEE 光源顶点上重连，replay 时不再做光源采样（PTE §6.2.3）。
 - 预采样 light tile（Wyman & Panteleev 2021）：场景级 pass 每帧按功率采样出 128 个 tile，每个 tile 1024 个光源；每个 8×8 的屏幕 tile 取其中一个，提高缓存一致性。
 - ReSTIR 的 pass 是 compute，射线都是 inline ray query。
+
+### 2.9 路径分类与归属
+
+DI 和 GI 放进同一个蓄水池（§2.1），但不是每个档位、每个项目都让蓄水池负责全部光照：太阳在 L0–L2 走 VSM（§5.3），低粗糙度镜面在 L0–L3 走镜面追踪（§2.7），以后也可能有项目只用 ReSTIR 做直接光、间接光用别的方案（探针、屏幕空间、烘焙）。为此把一个像素收到的光按路径分成几类，每个档位为每一类指定一个**负责者**。
+
+| 类 | 路径 | 说明 |
+|---|---|---|
+| `E` | `x1` 自身的自发光 | 主可见点是光源或自发光表面 |
+| `Dsun` | `x1` → 太阳 | 方向光，包括 BSDF 采样碰到太阳圆盘 |
+| `Dnee` | `x1` 处 NEE 连到太阳以外的光源 | 局部光源、自发光三角形（§5.2）、天空 |
+| `Dhit` | `x1` 的 BSDF 射线打到光源或天空（`x2` 是光源） | `Dnee` 的 MIS 搭档 |
+| `I` | `x1` 的 BSDF 射线打到非光源表面，`x2` 往后反射过来的光 | 间接光；在哪里终止、查不查 cache 按档位（§2.2） |
+| `S` | proxy lobe 里粗糙度低于 τ 的镜面部分，所有长度 | §2.7 |
+
+| 类 | L0 | L1 | L2 | L3 | L4 | 外部 GI 配置 |
+|---|---|---|---|---|---|---|
+| `E` | 着色 | 着色 | 着色 | 着色 | 着色 | 着色 |
+| `Dsun` | VSM | VSM | VSM | 蓄水池 | 蓄水池 | VSM 或蓄水池（按档位） |
+| `Dnee`、`Dhit` | 蓄水池 | 蓄水池 | 蓄水池 | 蓄水池 | 蓄水池 | 蓄水池 |
+| `I` | 蓄水池（`x2` 查 cache） | 同左 | 蓄水池（`x2` NEE + cache） | 蓄水池（2 次弹射） | 蓄水池 | 外部 GI |
+| `S` | 镜面追踪 | 镜面追踪 | 镜面追踪 | 镜面追踪 | 蓄水池 | 镜面追踪或外部方案 |
+
+- "着色"指最终着色直接加上，不经过重采样。`E` 永远不进蓄水池（Falcor 也是这样，§2.10）。
+- 归属是一个 cvar 掩码（`r.restir.classes`），预设按档位填；蓄水池格式和 pass 不变，掩码只决定初始采样时哪些候选进 RIS、哪些写进残差。
+- **R3 的"ReSTIR DI"就是这张表的一种配置**：蓄水池只负责 `Dnee`、`Dhit`，路径长度到 `x2` 为止（BSDF 射线只为了找到光源，`x2` 不是光源就不贡献），`I` 暂时由现在的常数环境光负责。到 R4，`I` 换成蓄水池，代码不用分叉。关掉 ReSTIR 的档位只是把掩码清空，`Dnee`、`Dhit` 改由 clustered 光源网格（§5.4）不带阴影地着色。
+
+约束：
+
+1. **每一类恰好一个负责者**，否则会重复计算或者漏掉。
+2. **`Dnee` 和 `Dhit` 的负责者必须相同。**它们是同一个积分的两种采样策略，靠 MIS 合在一起；拆给两个负责者，就会重复计算或者失去 MIS。
+3. **外部 GI 只能返回反射光。**它在 `x2` 查到的辐射亮度不能包含光源表（§5.1、§5.2）里的光源和天空自身的发射，那些属于 `Dhit`；也不能包含太阳的直射（属于 `Dsun`），但太阳照亮 `x2` 之后反射的部分要有。反过来，蓄水池负责 `I` 时，SHaRC 的项（§4.1）也要把"自发光"和"反射光"分开存，查询时按需要相加。
+4. **太阳由 VSM 负责时**，NEE 的候选里没有太阳，天空的重要性采样排除太阳圆盘，BSDF 射线碰到太阳圆盘在蓄水池里贡献 0。
+5. **残差和降噪**：不进蓄水池的部分在最终着色里加上。没有噪声的（`E`、VSM 的 `Dsun`）在降噪之后合成；外部 GI 自带降噪的也在降噪之后合成，否则按漫反射/镜面解调后加进降噪器的输入。Falcor 把残差只写进颜色，不写进降噪器的输入（§2.10），这一点我们不照搬。
+
+### 2.10 Falcor 实现对照
+
+对照 Falcor 9.0 里 ReSTIR PT Enhanced 的实现（`Source/Modules/ReSTIRPathTracing`，由 `Source/RenderPasses/PathTracer` 驱动，`scripts/PathTracerReSTIRPT.py` 是示例配置），记下和本文相关的事实。下面的路径都相对于 Falcor 仓库。
+
+DI 和 GI 怎么合在一起：
+
+- **一个像素一个蓄水池**（`PathReservoir`，`PathReservoir.slang:309`）：M、权重、`integrand`（float3，也就是 f/p 的颜色）、路径标志（一个 uint 打包路径长度、重连顶点下标、`lastVertexNEE`、光源类型、重连点前后的 lobe 信息）、初始随机数种子、重连点的 hit 信息、Jacobian、到达重连点的入射辐射亮度和方向。不压缩约 80 B，压缩后约 64 B，和我们 hybrid 格式的 64 B 一致。
+- **初始采样是路径前缀上的流式 RIS**（`PathTracer.slang:831` 起的 `handleHit`）：每个顶点的 NEE 样本和 BSDF 命中的光源各是一个候选，先乘 NEE/BSDF 的 MIS 权重，再按 `integrand` 的亮度做 RIS（`PathReservoir.slang:568`、`651`）。DI 就是长度最短的那些候选，没有单独的 DI 流程。
+- **强制在 NEE 光源顶点上重连**（`ReSTIRPT.slang:385`）：主可见点上的 NEE 样本把光源点本身记成重连顶点（重连顶点下标 1），所以 DI 样本做 shift 时**不需要 random replay**，只要一条阴影射线（`ResamplingCommon.slang:646`；`GenerateRetraceWorkload.cs.slang:194` 只把下标大于 1 的样本排进 replay 队列）。这是 DI 和 GI 合并之后 DI 仍然便宜的原因。shift 里对 NEE 光源顶点跳过 footprint 和粗糙度判据，在目标像素重新算光源 pdf 和 NEE/BSDF 的 MIS 权重（`Shift.slang:259`、`328`、`373`）。
+- **时域和空间复用不区分 DI 和 GI**，同一套 pass、同一个 `shiftPath`。
+
+能不能只做一部分：
+
+- 有一个选项 `sampleDI`（默认开）：关掉以后，主可见点的 NEE 和第二个顶点碰到的光源、天空不进蓄水池，写进残差 `pathL0`，不经过重采样直接加到颜色上（`ReSTIRPT.slang:356`、`431`、`469`）。也就是"蓄水池只负责 GI，DI 另算"。
+- **反过来"只做 DI"的选项没有**；也没有最短路径长度、按长度排除的选项，只有最大弹射数。
+- 主可见点的自发光从不进蓄水池（只有 Area ReSTIR 模式例外），走残差。
+- 残差只写进颜色，`FetchDenoiserData` 只读蓄水池，**残差不进降噪器的输入**（`FetchDenoiserData.cs.slang:71` 起）。
+- 解析光源（点光、方向光）不做 MIS，时域复用时也不支持它们变化（`Shift.slang:350`；`HybridShiftTraceRays.slang:337`）。
+
+所以 §2.9 的归属掩码是 `sampleDI` 的推广：Falcor 只能把 DI 拿出去，我们要能把任意一类交给别的负责者，包括"只做 DI"。
+
+和本文其他各节的出入：
+
+- **NEE 候选数**：§2.2 按 PTE §7 写的是 `32/2^b`；Falcor 的代码是 `max(1, 32/v²)`，v 是顶点下标（`LightTileRISHelper.slang:54`），依次是 32、8、3、2、1。两者在第二个顶点就不同（16 和 8）。先按代码实现，实测之后再定（§14）。
+- **duplication map**（§2.4）：Falcor 里默认关掉（`enableDupMapMCapDownweighting`），公式和我们写的一致：17×17 窗口、除以 288、`lerp(Cap, 1, d^0.1)`（`ResamplingCommon.slang:756`）。我们保持默认开。
+- **dual motion vector**（§2.4）：Falcor 的实现是按材质的反射概率，在表面运动向量、delta 反射和 delta 透射运动向量里随机选**一个**（`ComputeReuseMotionVector.cs.slang:102`），去遮挡运动向量按 Zeng et al. 2021；不是同时试两个。实现时以代码为准，§2.4 的写法留作对照。
+- **向量权重**（§2.6）：Falcor 的 `integrand` 本来就是颜色，RIS 用它的亮度；另有一个默认关闭的 `useDecoupledShading` 累积空间复用里所有候选的颜色贡献。没有专门给降噪用的向量权重，我们 §2.6 的做法是自己的扩展。
+- **分辨率**：Falcor 里没有 1/4、1/2、棋盘分辨率的蓄水池，也没有蓄水池上采样（§2.6）。这些是我们自己加的，L0–L2 的质量要单独验证（§13）。
+- **其余的优化我们都已采用**，Falcor 里的位置留作实现时参考：
+  - 配对空间复用：预先算好的偏移图案，每帧统一做随机平移、翻转和转置；正向 shift 先算一次存进缓冲，逆向直接读邻居的结果（`SpatialPrecomputeShiftBuffer.cs.slang:121`、`SpatialResampling.cs.slang:158`）；
+  - replay 工作量压缩：16×16 tile 一组，wave 前缀和压缩，每个 warp 一次原子操作（`GenerateRetraceWorkload.cs.slang:279`）；
+  - Russian roulette 只在初始采样里用，replay 时照样消耗随机数但不终止（`PathTracer.slang:787`）；
+  - 用条件选择代替分支（`PathReservoir.slang:424`）；
+  - 蓄水池按 16×16 tile 内 Morton 序排布（`ReSTIRPathTracingParams.slang:39`）；
+  - 光线 payload 只有 20 B（`TracePassMinimalPayload.rt.slang:52`）。
 
 ## 3. 档位
 
@@ -420,6 +490,8 @@ PS5 一栏略微超出预算：画质模式默认用 30fps 的预设；性能模
 - §3 和 §11 的数值要在主机上实测之后再调：
   - L0/L1 能不能在 NS2 上撑住；
   - PS5 的 60fps 预设具体降哪一项。
+- NEE 候选数随深度递减的公式：`32/2^b`（PTE 正文）还是 `32/v²`（Falcor 代码），实测后定（§2.10）。
+- 外部 GI 方案（探针、屏幕空间、烘焙）接进来时，它返回"只含反射光"的约定（§2.9 第 3 条）怎么落到具体方案上。
 - ReGIR（世界网格的光源蓄水池）作为 light tile 的补充，在光源极多的场景里是否需要。
 - NRC 在 PS5 Pro 和 NS2 上的可用性，取决于平台 API。
 - graph 的"外部" pass（§7.2）：0007 要补这个 pass 类型。
