@@ -84,6 +84,9 @@ pub struct RenderSide {
     frame: u64,
     /// Streaming feedback not read back yet: the frame, its counters, requests and used marks.
     feedback: VecDeque<(u64, [Readback; 3])>,
+    /// Whether the meshes have once finished streaming in: until then the exposure follows the
+    /// scene at once, since a half-loaded scene (often only the sky) is no light to adapt from.
+    loaded: bool,
 }
 
 impl RenderSide {
@@ -122,6 +125,7 @@ impl RenderSide {
             frames_in_flight: FRAMES_IN_FLIGHT as u64,
             frame: 0,
             feedback: VecDeque::new(),
+            loaded: false,
         })
     }
 
@@ -193,6 +197,10 @@ impl RenderSide {
     ) -> TextureHandle<'g> {
         let size = *g.texture_desc(target);
         let (width, height) = (size.width, size.height);
+        if !self.loaded && !self.uploaded.is_empty() && self.meshes.streaming_idle() {
+            self.loaded = true;
+        }
+        let dt = if self.loaded { self.dt } else { f32::INFINITY };
         let uploads = self.meshes.take_uploads();
         let Self {
             meshes,
@@ -203,7 +211,6 @@ impl RenderSide {
             post,
             scene,
             scatter,
-            dt,
             camera,
             previous,
             feedback,
@@ -253,7 +260,7 @@ impl RenderSide {
             (material, shadow.mask)
         });
         let scene = lighting.add_passes(g, lit.map(|l| l.0), lit.map(|l| l.1), &env, width, height);
-        post.add_passes(g, scene, target, MAIN_VIEW, *dt).output
+        post.add_passes(g, scene, target, MAIN_VIEW, dt).output
     }
 
     /// Takes the streaming feedback of the frames `frames` has finished (every frame's readbacks

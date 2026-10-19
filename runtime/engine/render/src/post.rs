@@ -47,7 +47,8 @@ pub struct PostSettings {
     /// The log2 luminance range the histogram covers.
     pub min_log_luminance: f32,
     pub max_log_luminance: f32,
-    /// The darkest and brightest fractions of pixels the average leaves out.
+    /// The average log luminance takes the pixels from `low_fraction` of them, darkest first,
+    /// to `high_fraction`: the middle, so neither a dark sky nor a few highlights sway it.
     pub low_fraction: f32,
     pub high_fraction: f32,
 }
@@ -62,8 +63,8 @@ impl Default for PostSettings {
             adaptation_speed: 1.5,
             min_log_luminance: -12.0,
             max_log_luminance: 10.0,
-            low_fraction: 0.6,
-            high_fraction: 0.95,
+            low_fraction: 0.1,
+            high_fraction: 0.9,
         }
     }
 }
@@ -187,8 +188,8 @@ impl PostProcess {
 
     /// Declares the chain: bloom of `scene` (an [`HDR_FORMAT`] texture), its exposure on the
     /// compute queue, and the tonemap into `output` (overwritten). `view` keys the exposure that
-    /// adapts across frames; `dt` is the frame's time in seconds. Needs a graph with a state
-    /// table (the exposure is a persistent resource).
+    /// adapts across frames; `dt` is the frame's time in seconds (infinite: the exposure takes the
+    /// scene's at once). Needs a graph with a state table (the exposure is a persistent resource).
     pub fn add_passes<'g>(
         &'g self,
         g: &mut RenderGraph<'g>,
@@ -290,7 +291,11 @@ impl PostProcess {
         });
         let exposure = g.persistent("Exposure", view, GraphBufferDesc::new(8));
         let fresh = u32::from(exposure.fresh);
-        let adapt = 1.0 - marlin_math::scalar::exp(-dt.max(0.0) * s.adaptation_speed);
+        let adapt = if dt.is_infinite() {
+            1.0
+        } else {
+            1.0 - marlin_math::scalar::exp(-dt.max(0.0) * s.adaptation_speed)
+        };
         let pipeline = &self.exposure;
         let exposure = g.add_compute("Exposure", |b| {
             b.async_compute();

@@ -58,11 +58,10 @@ fn frame_of(frame: &mut FrameContext, luminance: f32, dt: f32) -> u8 {
     pixels[centre]
 }
 
-/// What the chain gives a uniform scene whose exposure has settled: exposure `1 / (1.2 * 2^EV100)`
-/// with EV100 = log2(L * 100 / 12.5), so the exposed value is `(1 + bloom) / 9.6` whatever L is,
-/// then the filmic curve.
+/// What the chain gives a uniform scene whose exposure has settled: the exposure brings L to middle
+/// grey, so the exposed value is `0.18 * (1 + bloom)` whatever L is, then the filmic curve.
 fn settled() -> u8 {
-    let x: f32 = (1.0 + post().settings.bloom_intensity) / 9.6;
+    let x: f32 = 0.18 * (1.0 + post().settings.bloom_intensity);
     let y = (x * (2.51 * x + 0.03) / (x * (2.43 * x + 0.59) + 0.14)).clamp(0.0, 1.0);
     (y * 255.0).round() as u8
 }

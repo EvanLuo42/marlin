@@ -137,14 +137,16 @@ public struct ExposureArgs
     public uint Fresh;
     /// Stops added to the exposure.
     public float Compensation;
-    /// The darkest and brightest fractions of pixels left out of the average.
+    /// The average takes the pixels from this fraction of them, darkest first, to that one.
     public float LowFraction;
     public float HighFraction;
 }
 
+/// The exposed value of the average luminance.
+const float MiddleGrey = 0.18;
+
 /// The average log luminance of the pixels between `LowFraction` and `HighFraction` of the
-/// histogram, adapted over time, and the exposure for it: EV100 from the average (sensor
-/// calibration 12.5, ISO 100) and the saturation-based exposure `1 / (1.2 * 2^EV100)`.
+/// histogram, adapted over time, and the exposure that brings it to middle grey (0.18).
 [Compute(1, 1, 1)]
 public void Exposure([Push] in ExposureArgs a)
 {
@@ -170,8 +172,7 @@ public void Exposure([Push] in ExposureArgs a)
     float measured = weight > 0 ? sum / weight : a.MinLogLuminance;
     float previous = AsFloat(a.Exposure.Load(0));
     float adapted = a.Fresh != 0 ? measured : Lerp(previous, measured, a.Adapt);
-    float ev100 = adapted + Log2(100.0 / 12.5);
-    float exposure = Exp2(a.Compensation) / (1.2 * Exp2(ev100));
+    float exposure = Exp2(a.Compensation - adapted) * MiddleGrey;
     a.Exposure.Store(0, AsUInt(adapted));
     a.Exposure.Store(4, AsUInt(exposure));
 }

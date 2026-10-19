@@ -149,6 +149,15 @@ fn at(pixels: &[u32], x: u32, y: u32) -> [u8; 3] {
     rgb(pixels[(y * WIDTH + x) as usize])
 }
 
+/// Pixels near the middle (where the sphere is, parts of it behind the spinning torus) that
+/// `is` holds for.
+fn around_center(pixels: &[u32], is: impl Fn([u8; 3]) -> bool) -> usize {
+    (HEIGHT / 2 - 8..HEIGHT / 2 + 8)
+        .flat_map(|y| (WIDTH / 2 - 8..WIDTH / 2 + 8).map(move |x| at(pixels, x, y)))
+        .filter(|&c| is(c))
+        .count()
+}
+
 /// What the sample must look like: the same blue-black background at both top corners (the
 /// clear color, exposed and tonemapped), the orange sphere in the middle, the grey ground at the
 /// bottom.
@@ -163,11 +172,10 @@ fn check_sample(pixels: &[u32]) {
         other.iter().zip(clear).all(|(a, b)| a.abs_diff(b) <= 1),
         "background at both corners: {other:?} and {clear:?}"
     );
-    let center = at(pixels, WIDTH / 2, HEIGHT / 2);
-    assert!(
-        center[0] > center[1] && center[1] > center[2] && center[0] > 60,
-        "the orange sphere: {center:?}"
-    );
+    let orange = around_center(pixels, |c| {
+        c[0] > c[1] && c[1] > c[2] && c[0] > 60 && c[0] > c[2] + 40
+    });
+    assert!(orange > 10, "the orange sphere: {orange} pixels");
     let ground = at(pixels, WIDTH / 2, HEIGHT - 3);
     let spread = ground.iter().max().unwrap() - ground.iter().min().unwrap();
     assert!(ground[0] > 20 && spread < 12, "the grey ground: {ground:?}");
@@ -276,11 +284,57 @@ fn editing_the_level_changes_the_picture_live() {
     std::fs::write(&path, edited).unwrap();
     wait_until(Duration::from_secs(30), "the sphere to turn green", || {
         let pixels = viewer.frame(&mut engine);
-        let [r, g, b] = at(&pixels, WIDTH / 2, HEIGHT / 2).map(u32::from);
         // Exposed and tonemapped, so all channels rise: green clearly ahead of the others.
-        g > r.max(b) + 40
+        around_center(&pixels, |c| {
+            let [r, g, b] = c.map(u32::from);
+            g > r.max(b) + 40
+        }) > 10
     });
     // Only the level reloaded; its meshes stayed on the GPU.
     assert_eq!(viewer.render.mesh_count(), 3);
     drop(cookd);
+}
+
+/// The sample's brightness over four seconds from its first frame: the exposure takes the loaded
+/// scene's at once and holds it, neither fading down from a half-loaded frame nor drifting.
+#[test]
+fn the_exposure_holds_steady_from_the_first_frame() {
+    let root = sample("exposure");
+    let package = package(&root);
+    let level: Uuid = LEVEL.parse().unwrap();
+    let boot = mount(&ContentSettings {
+        packages: vec![package],
+        cookd: None,
+        platform: marlin_rt::PLATFORM.into(),
+        level,
+    })
+    .unwrap();
+    let (mut engine, mut viewer, _) = start(&boot);
+    let mean = |px: &[u32]| {
+        px.iter()
+            .map(|p| ((p & 255) + ((p >> 8) & 255) + ((p >> 16) & 255)) as f32 / 3.0)
+            .sum::<f32>()
+            / px.len() as f32
+    };
+    let mut means = Vec::new();
+    for _ in 0..240 {
+        let delta = engine.frame(1.0 / 60.0, None, None);
+        let px = viewer
+            .offscreen
+            .render(viewer.device, &mut viewer.render, &delta)
+            .unwrap();
+        means.push(mean(&px));
+    }
+    let (first, last) = (means[0], means[239]);
+    // Middle grey through the filmic curve, written linear: about 0.4 of full scale.
+    assert!((70.0..130.0).contains(&last), "settled mean {last}");
+    assert!(
+        (first - last).abs() < 6.0,
+        "first frame {first}, settled {last}"
+    );
+    let (lo, hi) = means
+        .iter()
+        .fold((f32::MAX, f32::MIN), |(lo, hi), &m| (lo.min(m), hi.max(m)));
+    assert!(hi - lo < 8.0, "means from {lo} to {hi}");
+    drop(engine);
 }
