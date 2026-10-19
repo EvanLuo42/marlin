@@ -149,10 +149,10 @@ fn at(pixels: &[u32], x: u32, y: u32) -> [u8; 3] {
     rgb(pixels[(y * WIDTH + x) as usize])
 }
 
-/// Pixels near the middle (where the sphere is, parts of it behind the spinning torus) that
-/// `is` holds for.
+/// Pixels around the middle and above it (where the sphere is, parts of it behind the spinning
+/// torus) that `is` holds for.
 fn around_center(pixels: &[u32], is: impl Fn([u8; 3]) -> bool) -> usize {
-    (HEIGHT / 2 - 8..HEIGHT / 2 + 8)
+    (HEIGHT / 2 - 16..HEIGHT / 2 + 8)
         .flat_map(|y| (WIDTH / 2 - 8..WIDTH / 2 + 8).map(move |x| at(pixels, x, y)))
         .filter(|&c| is(c))
         .count()
