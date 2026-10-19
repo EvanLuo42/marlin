@@ -22,12 +22,12 @@ use crate::{
     BuildFlags, ClearColor, ClockCalibration, ColorSpace, ComputePipelineDesc,
     DepthStencilViewDesc, DeviceDesc, Features, Fence, FenceWait, Format, FormatSupport,
     FrameStatistics, GraphicsPipelineDesc, HdrMetadata, HeapDesc, IndexFormat, IndirectArgs,
-    InstanceDesc, MarkerPoint, MemoryBudget, MemoryRequirements, MeshPipelineDesc, OutputInfo,
-    Pageable, PredicateSkip, PresentMode, PresentStatus, QueryPoolDesc, QueueType, Rect,
-    RenderPassDesc, RenderTargetView, RenderTargetViewDesc, ResidencyPriority, Result, SamplerDesc,
-    ShaderFormat, ShadingRate, ShadingRateCombiner, SparseBind, SparseTextureLayout, SubmitDesc,
-    SubresourceRange, SurfaceHandle, SwapchainDesc, Texture, TextureBarrier, TextureCopy,
-    TextureDesc, TextureResolve, TextureViewDesc, Viewport,
+    InstanceDesc, MarkerPoint, MemoryBudget, MemoryRequirements, MemoryStats, MeshPipelineDesc,
+    OutputInfo, Pageable, PredicateSkip, PresentMode, PresentStatus, QueryPoolDesc, QueueType,
+    Rect, RenderPassDesc, RenderTargetView, RenderTargetViewDesc, ResidencyPriority, Result,
+    SamplerDesc, ShaderFormat, ShadingRate, ShadingRateCombiner, SparseBind, SparseTextureLayout,
+    SubmitDesc, SubresourceRange, SurfaceHandle, SwapchainDesc, Texture, TextureBarrier,
+    TextureCopy, TextureDesc, TextureResolve, TextureViewDesc, Viewport,
 };
 
 pub(crate) trait Types {
@@ -185,6 +185,7 @@ pub(crate) trait Device: Types {
     ) -> Result<Self::Texture>;
 
     fn memory_budget(device: &Self::Device) -> Result<MemoryBudget>;
+    fn memory_stats(device: &Self::Device) -> MemoryStats;
     fn set_memory_reservation(device: &Self::Device, local: u64, non_local: u64) -> Result<()>;
     fn make_resident(device: &Self::Device, objects: &[Pageable<'_>]) -> Result<()>;
     fn evict(device: &Self::Device, objects: &[Pageable<'_>]) -> Result<()>;

@@ -5,6 +5,7 @@
 //! Run alone with `cargo test -p marlin-rhi --test gpu`.
 #![cfg(marlin_platform = "windows")]
 
+mod allocator;
 mod clears;
 mod draw;
 mod indirect;

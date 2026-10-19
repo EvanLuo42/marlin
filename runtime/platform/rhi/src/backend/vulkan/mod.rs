@@ -39,11 +39,12 @@ use crate::{
     ClockCalibration, ColorSpace, ComputePipelineDesc, DepthStencilViewDesc, DeviceDesc, Error,
     ErrorKind, Features, Fence as PublicFence, FenceWait, Format, FormatSupport, FrameStatistics,
     GraphicsPipelineDesc, HdrMetadata, HeapDesc, IndexFormat, IndirectArgs, InstanceDesc,
-    MarkerPoint, MemoryBudget, MemoryRequirements, MeshPipelineDesc, OutputInfo, Pageable,
-    PredicateSkip, PresentMode, PresentStatus, QueryPoolDesc, QueueType, Rect, RenderPassDesc,
-    RenderTargetViewDesc, ResidencyPriority, Result, SamplerDesc, ShadingRate, ShadingRateCombiner,
-    SparseBind, SparseTextureLayout, SubmitDesc, SubresourceRange, SurfaceHandle, SwapchainDesc,
-    TextureBarrier, TextureCopy, TextureDesc, TextureResolve, TextureViewDesc, Viewport,
+    MarkerPoint, MemoryBudget, MemoryRequirements, MemoryStats, MeshPipelineDesc, OutputInfo,
+    Pageable, PredicateSkip, PresentMode, PresentStatus, QueryPoolDesc, QueueType, Rect,
+    RenderPassDesc, RenderTargetViewDesc, ResidencyPriority, Result, SamplerDesc, ShadingRate,
+    ShadingRateCombiner, SparseBind, SparseTextureLayout, SubmitDesc, SubresourceRange,
+    SurfaceHandle, SwapchainDesc, TextureBarrier, TextureCopy, TextureDesc, TextureResolve,
+    TextureViewDesc, Viewport,
 };
 use ffi::*;
 
@@ -327,6 +328,10 @@ impl crate::contract::Device for Backend {
 
     fn memory_budget(device: &device::Device) -> Result<MemoryBudget> {
         residency::memory_budget(device)
+    }
+
+    fn memory_stats(device: &device::Device) -> MemoryStats {
+        device.allocator.stats()
     }
 
     fn set_memory_reservation(device: &device::Device, local: u64, non_local: u64) -> Result<()> {

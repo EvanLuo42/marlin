@@ -37,9 +37,12 @@
 //! - **Indirect commands set one push constant** ([`INDIRECT_CONSTANT_WORD`]) per record, so one
 //!   multi-draw runs many differently parameterized draws (Vulkan device-generated commands,
 //!   D3D12 command signatures); commands that do not need it say so and run natively.
-//! - **Memory** is committed per resource, placed in [`Heap`]s where resources may alias, or
-//!   bound tile by tile to sparse resources. Sub-allocation policy lives above the RHI; the RHI
-//!   reports the OS memory budget and pages heaps in and out on request.
+//! - **Memory**: committed resources are suballocated from large driver blocks per memory type
+//!   (TLSF), or get memory of their own when large or when the driver asks
+//!   (docs/design/0017-rhi-memory.md). [`Heap`]s hold placed resources that may alias, and
+//!   sparse resources bind heap memory tile by tile. The RHI reports the OS memory budget and its
+//!   own usage ([`Device::memory_stats`]) and pages memory in and out on request. [`Tlsf`], the
+//!   suballocator, also serves ranges above the RHI (mega-buffers).
 //! - **Ray tracing is inline ray queries** over [`AccelerationStructure`]s, from any shader. There
 //!   are no ray tracing pipelines or shader tables.
 //! - **Shaders are bytecode** ([`ShaderModule`]): SPIR-V, DXIL or a console format
@@ -71,6 +74,7 @@ mod commands;
 mod contract;
 mod error;
 mod frames;
+mod memory;
 mod types;
 
 pub use api::{
@@ -81,6 +85,7 @@ pub use api::{
 pub use commands::{MAX_VIEWPORTS, MEMORY_BARRIER_ACCESS};
 pub use error::{Error, ErrorKind, Result};
 pub use frames::FramesInFlight;
+pub use memory::{Tlsf, TlsfAllocation};
 pub use types::{
     ACCELERATION_STRUCTURE_ALIGNMENT, AccelerationStructureAabbs, AccelerationStructureCopy,
     AccelerationStructureGeometry, AccelerationStructureInputs, AccelerationStructureInstance,
@@ -93,20 +98,20 @@ pub use types::{
     DepthStencilViewDesc, DeviceDesc, DispatchIndirectArgs, DrawIndexedIndirectArgs,
     DrawIndirectArgs, Features, FenceWait, Filter, Format, FormatFeatures, FormatSupport,
     FrameStatistics, FrontFace, GeometryFlags, GraphicsApi, GraphicsPipelineDesc, HdrMetadata,
-    HeapDesc, HeapKind, INDIRECT_CONSTANT_WORD, INSTANCE_ALIGNMENT, IndexFormat, IndirectArgs,
-    InstanceDesc, InstanceFlags, Layout, LoadOp, MAX_BINDLESS_RESOURCES, MAX_BINDLESS_SAMPLERS,
-    MAX_COLOR_ATTACHMENTS, MAX_PUSH_CONSTANTS, MAX_UNIFORM_SIZE, MSAA_PLACEMENT_ALIGNMENT,
-    MarkerPoint, MemoryBudget, MemoryLocation, MemoryRequirements, MemoryUsage, MeshPipelineDesc,
-    MultisampleState, OutputInfo, PLACEMENT_ALIGNMENT, Pageable, PipelineStatistics, PolygonMode,
-    PredicateSkip, PresentMode, PresentStatus, PrimitiveTopology, QueryKind, QueryPoolDesc,
-    QueueType, RasterState, Rect, RenderPassDesc, RenderTargetViewDesc, ResidencyPriority,
-    SPARSE_TILE_SIZE, STORAGE_ALIGNMENT, SamplerDesc, SamplerReduction, ShaderFormat, ShaderModule,
-    ShadingRate, ShadingRateCombiner, SparseBind, SparseTextureLayout, SparseTextureRegion, Stage,
-    StencilFace, StencilOp, StencilState, StoreOp, SubmitDesc, SubresourceRange, SurfaceHandle,
-    SwapchainDesc, TEXTURE_OFFSET_ALIGNMENT, TEXTURE_ROW_PITCH_ALIGNMENT, TextureBarrier,
-    TextureCopy, TextureDesc, TextureDimension, TextureResolve, TextureState, TextureUsage,
-    TextureViewDesc, TextureViewDimension, UNIFORM_ALIGNMENT, VariableRateShading, VertexFormat,
-    Viewport, aligned_row_pitch,
+    HeapDesc, HeapKind, HeapStats, INDIRECT_CONSTANT_WORD, INSTANCE_ALIGNMENT, IndexFormat,
+    IndirectArgs, InstanceDesc, InstanceFlags, Layout, LoadOp, MAX_BINDLESS_RESOURCES,
+    MAX_BINDLESS_SAMPLERS, MAX_COLOR_ATTACHMENTS, MAX_PUSH_CONSTANTS, MAX_UNIFORM_SIZE,
+    MSAA_PLACEMENT_ALIGNMENT, MarkerPoint, MemoryBudget, MemoryLocation, MemoryRequirements,
+    MemoryStats, MemoryUsage, MeshPipelineDesc, MultisampleState, OutputInfo, PLACEMENT_ALIGNMENT,
+    Pageable, PipelineStatistics, PolygonMode, PredicateSkip, PresentMode, PresentStatus,
+    PrimitiveTopology, QueryKind, QueryPoolDesc, QueueType, RasterState, Rect, RenderPassDesc,
+    RenderTargetViewDesc, ResidencyPriority, SPARSE_TILE_SIZE, STORAGE_ALIGNMENT, SamplerDesc,
+    SamplerReduction, ShaderFormat, ShaderModule, ShadingRate, ShadingRateCombiner, SparseBind,
+    SparseTextureLayout, SparseTextureRegion, Stage, StencilFace, StencilOp, StencilState, StoreOp,
+    SubmitDesc, SubresourceRange, SurfaceHandle, SwapchainDesc, TEXTURE_OFFSET_ALIGNMENT,
+    TEXTURE_ROW_PITCH_ALIGNMENT, TextureBarrier, TextureCopy, TextureDesc, TextureDimension,
+    TextureResolve, TextureState, TextureUsage, TextureViewDesc, TextureViewDimension,
+    UNIFORM_ALIGNMENT, VariableRateShading, VertexFormat, Viewport, aligned_row_pitch,
 };
 
 /// The shader bytecode this build's backend consumes. Engine code picks shader blobs with it

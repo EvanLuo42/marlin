@@ -13,7 +13,7 @@ use super::descriptor::Bindless;
 use super::diag::Lost;
 use super::ffi::*;
 use super::instance::{Adapter, Instance, InstanceShared};
-use super::memory::MemoryInfo;
+use super::memory::{MemoryInfo, VkAllocator};
 use super::queue::Queue;
 use super::resource::InternalWork;
 use super::{check, unsupported};
@@ -214,6 +214,8 @@ pub(crate) struct Shared {
     pub(crate) ext: DeviceExtensions,
     pub(crate) families: Families,
     pub(crate) memory: MemoryInfo,
+    /// Committed resources' memory (memory.rs); its blocks are freed in `Drop`.
+    pub(crate) allocator: VkAllocator,
     pub(crate) lost: Lost,
     /// Dropped before the device, in `Drop`.
     pub(crate) bindless: ManuallyDrop<Bindless>,
@@ -236,6 +238,7 @@ impl Drop for Shared {
             (self.fns.vkDeviceWaitIdle)(self.raw);
             ManuallyDrop::drop(&mut self.bindless);
             self.internal.destroy(&self.fns, self.raw);
+            self.allocator.destroy(self);
             (self.fns.vkDestroyDevice)(self.raw, ptr::null());
         }
     }
@@ -754,6 +757,7 @@ pub(crate) fn create(instance: &Instance, desc: &DeviceDesc) -> Result<(Device, 
 
     let tearing = super::swapchain::tearing(shared_instance, physical);
     let features = report_features(&chain, &ext, &props, &families, &memory, tearing);
+    let allocator = memory.allocator(&props.limits);
     let shared = Arc::new(Shared {
         raw,
         physical,
@@ -764,6 +768,7 @@ pub(crate) fn create(instance: &Instance, desc: &DeviceDesc) -> Result<(Device, 
         properties: props,
         ext,
         families: families.clone(),
+        allocator,
         memory,
         lost: Lost::default(),
         bindless: ManuallyDrop::new(bindless),

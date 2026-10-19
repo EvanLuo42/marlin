@@ -37,7 +37,7 @@ use crate::contract::{Fences, Object, Queues, Rhi, Types};
 use crate::{
     AdapterInfo, AdapterKind, AdapterPreference, BufferDesc, ClockCalibration, ColorSpace,
     DeviceDesc, Error, ErrorKind, Fence as PublicFence, FenceWait, InstanceDesc, MemoryBudget,
-    MemoryUsage, OutputInfo, Pageable, QueryKind, QueryPoolDesc, QueueType, Rect,
+    MemoryStats, MemoryUsage, OutputInfo, Pageable, QueryKind, QueryPoolDesc, QueueType, Rect,
     ResidencyPriority, Result, SparseBind, SparseTextureRegion, SubmitDesc, TextureDesc,
 };
 use diag::{Lost, Validation, flush};
@@ -747,6 +747,11 @@ impl crate::contract::Device for Backend {
             local: query(DXGI_MEMORY_SEGMENT_GROUP_LOCAL)?,
             non_local: query(DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL)?,
         })
+    }
+
+    /// Committed resources are not pooled here yet (docs/design/0017-rhi-memory.md §7).
+    fn memory_stats(_device: &Device) -> MemoryStats {
+        MemoryStats::default()
     }
 
     fn set_memory_reservation(device: &Device, local: u64, non_local: u64) -> Result<()> {

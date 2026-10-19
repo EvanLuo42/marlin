@@ -2324,6 +2324,31 @@ pub struct MemoryBudget {
     pub non_local: MemoryUsage,
 }
 
+/// [`Device::memory_stats`](crate::Device::memory_stats): the driver memory the RHI holds, on one
+/// side of [`MemoryBudget`]'s split.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub struct HeapStats {
+    /// Blocks resources are suballocated from (docs/design/0017-rhi-memory.md).
+    pub blocks: u32,
+    pub block_bytes: u64,
+    /// Resources in those blocks, and the bytes they take.
+    pub suballocations: u32,
+    pub suballocated_bytes: u64,
+    /// Driver allocations of their own: dedicated resources and [`Heap`](crate::Heap)s.
+    pub dedicated: u32,
+    pub dedicated_bytes: u64,
+}
+
+/// [`Device::memory_stats`](crate::Device::memory_stats).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub struct MemoryStats {
+    pub local: HeapStats,
+    pub non_local: HeapStats,
+    /// Driver allocations made since the device was created (`vkAllocateMemory`, heap
+    /// creation): each costs tens of microseconds, so a steady frame should add none.
+    pub driver_allocations: u64,
+}
+
 /// Which memory the OS pages out first when it must ([`Device::set_residency_priority`]).
 ///
 /// [`Device::set_residency_priority`]: crate::Device::set_residency_priority

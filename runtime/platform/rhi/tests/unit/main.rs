@@ -2,3 +2,4 @@
 //! Run alone with `cargo test -p marlin-rhi --test unit`.
 
 mod error;
+mod tlsf;

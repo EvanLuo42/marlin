@@ -22,13 +22,13 @@ use crate::{
     ComputePipelineDesc, DepthState, DepthStencilViewDesc, DeviceDesc, Error, ErrorKind, Features,
     FenceWait, Format, FormatFeatures, FormatSupport, FrameStatistics, GraphicsPipelineDesc,
     HdrMetadata, HeapDesc, HeapKind, InstanceDesc, MAX_COLOR_ATTACHMENTS, MAX_UNIFORM_SIZE,
-    MemoryBudget, MemoryLocation, MemoryRequirements, MeshPipelineDesc, MultisampleState,
-    OutputInfo, Pageable, PresentMode, PresentStatus, PrimitiveTopology, QueryKind, QueryPoolDesc,
-    QueueType, RasterState, RenderTargetViewDesc, ResidencyPriority, Result, SPARSE_TILE_SIZE,
-    STORAGE_ALIGNMENT, SamplerDesc, SamplerReduction, SparseBind, SparseTextureLayout,
-    SparseTextureRegion, SubmitDesc, SubresourceRange, SurfaceHandle, SwapchainDesc, TextureDesc,
-    TextureDimension, TextureUsage, TextureViewDesc, TextureViewDimension, UNIFORM_ALIGNMENT,
-    VariableRateShading,
+    MemoryBudget, MemoryLocation, MemoryRequirements, MemoryStats, MeshPipelineDesc,
+    MultisampleState, OutputInfo, Pageable, PresentMode, PresentStatus, PrimitiveTopology,
+    QueryKind, QueryPoolDesc, QueueType, RasterState, RenderTargetViewDesc, ResidencyPriority,
+    Result, SPARSE_TILE_SIZE, STORAGE_ALIGNMENT, SamplerDesc, SamplerReduction, SparseBind,
+    SparseTextureLayout, SparseTextureRegion, SubmitDesc, SubresourceRange, SurfaceHandle,
+    SwapchainDesc, TextureDesc, TextureDimension, TextureUsage, TextureViewDesc,
+    TextureViewDimension, UNIFORM_ALIGNMENT, VariableRateShading,
 };
 
 pub(crate) fn invalid() -> Error {
@@ -666,6 +666,12 @@ impl Device {
     /// [`MemoryUsage::headroom`]: crate::MemoryUsage::headroom
     pub fn memory_budget(&self) -> Result<MemoryBudget> {
         Backend::memory_budget(&self.raw)
+    }
+
+    /// The driver memory this device holds: suballocation blocks, dedicated allocations and heaps
+    /// (docs/design/0017-rhi-memory.md), and how many driver allocations it made so far.
+    pub fn memory_stats(&self) -> MemoryStats {
+        Backend::memory_stats(&self.raw)
     }
 
     /// Asks the OS to keep this much local and non-local memory for the process even under

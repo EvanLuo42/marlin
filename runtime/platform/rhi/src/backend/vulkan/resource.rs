@@ -12,10 +12,14 @@ use alloc::sync::Arc;
 use super::descriptor::{Descriptor, Table};
 use super::device::{Device, Shared};
 use super::ffi::*;
-use super::memory::{Dedicated, Heap, Memory};
+use super::memory::{
+    Bound, Dedicated, Heap, Memory, VkAllocator, buffer_requirements as buffer_memory_requirements,
+    image_requirements,
+};
 use super::queue::Queue;
 use super::share::External;
 use super::unsupported;
+use crate::memory::{Allocation, ResourceClass};
 use crate::{
     BufferDesc, BufferUsage, BufferViewDesc, BufferViewKind, DepthStencilViewDesc, Format,
     FormatSupport, MemoryRequirements, RenderTargetViewDesc, Result, SamplerDesc, SparseBind,
@@ -24,14 +28,33 @@ use crate::{
 
 // --- Buffers ---
 
+/// Alignment of committed buffers' device addresses: the largest of the alignments buffer offsets
+/// must have (views, uniforms, acceleration structure storage and scratch), so any of them may
+/// start at a buffer's offset 0.
+const BUFFER_ADDRESS_ALIGNMENT: u64 = {
+    let a = if UNIFORM_ALIGNMENT > STORAGE_ALIGNMENT {
+        UNIFORM_ALIGNMENT
+    } else {
+        STORAGE_ALIGNMENT
+    };
+    if a > ACCELERATION_STRUCTURE_ALIGNMENT {
+        a
+    } else {
+        ACCELERATION_STRUCTURE_ALIGNMENT
+    }
+};
+
 pub(crate) struct BufferInner {
     shared: Arc<Shared>,
     raw: VkBuffer,
     address: u64,
     mapped: Option<NonNull<u8>>,
-    /// Committed memory, or the heap a placed buffer lives in; `None` for sparse and wrapped
-    /// buffers.
+    /// Dedicated memory, or the heap a placed buffer lives in; `None` for suballocated, sparse
+    /// and wrapped buffers.
     memory: Option<Arc<Memory>>,
+    /// The suballocation of a committed buffer in an allocator block, freed after `raw` is
+    /// destroyed.
+    pooled: Option<Allocation<VkDeviceMemory>>,
     /// Destroy `raw` on drop (false for buffers wrapped from native ones).
     owned: bool,
 }
@@ -48,6 +71,16 @@ impl Drop for BufferInner {
             // SAFETY: no pending submission uses the buffer (the public API's contract).
             unsafe { (self.shared.fns.vkDestroyBuffer)(self.shared.raw, self.raw, ptr::null()) };
         }
+        free_pooled(&self.shared, self.pooled.take());
+    }
+}
+
+/// Returns a destroyed resource's suballocation to its block.
+fn free_pooled(shared: &Shared, pooled: Option<Allocation<VkDeviceMemory>>) {
+    if let Some(a) = pooled {
+        // SAFETY: the resource bound to it is destroyed and no submission uses it (the public
+        // API's contract).
+        unsafe { VkAllocator::free(&shared.allocator, shared, a) };
     }
 }
 
@@ -68,7 +101,8 @@ impl Buffer {
         self.0.mapped
     }
 
-    /// The memory it is bound to: its own for committed buffers, the heap's for placed ones.
+    /// The memory it is bound to when that is its own (dedicated) or a heap's (placed); `None` for
+    /// suballocated buffers, whose block is shared.
     pub(crate) fn memory(&self) -> Option<&Memory> {
         self.0.memory.as_deref()
     }
@@ -85,6 +119,17 @@ impl Buffer {
         memory: Option<Arc<Memory>>,
         owned: bool,
     ) -> Self {
+        Self::with_memory(shared, raw, mapped, memory, None, owned)
+    }
+
+    fn with_memory(
+        shared: &Arc<Shared>,
+        raw: VkBuffer,
+        mapped: Option<NonNull<u8>>,
+        memory: Option<Arc<Memory>>,
+        pooled: Option<Allocation<VkDeviceMemory>>,
+        owned: bool,
+    ) -> Self {
         let info = VkBufferDeviceAddressInfo {
             buffer: raw,
             ..Default::default()
@@ -97,6 +142,7 @@ impl Buffer {
             address,
             mapped,
             memory,
+            pooled,
             owned,
         }))
     }
@@ -194,7 +240,9 @@ pub(crate) fn create_buffer(device: &Device, desc: &BufferDesc) -> Result<Buffer
     create_buffer_with(device, desc, external.as_ref())
 }
 
-/// A committed buffer; `external` makes its memory exportable, or imports it (share.rs).
+/// A committed buffer, suballocated unless large or the driver prefers memory of its own
+/// (0017 §4); `external` makes its memory exportable, or imports it (share.rs), in a dedicated
+/// allocation.
 pub(crate) fn create_buffer_with(
     device: &Device,
     desc: &BufferDesc,
@@ -208,38 +256,47 @@ pub(crate) fn create_buffer_with(
         0,
         external.map_or(ptr::null(), |e| e.buffer_info()),
     )?;
-    let info = VkBufferMemoryRequirementsInfo2 {
-        buffer: raw,
-        ..Default::default()
-    };
-    let mut req = VkMemoryRequirements2::default();
-    // SAFETY: a live buffer and valid structures.
-    unsafe { (s.fns.vkGetBufferMemoryRequirements2)(s.raw, &info, &mut req) };
-    let r = req.memoryRequirements;
-    let Some(memory_type) = s.memory.find_type(r.memoryTypeBits, desc.memory) else {
+    let mut r = buffer_memory_requirements(s, raw);
+    // Addresses keep the alignment views, uniforms and acceleration structures need, as a
+    // dedicated allocation would have: offsets inside the buffer are then all the caller's.
+    r.memory.alignment = r.memory.alignment.max(BUFFER_ADDRESS_ALIGNMENT);
+    let Some(memory_type) = s.memory.find_type(r.memory.memoryTypeBits, desc.memory) else {
         destroy_buffer(s, raw);
         return Err(unsupported());
     };
-    let next = external.map_or(ptr::null(), |e| e.memory_info());
-    let memory = match Memory::allocate(s, r.size, memory_type, Dedicated::Buffer(raw), next) {
-        Ok(m) => m,
+    // Exported and imported memory is the buffer's own. So, for now, is that of index and indirect
+    // argument buffers: in memory a freed buffer used before, indexed indirect draws (device-
+    // generated commands) hung the GPU on NVIDIA (0017 §14).
+    let own_memory = external.is_some()
+        || desc
+            .usage
+            .intersects(BufferUsage::INDEX | BufferUsage::INDIRECT);
+    let bound = match Bound::allocate(
+        s,
+        &r.memory,
+        r.prefers_dedicated,
+        memory_type,
+        ResourceClass::Buffer,
+        Dedicated::Buffer(raw),
+        own_memory,
+        external.map_or(ptr::null(), |e| e.memory_info()),
+    ) {
+        Ok(b) => b,
         Err(e) => {
             destroy_buffer(s, raw);
             return Err(e);
         }
     };
-    if let Err(e) = bind_buffer(s, raw, memory.raw, 0) {
+    let (memory, offset) = bound.binding();
+    if let Err(e) = bind_buffer(s, raw, memory, offset) {
         destroy_buffer(s, raw);
+        // SAFETY: nothing is bound to it.
+        unsafe { bound.discard(s) };
         return Err(e);
     }
-    let mapped = memory.mapped;
-    Ok(Buffer::from_parts(
-        s,
-        raw,
-        mapped,
-        Some(Arc::new(memory)),
-        true,
-    ))
+    let mapped = bound.mapped();
+    let (memory, pooled) = bound.into_parts();
+    Ok(Buffer::with_memory(s, raw, mapped, memory, pooled, true))
 }
 
 pub(crate) fn buffer_requirements(device: &Device, desc: &BufferDesc) -> MemoryRequirements {
@@ -341,9 +398,9 @@ use marlin_sync::Mutex;
 
 use super::command::layout;
 use crate::{
-    AddressMode, BorderColor, CompareOp, Filter, FormatFeatures, Layout, MemoryLocation,
-    SPARSE_TILE_SIZE, SamplerReduction, SparseTextureRegion, TextureDimension, TextureUsage,
-    TextureViewDimension,
+    ACCELERATION_STRUCTURE_ALIGNMENT, AddressMode, BorderColor, CompareOp, Filter, FormatFeatures,
+    Layout, MemoryLocation, SPARSE_TILE_SIZE, STORAGE_ALIGNMENT, SamplerReduction,
+    SparseTextureRegion, TextureDimension, TextureUsage, TextureViewDimension, UNIFORM_ALIGNMENT,
 };
 
 /// `format` as a `VkFormat`. `Rgb10a2*` is Vulkan's `A2B10G10R10` (red in the low bits, as in
@@ -758,17 +815,6 @@ fn destroy_image(shared: &Shared, raw: VkImage) {
     unsafe { (shared.fns.vkDestroyImage)(shared.raw, raw, ptr::null()) };
 }
 
-fn image_requirements(shared: &Shared, image: VkImage) -> VkMemoryRequirements {
-    let info = VkImageMemoryRequirementsInfo2 {
-        image,
-        ..Default::default()
-    };
-    let mut req = VkMemoryRequirements2::default();
-    // SAFETY: a live image and valid structures.
-    unsafe { (shared.fns.vkGetImageMemoryRequirements2)(shared.raw, &info, &mut req) };
-    req.memoryRequirements
-}
-
 fn bind_image(shared: &Shared, image: VkImage, memory: VkDeviceMemory, offset: u64) -> Result<()> {
     let bind = VkBindImageMemoryInfo {
         image,
@@ -804,9 +850,11 @@ pub(crate) struct TextureInner {
     aspect: VkImageAspectFlags,
     depth: bool,
     desc: TextureDesc,
-    /// Committed memory, or the heap a placed texture lives in; `None` for sparse and wrapped
-    /// textures.
+    /// Dedicated memory, or the heap a placed texture lives in; `None` for suballocated, sparse
+    /// swapchain, sparse and wrapped textures.
     memory: Option<Arc<Memory>>,
+    /// The suballocation of a committed texture, freed after `image` is destroyed.
+    pooled: Option<Allocation<VkDeviceMemory>>,
     sparse: Option<SparseImage>,
     /// Destroy `image` on drop (false for images wrapped from other owners).
     owned: bool,
@@ -836,6 +884,7 @@ impl Drop for TextureInner {
             // waited for the internal one).
             unsafe { (s.fns.vkDestroyImage)(s.raw, self.image, ptr::null()) };
         }
+        free_pooled(s, self.pooled.take());
     }
 }
 
@@ -867,8 +916,8 @@ impl Texture {
         &self.0.desc
     }
 
-    /// The committed allocation, or the heap of a placed texture; `None` for swapchain, sparse
-    /// and wrapped textures.
+    /// Its dedicated allocation, or the heap of a placed texture; `None` for suballocated,
+    /// swapchain, sparse and wrapped textures.
     pub(crate) fn memory(&self) -> Option<&Memory> {
         self.0.memory.as_deref()
     }
@@ -908,6 +957,7 @@ impl Texture {
             depth: desc.format.is_depth(),
             desc: *desc,
             memory,
+            pooled: None,
             sparse: None,
             owned,
             initial_layout: false,
@@ -916,13 +966,14 @@ impl Texture {
     }
 
     /// A texture this backend created (and owns), in `Layout::Common` before any work using it
-    /// runs: queued for [`InternalWork`] unless `initial_layout` is false. Destroys `image` if it
-    /// fails.
+    /// runs: queued for [`InternalWork`] unless `initial_layout` is false. Destroys `image` (and
+    /// frees `pooled`) if it fails.
     fn created(
         shared: &Arc<Shared>,
         image: VkImage,
         desc: &TextureDesc,
         memory: Option<Arc<Memory>>,
+        pooled: Option<Allocation<VkDeviceMemory>>,
         sparse: Option<SparseImage>,
         initial_layout: bool,
     ) -> Result<Self> {
@@ -935,6 +986,7 @@ impl Texture {
                 Ok(view) => shading_rate_view = view,
                 Err(e) => {
                     destroy_image(shared, image);
+                    free_pooled(shared, pooled);
                     return Err(e);
                 }
             }
@@ -949,6 +1001,7 @@ impl Texture {
             depth: desc.format.is_depth(),
             desc: *desc,
             memory,
+            pooled,
             sparse,
             owned: true,
             initial_layout,
@@ -1116,24 +1169,45 @@ fn committed_texture(
     let r = image_requirements(s, raw);
     let Some(memory_type) = s
         .memory
-        .find_type(r.memoryTypeBits, MemoryLocation::GpuOnly)
+        .find_type(r.memory.memoryTypeBits, MemoryLocation::GpuOnly)
     else {
         destroy_image(s, raw);
         return Err(unsupported());
     };
-    let memory = match Memory::allocate(s, r.size, memory_type, Dedicated::Image(raw), memory_next)
+    let class = if desc
+        .usage
+        .intersects(TextureUsage::RENDER_TARGET | TextureUsage::DEPTH_STENCIL)
     {
-        Ok(m) => m,
+        ResourceClass::Target
+    } else {
+        ResourceClass::Texture
+    };
+    // Exported and imported memory is the resource's own.
+    let bound = match Bound::allocate(
+        s,
+        &r.memory,
+        r.prefers_dedicated,
+        memory_type,
+        class,
+        Dedicated::Image(raw),
+        !memory_next.is_null(),
+        memory_next,
+    ) {
+        Ok(b) => b,
         Err(e) => {
             destroy_image(s, raw);
             return Err(e);
         }
     };
-    if let Err(e) = bind_image(s, raw, memory.raw, 0) {
+    let (memory, offset) = bound.binding();
+    if let Err(e) = bind_image(s, raw, memory, offset) {
         destroy_image(s, raw);
+        // SAFETY: nothing is bound to it.
+        unsafe { bound.discard(s) };
         return Err(e);
     }
-    Texture::created(s, raw, desc, Some(Arc::new(memory)), None, initial_layout)
+    let (memory, pooled) = bound.into_parts();
+    Texture::created(s, raw, desc, memory, pooled, None, initial_layout)
 }
 
 pub(crate) fn texture_requirements(device: &Device, desc: &TextureDesc) -> MemoryRequirements {
@@ -1166,7 +1240,7 @@ pub(crate) fn create_placed_texture(
     s.lost.check()?;
     let raw = create_image(s, desc, 0, ptr::null())?;
     let memory = &heap.memory;
-    if image_requirements(s, raw).memoryTypeBits & (1 << memory.memory_type) == 0 {
+    if image_requirements(s, raw).memory.memoryTypeBits & (1 << memory.memory_type) == 0 {
         destroy_image(s, raw);
         return Err(unsupported());
     }
@@ -1174,7 +1248,7 @@ pub(crate) fn create_placed_texture(
         destroy_image(s, raw);
         return Err(e);
     }
-    Texture::created(s, raw, desc, Some(memory.clone()), None, false)
+    Texture::created(s, raw, desc, Some(memory.clone()), None, None, false)
 }
 
 pub(crate) fn create_render_target_view(
@@ -1410,7 +1484,7 @@ pub(crate) fn create_sparse_texture(device: &Device, desc: &TextureDesc) -> Resu
         destroy_image(s, raw);
         Err(e)
     };
-    let req = image_requirements(s, raw);
+    let req = image_requirements(s, raw).memory;
     if req.alignment != SPARSE_TILE_SIZE {
         return fail(unsupported());
     }
@@ -1455,7 +1529,7 @@ pub(crate) fn create_sparse_texture(device: &Device, desc: &TextureDesc) -> Resu
         size: req.size,
         memory_type_bits: req.memoryTypeBits,
     };
-    Texture::created(s, raw, desc, None, Some(sparse), true)
+    Texture::created(s, raw, desc, None, None, Some(sparse), true)
 }
 
 pub(crate) fn sparse_texture_layout(texture: &Texture) -> SparseTextureLayout {

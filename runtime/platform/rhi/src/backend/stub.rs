@@ -18,12 +18,12 @@ use crate::{
     BuildFlags, ClearColor, ClockCalibration, ColorSpace, ComputePipelineDesc,
     DepthStencilViewDesc, DeviceDesc, Error, ErrorKind, Features, Fence, FenceWait, Format,
     FormatSupport, FrameStatistics, GraphicsPipelineDesc, HdrMetadata, HeapDesc, IndexFormat,
-    IndirectArgs, InstanceDesc, MarkerPoint, MemoryBudget, MemoryRequirements, MeshPipelineDesc,
-    OutputInfo, Pageable, PredicateSkip, PresentMode, PresentStatus, QueryPoolDesc, QueueType,
-    Rect, RenderPassDesc, RenderTargetView, RenderTargetViewDesc, ResidencyPriority, Result,
-    SamplerDesc, ShadingRate, ShadingRateCombiner, SparseBind, SparseTextureLayout, SubmitDesc,
-    SubresourceRange, SurfaceHandle, SwapchainDesc, Texture, TextureBarrier, TextureCopy,
-    TextureDesc, TextureResolve, TextureViewDesc, Viewport,
+    IndirectArgs, InstanceDesc, MarkerPoint, MemoryBudget, MemoryRequirements, MemoryStats,
+    MeshPipelineDesc, OutputInfo, Pageable, PredicateSkip, PresentMode, PresentStatus,
+    QueryPoolDesc, QueueType, Rect, RenderPassDesc, RenderTargetView, RenderTargetViewDesc,
+    ResidencyPriority, Result, SamplerDesc, ShadingRate, ShadingRateCombiner, SparseBind,
+    SparseTextureLayout, SubmitDesc, SubresourceRange, SurfaceHandle, SwapchainDesc, Texture,
+    TextureBarrier, TextureCopy, TextureDesc, TextureResolve, TextureViewDesc, Viewport,
 };
 
 pub(crate) struct Backend;
@@ -140,6 +140,7 @@ impl Device for Backend {
         fn create_placed_buffer(device: &Never, heap: &Never, offset: u64, desc: &BufferDesc) -> Result<Never>;
         fn create_placed_texture(device: &Never, heap: &Never, offset: u64, desc: &TextureDesc) -> Result<Never>;
         fn memory_budget(device: &Never) -> Result<MemoryBudget>;
+        fn memory_stats(device: &Never) -> MemoryStats;
         fn set_memory_reservation(device: &Never, local: u64, non_local: u64) -> Result<()>;
         fn make_resident(device: &Never, objects: &[Pageable<'_>]) -> Result<()>;
         fn evict(device: &Never, objects: &[Pageable<'_>]) -> Result<()>;
