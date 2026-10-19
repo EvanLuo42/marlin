@@ -2,9 +2,11 @@
 //! small view, read back: the material buffer, the velocity, the visibility buffer, the bins'
 //! counts and optionally a debug view.
 
+use marlin_cook_render::cook_pairing;
 use marlin_gpu_test_support::{Image, Shader, engine_shaders, hardware_device};
 use marlin_material::{DefaultMaterial, MaterialDebug, MaterialShaders, Materials, RESOLVE};
 use marlin_math::{Transform, Vec3};
+use marlin_render::asset::{PairingPattern, PairingPatternView};
 use marlin_render::lights::LightTiles;
 use marlin_render::raytracing::{RtShaders, Tlas};
 use marlin_render::restir::{RestirDi, RestirInputs, RestirShaders};
@@ -113,9 +115,21 @@ impl Harness {
         )
         .unwrap();
         let light_tiles = LightTiles::new(device, engine_shaders(&[LightTiles::ENTRY])[0]).unwrap();
+        // Pairing patterns cooked as the cooker would, at the radius the engine's 30 pixels at
+        // 1080p come to in this small view (30 · 64 / 1080 ≈ 2), so the neighbors are as near
+        // in the scene as they would be on a real screen.
+        let pairing: &'static [u8] = Box::leak(
+            cook_pairing(&PairingPattern {
+                radius: 3.0,
+                ..PairingPattern::default()
+            })
+            .unwrap()
+            .into_boxed_slice(),
+        );
         let restir = RestirDi::new(
             device,
             &RestirShaders::from_modules(engine_shaders(&RestirShaders::ENTRIES)),
+            PairingPatternView::new(pairing).unwrap(),
         )
         .unwrap();
         let unorm = Box::leak(Box::new(

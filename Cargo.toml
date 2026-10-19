@@ -116,6 +116,7 @@ marlin-gpu-test-macros = { path = "tools/gpu_test_macros" }
 marlin-bench = { path = "tools/bench" }
 marlin-cook-text = { path = "tools/cook_text" }
 marlin-cook-font = { path = "tools/cook_font" }
+marlin-cook-render = { path = "tools/cook_render" }
 
 # --- third party ---
 # Anything a runtime crate depends on must be no_std (default-features = false).

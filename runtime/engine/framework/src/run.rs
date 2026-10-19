@@ -23,7 +23,9 @@ use crate::boot::{Boot, R_VSYNC, WINDOW_HEIGHT, WINDOW_WIDTH};
 use crate::delta::{RenderDelta, RenderSide, RenderSideError};
 use crate::dev::DevTools;
 use crate::engine::{Engine, EngineError};
-use crate::shaders::{ShaderError, load_default_resolve, load_engine_shaders};
+use crate::shaders::{
+    ShaderError, load_default_resolve, load_engine_shaders, load_pairing_pattern,
+};
 
 #[derive(Debug, marlin_error::Error)]
 pub enum RunError {
@@ -99,6 +101,8 @@ pub fn run(boot: &Boot, title: &str) -> Result<(), RunError> {
     // The renderer's shaders, cooked from content/engine like any asset.
     let library = load_engine_shaders(&mut engine.assets, &boot.vfs, Some(&jobs))?;
     let resolve = load_default_resolve(&mut engine.assets, &boot.vfs, Some(&jobs))?;
+    let pairing = load_pairing_pattern(&mut engine.assets, &boot.vfs, Some(&jobs))
+        .map_err(ShaderError::Load)?;
     let shaders = engine
         .assets
         .get(&library)
@@ -107,10 +111,15 @@ pub fn run(boot: &Boot, title: &str) -> Result<(), RunError> {
         .assets
         .get(&resolve)
         .ok_or(ShaderError::Load(marlin_asset::AssetError::NotFound))?;
+    let pairing = engine
+        .assets
+        .get(&pairing)
+        .ok_or(ShaderError::Load(marlin_asset::AssetError::NotFound))?;
     let mut render = RenderSide::new(
         &device,
         shaders,
         resolve,
+        pairing.view(),
         swapchain.format(),
         engine.scene_ids(),
     )?;

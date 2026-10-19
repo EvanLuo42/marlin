@@ -4,9 +4,9 @@
 //! - `ShaderLibrary` (a cooked `ShaderPackage`): as cooked (marlin-serial); see [`crate::shaders`].
 //! - `Mesh` → [`LoadedMesh`]: the cooked mesh in place with its root pages, shared with the
 //!   render side through an `Arc`; its other pages stream from disk when the renderer wants them.
-//! - `Texture`, `Skeleton`, `AnimationClip`, `Font` → [`InPlace`]: the cooked layout checked once and
-//!   kept in the unit's bytes, read through its view without copying. Texture upload arrives
-//!   with the renderer that samples textures.
+//! - `Texture`, `Skeleton`, `AnimationClip`, `Font`, `PairingPattern` → [`InPlace`]: the cooked
+//!   layout checked once and kept in the unit's bytes, read through its view without copying.
+//!   Texture upload arrives with the renderer that samples textures.
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -20,7 +20,7 @@ use marlin_reflect::type_info;
 use marlin_render::MeshData;
 use marlin_render::asset::mesh::MeshView;
 use marlin_render::asset::texture::TextureView;
-use marlin_render::asset::{Mesh, Texture};
+use marlin_render::asset::{Mesh, PairingPattern, PairingPatternView, Texture};
 use marlin_shader::asset::ShaderLibrary;
 use marlin_sync::Mutex;
 
@@ -151,6 +151,12 @@ impl InPlace<Font> {
     }
 }
 
+impl InPlace<PairingPattern> {
+    pub fn view(&self) -> PairingPatternView<'_> {
+        PairingPatternView::new(self.payload()).expect("checked at load")
+    }
+}
+
 impl InPlace<Skeleton> {
     pub fn view(&self) -> SkeletonView<'_> {
         SkeletonView::new(self.payload()).expect("checked at load")
@@ -196,6 +202,10 @@ pub fn engine_loaders(streamer: &Arc<BlobStreamer>) -> Loaders {
     });
     l.register::<InPlace<Font>>(type_info::<Font>().id.0, |ctx| {
         FontView::new(ctx.payload).map_err(|e| alloc::format!("{e:?}"))?;
+        Ok(InPlace::new(ctx))
+    });
+    l.register::<InPlace<PairingPattern>>(type_info::<PairingPattern>().id.0, |ctx| {
+        PairingPatternView::new(ctx.payload).map_err(|e| alloc::format!("{e:?}"))?;
         Ok(InPlace::new(ctx))
     });
     l.register::<InPlace<Skeleton>>(type_info::<Skeleton>().id.0, |ctx| {

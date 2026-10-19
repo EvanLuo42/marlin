@@ -12,9 +12,10 @@ use marlin_cookd::{Cookd, CookdOptions, bind};
 use marlin_cooker::{engine_cookers, open_ddc};
 use marlin_framework::{
     Boot, ContentSettings, Engine, OFFSCREEN_FORMAT, Offscreen, RenderSide, load_default_resolve,
-    load_engine_shaders, mount,
+    load_engine_shaders, load_pairing_pattern, mount,
 };
 use marlin_gpu_test_support::{Image, assert_image, hardware_device};
+use marlin_render::asset::PairingPatternView;
 use marlin_render_graph::{FrameContext, FrameContextDesc, TextureDesc};
 use marlin_rhi::Device;
 use marlin_shader::asset::ShaderLibrary;
@@ -87,10 +88,16 @@ struct Viewer {
 
 impl Viewer {
     /// The render side made with the engine's cooked shaders: its library and the default
-    /// material's resolve permutation.
-    fn new(library: &ShaderLibrary, resolve: &ShaderLibrary, ids: marlin_render::SceneIds) -> Self {
+    /// material's resolve permutation, and the pairing patterns.
+    fn new(
+        library: &ShaderLibrary,
+        resolve: &ShaderLibrary,
+        pairing: PairingPatternView<'_>,
+        ids: marlin_render::SceneIds,
+    ) -> Self {
         let device = hardware_device();
-        let render = RenderSide::new(device, library, resolve, OFFSCREEN_FORMAT, ids).unwrap();
+        let render =
+            RenderSide::new(device, library, resolve, pairing, OFFSCREEN_FORMAT, ids).unwrap();
         let offscreen = Offscreen::new(device, WIDTH, HEIGHT).unwrap();
         Self {
             render,
@@ -115,9 +122,11 @@ fn start<'a>(boot: &'a Boot) -> (Engine<'a>, Viewer, Vec<u32>) {
     let mut engine = Engine::new(&boot.vfs).unwrap();
     let library = load_engine_shaders(&mut engine.assets, &boot.vfs, None).unwrap();
     let resolve = load_default_resolve(&mut engine.assets, &boot.vfs, None).unwrap();
+    let pairing = load_pairing_pattern(&mut engine.assets, &boot.vfs, None).unwrap();
     let mut viewer = Viewer::new(
         engine.assets.get(&library).unwrap(),
         engine.assets.get(&resolve).unwrap(),
+        engine.assets.get(&pairing).unwrap().view(),
         engine.scene_ids(),
     );
     engine.load_level(boot.level);
@@ -364,10 +373,12 @@ fn resizing_with_frames_in_flight_keeps_validation_quiet() {
     let mut engine = Engine::new(&boot.vfs).unwrap();
     let library = load_engine_shaders(&mut engine.assets, &boot.vfs, None).unwrap();
     let resolve = load_default_resolve(&mut engine.assets, &boot.vfs, None).unwrap();
+    let pairing = load_pairing_pattern(&mut engine.assets, &boot.vfs, None).unwrap();
     let mut render = RenderSide::new(
         device,
         engine.assets.get(&library).unwrap(),
         engine.assets.get(&resolve).unwrap(),
+        engine.assets.get(&pairing).unwrap().view(),
         OFFSCREEN_FORMAT,
         engine.scene_ids(),
     )

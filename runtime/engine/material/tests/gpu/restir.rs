@@ -159,6 +159,30 @@ fn temporal_reuse_lowers_the_noise() {
 }
 
 #[test]
+fn spatial_reuse_lowers_the_noise() {
+    let scene = light_hall(256);
+    // The picture's mean, as in the temporal test.
+    let mut h = Harness::new();
+    h.load(&scene);
+    h.restir.temporal = false;
+    h.restir.spatial_neighbors = 0;
+    let mean = average(&mut h, 256);
+    let alone = h.restir_frame(1000);
+    // A first frame, its reservoirs resampled with two partners' each: one round of two partners,
+    // some of them on other surfaces (the pillars), takes off about a seventh (5.15 → 4.45).
+    let mut h = Harness::new();
+    h.load(&scene);
+    h.restir.temporal = false;
+    let paired = h.restir_frame(1000);
+    let (alone, paired) = (rms(&alone, &mean), rms(&paired, &mean));
+    eprintln!("one frame's error: {alone:.4} alone, {paired:.4} with paired spatial reuse");
+    assert!(
+        paired < 0.9 * alone,
+        "{paired} with spatial reuse, {alone} alone"
+    );
+}
+
+#[test]
 fn lights_removed_or_moved_leave_no_trace_the_next_frame() {
     let scene = lit_wall();
     let mut h = Harness::new();

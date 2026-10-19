@@ -22,6 +22,7 @@ marlin-cook-core.workspace = true
 marlin-cook-font.workspace = true
 marlin-cook-level.workspace = true
 marlin-cook-mesh.workspace = true
+marlin-cook-render.workspace = true
 marlin-cook-shader.workspace = true
 marlin-cook-text.workspace = true
 marlin-cook-texture.workspace = true

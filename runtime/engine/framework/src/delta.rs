@@ -15,6 +15,7 @@ use alloc::vec::Vec;
 use marlin_containers::{HashMap, HashMapExt};
 use marlin_material::{DEFAULT_PERMUTATION, MaterialShaders, Materials, RESOLVE};
 use marlin_math::Transform;
+use marlin_render::asset::PairingPatternView;
 use marlin_render::lights::LightTiles;
 use marlin_render::raytracing::{RtShaders, Tlas};
 use marlin_render::restir::{RestirDi, RestirInputs, RestirShaders};
@@ -97,14 +98,15 @@ pub struct RenderSide {
 }
 
 impl RenderSide {
-    /// The passes made with the engine's shaders (`engine`, the `Marlin.Engine` library) and
-    /// the default material's resolve permutation (`default_resolve`, `DEFAULT_RESOLVE`);
-    /// the post chain writes `output`. The scene's rows come from `ids`, the allocators the
-    /// simulation reserves them from.
+    /// The passes made with the engine's shaders (`engine`, the `Marlin.Engine` library), the
+    /// default material's resolve permutation (`default_resolve`, `DEFAULT_RESOLVE`) and ReSTIR's
+    /// pairing patterns (`pairing`, `PAIRING_PATTERN`); the post chain writes `output`. The
+    /// scene's rows come from `ids`, the allocators the simulation reserves them from.
     pub fn new(
         device: &Device,
         engine: &ShaderLibrary,
         default_resolve: &ShaderLibrary,
+        pairing: PairingPatternView<'_>,
         output: Format,
         ids: SceneIds,
     ) -> Result<Self, RenderSideError> {
@@ -127,7 +129,7 @@ impl RenderSide {
             vsm: Vsm::new(device, &VsmShaders::bind(engine)?, VsmSettings::DEFAULT)?,
             tlas: Tlas::new(device, &RtShaders::bind(engine)?)?,
             light_tiles: LightTiles::new(device, bind_one(engine, &LightTiles::ENTRY)?)?,
-            restir: RestirDi::new(device, &RestirShaders::bind(engine)?)?,
+            restir: RestirDi::new(device, &RestirShaders::bind(engine)?, pairing)?,
             post: PostProcess::new(device, &PostShaders::bind(engine)?, output)?,
             scene: RenderScene::with_ids(ids),
             scatter: ScatterShader::new(device, bind_one(engine, &ScatterShader::ENTRY)?)?,

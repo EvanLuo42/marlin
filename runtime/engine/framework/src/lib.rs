@@ -37,6 +37,6 @@ pub use level::{
 pub use offscreen::{OFFSCREEN_FORMAT, Offscreen};
 pub use run::{RunError, run};
 pub use shaders::{
-    DEFAULT_RESOLVE, ENGINE_SHADERS, ShaderError, UI_FONT, load_default_resolve,
-    load_engine_shaders, load_ui_font,
+    DEFAULT_RESOLVE, ENGINE_SHADERS, PAIRING_PATTERN, ShaderError, UI_FONT, load_default_resolve,
+    load_engine_shaders, load_pairing_pattern, load_ui_font,
 };

@@ -1103,7 +1103,7 @@ impl Meshes {
 }
 
 /// A new GPU buffer holding `bytes`, read through a raw view, copied before this returns.
-fn copy_to_new_buffer(device: &Device, bytes: &[u8]) -> Result<(Buffer, ShaderView)> {
+pub(crate) fn copy_to_new_buffer(device: &Device, bytes: &[u8]) -> Result<(Buffer, ShaderView)> {
     let size = bytes.len() as u64;
     let staging = device.create_buffer(&BufferDesc {
         size,

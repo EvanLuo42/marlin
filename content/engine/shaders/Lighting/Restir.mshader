@@ -11,11 +11,15 @@ namespace Marlin.Engine.Lighting;
 // 2. `RestirTemporal` (0010 §2.4): the pixel's reservoir last frame, found through the motion
 //    vector, unless its surface changed (distance to the eye, normal); its sample's target
 //    evaluated here, its confidence capped at `MaxHistory`; the two reservoirs merged by RIS
-//    weighted by confidence. Into this frame's history.
-// 3. `RestirShade`: the kept light's contribution, its visibility from one shadow ray to a point
+//    weighted by confidence. Into this frame's history, or, with spatial reuse, into its input.
+// 3. `RestirSpatialShift`, then `RestirSpatial` (0010 §2.5): paired spatial reuse. Pixels pair
+//    up through the cooked pairing patterns, one pattern per neighbor; the first pass shifts
+//    every pixel's sample to its partners, the second resamples the pixel's reservoir and its
+//    partners' by pairwise MIS from those shifts. Into this frame's history.
+// 4. `RestirShade`: the kept light's contribution, its visibility from one shadow ray to a point
 //    of its sphere (a ray query against the TLAS), times the reservoir's weight `W`, added to
 //    the HDR scene.
-// 4. `RestirDuplication`: the duplication map of the frame's reservoirs, which lowers the next
+// 5. `RestirDuplication`: the duplication map of the frame's reservoirs, which lowers the next
 //    frame's temporal cap where one sample has spread (PTE §5).
 //
 // Lambert diffuse for now, like the sun (`Lighting.mshader`): the exact BSDF comes with the
@@ -90,6 +94,17 @@ public struct RestirConstants
     public float DuplicationPower;
     /// Words of `ChangedLights`.
     public uint ChangedWords;
+    /// Paired spatial neighbors (0010 §2.5): one per pairing pattern, none when 0.
+    public uint Neighbors;
+    /// 1: a shadow ray for every sample shifted to a neighbor (0010 §2.6, L2 and up).
+    public uint SpatialVisibility;
+    /// This frame's placement of the patterns: a translation, then bit 0 flips x, bit 1 flips
+    /// y, bit 2 swaps them.
+    public uint2 PairingOffset;
+    public uint PairingFlags;
+    public uint Spare0;
+    public uint Spare1;
+    public uint Spare2;
 }
 
 public struct RestirArgs
@@ -115,6 +130,13 @@ public struct RestirArgs
     /// trusted); `ChangedWords` words.
     public ReadOnlyBuffer<uint> ChangedLights;
     public AccelerationStructure Tlas;
+    /// The pairing patterns (`marlin_render::restir`): words 0–3 their sides, 4–7 where each
+    /// starts (in 16-bit offsets after the header), then the offsets, `(dx + 128) | (dy + 128) << 8`.
+    public ReadOnlyByteBuffer Pairing;
+    /// Per neighbor slot and pixel (slot-major): the pixel's sample shifted to its partner in that
+    /// slot, the target there; negative: no partner (off screen, or another surface).
+    public Buffer<float> ShiftsOut;
+    public ReadOnlyBuffer<float> Shifts;
     /// The HDR scene the shading adds to.
     public StorageTexture2D<float4> Scene;
 }
@@ -284,6 +306,166 @@ public void RestirTemporal([DispatchThreadId] uint3 id, [Push] in RestirArgs a)
     }
     s.M = r.M + qM;
     s.W = s.Target > 0 ? sum / (s.M * s.Target) : 0;
+    a.Output[pixel] = s;
+}
+
+/// Whether two reservoirs' surfaces are one: about as far from the eye, facing about the same
+/// way. Symmetric, so paired pixels agree on whether they reuse from each other.
+bool SameSurface(in DiReservoir r, in DiReservoir q) =>
+    r.Distance > 0 && q.Distance > 0 && Abs(q.Distance - r.Distance) < 0.1 * Max(r.Distance, q.Distance)
+        && Dot(UnpackOct(q.Normal), UnpackOct(r.Normal)) > 0.9;
+
+/// The offset from screen pixel `px` to its partner in pairing pattern `k`, as this frame
+/// places the pattern (`PairingOffset`, `PairingFlags`).
+int2 PartnerOffset(in RestirConstants c, in RestirArgs a, uint k, uint2 px)
+{
+    uint size = a.Pairing.Load(k * 4);
+    uint start = a.Pairing.Load(16 + k * 4);
+    uint x = (px.x + c.PairingOffset.x) % size;
+    uint y = (px.y + c.PairingOffset.y) % size;
+    if ((c.PairingFlags & 1) != 0)
+        x = size - 1 - x;
+    if ((c.PairingFlags & 2) != 0)
+        y = size - 1 - y;
+    if ((c.PairingFlags & 4) != 0)
+    {
+        uint t = x;
+        x = y;
+        y = t;
+    }
+    uint e = start + y * size + x;
+    uint packed = (a.Pairing.Load(32 + (e / 2) * 4) >> ((e % 2) * 16)) & 0xFFFF;
+    int dx = (int)(packed & 0xFF) - 128;
+    int dy = (int)(packed >> 8) - 128;
+    // Back to the screen: the placement's inverse.
+    if ((c.PairingFlags & 4) != 0)
+    {
+        int t = dx;
+        dx = dy;
+        dy = t;
+    }
+    if ((c.PairingFlags & 1) != 0)
+        dx = -dx;
+    if ((c.PairingFlags & 2) != 0)
+        dy = -dy;
+    return int2(dx, dy);
+}
+
+/// Pixel `px`'s partner in pattern `k`; x negative when it is off screen.
+int2 Partner(in RestirConstants c, in RestirArgs a, uint k, uint2 px)
+{
+    int2 q = int2((int)px.x, (int)px.y) + PartnerOffset(c, a, k, px);
+    bool inside = q.x >= 0 && q.y >= 0 && q.x < (int)c.Width && q.y < (int)c.Height;
+    return inside ? q : int2(-1, -1);
+}
+
+/// The first half of paired spatial reuse (0010 §2.5, PTE §3): every pixel's sample shifted to
+/// each of its partners, its target there (with a shadow ray from there under
+/// `SpatialVisibility`), into `ShiftsOut`. A pair reuses from each other, so these are both
+/// shifts of the pair, each computed once.
+[Compute(8, 8, 1)]
+public void RestirSpatialShift([DispatchThreadId] uint3 id, [Push] in RestirArgs a)
+{
+    RestirConstants c = a.Constants.Value;
+    if (id.x >= c.Width || id.y >= c.Height)
+        return;
+    uint pixels = c.Width * c.Height;
+    uint pixel = id.y * c.Width + id.x;
+    DiReservoir r = a.Input[pixel];
+    for (uint k = 0; k < c.Neighbors; k++)
+    {
+        float shifted = -1;
+        int2 q = Partner(c, a, k, id.xy);
+        if (q.x >= 0)
+        {
+            DiReservoir n = a.Input[(uint)q.y * c.Width + (uint)q.x];
+            if (SameSurface(r, n))
+            {
+                shifted = 0;
+                if (r.Light != NoLight && r.W > 0)
+                {
+                    Proxy p = UnpackProxy(a.MaterialBuffer.Load(q));
+                    float3 x = WorldAt(c, (uint2)q, a.Depth.Load(q));
+                    LightRow l = a.Lights[r.Light];
+                    shifted = Luminance(Contribution(l, x, p.Normal, p.Albedo));
+                    if (shifted > 0 && c.SpatialVisibility != 0 && !Visible(c, a, l, x, p.Normal, r.Sample))
+                        shifted = 0;
+                }
+            }
+        }
+        a.ShiftsOut[k * pixels + pixel] = shifted;
+    }
+}
+
+/// The second half: every pixel resamples its own reservoir (the canonical one) and its
+/// partners', with pairwise MIS weighted by confidence (Falcor's `SpatialResampling`; Lin et al.
+/// 2022). Both shifts of each pair come from `Shifts`: the partner's sample here is the partner's
+/// entry, this pixel's sample there is this pixel's.
+[Compute(8, 8, 1)]
+public void RestirSpatial([DispatchThreadId] uint3 id, [Push] in RestirArgs a)
+{
+    RestirConstants c = a.Constants.Value;
+    if (id.x >= c.Width || id.y >= c.Height)
+        return;
+    uint pixels = c.Width * c.Height;
+    uint pixel = id.y * c.Width + id.x;
+    DiReservoir r = a.Input[pixel];
+    if (r.Distance <= 0)
+    {
+        a.Output[pixel] = r;
+        return;
+    }
+    // The confidence of all the reservoirs resampled.
+    float total = r.M;
+    for (uint k = 0; k < c.Neighbors; k++)
+    {
+        int2 q = Partner(c, a, k, id.xy);
+        if (a.Shifts[k * pixels + pixel] >= 0 && q.x >= 0)
+            total += a.Input[(uint)q.y * c.Width + (uint)q.x].M;
+    }
+    float others = total - r.M;
+    float canonical = r.M / total;
+    DiReservoir s = r;
+    float sum = 0;
+    uint seed = Hash(c.Seed ^ 0x7F4A7C15) ^ pixel;
+    for (uint k = 0; k < c.Neighbors; k++)
+    {
+        float mine = a.Shifts[k * pixels + pixel];
+        int2 q = Partner(c, a, k, id.xy);
+        if (mine < 0 || q.x < 0)
+            continue;
+        uint other = (uint)q.y * c.Width + (uint)q.x;
+        DiReservoir n = a.Input[other];
+        // This pixel's sample, had the partner drawn it: the canonical weight's pairwise term.
+        if (mine > 0)
+            canonical += n.M / total * (1 - mine * others / (mine * others + r.Target * r.M));
+        else
+            canonical += n.M / total;
+        // The partner's sample, shifted here.
+        float theirs = a.Shifts[k * pixels + other];
+        if (n.Light == NoLight || n.W <= 0 || theirs <= 0)
+            continue;
+        float source = n.Target * others;
+        float m = n.M / total * source / Max(source + theirs * r.M, 1e-20);
+        float weight = theirs * n.W * m;
+        sum += weight;
+        if (weight > 0 && Random(Hash(seed + k * 0x9E3779B9)) * sum < weight)
+        {
+            s.Light = n.Light;
+            s.Sample = n.Sample;
+            s.Target = theirs;
+        }
+    }
+    float own = r.Light != NoLight ? r.Target * r.W * canonical : 0;
+    sum += own;
+    if (own > 0 && Random(Hash(seed ^ 0x1B873593)) * sum < own)
+    {
+        s.Light = r.Light;
+        s.Sample = r.Sample;
+        s.Target = r.Target;
+    }
+    s.M = total;
+    s.W = s.Target > 0 && s.Light != NoLight ? sum / s.Target : 0;
     a.Output[pixel] = s;
 }
 

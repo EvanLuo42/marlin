@@ -11,6 +11,7 @@ use marlin_shader::asset::ShaderLibrary;
 
 use crate::loaders::InPlace;
 use marlin_font::Font;
+use marlin_render::asset::PairingPattern;
 
 /// The engine's shader package.
 pub const ENGINE_SHADERS: &str = "Marlin.Engine";
@@ -73,6 +74,26 @@ fn load_named(
         LoadState::Loaded => Ok(handle),
         LoadState::Failed(e) => Err(ShaderError::Load(e)),
         LoadState::Loading => Err(ShaderError::Load(AssetError::NotFound)),
+    }
+}
+
+/// ReSTIR's pairing patterns (`content/engine/lighting/PairingPattern.masset`).
+pub const PAIRING_PATTERN: &str = "Marlin.Engine.Lighting.PairingPattern";
+
+/// Loads ReSTIR's pairing patterns ([`PAIRING_PATTERN`]), blocking like
+/// [`load_engine_shaders`]; the render side takes them (`RenderSide::new`).
+pub fn load_pairing_pattern(
+    assets: &mut AssetServer,
+    vfs: &Vfs,
+    jobs: Option<&JobSystem>,
+) -> Result<Handle<InPlace<PairingPattern>>, AssetError> {
+    let uuid = vfs.named(PAIRING_PATTERN).ok_or(AssetError::NotFound)?;
+    let handle = assets.load::<InPlace<PairingPattern>>(uuid);
+    assets.update_blocking(vfs, jobs);
+    match assets.state(&handle) {
+        LoadState::Loaded => Ok(handle),
+        LoadState::Failed(e) => Err(e),
+        LoadState::Loading => Err(AssetError::NotFound),
     }
 }
 

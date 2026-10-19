@@ -2,11 +2,12 @@
 //! owning `Dnee` (0010 §2.9). The passes are `Marlin.Engine.Lighting`'s (`Lighting/Restir.mshader`,
 //! whose file comment describes them): initial sampling from the presampled light tiles
 //! ([`crate::lights`]) with a visibility test of the sample kept, temporal reuse of last frame's
-//! reservoirs (a history resource per view, the confidence capped by a duplication map), then
-//! shading with one shadow ray against the TLAS ([`crate::raytracing`]), added to the HDR scene.
+//! reservoirs (a history resource per view, the confidence capped by a duplication map), paired
+//! spatial reuse between pixels two by two (pairing patterns from the cooker,
+//! [`crate::asset::pairing`]), then shading with one shadow ray against the TLAS
+//! ([`crate::raytracing`]), added to the HDR scene.
 //!
-//! Not yet: spatial reuse (R3c3), reduced-resolution reservoirs (0010 §3), specular (the final
-//! shading, 0010 §2.6).
+//! Not yet: reduced-resolution reservoirs (0010 §3), specular (the final shading, 0010 §2.6).
 
 use alloc::vec::Vec;
 
@@ -14,13 +15,16 @@ use marlin_math::{Mat4, Transform};
 use marlin_render_graph::{
     Access, BufferDesc, BufferHandle, PassContext, RenderGraph, TextureHandle,
 };
-use marlin_rhi::{ComputePipeline, ComputePipelineDesc, Device, Result, ShaderModule};
+use marlin_rhi::{
+    Buffer, ComputePipeline, ComputePipelineDesc, Device, Result, ShaderModule, ShaderView,
+};
 use marlin_serial::cooked::Pod;
 use marlin_shader::asset::ShaderLibrary;
 use marlin_shader::bind::{BindError, EntryDesc, bind};
 
+use crate::asset::PairingPatternView;
 use crate::lights::{LIGHT_TILE_SIZE, LIGHT_TILES, LightTileOutput};
-use crate::meshes::Camera;
+use crate::meshes::{Camera, copy_to_new_buffer};
 use crate::raytracing::RtScene;
 
 /// ReSTIR DI's shaders (`Marlin.Engine.Lighting`).
@@ -28,24 +32,39 @@ use crate::raytracing::RtScene;
 pub struct RestirShaders<'a> {
     pub initial: ShaderModule<'a>,
     pub temporal: ShaderModule<'a>,
+    pub spatial_shift: ShaderModule<'a>,
+    pub spatial: ShaderModule<'a>,
     pub shade: ShaderModule<'a>,
     pub duplication: ShaderModule<'a>,
 }
 
 impl<'a> RestirShaders<'a> {
     /// The entries, in field order.
-    pub const ENTRIES: [EntryDesc; 4] = [
+    pub const ENTRIES: [EntryDesc; 6] = [
         EntryDesc::compute("Marlin.Engine.Lighting.RestirInitial").push::<RestirArgs>(),
         EntryDesc::compute("Marlin.Engine.Lighting.RestirTemporal").push::<RestirArgs>(),
+        EntryDesc::compute("Marlin.Engine.Lighting.RestirSpatialShift").push::<RestirArgs>(),
+        EntryDesc::compute("Marlin.Engine.Lighting.RestirSpatial").push::<RestirArgs>(),
         EntryDesc::compute("Marlin.Engine.Lighting.RestirShade").push::<RestirArgs>(),
         EntryDesc::compute("Marlin.Engine.Lighting.RestirDuplication").push::<RestirArgs>(),
     ];
 
     /// The shaders from `modules`, in [`ENTRIES`](Self::ENTRIES) order.
-    pub fn from_modules([initial, temporal, shade, duplication]: [ShaderModule<'a>; 4]) -> Self {
+    pub fn from_modules(
+        [
+            initial,
+            temporal,
+            spatial_shift,
+            spatial,
+            shade,
+            duplication,
+        ]: [ShaderModule<'a>; 6],
+    ) -> Self {
         Self {
             initial,
             temporal,
+            spatial_shift,
+            spatial,
             shade,
             duplication,
         }
@@ -74,6 +93,11 @@ struct Constants {
     duplication: u32,
     duplication_power: f32,
     changed_words: u32,
+    neighbors: u32,
+    spatial_visibility: u32,
+    pairing_offset: [u32; 2],
+    pairing_flags: u32,
+    spare: [u32; 3],
 }
 
 /// `Marlin.Engine.Lighting.RestirArgs`.
@@ -92,7 +116,39 @@ struct RestirArgs {
     duplication_map: u32,
     changed_lights: u32,
     tlas: u32,
+    pairing: u32,
+    shifts_out: u32,
+    shifts: u32,
     scene: u32,
+}
+
+/// The pairing patterns as `RestirArgs::Pairing` reads them: the sides (4 words, 0 past the
+/// last), where each pattern's offsets start (4 words, in offsets), then the offsets, two to a
+/// word.
+fn pairing_words(pairing: PairingPatternView<'_>) -> Vec<u8> {
+    let mut header = [0u32; 8];
+    let mut start = 0;
+    for (i, &size) in pairing.sizes.iter().enumerate() {
+        header[i] = size;
+        header[4 + i] = start;
+        start += size * size;
+    }
+    let mut bytes: Vec<u8> = header.iter().flat_map(|w| w.to_le_bytes()).collect();
+    bytes.extend(pairing.offsets.iter().flat_map(|o| o.to_le_bytes()));
+    bytes.resize(bytes.len().next_multiple_of(4), 0);
+    bytes
+}
+
+/// This frame's placement of the pairing patterns (`PairingOffset`, `PairingFlags`): a
+/// translation and a flip or transpose, from `seed`, so no pixel keeps its partners (Falcor's
+/// `PairedNeighborTransform`).
+fn pairing_placement(seed: u32) -> ([u32; 2], u32) {
+    // SplitMix32-style mixing: the frame seeds are consecutive.
+    let mut h = seed.wrapping_add(0x9E37_79B9);
+    h = (h ^ (h >> 16)).wrapping_mul(0x21F0_AAAD);
+    h = (h ^ (h >> 15)).wrapping_mul(0x735A_2D97);
+    h ^= h >> 15;
+    ([h & 0x7FFF, (h >> 15) & 0x3FFF], h >> 29)
 }
 
 /// Bytes of a pixel's reservoir (`DiReservoir`).
@@ -123,6 +179,12 @@ pub struct RestirDi {
     temporal_pass: ComputePipeline,
     shade_pass: ComputePipeline,
     duplication_pass: ComputePipeline,
+    spatial_shift_pass: ComputePipeline,
+    spatial_pass: ComputePipeline,
+    /// The pairing patterns, as `Pairing` reads them; how many there are.
+    _pairing: Buffer,
+    pairing_view: ShaderView,
+    patterns: u32,
     /// Lights each pixel draws from its tile (0010 §3: 4, 8, 16 and 32 from L0 to L3).
     pub candidates: u32,
     /// Test the visibility of the initial sample kept, so reuse spreads only visible lights.
@@ -134,12 +196,24 @@ pub struct RestirDi {
     /// Lower that cap where a sample has spread (PTE §5): `lerp(max_history, 1, d^power)`, d the
     /// pixel's duplication map; the power 0.1.
     pub duplication: Option<f32>,
+    /// Paired spatial neighbors (0010 §3: 1, 1, 2, 3 from L0 to L3), at most one per pairing
+    /// pattern; 0 turns spatial reuse off.
+    pub spatial_neighbors: u32,
+    /// A shadow ray for each sample shifted to a neighbor (0010 §2.6: L2 and up); without, the
+    /// final shading's ray alone (biased, cheaper).
+    pub spatial_visibility: bool,
 }
 
 impl RestirDi {
     /// The desktop default (L2): 16 candidates, initial visibility, temporal reuse with a cap of
-    /// 20 lowered by the duplication map.
-    pub fn new(device: &Device, shaders: &RestirShaders<'_>) -> Result<Self> {
+    /// 20 lowered by the duplication map, two paired spatial neighbors with visibility.
+    /// `pairing`: the pairing patterns (the engine's `Marlin.Engine.Lighting.PairingPattern`).
+    pub fn new(
+        device: &Device,
+        shaders: &RestirShaders<'_>,
+        pairing: PairingPatternView<'_>,
+    ) -> Result<Self> {
+        let (pairing_buffer, pairing_view) = copy_to_new_buffer(device, &pairing_words(pairing))?;
         let compute = |shader| {
             device.create_compute_pipeline(&ComputePipelineDesc {
                 shader,
@@ -151,11 +225,18 @@ impl RestirDi {
             temporal_pass: compute(shaders.temporal)?,
             shade_pass: compute(shaders.shade)?,
             duplication_pass: compute(shaders.duplication)?,
+            spatial_shift_pass: compute(shaders.spatial_shift)?,
+            spatial_pass: compute(shaders.spatial)?,
+            _pairing: pairing_buffer,
+            pairing_view,
+            patterns: pairing.sizes.len() as u32,
             candidates: 16,
             initial_visibility: true,
             temporal: true,
             max_history: 20.0,
             duplication: Some(0.1),
+            spatial_neighbors: 2,
+            spatial_visibility: true,
         })
     }
 
@@ -208,6 +289,8 @@ impl RestirDi {
         let history = g.history("DiReservoirs", view, reservoir_desc);
         let previous = history.prev.filter(|_| self.temporal);
         let duplication = self.duplication.filter(|_| self.temporal);
+        let neighbors = self.spatial_neighbors.min(self.patterns);
+        let (pairing_offset, pairing_flags) = pairing_placement(seed);
         let constants = Constants {
             inverse_view_projection: view_projection.inverse().to_cols_array(),
             eye: [p.x, p.y, p.z, 0.0],
@@ -223,6 +306,11 @@ impl RestirDi {
             duplication: u32::from(duplication.is_some()),
             duplication_power: duplication.unwrap_or(1.0),
             changed_words,
+            neighbors,
+            spatial_visibility: u32::from(self.spatial_visibility),
+            pairing_offset,
+            pairing_flags,
+            spare: [0; 3],
         };
         let groups = (width.div_ceil(8), height.div_ceil(8));
 
@@ -260,6 +348,12 @@ impl RestirDi {
                 (m, move |ctx: &mut PassContext<'_>| ctx.fill_buffer(m, 0))
             });
         }
+        // Into the history, unless spatial reuse follows: then its output is.
+        let temporal_out = if neighbors > 0 {
+            g.create_buffer("DiTemporal", reservoir_desc)
+        } else {
+            history.cur
+        };
         let reservoirs = g.add_compute("RestirTemporal", |b| {
             let material = b.read_texture(material, Access::ComputeRead);
             let depth = b.read_texture(depth, Access::ComputeRead);
@@ -268,7 +362,7 @@ impl RestirDi {
             let input = b.read_buffer(initial, Access::ComputeRead);
             let previous = previous.map(|h| b.read_buffer(h, Access::ComputeRead));
             let dup = b.read_buffer(map_handle, Access::ComputeRead);
-            let output = b.write_buffer(history.cur, Access::ComputeWrite);
+            let output = b.write_buffer(temporal_out, Access::ComputeWrite);
             (output, move |ctx: &mut PassContext<'_>| {
                 ctx.set_pipeline(&self.temporal_pass);
                 let args = RestirArgs {
@@ -289,6 +383,59 @@ impl RestirDi {
                 ctx.dispatch(groups.0, groups.1, 1);
             })
         });
+
+        // Paired spatial reuse (0010 §2.5): both shifts of every pair, then the resampling.
+        let reservoirs = if neighbors > 0 {
+            let shifts = g.create_buffer(
+                "DiShifts",
+                BufferDesc::structured::<f32>(pixels * u64::from(neighbors)),
+            );
+            let pairing = self.pairing_view.index();
+            let shifts = g.add_compute("RestirSpatialShift", |b| {
+                let material = b.read_texture(material, Access::ComputeRead);
+                let depth = b.read_texture(depth, Access::ComputeRead);
+                let lights = b.read_buffer(lights, Access::ComputeRead);
+                let input = b.read_buffer(reservoirs, Access::ComputeRead);
+                rt.read(b);
+                let shifts = b.write_buffer(shifts, Access::ComputeWrite);
+                (shifts, move |ctx: &mut PassContext<'_>| {
+                    ctx.set_pipeline(&self.spatial_shift_pass);
+                    let args = RestirArgs {
+                        constants: ctx.upload(&constants),
+                        material: ctx.srv(material),
+                        depth: ctx.srv(depth),
+                        lights: ctx.srv(lights),
+                        input: ctx.srv(input),
+                        tlas: rt.index,
+                        pairing,
+                        shifts_out: ctx.uav(shifts),
+                        ..RestirArgs::default()
+                    };
+                    ctx.push(&args);
+                    ctx.dispatch(groups.0, groups.1, 1);
+                })
+            });
+            g.add_compute("RestirSpatial", |b| {
+                let input = b.read_buffer(reservoirs, Access::ComputeRead);
+                let shifts = b.read_buffer(shifts, Access::ComputeRead);
+                let output = b.write_buffer(history.cur, Access::ComputeWrite);
+                (output, move |ctx: &mut PassContext<'_>| {
+                    ctx.set_pipeline(&self.spatial_pass);
+                    let args = RestirArgs {
+                        constants: ctx.upload(&constants),
+                        input: ctx.srv(input),
+                        pairing,
+                        shifts: ctx.srv(shifts),
+                        output: ctx.uav(output),
+                        ..RestirArgs::default()
+                    };
+                    ctx.push(&args);
+                    ctx.dispatch(groups.0, groups.1, 1);
+                })
+            })
+        } else {
+            reservoirs
+        };
 
         let scene = g.add_compute("RestirShade", |b| {
             let material = b.read_texture(material, Access::ComputeRead);

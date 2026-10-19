@@ -412,6 +412,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "marlin-cook-render"
+version = "0.1.0"
+dependencies = [
+ "marlin-asset",
+ "marlin-cook-core",
+ "marlin-math",
+ "marlin-reflect",
+ "marlin-render",
+ "marlin-serial",
+]
+
+[[package]]
 name = "marlin-cook-shader"
 version = "0.1.0"
 dependencies = [
@@ -487,6 +499,7 @@ dependencies = [
  "marlin-cook-font",
  "marlin-cook-level",
  "marlin-cook-mesh",
+ "marlin-cook-render",
  "marlin-cook-shader",
  "marlin-cook-text",
  "marlin-cook-texture",
@@ -805,6 +818,7 @@ name = "marlin-material"
 version = "0.1.0"
 dependencies = [
  "marlin-cook-mesh",
+ "marlin-cook-render",
  "marlin-gpu-test-support",
  "marlin-math",
  "marlin-render",
