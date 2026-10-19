@@ -11,6 +11,9 @@ use crate::{
     Surface, WindowDesc, WindowId, WindowMode,
 };
 
+/// The closure [`App::pump`] calls while the OS runs a modal loop inside it.
+pub(crate) type Tick<'a> = &'a mut dyn FnMut(&[Event]);
+
 pub(crate) trait App: Sized {
     type Window;
 
@@ -20,12 +23,7 @@ pub(crate) trait App: Sized {
     /// every queued message, then appends the gathered events to `out`. While the OS runs a modal
     /// loop inside the pump (a window drag), `tick` is called periodically with the events gathered
     /// so far, which it consumes.
-    fn pump(
-        &mut self,
-        timeout: Option<Duration>,
-        out: &mut EventQueue,
-        tick: Option<&mut dyn FnMut(&[Event])>,
-    );
+    fn pump(&mut self, timeout: Option<Duration>, out: &mut EventQueue, tick: Option<Tick<'_>>);
     fn lifecycle(&self) -> Lifecycle;
     /// Appends every connected display to `out`, the primary one first.
     fn displays(&self, out: &mut Vec<Display>);

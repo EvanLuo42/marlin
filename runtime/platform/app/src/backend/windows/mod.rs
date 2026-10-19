@@ -54,6 +54,9 @@ const CONSTRAINED_LOCKED: u8 = 1;
 const CONSTRAINED_DISCONNECTED: u8 = 2;
 const CONSTRAINED_DISPLAY_OFF: u8 = 4;
 
+/// The tick closure with its lifetime erased (see `App::pump`).
+type TickPtr = *mut dyn FnMut(&[Event]);
+
 /// State shared by the [`App`], its helper window and the window procedure of each of its
 /// windows.
 pub(crate) struct Shared {
@@ -67,7 +70,7 @@ pub(crate) struct Shared {
     /// `CONSTRAINED_*` bits; the app is constrained while any is set.
     constrained: Cell<u8>,
     /// The caller's tick closure, set only while `pump` runs (its lifetime is erased; see `pump`).
-    tick: Cell<Option<*mut dyn FnMut(&[Event])>>,
+    tick: Cell<Option<TickPtr>>,
     /// The tick closure is running; a nested modal loop it starts must not call it again.
     ticking: Cell<bool>,
     /// Events handed to the tick closure.
