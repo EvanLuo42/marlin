@@ -13,6 +13,7 @@ ShaderPackage
         `source:shaders/Material/Material.mshader`,
         `source:shaders/Post/Post.mshader`,
         `source:shaders/Scene/Geometry.mshader`,
+        `source:shaders/Scene/RayTracing.mshader`,
         `source:shaders/Scene/Scene.mshader`,
         `source:shaders/Shadows/Vsm.mshader`,
         `source:shaders/Streaming/Streaming.mshader`,

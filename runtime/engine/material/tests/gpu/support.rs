@@ -115,6 +115,12 @@ impl Harness {
                 &PagePoolDesc {
                     slots: 64,
                     table_entries: 1024,
+                    rt: marlin_render::raytracing::RtDesc {
+                        geometry_bytes: 16 << 20,
+                        blas_bytes: 16 << 20,
+                        mesh_slots: 1024,
+                        triangles_per_frame: 1 << 20,
+                    },
                 },
                 &StreamingShaders::from_modules(engine_shaders(&StreamingShaders::ENTRIES)),
             )

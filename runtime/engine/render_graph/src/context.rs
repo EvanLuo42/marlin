@@ -8,11 +8,11 @@ use marlin_containers::ArrayVec;
 use marlin_jobs::JobSystem;
 use marlin_jobs::sync::Mutex;
 use marlin_rhi::{
-    Buffer, BufferTextureCopy, BufferViewDesc, BufferViewKind, ClearColor, ColorAttachment,
-    CommandList, CommandPool, ComputePipeline, DepthAttachment, Device, GraphicsPipeline,
-    IndexFormat, IndirectArgs, LoadOp, MAX_COLOR_ATTACHMENTS, MAX_PUSH_CONSTANTS, MeshPipeline,
-    QueueType, Rect, RenderPassDesc, Result, STORAGE_ALIGNMENT, StoreOp, Texture, TextureCopy,
-    Viewport,
+    AccelerationStructure, AccelerationStructureCopy, Buffer, BufferTextureCopy, BufferViewDesc,
+    BufferViewKind, BuildAccelerationStructure, ClearColor, ColorAttachment, CommandList,
+    CommandPool, ComputePipeline, DepthAttachment, Device, GraphicsPipeline, IndexFormat,
+    IndirectArgs, LoadOp, MAX_COLOR_ATTACHMENTS, MAX_PUSH_CONSTANTS, MeshPipeline, QueueType, Rect,
+    RenderPassDesc, Result, STORAGE_ALIGNMENT, StoreOp, Texture, TextureCopy, Viewport,
 };
 use marlin_serial::cooked::Pod;
 
@@ -657,6 +657,53 @@ impl<'a> PassContext<'a, Rhi> {
             n => n,
         };
         self.parts.list().fill_buffer(buffer, h.offset, size, value);
+    }
+
+    /// The buffer `h` names, declared with the acceleration structure access `access`: what
+    /// builds and copies take for their inputs, scratch memory and storage (0007 §9.3).
+    pub fn accel_buffer(&self, h: BufferHandle<'_>, access: Access) -> &'a Buffer {
+        assert!(
+            access.is_accel(),
+            "pass {}: {access:?} is not an acceleration structure access",
+            self.parts.pass
+        );
+        self.buffer(h, access)
+    }
+
+    /// Builds or refits an acceleration structure: its buffers from
+    /// [`accel_buffer`](Self::accel_buffer), the destination's storage declared
+    /// [`Access::AccelWrite`], the bottom-level structures a top-level build instances
+    /// [`Access::AccelRead`].
+    pub fn build_acceleration_structure(&mut self, build: &BuildAccelerationStructure<'_>) {
+        self.parts.list().build_acceleration_structure(build);
+    }
+
+    /// Copies (or compacts) `src` into `dst`: their storage declared [`Access::AccelRead`] and
+    /// [`Access::AccelWrite`], or one buffer declared [`Access::AccelWrite`].
+    pub fn copy_acceleration_structure(
+        &mut self,
+        src: &AccelerationStructure,
+        dst: &AccelerationStructure,
+        mode: AccelerationStructureCopy,
+    ) {
+        self.parts
+            .list()
+            .copy_acceleration_structure(src, dst, mode);
+    }
+
+    /// Writes the compacted size of each of `structures` (storage declared
+    /// [`Access::AccelRead`]) as a `u64`, from `offset` of what `dst` (declared
+    /// [`Access::AccelSizes`]) covers.
+    pub fn write_compacted_sizes(
+        &mut self,
+        structures: &[&AccelerationStructure],
+        dst: BufferHandle<'_>,
+        offset: u64,
+    ) {
+        let buffer = self.buffer(dst, Access::AccelSizes);
+        self.parts
+            .list()
+            .write_compacted_sizes(structures, buffer, dst.offset + offset);
     }
 
     /// Clears what `h` covers (one mip, declared [`Access::Clear`]) to `value`.

@@ -337,6 +337,11 @@ fn the_exposure_holds_steady_from_the_first_frame() {
         .iter()
         .fold((f32::MAX, f32::MIN), |(lo, hi), &m| (lo.min(m), hi.max(m)));
     assert!(hi - lo < 8.0, "means from {lo} to {hi}");
+    // The RT LODs streamed in from the package and every mesh has its BLAS.
+    assert_eq!(
+        viewer.render.meshes.blas_count(),
+        viewer.render.mesh_count()
+    );
     drop(engine);
 }
 

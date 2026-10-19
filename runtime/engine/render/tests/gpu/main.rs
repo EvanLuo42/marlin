@@ -12,6 +12,7 @@ mod geometry;
 mod gpu_scene;
 mod occlusion;
 mod post;
+mod raytracing;
 mod shadows;
 mod software;
 mod streaming;

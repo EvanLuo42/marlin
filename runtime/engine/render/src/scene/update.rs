@@ -167,6 +167,8 @@ pub struct ResidentMesh {
     pub position_scale: [f32; 3],
     /// Local bounds.
     pub bounds: Bounds,
+    /// Its slot in the renderer ([`Meshes`](crate::Meshes)): its row in the BLAS table.
+    pub slot: u32,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]

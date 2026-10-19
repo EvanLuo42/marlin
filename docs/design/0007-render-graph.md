@@ -444,6 +444,27 @@ GPU Scene 实例表 ─┐
   - ray query 读了本帧还没构建的瞬态 TLAS。
 - 调试视图（实例 ID、BLAS 是否压缩、refit 次数）通过 ray query 的 compute pass 输出到一张纹理，再走资源捕获（§10.4）。
 
+### 9.11 R3a 的实现（2026-10-18）
+
+R3a 实现了 §9 的一个子集。和上面设计不同的地方都记在这里。
+
+- **AS 的访问方式**：`Access` 加了五项，`AccelInput`、`AccelScratch`、`AccelWrite`、`AccelRead`、`AccelSizes`，都只能用在 buffer 上，分别映射到 RHI 的 `BUILD_INPUT`、`BUILD_SCRATCH`、`ACCELERATION_STRUCTURE_WRITE`（加上 READ，因为同一个 buffer 里的 compaction 拷贝也要读源）、`ACCELERATION_STRUCTURE_READ`，以及 emit 阶段的 UAV。`PassContext` 加了 `accel_buffer`（按声明取 RHI buffer）、`build_acceleration_structure`、`copy_acceleration_structure` 和 `write_compacted_sizes`。
+- **没有单独的 `AccelHandle` 和 `add_accel`**：AS 就是放在 buffer 里的对象，graph 只管这个 buffer 的访问和同步；`AccelerationStructure` 对象由持有 buffer 的一方创建。构建 pass 就是普通的 compute pass。graph 原生的瞬态 AS（§9.1、§9.5 的瞬态 TLAS）等真正需要时再做。
+- **TLAS** 由 `marlin_render::raytracing::Tlas` 持有：容量取实例行数向上取 2 的幂（至少 64），只增不减。每帧导入，`WriteTlasInstances` 写实例描述，`BuildTlas` 构建，标志用 `PREFER_FAST_TRACE`。容量增长时旧的 storage 先退休，过了 `FRAMES_IN_FLIGHT` 帧之后由 `Tlas::release` 让 `FrameContext` 忘掉它，再释放。scratch 和实例描述是瞬态 buffer。
+- **AS 组**就是一个 buffer：`Meshes` 持有一个 BLAS 池（桌面默认 256 MiB），所有 BLAS 都在里面按偏移分配（first-fit，按 256 字节对齐）。构建写整个池（`AccelWrite`），TLAS 构建和 ray query 读整个池（`AccelRead`），所以一次 barrier 就覆盖了所有 BLAS，拓扑也不随每帧建几个而变。§9.9 说的"ray query 隐式读 BLAS"由 `RtScene::read` 实现：它同时声明读 TLAS 和读 BLAS 池。
+- **BLAS 的输入**：RT LOD 的 bulk blob 和网格的页一样流送，网格上传时就请求读取。读到之后整块放进 RT 几何池（默认 256 MiB），由每帧的上传 pass 写进去，同一帧里 `BuildBlas` 读它构建（`PREFER_FAST_TRACE`，几何 `OPAQUE`）。每帧按三角形数预算（`RtDesc::triangles_per_frame`，默认 2^20）。超出预算的网格如果是这一帧的第一个，就单独构建。池满了的网格留到以后再试。
+- **BLAS 的引用**：GPU Scene 的网格表每行从 16 个字扩到 20 个字，加了 `Slot`（网格在 `Meshes` 里的槽位）和 3 个空位。`Meshes` 持有一张 BLAS 表，按槽位存 BLAS 地址（两个字，0 表示没有），也由上传 pass 写。实例描述的 BLAS 引用从这张表里取，不在 CPU 上碰每个实例。
+- **实例描述**：第 i 条对应 GPU Scene 的第 i 个实例行，所以命中的 `InstanceIndex` 就是实例行号，`InstanceID` 也写成行号。flags 是 `TRIANGLE_CULL_DISABLE | FORCE_OPAQUE`。被删除、被隐藏、网格不在 GPU 上、还没有 BLAS 的行写成非激活实例（BLAS 地址 0）。实例描述的格式写在引擎 shader（`Scene/RayTracing.mshader` 的 `TlasInstance`）里，是 Vulkan/D3D12 共用的布局。等有了 Metal 再按 §9.6 挪进标准库。
+- **调试**：`Tlas::add_trace` 对给定的射线求最近的命中（实例行、图元、t、正反面），供工具和测试使用（§9.10）。
+- **还没做**：BLAS compaction（§9.7，要回读压缩后的大小）、动态 BLAS 的 refit（§9.8）、AS 的异步计算队列（现在都在图形队列上）、RT LOD 按距离流送（现在随网格一起读）、§9.10 的图导出和 Development 校验。
+- **测试**（`marlin-render/tests/gpu/raytracing.rs`）：
+  - 4×4 网格的立方体，每个上方竖直向下打一条射线，命中的实例行正确，t 等于到顶面的距离（误差 1e-3），打在正面；立方体之间的射线不命中。
+  - 移动、隐藏、删除实例后的下一帧，TLAS 跟着变：移走的实例在新位置被命中，旧位置、隐藏和删除的都不命中。
+  - 缩放并旋转的球，从六个方向打射线，命中点在半径上（RT LOD 简化到四分之一的三角形，误差 1%）。
+  - BLAS 构建遵守每帧预算：大约一帧一个球，最后全部建好，全部能被命中。
+  - 端到端：打包的示例里，RT LOD 从包里流送进来，每个网格都有了 BLAS。
+  - `streaming` 的读取计数多了一次（RT LOD）。验证层没有报错。开窗口跑 `samples/basic` 12 秒，没有报错。
+
 ## 10. 调试与工具
 
 ### 10.1 计时与标记

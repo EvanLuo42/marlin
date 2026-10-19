@@ -452,7 +452,7 @@ impl RenderScene {
     }
 
     /// Instance rows, live or not: the GPU tables' rows in use.
-    pub(crate) fn instance_rows(&self) -> u32 {
+    pub fn instance_rows(&self) -> u32 {
         self.instance_rows.len() as u32
     }
 

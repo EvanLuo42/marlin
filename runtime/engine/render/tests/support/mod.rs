@@ -12,6 +12,7 @@ use marlin_containers::HashMap;
 use marlin_gpu_test_support::{Shader, engine_shaders, hardware_device};
 use marlin_math::{Mat4, Transform, Vec3};
 use marlin_render::asset::cluster::ClusterRecord;
+use marlin_render::raytracing::{Ray, RayHit, RtShaders, Tlas};
 use marlin_render::scene::{
     InstanceDesc, InstanceId, InstanceUpdate, MaterialDesc, MaterialId, MaterialUpdate, MeshId,
     MeshUpdate,
@@ -65,6 +66,8 @@ pub struct Harness {
     reference: GraphicsPipeline,
     /// The sun's virtual shadow maps, at [`SHADOW_SETTINGS`].
     pub vsm: Vsm,
+    /// The ray tracing scene's TLAS.
+    pub tlas: Tlas,
     /// The unit cube, in the scene and on the GPU.
     pub cube: MeshId,
     /// What instances draw with: a material row of permutation 0 (nothing here reads it).
@@ -91,6 +94,13 @@ impl Harness {
             &PagePoolDesc {
                 slots,
                 table_entries: 1 << 14,
+                // Small pools: tests make many harnesses.
+                rt: marlin_render::raytracing::RtDesc {
+                    geometry_bytes: 16 << 20,
+                    blas_bytes: 16 << 20,
+                    mesh_slots: 1024,
+                    triangles_per_frame: 1 << 20,
+                },
             },
             &StreamingShaders::from_modules(engine_shaders(&StreamingShaders::ENTRIES)),
         )
@@ -123,6 +133,11 @@ impl Harness {
             SHADOW_SETTINGS,
         )
         .unwrap();
+        let tlas = Tlas::new(
+            device,
+            &RtShaders::from_modules(engine_shaders(&RtShaders::ENTRIES)),
+        )
+        .unwrap();
         let frame = FrameContext::new(device, &FrameContextDesc::default()).unwrap();
         let scene = RenderScene::new();
         let mut updates = SceneUpdates {
@@ -152,6 +167,7 @@ impl Harness {
             vis,
             reference,
             vsm,
+            tlas,
             cube,
             material,
             updates,
@@ -476,6 +492,34 @@ impl Harness {
             drawn: words(&counters)[0],
             cached: words(&counters)[3],
         }
+    }
+
+    /// Applies the pending updates and runs one frame: the BLAS builds its budget allows, the TLAS,
+    /// and `rays` traced against it; their closest hits.
+    pub fn trace_frame(&mut self, rays: &[Ray]) -> Vec<Option<RayHit>> {
+        let updates = core::mem::take(&mut self.updates);
+        self.scene.apply(&updates);
+        self.meshes.prepare_rt(self.device).unwrap();
+        let rows = self.scene.instance_rows();
+        self.tlas.prepare(self.device, rows).unwrap();
+        self.tlas.release(&mut self.frame);
+        let uploads = self.meshes.take_uploads();
+        let rays = rays.to_vec();
+        let (meshes, scene, scatter, tlas) =
+            (&self.meshes, &mut self.scene, &self.scatter, &self.tlas);
+        let ticket = self
+            .frame
+            .execute(self.device, |g, _| {
+                let pool = meshes.add_passes(g, uploads);
+                let gpu = scene.add_passes(g, scatter);
+                let rt = tlas.add_passes(g, gpu, &pool, rows);
+                let hits = tlas.add_trace(g, &rt, rays);
+                g.readback(hits)
+            })
+            .unwrap();
+        let hits = self.frame.wait_readback(ticket).unwrap();
+        assert_eq!(self.device.validation_errors(), 0);
+        RayHit::read(&hits)
     }
 
     /// Waits for the readback `ticket` of the last frame.

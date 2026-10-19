@@ -47,6 +47,7 @@ use marlin_shader::bind::{BindError, EntryDesc, bind};
 use crate::asset::cluster::PAGE_SIZE;
 use crate::asset::mesh::MeshView;
 use crate::geometry::{self, DagCounts, NOT_RESIDENT};
+use crate::raytracing::{RtDesc, RtGeometry, RtUploads};
 use crate::scene::{Bounds, ResidentMesh};
 
 /// A view's camera: put it on an entity with a `Transform`. The camera looks
@@ -129,6 +130,8 @@ pub struct PagePoolDesc {
     pub slots: u32,
     /// Page table entries: the pages of every uploaded mesh, resident or not.
     pub table_entries: u32,
+    /// The ray tracing pools ([`crate::raytracing`]).
+    pub rt: RtDesc,
 }
 
 impl PagePoolDesc {
@@ -137,6 +140,7 @@ impl PagePoolDesc {
     pub const DEFAULT: Self = Self {
         slots: 4096,
         table_entries: 1 << 18,
+        rt: RtDesc::DEFAULT,
     };
 }
 
@@ -242,6 +246,7 @@ pub struct Uploads {
     ops: Vec<[u32; 4]>,
     data: Vec<u32>,
     frame: u64,
+    rt: RtUploads,
 }
 
 impl Uploads {
@@ -263,6 +268,11 @@ pub struct PagePool<'g> {
     /// A u32 per slot, cleared: nonzero once a pass read the slot.
     pub used: BufferHandle<'g>,
     pub frame: u64,
+    /// The RT LOD geometry, the BLASes and the BLAS table (a mesh slot's BLAS address), after
+    /// the frame's uploads and builds ([`crate::raytracing`]).
+    pub rt_geometry: BufferHandle<'g>,
+    pub blas: BufferHandle<'g>,
+    pub blas_table: BufferHandle<'g>,
 }
 
 /// The visibility passes' feedback of one frame, read back.
@@ -323,6 +333,8 @@ pub struct Meshes {
     loading: Vec<(MeshHandle, u32)>,
     /// Most pages loaded a frame (each up to 128 KiB of upload).
     pub max_page_uploads: u32,
+    /// RT LOD geometry and BLASes.
+    rt: RtGeometry,
 }
 
 impl Meshes {
@@ -365,6 +377,7 @@ impl Meshes {
             wanted: 0,
             loading: Vec::new(),
             max_page_uploads: 64,
+            rt: RtGeometry::new(device, &desc.rt)?,
         })
     }
 
@@ -481,6 +494,7 @@ impl Meshes {
                 min: h.bounds_min,
                 max: h.bounds_max,
             },
+            slot: 0,
         };
         let counts = geometry::counts(&dag);
         let mut pages: Vec<PageState> = (0..bulk.len())
@@ -514,6 +528,9 @@ impl Meshes {
             unreachable!("just inserted");
         };
         mesh.resident.handle = handle;
+        mesh.resident.slot = handle.0.index();
+        let rt_data = mesh.data.clone();
+        self.rt.add(handle.0.index(), rt_data);
         self.tables.insert(table, (page_count, handle));
         for (&page, &slot) in pinned.iter().zip(&slots) {
             self.owner[slot as usize] = Some((handle, page));
@@ -895,32 +912,45 @@ impl Meshes {
             ops.push([self.entry_offset(entry), data.len() as u32, 1, 0]);
             data.push(value);
         }
-        Uploads { ops, data, frame }
+        Uploads {
+            ops,
+            data,
+            frame,
+            rt: self.rt.take(),
+        }
     }
 
     /// Declares the frame's upload pass (`uploads`, from [`take_uploads`](Self::take_uploads))
     /// into the imported pool, and the cleared used-slot marks.
     pub fn add_passes<'g>(&'g self, g: &mut RenderGraph<'g>, uploads: Uploads) -> PagePool<'g> {
-        let mut pages = g.import_buffer("PagePool", &self.pool);
-        let frame = uploads.frame;
-        if !uploads.ops.is_empty() {
-            pages = g.add_compute("PageUpload", |b| {
-                let pool = b.write_buffer(pages, Access::ComputeWrite);
-                (pool, move |ctx: &mut PassContext<'_>| {
-                    let count = uploads.ops.len() as u32;
-                    let ops = ctx.upload_slice(&uploads.ops);
-                    let data = ctx.upload_slice(&uploads.data);
-                    ctx.set_pipeline(&self.upload);
-                    ctx.push(&UploadArgs {
-                        ops,
-                        data,
-                        pool: ctx.uav(pool),
-                        count,
-                    });
-                    ctx.dispatch(count.min(65535), count.div_ceil(65535), 1);
-                })
-            });
-        }
+        let Uploads {
+            ops,
+            data,
+            frame,
+            rt,
+        } = uploads;
+        let pages = g.import_buffer("PagePool", &self.pool);
+        let pages = self.add_upload(g, "PageUpload", pages, ops, data);
+        let rt_geometry = g.import_buffer("RtGeometry", &self.rt.geometry);
+        let rt_geometry = self.add_upload(
+            g,
+            "RtGeometryUpload",
+            rt_geometry,
+            rt.geometry_ops,
+            rt.geometry_data,
+        );
+        let blas_table = g.import_buffer("BlasTable", &self.rt.table);
+        let blas_table = self.add_upload(
+            g,
+            "BlasTableUpload",
+            blas_table,
+            rt.table_ops,
+            rt.table_data,
+        );
+        let blas = g.import_buffer("BlasPool", &self.rt.blas);
+        let blas = self
+            .rt
+            .add_builds(g, rt_geometry, blas, rt.builds, rt.scratch);
         let slots = self.slots;
         let used = g.create_buffer(
             "PageUsed",
@@ -937,7 +967,45 @@ impl Meshes {
                 ctx.dispatch(slots.div_ceil(64), 1, 1);
             })
         });
-        PagePool { pages, used, frame }
+        PagePool {
+            pages,
+            used,
+            frame,
+            rt_geometry,
+            blas,
+            blas_table,
+        }
+    }
+
+    /// Declares a `PageUpload` pass writing `ops` (destination byte, first data word, words) of
+    /// `data` into `target`, if there are any.
+    fn add_upload<'g>(
+        &'g self,
+        g: &mut RenderGraph<'g>,
+        name: &str,
+        target: BufferHandle<'g>,
+        ops: Vec<[u32; 4]>,
+        data: Vec<u32>,
+    ) -> BufferHandle<'g> {
+        if ops.is_empty() {
+            return target;
+        }
+        g.add_compute(name, |b| {
+            let target = b.write_buffer(target, Access::ComputeWrite);
+            (target, move |ctx: &mut PassContext<'_>| {
+                let count = ops.len() as u32;
+                let ops = ctx.upload_slice(&ops);
+                let data = ctx.upload_slice(&data);
+                ctx.set_pipeline(&self.upload);
+                ctx.push(&UploadArgs {
+                    ops,
+                    data,
+                    pool: ctx.uav(target),
+                    count,
+                });
+                ctx.dispatch(count.min(65535), count.div_ceil(65535), 1);
+            })
+        })
     }
 
     /// Frees a mesh's DAG buffer, its slots and its page table entries. Its handle draws nothing
@@ -960,6 +1028,8 @@ impl Meshes {
         self.loading.retain(|&(m, _)| m != mesh);
         self.tables.remove(&m.table);
         self.free_table(m.table, m.pages.len() as u32);
+        // SAFETY: forwarded from the caller.
+        unsafe { self.rt.remove(mesh.0.index()) };
     }
 
     /// What one instance of `mesh` may add to the visibility passes' buffers (zero if it was
@@ -968,6 +1038,27 @@ impl Meshes {
         self.meshes
             .get(mesh.0)
             .map_or(DagCounts::default(), |m| m.counts)
+    }
+
+    /// Takes the RT LODs read since and places and queues the BLASes this frame's budget
+    /// allows (call once a frame, before [`take_uploads`](Self::take_uploads)).
+    pub fn prepare_rt(&mut self, device: &Device) -> Result<()> {
+        self.rt.prepare(device)
+    }
+
+    /// Meshes with a BLAS (built, or building this frame).
+    pub fn blas_count(&self) -> usize {
+        self.rt.built()
+    }
+
+    /// Free bytes of the BLAS pool.
+    pub fn free_blas_bytes(&self) -> u64 {
+        self.rt.free_blas_bytes()
+    }
+
+    /// Most triangles whose BLASes a frame builds.
+    pub fn set_blas_budget(&mut self, triangles: u32) {
+        self.rt.triangles_per_frame = triangles;
     }
 
     /// Meshes uploaded and not released.

@@ -30,6 +30,9 @@ public struct MeshEntry
     public uint UvSets;
     /// Local bounding sphere: center, radius.
     public float4 Sphere;
+    /// The mesh's slot in the renderer: its row in the BLAS table.
+    public uint Slot;
+    public uint3 Spare;
 }
 
 /// The slot of an address `slot << 12 | cluster`.

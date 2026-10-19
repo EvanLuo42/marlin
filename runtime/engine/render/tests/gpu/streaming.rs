@@ -291,7 +291,8 @@ fn pages_not_in_memory_are_read_then_loaded() {
     // Every frame on the way is the cut of what is resident; a page is read once.
     let last = settle(&mut h);
     assert_eq!(h.meshes.resident_pages(handle), pages);
-    assert_eq!(disk.reads(), pages - roots);
+    // And the RT LOD, read with the mesh for its BLAS.
+    assert_eq!(disk.reads(), pages - roots + 1);
     check_residency(&h, handle, &ball);
 
     // The same picture as a mesh with every page in memory.

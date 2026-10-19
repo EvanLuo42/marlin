@@ -1,0 +1,97 @@
+namespace Marlin.Engine.Scene;
+
+// The ray tracing scene (0007 §9.6, 0009 §3.1): marlin-render's `raytracing` module builds a
+// BLAS per mesh from its RT LOD and the TLAS every frame. `WriteTlasInstances` writes one
+// instance record per GPU Scene instance row, so a ray query's `InstanceIndex` is the row;
+// `TraceRays` traces given rays, for tools and tests.
+
+/// An instance record of a top-level build: the layout Vulkan and D3D12 share (64 bytes).
+public struct TlasInstance
+{
+    /// Object to world, row-major 3×4.
+    public Rows3x4 Transform;
+    /// The instance id (low 24 bits) and the visibility mask (high 8).
+    public uint IdAndMask;
+    /// The hit group contribution (low 24 bits) and the instance flags (high 8).
+    public uint ContributionAndFlags;
+    /// The BLAS's address (low, high words); 0: an inactive instance, which builds skip.
+    public uint2 Blas;
+}
+
+/// `InstanceData.Flags`: drawn nowhere.
+const uint InstanceHidden = 1;
+/// Instance flags: triangles of either facing, opaque (no any-hit processing).
+const uint CullDisableAndForceOpaque = 0x5;
+
+public struct TlasArgs
+{
+    public ReadOnlyBuffer<InstanceData> Instances;
+    public ReadOnlyBuffer<InstanceTransforms> Transforms;
+    public ReadOnlyBuffer<MeshEntry> Meshes;
+    /// Per mesh slot (`MeshEntry.Slot`): its BLAS's address, or 0 without one.
+    public ReadOnlyBuffer<uint2> BlasTable;
+    public Buffer<TlasInstance> Records;
+    /// Instance rows in the GPU Scene, and records to write (rows past the instance rows are
+    /// inactive).
+    public uint Rows;
+    public uint Capacity;
+}
+
+[Compute(64, 1, 1)]
+public void WriteTlasInstances([DispatchThreadId] uint3 id, [Push] in TlasArgs a)
+{
+    uint i = id.x;
+    if (i >= a.Capacity)
+        return;
+    uint2 blas = uint2(0, 0);
+    if (i < a.Rows)
+    {
+        InstanceData data = a.Instances[i];
+        MeshEntry mesh = a.Meshes[data.Mesh];
+        // A removed row reads as hidden; a mesh not on the GPU has no BLAS either.
+        if ((data.Flags & InstanceHidden) == 0 && mesh.Resident != 0)
+            blas = a.BlasTable[mesh.Slot];
+    }
+    if (blas.x == 0 && blas.y == 0)
+    {
+        a.Records[i] = TlasInstance
+        {
+            Transform = Rows3x4 { R0 = float4(1, 0, 0, 0), R1 = float4(0, 1, 0, 0), R2 = float4(0, 0, 1, 0) },
+            IdAndMask = 0,
+            ContributionAndFlags = 0,
+            Blas = blas,
+        };
+        return;
+    }
+    a.Records[i] = TlasInstance
+    {
+        Transform = a.Transforms[i].Current,
+        IdAndMask = (i & (uint)0xFFFFFF) | ((uint)0xFF << 24),
+        ContributionAndFlags = CullDisableAndForceOpaque << 24,
+        Blas = blas,
+    };
+}
+
+public struct TraceArgs
+{
+    public AccelerationStructure Tlas;
+    public ReadOnlyBuffer<Ray> Rays;
+    /// Per ray: the instance index (`0xFFFFFFFF` for a miss), the primitive, the distance (float
+    /// bits), 1 for the front face.
+    public Buffer<uint4> Hits;
+    public uint Count;
+}
+
+[Compute(64, 1, 1)]
+public void TraceRays([DispatchThreadId] uint3 id, [Push] in TraceArgs a)
+{
+    if (id.x >= a.Count)
+        return;
+    RayHit hit = a.Tlas.TraceClosest(a.Rays[id.x]);
+    if (hit.Kind == HitKind.None)
+    {
+        a.Hits[id.x] = uint4(0xFFFFFFFF, 0, 0, 0);
+        return;
+    }
+    a.Hits[id.x] = uint4(hit.InstanceIndex, hit.PrimitiveIndex, AsUInt(hit.T), hit.FrontFace ? (uint)1 : (uint)0);
+}

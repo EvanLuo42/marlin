@@ -28,6 +28,7 @@ pub mod geometry;
 pub mod lighting;
 mod meshes;
 mod post;
+pub mod raytracing;
 pub mod scene;
 pub mod shadows;
 pub mod visibility;

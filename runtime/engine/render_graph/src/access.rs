@@ -30,6 +30,18 @@ pub enum Access {
     CopyDst,
     /// Filled (`fill_buffer`) or cleared (`clear_storage_texture`).
     Clear,
+    /// Vertices, indices or instance records read by acceleration structure builds (0007 §9.2).
+    AccelInput,
+    /// Scratch memory of acceleration structure builds.
+    AccelScratch,
+    /// The acceleration structures in a buffer built, updated or copied into; a copy within one
+    /// buffer (a compaction) reads its source through this access too.
+    AccelWrite,
+    /// The acceleration structures in a buffer read: traversed by ray queries, instanced by
+    /// top-level builds, copied from.
+    AccelRead,
+    /// Compacted sizes written by `write_compacted_sizes`.
+    AccelSizes,
 }
 
 impl Access {
@@ -37,7 +49,25 @@ impl Access {
     pub const fn is_write(self) -> bool {
         matches!(
             self,
-            Self::ComputeWrite | Self::PixelWrite | Self::CopyDst | Self::Clear
+            Self::ComputeWrite
+                | Self::PixelWrite
+                | Self::CopyDst
+                | Self::Clear
+                | Self::AccelScratch
+                | Self::AccelWrite
+                | Self::AccelSizes
+        )
+    }
+
+    /// An acceleration structure build's or copy's access, or a read of acceleration structures.
+    pub const fn is_accel(self) -> bool {
+        matches!(
+            self,
+            Self::AccelInput
+                | Self::AccelScratch
+                | Self::AccelWrite
+                | Self::AccelRead
+                | Self::AccelSizes
         )
     }
 
@@ -93,6 +123,11 @@ impl Use {
                 Access::CopySrc => "CopySrc",
                 Access::CopyDst => "CopyDst",
                 Access::Clear => "Clear",
+                Access::AccelInput => "AccelInput",
+                Access::AccelScratch => "AccelScratch",
+                Access::AccelWrite => "AccelWrite",
+                Access::AccelRead => "AccelRead",
+                Access::AccelSizes => "AccelSizes",
             },
             Self::Color => "color attachment",
             Self::DepthWrite => "depth attachment",
@@ -123,7 +158,14 @@ impl Use {
                 Access::CopySrc => TextureState::COPY_SRC,
                 Access::CopyDst => TextureState::COPY_DST,
                 Access::Clear => TextureState::CLEAR_STORAGE,
-                Access::Uniform | Access::Indirect | Access::Index => return None,
+                Access::Uniform
+                | Access::Indirect
+                | Access::Index
+                | Access::AccelInput
+                | Access::AccelScratch
+                | Access::AccelWrite
+                | Access::AccelRead
+                | Access::AccelSizes => return None,
             },
             Self::Color => TextureState::RENDER_TARGET,
             Self::DepthWrite => TextureState::DEPTH_WRITE,
@@ -158,6 +200,18 @@ impl Use {
                 Access::CopySrc => BufferState::COPY_SRC,
                 Access::CopyDst => BufferState::COPY_DST,
                 Access::Clear => BufferState::CLEAR_STORAGE,
+                Access::AccelInput => BufferState::BUILD_INPUT,
+                Access::AccelScratch => BufferState::BUILD_SCRATCH,
+                Access::AccelWrite => BufferState {
+                    stage: BufferState::ACCELERATION_STRUCTURE_WRITE.stage,
+                    access: RhiAccess::ACCELERATION_STRUCTURE_WRITE
+                        .union(RhiAccess::ACCELERATION_STRUCTURE_READ),
+                },
+                Access::AccelRead => BufferState::ACCELERATION_STRUCTURE_READ,
+                Access::AccelSizes => BufferState {
+                    stage: Stage::EMIT_ACCELERATION_STRUCTURE_INFO,
+                    access: RhiAccess::UNORDERED_ACCESS,
+                },
             },
             Self::Color | Self::DepthWrite | Self::DepthRead | Self::Present => return None,
         })
@@ -173,6 +227,11 @@ impl Use {
                 Access::CopySrc => TextureUsage::COPY_SRC,
                 Access::CopyDst => TextureUsage::COPY_DST,
                 Access::Uniform | Access::Indirect | Access::Index => TextureUsage::default(),
+                Access::AccelInput
+                | Access::AccelScratch
+                | Access::AccelWrite
+                | Access::AccelRead
+                | Access::AccelSizes => TextureUsage::default(),
             },
             Self::Color => TextureUsage::RENDER_TARGET,
             Self::DepthWrite | Self::DepthRead => TextureUsage::DEPTH_STENCIL,
@@ -194,6 +253,11 @@ impl Use {
                 Access::Index => BufferUsage::INDEX,
                 Access::CopySrc => BufferUsage::COPY_SRC,
                 Access::CopyDst => BufferUsage::COPY_DST,
+                Access::AccelInput => BufferUsage::ACCELERATION_STRUCTURE_INPUT,
+                Access::AccelScratch | Access::AccelSizes => BufferUsage::SHADER_WRITE,
+                Access::AccelWrite | Access::AccelRead => {
+                    BufferUsage::ACCELERATION_STRUCTURE_STORAGE
+                }
             },
             Self::Color | Self::DepthWrite | Self::DepthRead | Self::Present => {
                 BufferUsage::default()

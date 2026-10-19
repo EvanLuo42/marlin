@@ -15,6 +15,7 @@ use alloc::vec::Vec;
 use marlin_containers::{HashMap, HashMapExt};
 use marlin_material::{DEFAULT_PERMUTATION, MaterialShaders, Materials, RESOLVE};
 use marlin_math::Transform;
+use marlin_render::raytracing::{RtShaders, Tlas};
 use marlin_render::scene::{MeshId, MeshUpdate};
 use marlin_render::shadows::{Vsm, VsmSettings, VsmShaders};
 use marlin_render::visibility::{ViewDesc, counters};
@@ -67,6 +68,8 @@ pub struct RenderSide {
     pub lighting: Lighting,
     /// The sun's virtual shadow maps.
     pub vsm: Vsm,
+    /// The ray tracing scene's TLAS (0007 §9).
+    pub tlas: Tlas,
     /// Tonemaps the [`HDR_FORMAT`](marlin_render::HDR_FORMAT) scene into the output.
     pub post: PostProcess,
     pub scene: RenderScene,
@@ -116,6 +119,7 @@ impl RenderSide {
             materials,
             lighting: Lighting::new(device, bind_one(engine, &Lighting::ENTRY)?)?,
             vsm: Vsm::new(device, &VsmShaders::bind(engine)?, VsmSettings::DEFAULT)?,
+            tlas: Tlas::new(device, &RtShaders::bind(engine)?)?,
             post: PostProcess::new(device, &PostShaders::bind(engine)?, output)?,
             scene: RenderScene::with_ids(ids),
             scatter: ScatterShader::new(device, bind_one(engine, &ScatterShader::ENTRY)?)?,
@@ -182,6 +186,9 @@ impl RenderSide {
         });
         // The delta's adds come first: the residency of a mesh added this frame applies to it.
         self.scene.apply_all([&delta.updates, &resident]);
+        // The frame's BLAS builds and the TLAS's room for the instance rows.
+        self.meshes.prepare_rt(device)?;
+        self.tlas.prepare(device, self.scene.instance_rows())?;
         self.dt = delta.dt;
         self.previous = self.camera;
         self.camera = delta.camera;
@@ -211,6 +218,7 @@ impl RenderSide {
             lighting,
             vsm,
             post,
+            tlas,
             scene,
             scatter,
             camera,
@@ -221,6 +229,9 @@ impl RenderSide {
         let meshes: &'g Meshes = meshes;
         let pool = meshes.add_passes(g, uploads);
         let gpu = scene.add_passes(g, scatter);
+        let rows = scene.instance_rows();
+        // Built every frame; ray query passes read it (R3c on).
+        let _rt = tlas.add_passes(g, gpu, &pool, rows);
         let scene: &'g RenderScene = scene;
         let visibility: &'g Visibility = visibility;
         let env = *scene.environment();
@@ -272,6 +283,7 @@ impl RenderSide {
     ///
     /// [`add_passes`]: RenderSide::add_passes
     pub fn collect_feedback(&mut self, frames: &mut FrameContext) {
+        self.tlas.release(frames);
         while let Some(&(frame, [c, r, u])) = self.feedback.front() {
             let Some(counter_bytes) = frames.readback(c) else {
                 break;

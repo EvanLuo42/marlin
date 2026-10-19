@@ -8,7 +8,7 @@
 //! | instance data | 8 | mesh row, flags, material row (`u32::MAX`: none), spare, color (float4) |
 //! | instance transforms | 24 | current, then previous: 3 rows of a 3×4 matrix each |
 //! | instance bounds | 4 | world bounding sphere: center, radius |
-//! | meshes | 16 | page pool view, DAG buffer view, flags, strides; position offset (3), resident (0/1); position scale (3), UV sets; local bounding sphere (`Marlin.Engine.Scene.MeshEntry`) |
+//! | meshes | 20 | page pool view, DAG buffer view, flags, strides; position offset (3), resident (0/1); position scale (3), UV sets; local bounding sphere; the mesh's slot (its BLAS table row), 3 spare (`Marlin.Engine.Scene.MeshEntry`) |
 //! | lights | 16 | kind, range, cone (2); radiance + spare; position + spare; direction + spare |
 //! | materials | 4 | permutation (`u32::MAX`: removed), row in its parameter table, 2 spare |
 //! | parameters, one table per permutation | the permutation's block | the material struct (0011 §7.5) |
@@ -32,7 +32,7 @@ use marlin_shader::bind::EntryDesc;
 use super::{RenderScene, dirty};
 
 /// Words per row of the fixed tables, in table order.
-const STRIDES: [u32; 6] = [8, 24, 4, 16, 16, 4];
+const STRIDES: [u32; 6] = [8, 24, 4, 20, 16, 4];
 const DATA: usize = 0;
 const TRANSFORMS: usize = 1;
 const BOUNDS: usize = 2;
@@ -322,7 +322,7 @@ impl RenderScene {
                 continue;
             }
             // Not resident: all zero (`Resident` = 0).
-            let mut words = [0u32; 16];
+            let mut words = [0u32; 20];
             if let Some(m) = self.mesh_resident[i] {
                 let (o, s, b) = (m.position_offset, m.position_scale, m.bounds);
                 words = [
@@ -342,6 +342,10 @@ impl RenderScene {
                     b.center[1].to_bits(),
                     b.center[2].to_bits(),
                     b.radius.to_bits(),
+                    m.slot,
+                    0,
+                    0,
+                    0,
                 ];
             }
             ops.push(WRITE, row, &words);
