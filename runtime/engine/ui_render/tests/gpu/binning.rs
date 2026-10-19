@@ -8,7 +8,7 @@ use marlin_ui_render::command::{BLOCK_COMMANDS, BLOCK_WORDS};
 use marlin_ui_render::reference::{bin, tile_counts};
 use marlin_ui_render::{
     Color, Corners, LineCap, Rect, RectStyle, ShapeStyle, Stroke, StrokeStyle, UiDrawList,
-    UiRenderer, UiRendererDesc,
+    UiRendererDesc,
 };
 
 use crate::support::{inter, scene};
@@ -16,12 +16,12 @@ use crate::{finish, renderer};
 
 /// The tile lists the GPU builds for `list` on a `width` × `height` surface.
 pub fn gpu_lists(
-    r: &mut UiRenderer,
+    r: &mut crate::TestUi,
     frames: &mut FrameContext,
     list: &UiDrawList,
     width: u32,
     height: u32,
-) -> (Vec<Vec<u32>>, marlin_ui_render::UiFrameData) {
+) -> (Vec<Vec<u32>>, crate::Frame) {
     let fonts: [FontView<'_>; 1] = [inter()];
     let data = r.prepare(list, &fonts, None);
     let (heads, pool) = frames
@@ -36,7 +36,7 @@ pub fn gpu_lists(
     let (tx, ty) = tile_counts(width, height);
     let mut lists = Vec::new();
     for t in 0..(tx * ty) as usize {
-        let (mut block, count) = (word(&heads, 2 * t), word(&heads, 2 * t + 1));
+        let (mut block, count) = (word(&heads, 4 * t), word(&heads, 4 * t + 1));
         let mut l = Vec::with_capacity(count as usize);
         for k in 0..count {
             let slot = k % BLOCK_COMMANDS;
@@ -51,7 +51,7 @@ pub fn gpu_lists(
 }
 
 pub fn compare(
-    r: &mut UiRenderer,
+    r: &mut crate::TestUi,
     frames: &mut FrameContext,
     list: &UiDrawList,
     width: u32,
@@ -171,10 +171,13 @@ fn an_empty_list_lists_nothing() {
 
 #[test]
 fn a_small_pool_overflows_and_grows() {
-    let mut r = renderer(&UiRendererDesc {
-        initial_pool_blocks: 64,
-        ..UiRendererDesc::default()
-    });
+    let mut r = crate::renderer_with(
+        &UiRendererDesc::default(),
+        &marlin_ui_render::UiSurfaceDesc {
+            initial_pool_blocks: 64,
+            ..marlin_ui_render::UiSurfaceDesc::new(1)
+        },
+    );
     let mut frames = FrameContext::new(hardware_device(), &FrameContextDesc::default()).unwrap();
     // 40 × 26 tiles, each taking a block for the background: more than 64.
     let mut list = UiDrawList::new(1.0);

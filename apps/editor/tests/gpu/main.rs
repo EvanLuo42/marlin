@@ -11,7 +11,8 @@ use marlin_math::Vec2;
 use marlin_render_graph::{FrameContext, FrameContextDesc};
 use marlin_ui_render::shape::Textures;
 use marlin_ui_render::{
-    Color, UI_ENTRIES, UiDrawList, UiRenderer, UiRendererDesc, UiShaders, reference,
+    Color, UI_ENTRIES, UiDrawList, UiRenderer, UiRendererDesc, UiShaders, UiSurface, UiSurfaceDesc,
+    reference,
 };
 
 fn inter() -> Vec<u8> {
@@ -65,10 +66,13 @@ fn the_shell_draws_like_the_reference_and_its_golden() {
             status: "Ready  ·  60 fps",
         },
     );
-    let data = ui.prepare(&list, &[font], None);
+    let surface = UiSurface::new(hardware_device(), &UiSurfaceDesc::new(1)).unwrap();
+    let prepared = ui.prepare(&[&list], &[], &[font], None);
+    let data = &prepared.surfaces[0];
     let ticket = frames
         .execute(hardware_device(), |g, _| {
-            let out = ui.add_passes(g, &data, w, h, Color::BLACK);
+            let pages = ui.begin(g, &prepared);
+            let out = ui.add_passes(g, pages, &surface, data, w, h, Color::BLACK, &[]);
             g.readback_texture(out.target)
         })
         .unwrap();
@@ -76,7 +80,7 @@ fn the_shell_draws_like_the_reference_and_its_golden() {
 
     let size = ui.glyph_cache().config().page_size;
     let mut pages = Pages(Vec::new(), size);
-    for u in data.uploads() {
+    for u in prepared.uploads() {
         while pages.0.len() <= u.page as usize {
             pages.0.push(vec![0; (size * size) as usize]);
         }
@@ -88,7 +92,7 @@ fn the_shell_draws_like_the_reference_and_its_golden() {
         }
     }
     let clear = marlin_ui_render::shape::premultiplied(Color::BLACK.packed());
-    let cpu = reference::rasterize(data.commands(), data.glyph_table(), &pages, w, h, clear);
+    let cpu = reference::rasterize(data.commands(), prepared.glyph_table(), &pages, w, h, clear);
     let worst = gpu
         .rgba8
         .iter()
@@ -104,5 +108,6 @@ fn the_shell_draws_like_the_reference_and_its_golden() {
 
     frames.wait_idle().unwrap();
     ui.forget(&mut frames);
+    surface.forget(&mut frames);
     assert_eq!(hardware_device().validation_errors(), 0);
 }

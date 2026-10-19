@@ -203,12 +203,24 @@ pub enum ImageColor {
     SrgbPremultiplied,
 }
 
+/// An image the graph makes in the frame that draws it (a viewport's scene, §7): named when
+/// recording, given its texture when the passes are declared.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
+pub struct ExternalImageId(pub u32);
+
 /// A texture an image command samples.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum ImageSource {
     /// A texture's bindless view index (`ShaderView::index`) and size in texels.
     Texture {
         view: u32,
+        width: u32,
+        height: u32,
+        color: ImageColor,
+    },
+    /// An external image of `width` × `height` texels.
+    External {
+        id: ExternalImageId,
         width: u32,
         height: u32,
         color: ImageColor,

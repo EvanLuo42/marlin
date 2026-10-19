@@ -1,18 +1,27 @@
-//! The GPU side (0012 §5): the passes of one surface, on the render graph.
+//! The GPU side (0012 §5): the passes, on the render graph.
 //!
-//! [`UiRenderer::prepare`] is the CPU part of a frame: the draw list's glyphs made resident in
-//! the glyph cache (new ones rasterized), the list flattened into one command buffer, the glyph
-//! table built. [`UiRenderer::add_passes`] declares the passes: the new glyphs into the cache's
-//! pages, then bounds, coarse and fine binning and shading into a UI target, which
-//! [`UiRenderer::encode`] writes into the window's image.
+//! A [`UiRenderer`] holds what every surface shares: the pipelines, the sampler, the glyph cache
+//! and its pages. A [`UiSurface`] is one window or render target: its persistent UI target and
+//! tile hashes (damage detection, §5.5), and its tile list pool.
+//!
+//! A frame:
+//!
+//! 1. [`UiRenderer::prepare`] (CPU): every surface's draw list flattened, their glyphs made
+//!    resident at once (new ones rasterized), every command hashed.
+//! 2. [`UiSurface::needs_redraw`]: whether a surface's frame draws anything new; when not, the
+//!    caller declares nothing for it and does not present it (§5.5's whole-frame skip).
+//! 3. [`UiRenderer::begin`], once: the new glyphs into the pages.
+//! 4. [`UiRenderer::add_passes`] per surface: bounds, binning, damage and shading into its UI
+//!    target, with the frame's external images (viewports, §7) read where they are drawn.
+//! 5. [`UiRenderer::encode`]: a UI target into a window's image.
 //!
 //! The tile lists come from a pool of blocks sized from what earlier frames used: each frame
 //! copies its count into a small readback buffer, read when its frame slot comes round again.
 //! A frame that runs out of blocks drops commands from the tiles it could not extend (and says
-//! so through [`UiRenderer::pool_overflowed`]); the next frames get twice the pool.
+//! so through [`UiSurface::pool_overflowed`]); the next frames get twice the pool.
 
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use marlin_font::{FontView, GlyphCache, GlyphCacheConfig, GlyphRecord, GlyphUpload, PrepareStats};
 use marlin_jobs::JobSystem;
@@ -29,10 +38,12 @@ use marlin_rhi::{
 use marlin_serial::cooked::Pod;
 
 use crate::command::{
-    BIN, BLOCK_WORDS, CHUNK_COMMANDS, Chunk, DEFAULT_SAMPLER, Kind, PAINT_IMAGE, TILE,
+    BIN, BLOCK_WORDS, CHUNK_COMMANDS, Chunk, DEFAULT_SAMPLER, Kind, PAINT_EXTERNAL, PAINT_IMAGE,
+    TILE,
 };
+use crate::damage::{command_hashes, frame_hash};
 use crate::list::UiDrawList;
-use crate::style::Color;
+use crate::style::{Color, ExternalImageId};
 
 /// The most tile list blocks the pool grows to (256 MiB).
 pub const MAX_POOL_BLOCKS: u32 = 1 << 21;
@@ -87,7 +98,11 @@ struct UiFrame {
     tiles_x: u32,
     tiles_y: u32,
     pool_blocks: u32,
-    spare: [u32; 3],
+    /// Tile hashes start from it: what changes every tile.
+    salt: u32,
+    /// Nonzero: every tile is dirty (the target is new, or damage detection is off).
+    force: u32,
+    spare: u32,
     clear: [f32; 4],
 }
 
@@ -126,11 +141,13 @@ struct CoarseArgs {
     commands: u32,
     payload: u32,
     groups: u32,
+    hashes: u32,
     bounds: u32,
     masks: u32,
     heads: u32,
     pool: u32,
     counters: u32,
+    tile_hashes: u32,
 }
 
 #[repr(C)]
@@ -164,8 +181,9 @@ pub struct UiRendererDesc {
     /// The format [`UiRenderer::encode`] writes (the swapchain's); `None` for a renderer that
     /// only draws UI targets.
     pub output_format: Option<Format>,
-    /// Tile list blocks the first frames get (128 bytes each).
-    pub initial_pool_blocks: u32,
+    /// Shade only the tiles whose content changed (§5.5). Off, every tile is shaded every
+    /// frame (tests compare the two).
+    pub damage: bool,
 }
 
 impl Default for UiRendererDesc {
@@ -173,17 +191,15 @@ impl Default for UiRendererDesc {
         Self {
             glyph_cache: GlyphCacheConfig::default(),
             output_format: None,
-            initial_pool_blocks: 16384,
+            damage: true,
         }
     }
 }
 
-/// A frame's CPU work, ready for [`UiRenderer::add_passes`].
+/// One surface's part of a frame, ready for [`UiRenderer::add_passes`].
 pub struct UiFrameData {
     chunk: Chunk,
-    glyphs: Vec<GlyphRecord>,
-    uploads: Vec<GlyphUpload>,
-    pub stats: PrepareStats,
+    hashes: Vec<u32>,
 }
 
 impl UiFrameData {
@@ -192,6 +208,21 @@ impl UiFrameData {
         &self.chunk
     }
 
+    /// Every command's content hash.
+    pub fn hashes(&self) -> &[u32] {
+        &self.hashes
+    }
+}
+
+/// A frame's CPU work for every surface.
+pub struct UiPrepared {
+    pub surfaces: Vec<UiFrameData>,
+    glyphs: Vec<GlyphRecord>,
+    uploads: Vec<GlyphUpload>,
+    pub stats: PrepareStats,
+}
+
+impl UiPrepared {
     /// The glyph table the frame draws with.
     pub fn glyph_table(&self) -> &[GlyphRecord] {
         &self.glyphs
@@ -203,18 +234,110 @@ impl UiFrameData {
     }
 }
 
+/// The glyph pages in this frame's graph, after [`UiRenderer::begin`].
+#[derive(Clone, Copy, Debug)]
+pub struct UiPages<'g> {
+    pages: TextureHandle<'g>,
+    glyphs: &'g [[u32; 4]],
+}
+
 /// What [`UiRenderer::add_passes`] declared.
 #[derive(Clone, Copy, Debug)]
 pub struct UiOutput<'g> {
-    /// The UI target: [`UI_FORMAT`], sRGB-encoded, premultiplied.
+    /// The UI target: [`UI_FORMAT`], sRGB-encoded, premultiplied; the surface's, kept across
+    /// frames.
     pub target: TextureHandle<'g>,
-    /// Per tile (row by row): its list's first block and length (two words).
+    /// Per tile (row by row): its list's first block, its length, whether it was shaded (four
+    /// words).
     pub heads: BufferHandle<'g>,
     /// The blocks: [`BLOCK_WORDS`] words each, the last one the next block.
     pub pool: BufferHandle<'g>,
 }
 
-/// One surface's UI renderer: pipelines, the glyph cache and its pages.
+/// How a [`UiSurface`] is set up.
+#[derive(Clone, Copy, Debug)]
+pub struct UiSurfaceDesc {
+    /// Keys its persistent resources in the graph: unique among the surfaces.
+    pub key: u64,
+    /// Tile list blocks the first frames get (128 bytes each).
+    pub initial_pool_blocks: u32,
+}
+
+impl UiSurfaceDesc {
+    pub fn new(key: u64) -> Self {
+        Self {
+            key,
+            initial_pool_blocks: 16384,
+        }
+    }
+}
+
+/// One window or render target the UI is drawn to.
+pub struct UiSurface {
+    key: u64,
+    /// The pool's size this frame, raised from what frames used.
+    pool_blocks: AtomicU32,
+    overflowed: AtomicBool,
+    /// Per frame slot: the counters' copy, and whether a frame has written it yet.
+    readbacks: Vec<(Buffer, AtomicBool)>,
+    /// The last frame drawn: its hash (0: none yet).
+    last: AtomicU64,
+}
+
+impl UiSurface {
+    pub fn new(device: &Device, desc: &UiSurfaceDesc) -> Result<Self> {
+        let readbacks = (0..FRAMES_IN_FLIGHT)
+            .map(|_| {
+                device
+                    .create_buffer(&marlin_rhi::BufferDesc {
+                        size: 8,
+                        usage: BufferUsage::COPY_DST,
+                        memory: MemoryLocation::Readback,
+                    })
+                    .map(|b| (b, AtomicBool::new(false)))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Self {
+            key: desc.key,
+            pool_blocks: AtomicU32::new(desc.initial_pool_blocks.max(64)),
+            overflowed: AtomicBool::new(false),
+            readbacks,
+            last: AtomicU64::new(0),
+        })
+    }
+
+    /// Whether `data` at `width` × `height` over `clear` draws anything this surface has not
+    /// drawn last time; it is then remembered as drawn. A surface that does not need a redraw
+    /// keeps its pixels: declare nothing for it and do not present it (§5.5).
+    pub fn needs_redraw(&self, data: &UiFrameData, width: u32, height: u32, clear: Color) -> bool {
+        let h = frame_hash(&data.hashes, width, height, clear.packed()).max(1);
+        self.last.swap(h, Ordering::Relaxed) != h
+    }
+
+    /// Forgets the last frame: the next one redraws.
+    pub fn invalidate(&self) {
+        self.last.store(0, Ordering::Relaxed);
+    }
+
+    /// Whether a frame ran out of tile list blocks since the last call.
+    pub fn pool_overflowed(&self) -> bool {
+        self.overflowed.swap(false, Ordering::Relaxed)
+    }
+
+    /// Tile list blocks the next frame gets.
+    pub fn pool_blocks(&self) -> u32 {
+        self.pool_blocks.load(Ordering::Relaxed)
+    }
+
+    /// Makes `frames` forget the surface's own resources; call before dropping it.
+    pub fn forget(&self, frames: &mut FrameContext) {
+        for (b, _) in &self.readbacks {
+            frames.forget_buffer(b);
+        }
+    }
+}
+
+/// What every surface shares: pipelines, the glyph cache and its pages.
 pub struct UiRenderer {
     glyph_upload: ComputePipeline,
     bounds: ComputePipeline,
@@ -225,11 +348,7 @@ pub struct UiRenderer {
     sampler: Sampler,
     glyphs: GlyphCache,
     pages: Texture,
-    /// The pool's size this frame, raised from what frames used.
-    pool_blocks: AtomicU32,
-    overflowed: AtomicBool,
-    /// Per frame slot: the counters' copy, and whether a frame has written it yet.
-    readbacks: Vec<(Buffer, AtomicBool)>,
+    damage: bool,
 }
 
 impl UiRenderer {
@@ -279,17 +398,6 @@ impl UiRenderer {
                 TextureUsage::SAMPLED | TextureUsage::STORAGE,
             )
         })?;
-        let readbacks = (0..FRAMES_IN_FLIGHT)
-            .map(|_| {
-                device
-                    .create_buffer(&marlin_rhi::BufferDesc {
-                        size: 8,
-                        usage: BufferUsage::COPY_DST,
-                        memory: MemoryLocation::Readback,
-                    })
-                    .map(|b| (b, AtomicBool::new(false)))
-            })
-            .collect::<Result<Vec<_>>>()?;
         Ok(Self {
             glyph_upload: compute(shaders.glyph_upload)?,
             bounds: compute(shaders.bounds)?,
@@ -305,9 +413,7 @@ impl UiRenderer {
             })?,
             glyphs: GlyphCache::new(desc.glyph_cache),
             pages,
-            pool_blocks: AtomicU32::new(desc.initial_pool_blocks.max(64)),
-            overflowed: AtomicBool::new(false),
-            readbacks,
+            damage: desc.damage,
         })
     }
 
@@ -316,62 +422,99 @@ impl UiRenderer {
         &self.glyphs
     }
 
-    /// Whether a frame ran out of tile list blocks since the last call.
-    pub fn pool_overflowed(&self) -> bool {
-        self.overflowed.swap(false, Ordering::Relaxed)
-    }
-
-    /// Tile list blocks the next frame gets.
-    pub fn pool_blocks(&self) -> u32 {
-        self.pool_blocks.load(Ordering::Relaxed)
-    }
-
-    /// The CPU part of a frame: `list`'s glyphs made resident (`fonts[i]` is `FontId(i)`),
-    /// rasterizing new ones on `jobs`, and its commands flattened.
+    /// The CPU part of a frame for every surface's list: their glyphs made resident at once
+    /// (`fonts[i]` is `FontId(i)`), rasterizing new ones on `jobs`, their commands flattened and
+    /// hashed. `externals` give the version of each external image the lists draw: a new
+    /// version redraws where the image is.
     pub fn prepare(
         &mut self,
-        list: &UiDrawList,
+        lists: &[&UiDrawList],
+        externals: &[(ExternalImageId, u64)],
         fonts: &[FontView<'_>],
         jobs: Option<&JobSystem>,
-    ) -> UiFrameData {
-        let mut chunk = list.flatten();
+    ) -> UiPrepared {
         let sampler = self.sampler.index();
-        for p in &mut chunk.paints {
-            if p[0] == PAINT_IMAGE && p[3] == DEFAULT_SAMPLER {
-                p[3] = sampler;
+        let mut chunks: Vec<Chunk> = lists.iter().map(|l| l.flatten()).collect();
+        let mut used = Vec::new();
+        for chunk in &mut chunks {
+            for p in &mut chunk.paints {
+                if (p[0] == PAINT_IMAGE || p[0] == PAINT_EXTERNAL) && p[3] == DEFAULT_SAMPLER {
+                    p[3] = sampler;
+                }
             }
+            used.extend(
+                chunk
+                    .commands
+                    .iter()
+                    .filter(|c| Kind::from_word(c[0]) == Some(Kind::Glyph))
+                    .map(|c| marlin_font::GlyphId(chunk.payload[c[3] as usize + 2])),
+            );
         }
-        let used: Vec<_> = chunk
-            .commands
-            .iter()
-            .filter(|c| Kind::from_word(c[0]) == Some(Kind::Glyph))
-            .map(|c| marlin_font::GlyphId(chunk.payload[c[3] as usize + 2]))
-            .collect();
         let stats = self.glyphs.prepare(fonts, &used, jobs);
-        UiFrameData {
-            chunk,
-            glyphs: self.glyphs.table(),
+        let glyphs = self.glyphs.table();
+        let surfaces = chunks
+            .into_iter()
+            .map(|chunk| UiFrameData {
+                hashes: command_hashes(&chunk, &glyphs, externals),
+                chunk,
+            })
+            .collect();
+        UiPrepared {
+            surfaces,
+            glyphs,
             uploads: self.glyphs.take_uploads(),
             stats,
         }
     }
 
-    /// Declares the frame's UI passes for a `width` × `height` surface over `clear`, and
-    /// returns the UI target. Needs a graph with a state table (the frame context's).
+    /// Declares the frame's glyph uploads; once a frame, before any surface's passes.
+    pub fn begin<'g>(&'g self, g: &mut RenderGraph<'g>, prepared: &'g UiPrepared) -> UiPages<'g> {
+        let pages = g.import_texture("UiGlyphPages", &self.pages);
+        let pages = if prepared.uploads.is_empty() {
+            pages
+        } else {
+            self.upload_glyphs(g, &prepared.uploads, pages)
+        };
+        let glyphs: &'g [[u32; 4]] = if prepared.glyphs.is_empty() {
+            &[[0; 4]]
+        } else {
+            &prepared.glyphs
+        };
+        UiPages { pages, glyphs }
+    }
+
+    /// Declares `surface`'s passes for `data` on a `width` × `height` target over `clear`, and
+    /// returns its UI target. `externals` give the textures of the external images the list
+    /// draws (one that is missing draws nothing). Needs a graph with a state table (the frame
+    /// context's).
+    #[allow(clippy::too_many_arguments)]
     pub fn add_passes<'g>(
         &'g self,
         g: &mut RenderGraph<'g>,
+        pages: UiPages<'g>,
+        surface: &'g UiSurface,
         data: &'g UiFrameData,
         width: u32,
         height: u32,
         clear: Color,
+        externals: &[(ExternalImageId, TextureHandle<'g>)],
     ) -> UiOutput<'g> {
         let commands = data.chunk.commands.len() as u32;
         let chunks = commands.div_ceil(CHUNK_COMMANDS);
         let (bins_x, bins_y) = (width.div_ceil(BIN), height.div_ceil(BIN));
         let (tiles_x, tiles_y) = (width.div_ceil(TILE), height.div_ceil(TILE));
-        let pool_blocks = self.pool_blocks.load(Ordering::Relaxed);
-        let c = crate::shape::premultiplied(clear.packed());
+        let tiles = u64::from(tiles_x * tiles_y);
+        let pool_blocks = surface.pool_blocks.load(Ordering::Relaxed);
+        let key = surface.key;
+
+        // The target and the tile hashes outlive the frame (§5.5): new ones redraw everything.
+        let target = g.persistent(
+            "UiTarget",
+            key,
+            TextureDesc::new_2d(width, height, UI_FORMAT),
+        );
+        let tile_hashes = g.persistent("UiTileHashes", key, BufferDesc::structured::<u32>(tiles));
+        let force = !self.damage || target.fresh || tile_hashes.fresh;
         let frame = UiFrame {
             width,
             height,
@@ -382,34 +525,23 @@ impl UiRenderer {
             tiles_x,
             tiles_y,
             pool_blocks,
-            spare: [0; 3],
-            clear: c,
+            salt: (frame_hash(&[], width, height, clear.packed()) as u32).max(1),
+            force: u32::from(force),
+            spare: 0,
+            clear: crate::shape::premultiplied(clear.packed()),
         };
         // Uploads need at least one element.
         let one = |s: &'g [[u32; 4]]| if s.is_empty() { &[[0u32; 4]][..] } else { s };
+        let ones = |s: &'g [u32]| if s.is_empty() { &[0u32][..] } else { s };
         let cmds: &'g [[u32; 4]] = one(&data.chunk.commands);
         let paints: &'g [[u32; 4]] = one(&data.chunk.paints);
-        let glyphs: &'g [[u32; 4]] = one(&data.glyphs);
-        let payload: &'g [u32] = if data.chunk.payload.is_empty() {
-            &[0]
-        } else {
-            &data.chunk.payload
-        };
+        let payload: &'g [u32] = ones(&data.chunk.payload);
+        let hashes: &'g [u32] = ones(&data.hashes);
         // Never empty: group 0 and clip 0 are always there.
         let groups: &'g [u32] = data.chunk.groups.as_flattened();
         let clips: &'g [u32] = data.chunk.clips.as_flattened();
-        let gradients: &'g [u32] = if data.chunk.gradients.is_empty() {
-            &[0]
-        } else {
-            data.chunk.gradients.as_flattened()
-        };
-
-        let pages = g.import_texture("UiGlyphPages", &self.pages);
-        let pages = if data.uploads.is_empty() {
-            pages
-        } else {
-            self.upload_glyphs(g, &data.uploads, pages)
-        };
+        let gradients: &'g [u32] = ones(data.chunk.gradients.as_flattened());
+        let glyphs = pages.glyphs;
 
         let bounds = g.create_buffer(
             "UiBounds",
@@ -419,10 +551,7 @@ impl UiRenderer {
             "UiMasks",
             BufferDesc::structured::<u32>(u64::from(chunks.max(1) * bins_x * bins_y * 8)),
         );
-        let heads = g.create_buffer(
-            "UiTileHeads",
-            BufferDesc::structured::<[u32; 2]>(u64::from(tiles_x * tiles_y)),
-        );
+        let heads = g.create_buffer("UiTileHeads", BufferDesc::structured::<[u32; 4]>(tiles));
         let pool = g.create_buffer(
             "UiTilePool",
             BufferDesc::structured::<u32>(u64::from(pool_blocks * BLOCK_WORDS)),
@@ -480,17 +609,20 @@ impl UiRenderer {
             let h = b.write_buffer(heads, Access::ComputeWrite);
             let p = b.write_buffer(pool, Access::ComputeWrite);
             let k = b.write_buffer(counters, Access::ComputeWrite);
+            let th = b.write_buffer(tile_hashes.handle, Access::ComputeWrite);
             ((h, p, k), move |ctx: &mut PassContext<'_>| {
                 let args = CoarseArgs {
                     frame: ctx.upload(&frame),
                     commands: ctx.upload_slice(cmds),
                     payload: ctx.upload_slice(payload),
                     groups: ctx.upload_slice(groups),
+                    hashes: ctx.upload_slice(hashes),
                     bounds: ctx.srv(bd),
                     masks: ctx.srv(m),
                     heads: ctx.uav(h),
                     pool: ctx.uav(p),
                     counters: ctx.uav(k),
+                    tile_hashes: ctx.uav(th),
                 };
                 ctx.set_pipeline(pipeline);
                 ctx.push(&args);
@@ -500,10 +632,10 @@ impl UiRenderer {
 
         // The pool's use, for sizing the next frames.
         let slot = (g.frame() % FRAMES_IN_FLIGHT as u64) as usize;
-        let (readback, written) = &self.readbacks[slot];
+        let (readback, written) = &surface.readbacks[slot];
         let rb = g.import_buffer("UiCountersReadback", readback);
-        let pool_size = &self.pool_blocks;
-        let overflowed = &self.overflowed;
+        let pool_size = &surface.pool_blocks;
+        let overflowed = &surface.overflowed;
         g.add_copy("UiCounters", |b| {
             b.side_effect();
             let k = b.read_buffer(counters, Access::CopySrc);
@@ -533,19 +665,36 @@ impl UiRenderer {
             })
         });
 
-        let target = g.create_texture("UiTarget", TextureDesc::new_2d(width, height, UI_FORMAT));
         let pipeline = &self.fine;
+        let externals: Vec<(ExternalImageId, TextureHandle<'g>)> = externals.to_vec();
         let target = g.add_compute("UiFine", |b| {
             let h = b.read_buffer(heads, Access::ComputeRead);
             let p = b.read_buffer(pool, Access::ComputeRead);
-            let gp = b.read_texture(pages, Access::ComputeRead);
-            let out = b.write_texture(target, Access::ComputeWrite);
+            let gp = b.read_texture(pages.pages, Access::ComputeRead);
+            let externals: Vec<(ExternalImageId, TextureHandle<'g>)> = externals
+                .iter()
+                .map(|&(id, t)| (id, b.read_texture(t, Access::ComputeRead)))
+                .collect();
+            let out = b.write_texture(target.handle, Access::ComputeWrite);
             (out, move |ctx: &mut PassContext<'_>| {
+                // External images get their views now; one without a texture draws nothing.
+                let paints: Vec<[u32; 4]> = paints
+                    .iter()
+                    .map(|&p| {
+                        if p[0] != PAINT_EXTERNAL {
+                            return p;
+                        }
+                        match externals.iter().find(|(id, _)| id.0 == p[2]) {
+                            Some(&(_, t)) => [p[0], p[1], ctx.srv(t), p[3]],
+                            None => [p[0], 0, 0, p[3]],
+                        }
+                    })
+                    .collect();
                 let args = FineArgs {
                     frame: ctx.upload(&frame),
                     commands: ctx.upload_slice(cmds),
                     payload: ctx.upload_slice(payload),
-                    paints: ctx.upload_slice(paints),
+                    paints: ctx.upload_slice(&paints),
                     gradients: ctx.upload_slice(gradients),
                     glyphs: ctx.upload_slice(glyphs),
                     groups: ctx.upload_slice(groups),
@@ -639,8 +788,5 @@ impl UiRenderer {
     /// Makes `frames` forget the renderer's own resources; call before dropping it.
     pub fn forget(&self, frames: &mut FrameContext) {
         frames.forget_texture(&self.pages);
-        for (b, _) in &self.readbacks {
-            frames.forget_buffer(b);
-        }
     }
 }

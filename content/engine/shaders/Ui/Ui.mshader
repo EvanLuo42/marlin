@@ -28,9 +28,11 @@ public struct UiFrame
     public uint TilesY;
     /// Blocks in the tile list pool.
     public uint PoolBlocks;
-    public uint Spare0;
-    public uint Spare1;
-    public uint Spare2;
+    /// Tile hashes start from it.
+    public uint Salt;
+    /// Nonzero: every tile is dirty.
+    public uint Force;
+    public uint Spare;
     /// Premultiplied, sRGB-encoded.
     public float4 Clear;
 }
@@ -351,13 +353,17 @@ public struct CoarseArgs
     public ReadOnlyBuffer<uint4> Commands;
     public ReadOnlyBuffer<uint> Payload;
     public ReadOnlyBuffer<uint> Groups;
+    /// Every command's content hash (`marlin_ui_render::damage`).
+    public ReadOnlyBuffer<uint> Hashes;
     public ReadOnlyBuffer<uint4> Bounds;
     public ReadOnlyBuffer<uint> Masks;
-    /// Per tile: first block, command count.
-    public Buffer<uint2> Heads;
+    /// Per tile: first block, command count, 1 if it is shaded this frame.
+    public Buffer<uint4> Heads;
     public Buffer<uint> Pool;
     /// 0: blocks taken; 1: nonzero if the pool ran out. Cleared before.
     public Buffer<uint> Counters;
+    /// Per tile: the hash of its list last frame, this frame's after (§5.5).
+    public Buffer<uint> TileHashes;
 }
 
 [Compute(16, 16, 1)]
@@ -376,6 +382,7 @@ public void Coarse([GroupId] uint3 group, [GroupThreadId] uint3 thread, [Push] i
     uint current = NoBlock;
     uint count = 0;
     bool full = false;
+    uint hash = f.Salt;
     for (uint c = 0; c < f.Chunks; c++)
     {
         for (uint w = 0; w < 8; w++)
@@ -406,6 +413,7 @@ public void Coarse([GroupId] uint3 group, [GroupThreadId] uint3 thread, [Push] i
                     // Hidden: start over, reusing the blocks.
                     count = 0;
                     current = head;
+                    hash = f.Salt;
                 }
                 uint slot = count % BlockCommands;
                 if (slot == 0)
@@ -430,11 +438,18 @@ public void Coarse([GroupId] uint3 group, [GroupThreadId] uint3 thread, [Push] i
                 }
                 a.Pool[current * BlockWords + slot] = i;
                 count++;
+                hash = (hash ^ a.Hashes[i]) * 16777619;
             }
         }
     }
     if (live)
-        a.Heads[ty * f.TilesX + tx] = uint2(head, count);
+    {
+        // Dirty when its list changed: content, order, or a command dropped for want of blocks.
+        uint tile = ty * f.TilesX + tx;
+        bool dirty = f.Force != 0 || full || a.TileHashes[tile] != hash;
+        a.TileHashes[tile] = full ? 0 : hash;
+        a.Heads[tile] = uint4(head, count, dirty ? 1u : 0u, 0);
+    }
 }
 
 /// Signed distance to a box of half size `b` around the origin, rounded by `r`.
@@ -625,7 +640,7 @@ public struct FineArgs
     public ReadOnlyBuffer<uint4> Glyphs;
     public ReadOnlyBuffer<uint> Groups;
     public ReadOnlyBuffer<uint> Clips;
-    public ReadOnlyBuffer<uint2> Heads;
+    public ReadOnlyBuffer<uint4> Heads;
     public ReadOnlyBuffer<uint> Pool;
     /// The glyph cache's pages: R8 coverage.
     public Texture2DArray<float> GlyphPages;
@@ -884,7 +899,10 @@ public void Fine([GroupId] uint3 group, [GroupThreadId] uint3 thread, [Push] in 
     UiFrame f = a.Frame.Value;
     uint2 xy = group.xy * 16 + thread.xy;
     float2 px = float2((float)xy.x + 0.5, (float)xy.y + 0.5);
-    uint2 h = a.Heads[group.y * f.TilesX + group.x];
+    uint4 h = a.Heads[group.y * f.TilesX + group.x];
+    // A clean tile keeps last frame's pixels.
+    if (h.z == 0)
+        return;
     uint block = h.x;
     float4 color = f.Clear;
     for (uint k = 0; k < h.y; k++)

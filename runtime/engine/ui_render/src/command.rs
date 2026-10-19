@@ -52,6 +52,9 @@ pub const PAINT_SOLID: u32 = 0;
 pub const PAINT_IMAGE: u32 = 1;
 /// A gradient: the paint's second word is its index among the frame's gradients.
 pub const PAINT_GRADIENT: u32 = 2;
+/// An external image: the paint's third word is its `ExternalImageId` until the passes put the
+/// texture's view there.
+pub const PAINT_EXTERNAL: u32 = 3;
 
 /// Words of a gradient record: a header, then [`GRADIENT_TEXELS`] premultiplied RGBA8 texels.
 ///
@@ -249,9 +252,8 @@ impl Chunk {
     }
 
     /// A new image paint.
-    pub(crate) fn image(&mut self, tint: Color, view: u32, sampler: u32) -> u32 {
-        self.paints
-            .push([PAINT_IMAGE, tint.packed(), view, sampler]);
+    pub(crate) fn image(&mut self, kind: u32, tint: Color, view: u32, sampler: u32) -> u32 {
+        self.paints.push([kind, tint.packed(), view, sampler]);
         self.paints.len() as u32 - 1
     }
 

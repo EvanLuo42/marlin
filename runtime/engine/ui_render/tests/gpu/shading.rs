@@ -11,8 +11,8 @@ use marlin_rhi::{
     TextureUsage, TextureViewDesc,
 };
 use marlin_ui_render::{
-    Color, ImageColor, ImageSource, ImageStyle, Rect, RectStyle, UiDrawList, UiRenderer,
-    UiRendererDesc, reference,
+    Color, ImageColor, ImageSource, ImageStyle, Rect, RectStyle, UiDrawList, UiRendererDesc,
+    reference,
 };
 
 use crate::support::{CpuTexture, CpuTextures, Pages, inter, scene};
@@ -61,7 +61,7 @@ pub fn checker_texture() -> (Texture, ShaderView) {
 /// One frame of `list` on a `width` × `height` surface: the GPU's UI target and the reference's
 /// image. `pages` keeps the glyph pages across frames, as the GPU does.
 pub fn draw(
-    r: &mut UiRenderer,
+    r: &mut crate::TestUi,
     frames: &mut FrameContext,
     pages: &mut Pages,
     list: &UiDrawList,
@@ -256,7 +256,7 @@ fn encoding_into_an_srgb_target_keeps_the_pixels() {
             let out = r.add_passes(g, &data, w, h, Color::BLACK);
             let target =
                 g.create_texture("Window", TextureDesc::new_2d(w, h, Format::Rgba8UnormSrgb));
-            let target = r.encode(g, out.target, target);
+            let target = r.renderer.encode(g, out.target, target);
             (g.readback_texture(out.target), g.readback_texture(target))
         })
         .unwrap();

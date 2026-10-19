@@ -28,7 +28,7 @@ use marlin_render_graph::FrameContext;
 use marlin_rhi::{
     DeviceDesc, Instance, InstanceDesc, PresentStatus, SurfaceHandle, Swapchain, SwapchainDesc,
 };
-use marlin_ui_render::{Color, UiDrawList, UiRenderer, UiRendererDesc};
+use marlin_ui_render::{Color, UiDrawList, UiRenderer, UiRendererDesc, UiSurface, UiSurfaceDesc};
 
 // Link the whole runtime and every editor library.
 use marlin as _;
@@ -184,14 +184,20 @@ fn run(project_dir: &str, max_frames: Option<u64>) -> Result<(), String> {
         },
     )
     .map_err(|e| format!("the UI renderer: {e}"))?;
+    let window_ui = UiSurface::new(&device, &UiSurfaceDesc::new(1))
+        .map_err(|e| format!("the window's UI surface: {e}"))?;
 
     let mut minimized = false;
+    // The last frame drew nothing new (§5.5): wait for events instead of spinning.
+    let mut idle = false;
     let mut frame = 0u64;
     let mut status = String::from("Ready");
     let (mut fps_start, mut fps_frames) = (Instant::now(), 0u32);
     'main: loop {
         let timeout = if minimized {
             Duration::from_millis(100)
+        } else if idle {
+            Duration::from_millis(16)
         } else {
             Duration::ZERO
         };
@@ -204,6 +210,7 @@ fn run(project_dir: &str, max_frames: Option<u64>) -> Result<(), String> {
                     swapchain
                         .resize(size.width, size.height)
                         .map_err(|e| format!("{e}"))?;
+                    window_ui.invalidate();
                 }
                 Event::Minimized(_) => minimized = true,
                 Event::Restored(_) => minimized = false,
@@ -235,22 +242,35 @@ fn run(project_dir: &str, max_frames: Option<u64>) -> Result<(), String> {
                 status: &status,
             },
         );
-        let data = ui.prepare(&list, &[font], Some(&jobs));
-        let image = swapchain.acquire(None).map_err(|e| format!("{e}"))?;
-        let texture = swapchain.texture(image);
-        frames
-            .execute_on(&device, Some(&jobs), |g, _| {
-                let target = g.import_texture("Swapchain", texture);
-                let out = ui.add_passes(g, &data, size.width, size.height, Color::BLACK);
-                let target = ui.encode(g, out.target, target);
-                g.present(target);
-            })
-            .map_err(|e| format!("{e}"))?;
-        if swapchain.present().map_err(|e| format!("{e}"))? == PresentStatus::Occluded {
-            app.pump_timeout(Some(Duration::from_millis(16)));
+        let prepared = ui.prepare(&[&list], &[], &[font], Some(&jobs));
+        let data = &prepared.surfaces[0];
+        idle = !window_ui.needs_redraw(data, size.width, size.height, Color::BLACK);
+        if !idle {
+            let image = swapchain.acquire(None).map_err(|e| format!("{e}"))?;
+            let texture = swapchain.texture(image);
+            frames
+                .execute_on(&device, Some(&jobs), |g, _| {
+                    let target = g.import_texture("Swapchain", texture);
+                    let pages = ui.begin(g, &prepared);
+                    let out = ui.add_passes(
+                        g,
+                        pages,
+                        &window_ui,
+                        data,
+                        size.width,
+                        size.height,
+                        Color::BLACK,
+                        &[],
+                    );
+                    let target = ui.encode(g, out.target, target);
+                    g.present(target);
+                })
+                .map_err(|e| format!("{e}"))?;
+            if swapchain.present().map_err(|e| format!("{e}"))? == PresentStatus::Occluded {
+                app.pump_timeout(Some(Duration::from_millis(16)));
+            }
+            fps_frames += 1;
         }
-
-        fps_frames += 1;
         let elapsed = fps_start.elapsed();
         if elapsed >= Duration::from_secs(1) {
             let fps = fps_frames as f32 / elapsed.as_secs_f32();
@@ -268,6 +288,7 @@ fn run(project_dir: &str, max_frames: Option<u64>) -> Result<(), String> {
     frames.wait_idle().map_err(|e| format!("{e}"))?;
     forget_images(&mut frames, &swapchain);
     ui.forget(&mut frames);
+    window_ui.forget(&mut frames);
     drop(cookd);
     Ok(())
 }

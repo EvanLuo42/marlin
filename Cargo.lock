@@ -1189,6 +1189,7 @@ dependencies = [
  "marlin-cook-font",
  "marlin-font",
  "marlin-gpu-test-support",
+ "marlin-hash",
  "marlin-jobs",
  "marlin-math",
  "marlin-render-graph",

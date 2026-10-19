@@ -7,6 +7,7 @@ publish.workspace = true
 
 [dependencies]
 marlin-font.workspace = true
+marlin-hash.workspace = true
 marlin-jobs.workspace = true
 marlin-math.workspace = true
 marlin-render-graph.workspace = true

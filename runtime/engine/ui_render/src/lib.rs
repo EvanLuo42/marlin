@@ -12,6 +12,7 @@
 extern crate alloc;
 
 pub mod command;
+pub mod damage;
 pub mod gradient;
 pub mod list;
 pub mod path;
@@ -24,10 +25,10 @@ pub use gradient::{Gradient, GradientShape, GradientSpace};
 pub use list::{ChunkSlot, Painter, RetainedChunk, UiDrawList};
 pub use path::{FillRule, Path};
 pub use renderer::{
-    UI_ENTRIES, UI_FORMAT, UI_PUSH_BYTES, UiFrameData, UiOutput, UiRenderer, UiRendererDesc,
-    UiShaders,
+    UI_ENTRIES, UI_FORMAT, UI_PUSH_BYTES, UiFrameData, UiOutput, UiPages, UiPrepared, UiRenderer,
+    UiRendererDesc, UiShaders, UiSurface, UiSurfaceDesc,
 };
 pub use style::{
-    Affine2, Color, Corners, Dash, Glow, GroupDesc, ImageColor, ImageSource, ImageStyle, LineCap,
-    Paint, Rect, RectStyle, Shadow, ShapeStyle, Stroke, StrokeStyle,
+    Affine2, Color, Corners, Dash, ExternalImageId, Glow, GroupDesc, ImageColor, ImageSource,
+    ImageStyle, LineCap, Paint, Rect, RectStyle, Shadow, ShapeStyle, Stroke, StrokeStyle,
 };

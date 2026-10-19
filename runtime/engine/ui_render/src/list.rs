@@ -26,7 +26,8 @@ use marlin_math::scalar::{floor, round, sqrt};
 
 use crate::command::{
     CLIP_WORDS, Chunk, ClipWords, DEFAULT_SAMPLER, GROUP_AXIS_ALIGNED, GROUP_NONUNIFORM,
-    GROUP_WORDS, GroupWords, IMAGE_SRGB_PREMULTIPLIED, Kind, OPAQUE, PAINT_GRADIENT, f,
+    GROUP_WORDS, GroupWords, IMAGE_SRGB_PREMULTIPLIED, Kind, OPAQUE, PAINT_EXTERNAL,
+    PAINT_GRADIENT, PAINT_IMAGE, f,
 };
 use crate::path::{FillRule, Path};
 use crate::style::{
@@ -856,12 +857,20 @@ impl Painter<'_> {
 
     /// A texture in `r`, through `style`'s UV rectangle, tint and corners.
     pub fn image(&mut self, r: Rect, src: ImageSource, style: &ImageStyle) {
-        let ImageSource::Texture {
-            view,
-            width,
-            height,
-            color,
-        } = src;
+        let (kind, view, width, height, color) = match src {
+            ImageSource::Texture {
+                view,
+                width,
+                height,
+                color,
+            } => (PAINT_IMAGE, view, width, height, color),
+            ImageSource::External {
+                id,
+                width,
+                height,
+                color,
+            } => (PAINT_EXTERNAL, id.0, width, height, color),
+        };
         let flags = match color {
             ImageColor::LinearStraight => 0,
             ImageColor::SrgbPremultiplied => IMAGE_SRGB_PREMULTIPLIED,
@@ -886,7 +895,7 @@ impl Painter<'_> {
         self.push(
             Kind::Image,
             flags,
-            |c| c.image(style.tint, view, sampler),
+            |c| c.image(kind, style.tint, view, sampler),
             &payload,
         );
     }

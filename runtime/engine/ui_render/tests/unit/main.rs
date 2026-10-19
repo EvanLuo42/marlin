@@ -7,6 +7,7 @@
 mod support;
 
 mod binning;
+mod damage;
 mod effects;
 mod gradients;
 mod groups;
