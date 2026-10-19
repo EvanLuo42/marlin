@@ -372,8 +372,9 @@ impl Default for GroupDesc {
     }
 }
 
-/// What fills a path (§2.1).
+/// What fills a shape (§2.1).
 #[derive(Clone, Copy, PartialEq, Debug)]
-pub enum Paint {
+pub enum Paint<'a> {
     Solid(Color),
+    Gradient(&'a crate::gradient::Gradient),
 }

@@ -8,6 +8,7 @@
 mod support;
 
 mod binning;
+mod gradients;
 mod groups;
 mod paths;
 mod shading;

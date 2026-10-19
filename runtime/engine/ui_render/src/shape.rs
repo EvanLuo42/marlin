@@ -12,8 +12,9 @@ use marlin_font::GlyphRecord;
 use marlin_math::scalar::{ceil, floor, sqrt};
 
 use crate::command::{
-    Chunk, ClipWords, CommandWords, GROUP_AXIS_ALIGNED, GROUP_NONUNIFORM, GroupWords,
-    IMAGE_SRGB_PREMULTIPLIED, Kind, OPAQUE, PaintWords, clip_of, group_of,
+    Chunk, ClipWords, CommandWords, GROUP_AXIS_ALIGNED, GROUP_NONUNIFORM, GradientWords,
+    GroupWords, IMAGE_SRGB_PREMULTIPLIED, Kind, OPAQUE, PAINT_GRADIENT, PaintWords, clip_of,
+    group_of,
 };
 use crate::style::Color;
 
@@ -28,6 +29,7 @@ pub struct Scene<'a> {
     pub commands: &'a [CommandWords],
     pub payload: &'a [u32],
     pub paints: &'a [PaintWords],
+    pub gradients: &'a [GradientWords],
     pub groups: &'a [GroupWords],
     pub clips: &'a [ClipWords],
     pub glyphs: &'a [GlyphRecord],
@@ -39,6 +41,7 @@ impl<'a> Scene<'a> {
             commands: &chunk.commands,
             payload: &chunk.payload,
             paints: &chunk.paints,
+            gradients: &chunk.gradients,
             groups: &chunk.groups,
             clips: &chunk.clips,
             glyphs,
@@ -519,7 +522,7 @@ fn shade_unclipped(
     y: f32,
 ) -> [f32; 4] {
     let p = &s.payload[c[3] as usize..];
-    let paint = premultiplied(s.paints[c[2] as usize][1]);
+    let paint = paint_color(s, &s.paints[c[2] as usize], x, y);
     let g = &s.groups[group_of(c) as usize];
     let q = apply(g, 6, x, y);
     // A distance at `q` and the pixels per unit there.
@@ -752,4 +755,35 @@ pub fn path_coverage(p: &[u32], x: f32, y: f32) -> f32 {
         let m = a - 2.0 * floor(a * 0.5);
         m.min(2.0 - m)
     }
+}
+
+/// A paint's premultiplied color at screen pixel `(x, y)`: its solid color (an image's tint),
+/// or its gradient there.
+pub fn paint_color(s: &Scene<'_>, paint: &PaintWords, x: f32, y: f32) -> [f32; 4] {
+    if paint[0] != PAINT_GRADIENT {
+        return premultiplied(paint[1]);
+    }
+    let g = &s.gradients[paint[1] as usize];
+    let t = match g[0] {
+        0 => {
+            let (dx, dy) = (w(g, 3) - w(g, 1), w(g, 4) - w(g, 2));
+            ((x - w(g, 1)) * dx + (y - w(g, 2)) * dy) / (dx * dx + dy * dy).max(1e-12)
+        }
+        1 => length(x - w(g, 1), y - w(g, 2)) / w(g, 3).max(1e-6),
+        _ => {
+            let a = marlin_math::scalar::atan2(y - w(g, 2), x - w(g, 1)) - w(g, 3);
+            let t = a / core::f32::consts::TAU;
+            t - floor(t)
+        }
+    };
+    let f = t.clamp(0.0, 1.0) * (crate::command::GRADIENT_TEXELS - 1) as f32;
+    let i = (floor(f) as usize).min(crate::command::GRADIENT_TEXELS - 2);
+    let k = f - i as f32;
+    let texel = |j: usize| {
+        let v = g[8 + j];
+        [v & 255, (v >> 8) & 255, (v >> 16) & 255, v >> 24].map(|c| c as f32 / 255.0)
+    };
+    let (a, b) = (texel(i), texel(i + 1));
+    let o = w(g, 5);
+    core::array::from_fn(|c| (a[c] + (b[c] - a[c]) * k) * o)
 }

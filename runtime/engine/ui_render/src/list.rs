@@ -26,7 +26,7 @@ use marlin_math::scalar::{floor, round, sqrt};
 
 use crate::command::{
     CLIP_WORDS, Chunk, ClipWords, DEFAULT_SAMPLER, GROUP_AXIS_ALIGNED, GROUP_NONUNIFORM,
-    GROUP_WORDS, GroupWords, IMAGE_SRGB_PREMULTIPLIED, Kind, OPAQUE, f,
+    GROUP_WORDS, GroupWords, IMAGE_SRGB_PREMULTIPLIED, Kind, OPAQUE, PAINT_GRADIENT, f,
 };
 use crate::path::{FillRule, Path};
 use crate::style::{
@@ -39,7 +39,7 @@ enum Part {
     Own(Range<usize>),
     /// A slot handed out and not filled yet: draws nothing.
     Reserved,
-    Filled(UiDrawList),
+    Filled(alloc::boxed::Box<UiDrawList>),
     /// A retained chunk moved by whole physical pixels, under one of the list's clips.
     Replay {
         chunk: RetainedChunk,
@@ -104,7 +104,7 @@ impl UiDrawList {
     /// Puts a slot's recording in the place [`Painter::chunk`] reserved for it.
     pub fn fill(&mut self, slot: ChunkSlot) {
         match self.parts.get_mut(slot.index) {
-            Some(p @ Part::Reserved) => *p = Part::Filled(slot.list),
+            Some(p @ Part::Reserved) => *p = Part::Filled(alloc::boxed::Box::new(slot.list)),
             _ => panic!("the slot is not this list's, or it was filled already"),
         }
     }
@@ -151,7 +151,15 @@ impl UiDrawList {
             c
         }));
         out.payload.extend_from_slice(&own.payload);
-        out.paints.extend_from_slice(&own.paints);
+        let rb = out.gradients.len() as u32;
+        out.paints.extend(own.paints.iter().map(|p| {
+            let mut p = *p;
+            if p[0] == PAINT_GRADIENT {
+                p[1] += rb;
+            }
+            p
+        }));
+        out.gradients.extend_from_slice(&own.gradients);
         // Where each own range landed, for the groups' member ranges.
         let mut landed: Vec<(Range<usize>, usize)> = Vec::new();
         for p in &self.parts {
@@ -322,6 +330,14 @@ fn translate(chunk: &mut Chunk, dx: f32, dy: f32) {
         for i in 0..6 {
             g[i] = f(t.0[i]);
             g[6 + i] = f(inv.0[i]);
+        }
+    }
+    for g in &mut chunk.gradients {
+        mv(&mut g[1], dx);
+        mv(&mut g[2], dy);
+        if g[0] == 0 {
+            mv(&mut g[3], dx);
+            mv(&mut g[4], dy);
         }
     }
     for c in &mut chunk.clips[1..] {
@@ -729,14 +745,16 @@ impl Painter<'_> {
     /// (§6.2): each glyph's pen is snapped to whole pixels vertically and to quarter pixels
     /// horizontally.
     pub fn text(&mut self, layout: &TextLayout, origin: Vec2, color: Color) {
+        self.text_paint(layout, origin, &Paint::Solid(color));
+    }
+
+    /// [`text`](Self::text) in any paint.
+    pub fn text_paint(&mut self, layout: &TextLayout, origin: Vec2, paint: &Paint) {
         let to_screen = self.to_screen();
         let size = layout.size * sqrt(to_screen.determinant().abs());
         let ids = self.ids;
         let scope = self.list.scope();
         let clip = self.list.clip();
-        let mut color = color;
-        // Glyphs are on the screen, not in the group: they take its opacity here.
-        color.a = (f32::from(color.a) * scope.opacity + 0.5) as u8;
         if !self.list.effects.is_empty() {
             let b = [
                 origin.x,
@@ -746,8 +764,9 @@ impl Painter<'_> {
             ];
             self.list.union_box(to_screen, b);
         }
+        // Glyphs are on the screen, not in the group: they take its opacity here.
+        let paint = self.paint(paint, scope.opacity);
         let list = &mut *self.list;
-        let paint = list.own.solid(color);
         ids.with(|id| {
             for g in &layout.glyphs {
                 let pen = to_screen.apply(Vec2::new(origin.x + g.x, origin.y + g.y));
@@ -772,6 +791,50 @@ impl Painter<'_> {
         });
     }
 
+    /// The index of a new paint for `paint` at `opacity`: solid colors take it in their alpha,
+    /// gradients are baked with their geometry on the screen.
+    fn paint(&mut self, paint: &Paint, opacity: f32) -> u32 {
+        match *paint {
+            Paint::Solid(mut color) => {
+                color.a = (f32::from(color.a) * opacity + 0.5) as u8;
+                self.list.own.solid(color)
+            }
+            Paint::Gradient(g) => {
+                let record = crate::gradient::bake(g, self.to_screen(), opacity);
+                let own = &mut self.list.own;
+                own.gradients.push(record);
+                own.paints
+                    .push([PAINT_GRADIENT, own.gradients.len() as u32 - 1, 0, 0]);
+                own.paints.len() as u32 - 1
+            }
+        }
+    }
+
+    /// A rectangle in any paint, rounded per corner (§2.1): in the current group, at its
+    /// opacity.
+    pub fn fill_rect(&mut self, r: Rect, corners: Corners, paint: &Paint) {
+        let opaque = match paint {
+            Paint::Solid(c) => c.a == 255,
+            Paint::Gradient(g) => g.stops.iter().all(|(_, c)| c.a == 255),
+        };
+        let [r0, r1, r2, r3] = self.corners(&corners);
+        let payload = [
+            self.s(r.min.x),
+            self.s(r.min.y),
+            self.s(r.max.x),
+            self.s(r.max.y),
+            r0,
+            r1,
+            r2,
+            r3,
+            0,
+            0,
+        ];
+        let index = self.paint(paint, 1.0);
+        let flags = if opaque { OPAQUE } else { 0 };
+        self.push(Kind::Rect, flags, |_| index, &payload);
+    }
+
     /// Fills `path` (logical pixels in the current space) by `rule` (§4.2). It is flattened onto
     /// the screen here, so it keeps the group's opacity and clip but not the group itself.
     pub fn fill_path(&mut self, path: &Path, rule: FillRule, paint: &Paint) {
@@ -781,16 +844,13 @@ impl Painter<'_> {
         };
         let scope = self.list.scope();
         let clip = self.list.clip();
-        let Paint::Solid(mut color) = *paint;
-        color.a = (f32::from(color.a) * scope.opacity + 0.5) as u8;
         if !self.list.effects.is_empty() {
             let b = |i: usize| f32::from_bits(payload[i]);
             self.list
                 .union_box(Affine2::IDENTITY, [b(5), b(6), b(7), b(8)]);
         }
-        let own = &mut self.list.own;
-        let paint = own.solid(color);
-        own.push(Kind::Path, 0, 0, clip, paint, &payload);
+        let paint = self.paint(paint, scope.opacity);
+        self.list.own.push(Kind::Path, 0, 0, clip, paint, &payload);
         self.list.extend_own();
     }
 

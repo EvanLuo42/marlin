@@ -140,6 +140,7 @@ struct FineArgs {
     commands: u32,
     payload: u32,
     paints: u32,
+    gradients: u32,
     glyphs: u32,
     groups: u32,
     clips: u32,
@@ -397,6 +398,11 @@ impl UiRenderer {
         // Never empty: group 0 and clip 0 are always there.
         let groups: &'g [u32] = data.chunk.groups.as_flattened();
         let clips: &'g [u32] = data.chunk.clips.as_flattened();
+        let gradients: &'g [u32] = if data.chunk.gradients.is_empty() {
+            &[0]
+        } else {
+            data.chunk.gradients.as_flattened()
+        };
 
         let pages = g.import_texture("UiGlyphPages", &self.pages);
         let pages = if data.uploads.is_empty() {
@@ -540,6 +546,7 @@ impl UiRenderer {
                     commands: ctx.upload_slice(cmds),
                     payload: ctx.upload_slice(payload),
                     paints: ctx.upload_slice(paints),
+                    gradients: ctx.upload_slice(gradients),
                     glyphs: ctx.upload_slice(glyphs),
                     groups: ctx.upload_slice(groups),
                     clips: ctx.upload_slice(clips),

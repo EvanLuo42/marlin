@@ -12,7 +12,8 @@
 //! | 2 | | paint index |
 //! | 3 | | payload offset, in words |
 //!
-//! A **paint** is four words: kind ([`PAINT_SOLID`] or [`PAINT_IMAGE`]), the color
+//! A **paint** is four words: kind ([`PAINT_SOLID`], [`PAINT_IMAGE`] or [`PAINT_GRADIENT`] with
+//! its gradient index in the second word and a [`GRADIENT_WORDS`] record), the color
 //! ([`Color::packed`], sRGB, straight alpha; an image's tint), and for images the texture's view
 //! index and the sampler index ([`DEFAULT_SAMPLER`] until the renderer puts its own there). The **payload** is 32-bit words, per kind (coordinates are physical
 //! pixels, y down, as `f32` bits):
@@ -49,6 +50,21 @@ pub const DEFAULT_SAMPLER: u32 = u32::MAX;
 /// Paint kinds.
 pub const PAINT_SOLID: u32 = 0;
 pub const PAINT_IMAGE: u32 = 1;
+/// A gradient: the paint's second word is its index among the frame's gradients.
+pub const PAINT_GRADIENT: u32 = 2;
+
+/// Words of a gradient record: a header, then [`GRADIENT_TEXELS`] premultiplied RGBA8 texels.
+///
+/// | words | meaning |
+/// |---|---|
+/// | 0 | shape: 0 linear, 1 radial, 2 angle |
+/// | 1–4 | on the screen (`f32`): linear from x y to x y; radial center x y, radius; angle center x y, start angle |
+/// | 5 | opacity (`f32`) |
+/// | 6, 7 | spare |
+/// | 8.. | the ramp from 0 to 1, sRGB-encoded, premultiplied |
+pub const GRADIENT_WORDS: usize = 8 + GRADIENT_TEXELS;
+pub const GRADIENT_TEXELS: usize = 256;
+pub type GradientWords = [u32; GRADIENT_WORDS];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u32)]
@@ -195,6 +211,7 @@ pub struct Chunk {
     pub commands: Vec<CommandWords>,
     pub payload: Vec<u32>,
     pub paints: Vec<PaintWords>,
+    pub gradients: Vec<GradientWords>,
     pub groups: Vec<GroupWords>,
     pub clips: Vec<ClipWords>,
 }
@@ -205,6 +222,7 @@ impl Default for Chunk {
             commands: Vec::new(),
             payload: Vec::new(),
             paints: Vec::new(),
+            gradients: Vec::new(),
             groups: alloc::vec![identity_group()],
             clips: alloc::vec![no_clip()],
         }
@@ -260,6 +278,7 @@ impl Chunk {
     /// of `self`), and so do its root clips.
     pub(crate) fn append_clipped(&mut self, other: &Chunk, clip: u32) {
         let (payload, paints) = (self.payload.len() as u32, self.paints.len() as u32);
+        let gradients = self.gradients.len() as u32;
         let commands = self.commands.len() as u32;
         // Other's group or clip `i` (from 1) lands at `base + i - 1`.
         let gb = self.groups.len() as u32 - 1;
@@ -288,7 +307,14 @@ impl Chunk {
             ]
         }));
         self.payload.extend_from_slice(&other.payload);
-        self.paints.extend_from_slice(&other.paints);
+        self.paints.extend(other.paints.iter().map(|p| {
+            let mut p = *p;
+            if p[0] == PAINT_GRADIENT {
+                p[1] += gradients;
+            }
+            p
+        }));
+        self.gradients.extend_from_slice(&other.gradients);
     }
 }
 

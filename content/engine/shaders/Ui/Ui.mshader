@@ -620,6 +620,8 @@ public struct FineArgs
     public ReadOnlyBuffer<uint4> Commands;
     public ReadOnlyBuffer<uint> Payload;
     public ReadOnlyBuffer<UiPaint> Paints;
+    /// Gradient records (`marlin_ui_render::command::GRADIENT_WORDS` words each).
+    public ReadOnlyBuffer<uint> Gradients;
     public ReadOnlyBuffer<uint4> Glyphs;
     public ReadOnlyBuffer<uint> Groups;
     public ReadOnlyBuffer<uint> Clips;
@@ -673,6 +675,47 @@ float PathCoverage(ReadOnlyBuffer<uint> p, uint at, float2 px)
         return Min(a, 1);
     float m = a - 2 * Floor(a * 0.5);
     return Min(m, 2 - m);
+}
+
+const uint PaintGradient = 2;
+const uint GradientWords = 264;
+const uint GradientTexels = 256;
+
+/// A premultiplied RGBA8 word as floats.
+float4 Unpack(uint v) => float4((float)(v & 255), (float)((v >> 8) & 255), (float)((v >> 16) & 255), (float)(v >> 24)) / 255;
+
+/// A paint's premultiplied color at screen pixel `px`: its solid color (an image's tint), or its
+/// gradient there.
+float4 PaintColor(in UiPaint paint, ReadOnlyBuffer<uint> gradients, float2 px)
+{
+    if (paint.Kind != PaintGradient)
+        return Premultiplied(paint.Color);
+    uint g = paint.Color * GradientWords;
+    uint shape = gradients[g];
+    float t = 0;
+    if (shape == 0)
+    {
+        float dx = P(gradients, g + 3) - P(gradients, g + 1);
+        float dy = P(gradients, g + 4) - P(gradients, g + 2);
+        t = ((px.x - P(gradients, g + 1)) * dx + (px.y - P(gradients, g + 2)) * dy) / Max(dx * dx + dy * dy, 0.000000000001);
+    }
+    else if (shape == 1)
+    {
+        float2 d = px - float2(P(gradients, g + 1), P(gradients, g + 2));
+        t = Sqrt(d.x * d.x + d.y * d.y) / Max(P(gradients, g + 3), 0.000001);
+    }
+    else
+    {
+        float angle = Atan2(px.y - P(gradients, g + 2), px.x - P(gradients, g + 1)) - P(gradients, g + 3);
+        t = angle / 6.28318531;
+        t = t - Floor(t);
+    }
+    float f = Clamp(t, 0, 1) * (float)(GradientTexels - 1);
+    uint i = Min((uint)Floor(f), GradientTexels - 2);
+    float k = f - (float)i;
+    float4 c0 = Unpack(gradients[g + 8 + i]);
+    float4 c1 = Unpack(gradients[g + 9 + i]);
+    return (c0 + (c1 - c0) * k) * P(gradients, g + 5);
 }
 
 /// `erf(x)`, Abramowitz and Stegun 7.1.26.
@@ -778,7 +821,7 @@ float4 ShadeUnclipped(uint4 c, in FineArgs a, float2 px)
     uint g = c.x >> 16;
     ReadOnlyBuffer<uint> p = a.Payload;
     UiPaint paint = a.Paints[c.z];
-    float4 color = Premultiplied(paint.Color);
+    float4 color = PaintColor(paint, a.Gradients, px);
     if (kind == KindPath)
         return color * PathCoverage(p, at, px);
     if (kind == KindEffect)
