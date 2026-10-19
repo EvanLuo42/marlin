@@ -20,6 +20,7 @@ pub use marlin_framework as framework;
 pub use marlin_gameplay as gameplay;
 pub use marlin_hash as hash;
 pub use marlin_input as input;
+pub use marlin_input_action as input_action;
 pub use marlin_jobs as jobs;
 pub use marlin_math as math;
 pub use marlin_nav as nav;
@@ -52,9 +53,10 @@ pub fn game_modules() -> Vec<Box<dyn Module>> {
     vec![
         Box::new(marlin_world::WorldModule),
         Box::new(marlin_anim::AnimModule),
+        Box::new(marlin_input_action::InputModule::new()),
         Box::new(marlin_ui_render::UiModule),
         Box::new(marlin_renderer::RenderModule),
-        Box::new(marlin_gameplay::GameplayModule),
+        Box::new(marlin_gameplay::GameplayModule::new()),
         #[cfg(not(marlin_build = "shipping"))]
         Box::new(marlin_framework::DevToolsModule),
     ]

@@ -10,6 +10,8 @@
 //!   on a job while its `marlin_renderer::WorldRenderer` draws frame N.
 //! - [`DevToolsModule`] (not in shipping builds): the stats overlay ([`hud`]) and the frame rate
 //!   in the title, drawn by the host when the build has the module.
+//! - [`input`]: routing: the host's own commands first, then a viewport's state decides what
+//!   its world's players get and what the cursor does.
 //! - [`scalability`]: the quality presets content holds, applied at boot.
 #![cfg_attr(not(test), no_std)]
 
@@ -20,6 +22,7 @@ mod dev;
 mod engine;
 #[cfg(not(marlin_build = "shipping"))]
 pub mod hud;
+pub mod input;
 mod run;
 pub mod scalability;
 

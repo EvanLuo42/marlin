@@ -16,6 +16,7 @@ use marlin_cook_text::{StringTable, StringTableCooker};
 use marlin_cook_texture::TextureCooker;
 use marlin_font::Font;
 use marlin_framework::scalability::{DeviceProfile, Scalability};
+use marlin_input_action::{InputAction, MappingContext};
 use marlin_render::asset::{Mesh, PairingPattern, Texture};
 use marlin_shader::asset::{Shader, ShaderPackage};
 use marlin_store::RemoteDdc;
@@ -38,6 +39,10 @@ pub fn engine_cookers() -> Cookers {
         .and_then(|()| cookers.register_named::<Shader>(ShaderCooker::new()))
         // Levels and Prefabs, with the components they place.
         .and_then(|()| marlin_cook_level::register(&mut cookers, game_components()))
+        // Input actions and mapping contexts, cooked as authored; the engine finds its own by name
+        // (0019 §9.1).
+        .and_then(|()| cookers.register_named_generic::<InputAction>())
+        .and_then(|()| cookers.register_named_generic::<MappingContext>())
         // The quality presets, found by name at boot (0008 §2.2).
         .and_then(|()| cookers.register_named_generic::<Scalability>())
         .and_then(|()| cookers.register_named_generic::<DeviceProfile>());

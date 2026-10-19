@@ -1,0 +1,59 @@
+!Version 1
+
+// The host's own commands (docs/design/0019-engine-framework-and-world.md §9.2): evaluated before
+// a world sees the input, and consuming what they fire with. `Host` is in every build;
+// `Dev` only in development builds (shipping games quit through their own UI).
+
+InputAction
+{
+    !Uuid = "019a5e00-1000-7000-8000-000000000101"
+    !Name = "Marlin.Engine.Input.Fullscreen"
+}
+
+InputAction
+{
+    !Uuid = "019a5e00-1000-7000-8000-000000000102"
+    !Name = "Marlin.Engine.Input.Alt"
+}
+
+InputAction
+{
+    !Uuid = "019a5e00-1000-7000-8000-000000000103"
+    !Name = "Marlin.Engine.Input.Quit"
+}
+
+InputAction
+{
+    !Uuid = "019a5e00-1000-7000-8000-000000000104"
+    !Name = "Marlin.Engine.Input.Vsync"
+}
+
+InputAction
+{
+    !Uuid = "019a5e00-1000-7000-8000-000000000105"
+    !Name = "Marlin.Engine.Input.Stats"
+}
+
+MappingContext
+{
+    !Uuid = "019a5e00-1000-7000-8000-000000000110"
+    !Name = "Marlin.Engine.Input.Host"
+    Mappings = [
+        { Action = <:Marlin.Engine.Input.Fullscreen #019a5e00-1000-7000-8000-000000000101>, Source = Key("F11"), Triggers = [Pressed] },
+        { Action = <:Marlin.Engine.Input.Fullscreen #019a5e00-1000-7000-8000-000000000101>, Source = Key("Enter"), Triggers = [Pressed, Chord(<:Marlin.Engine.Input.Alt #019a5e00-1000-7000-8000-000000000102>)] },
+        { Action = <:Marlin.Engine.Input.Alt #019a5e00-1000-7000-8000-000000000102>, Source = Key("Left Alt") },
+        { Action = <:Marlin.Engine.Input.Alt #019a5e00-1000-7000-8000-000000000102>, Source = Key("Right Alt") },
+    ]
+}
+
+MappingContext
+{
+    !Uuid = "019a5e00-1000-7000-8000-000000000111"
+    !Name = "Marlin.Engine.Input.Dev"
+    Mappings = [
+        { Action = <:Marlin.Engine.Input.Quit #019a5e00-1000-7000-8000-000000000103>, Source = Key("Escape"), Triggers = [Pressed] },
+        { Action = <:Marlin.Engine.Input.Quit #019a5e00-1000-7000-8000-000000000103>, Source = Pad(Start), Triggers = [Pressed] },
+        { Action = <:Marlin.Engine.Input.Vsync #019a5e00-1000-7000-8000-000000000104>, Source = Key("V"), Triggers = [Pressed] },
+        { Action = <:Marlin.Engine.Input.Stats #019a5e00-1000-7000-8000-000000000105>, Source = Key("F3"), Triggers = [Pressed] },
+    ]
+}

@@ -3,4 +3,5 @@
 //! Run alone with `cargo test -p marlin-framework --test unit`.
 
 mod boot;
+mod input;
 mod ui;

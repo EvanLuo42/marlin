@@ -123,7 +123,7 @@ impl Viewer {
 
     /// One frame of `world` (time standing still, so spinning objects hold their pose).
     fn frame(&mut self, engine: &mut Engine<'_>, world: &mut World) -> Vec<u32> {
-        engine.frame(world, 0.0, None, None);
+        engine.frame(world, 0.0, None);
         let delta = take_delta(world).unwrap();
         self.offscreen
             .render(self.device, &mut self.render, &delta)
@@ -356,7 +356,7 @@ fn the_exposure_holds_steady_from_the_first_frame() {
     };
     let mut means = Vec::new();
     for _ in 0..240 {
-        engine.frame(&mut world, 1.0 / 60.0, None, None);
+        engine.frame(&mut world, 1.0 / 60.0, None);
         let delta = take_delta(&mut world).unwrap();
         let px = viewer
             .offscreen
@@ -409,7 +409,7 @@ fn resizing_with_frames_in_flight_keeps_validation_quiet() {
                      engine: &mut Engine<'_>,
                      world: &mut World,
                      frames: &mut FrameContext| {
-        engine.frame(world, 1.0 / 60.0, None, None);
+        engine.frame(world, 1.0 / 60.0, None);
         let delta = take_delta(world).unwrap();
         render.collect_feedback(frames);
         render.apply(device, &delta).unwrap();
@@ -445,4 +445,74 @@ fn resizing_with_frames_in_flight_keeps_validation_quiet() {
     }
     frames.wait_idle().unwrap();
     assert_eq!(device.validation_errors(), before);
+}
+
+/// The engine's own bindings, cooked from `content/engine/input` with the sample: the host's
+/// Escape quits (and the world never sees it), W flies the spectator along its view, and the
+/// mouse turns it while the right button is held.
+#[test]
+fn the_engines_bindings_drive_the_host_and_the_spectator() {
+    use marlin_framework::input::{HostInput, give_player_input};
+    use marlin_input::Key;
+    use marlin_input_action::{InputFrame, Mouse};
+    use marlin_math::{DVec3, Vec3};
+
+    let root = sample("input");
+    let boot = mount(&ContentSettings {
+        packages: vec![package(&root)],
+        cookd: None,
+        platform: marlin_rt::PLATFORM.into(),
+        level: LEVEL.parse().unwrap(),
+    })
+    .unwrap();
+    let mut engine = engine(&boot);
+    let mut world = engine.create_world(WorldKind::Game, None);
+    world.load_sublevel(boot.level, Transform::IDENTITY);
+    wait_until(Duration::from_secs(60), "the level and its input", || {
+        engine.frame(&mut world, 0.0, None);
+        engine.is_ready(&world)
+    });
+
+    let mut host = HostInput::load(&mut engine.assets, &boot.vfs, None);
+    let (commands, rest) = host.route(InputFrame::empty().with_key(Key::ESCAPE), 0.016);
+    assert!(commands.quit, "Escape quits in development builds");
+    assert!(!rest.key(Key::ESCAPE));
+
+    let camera = world
+        .ecs()
+        .query_ref::<(marlin::ecs::Entity, &marlin::gameplay::SpectatorMovement)>()
+        .next()
+        .map(|(e, _)| e)
+        .expect("the sample's camera is a spectator");
+    let transform = |w: &World| *w.ecs().get::<Transform>(camera).unwrap();
+    let start = transform(&world);
+    // One second of W at the sample's 8 m/s.
+    for _ in 0..10 {
+        give_player_input(&mut world, 0, InputFrame::empty().with_key(Key::W));
+        engine.frame(&mut world, 0.1, None);
+    }
+    let moved = transform(&world).translation - start.translation;
+    let forward = DVec3::from_vec3(start.rotation * Vec3::FORWARD);
+    assert!(moved.abs_diff_eq(forward * 8.0, 1e-3), "{moved:?}");
+
+    // Mouse motion turns it only with the right button held: 100 px is 0.3 rad of yaw.
+    let before = transform(&world).rotation;
+    give_player_input(&mut world, 0, InputFrame::empty().with_motion([100.0, 0.0]));
+    engine.frame(&mut world, 0.1, None);
+    assert_eq!(transform(&world).rotation, before);
+    give_player_input(
+        &mut world,
+        0,
+        InputFrame::empty()
+            .with_mouse(Mouse::Right)
+            .with_motion([100.0, 0.0]),
+    );
+    engine.frame(&mut world, 0.1, None);
+    let turned = transform(&world).rotation * Vec3::FORWARD;
+    let was = before * Vec3::FORWARD;
+    let yaw = |v: Vec3| marlin_math::scalar::atan2(-v.x, -v.z);
+    assert!(
+        (yaw(was) - yaw(turned) - 0.3).abs() < 1e-3,
+        "{was:?} -> {turned:?}"
+    );
 }

@@ -3,7 +3,15 @@
 //! `cargo test -p marlin-gameplay --test unit`.
 
 use marlin_asset::{AssetServer, Vfs};
-use marlin_gameplay::{GameplayModule, RotatingMovement, SpectatorMovement};
+use std::sync::Arc;
+
+use marlin_asset::{Link, Uuid};
+use marlin_gameplay::{GameplayModule, RotatingMovement, SpectatorActions, SpectatorMovement};
+use marlin_input::Key;
+use marlin_input_action::{
+    CompiledContext, InputFrame, InputModule, InputSource, KeyCode, Mapping, MappingContext,
+    Modifier, Players, SwizzleOrder,
+};
 use marlin_jobs::{Config, JobSystem};
 use marlin_math::{DVec3, Quat, Vec3};
 use marlin_world::{
@@ -21,8 +29,12 @@ struct Harness {
 
 impl Harness {
     fn new() -> Self {
-        let mut modules =
-            Modules::new(vec![Box::new(WorldModule), Box::new(GameplayModule)]).unwrap();
+        let mut modules = Modules::new(vec![
+            Box::new(WorldModule),
+            Box::new(InputModule::new()),
+            Box::new(GameplayModule::new()),
+        ])
+        .unwrap();
         let mut resources = Resources::new();
         let mut assets = AssetServer::new(modules.table().loaders(&resources));
         let vfs = Vfs::new();
@@ -95,4 +107,54 @@ fn spectators_hold_still_without_input() {
         h.frame(0.1);
     }
     assert_eq!(h.world.ecs().get::<Transform>(e), Some(&at));
+}
+
+#[test]
+fn spectators_fly_by_player_zero_s_actions() {
+    let mut h = Harness::new();
+    // The content would hold these; here they are made by hand.
+    let actions = SpectatorActions {
+        context: Uuid::from_u128(10),
+        movement: Uuid::from_u128(11),
+        look: Uuid::from_u128(12),
+        rise: Uuid::from_u128(13),
+        boost: Uuid::from_u128(14),
+    };
+    let forward = Mapping {
+        action: Link::new(actions.movement),
+        source: InputSource::Key(KeyCode(Key::W)),
+        modifiers: vec![Modifier::Swizzle(SwizzleOrder::Yxz)],
+        triggers: Vec::new(),
+    };
+    let context = CompiledContext::compile(
+        actions.context,
+        &MappingContext {
+            mappings: vec![forward],
+        },
+        |_| Some(marlin_input_action::ActionValueType::Axis2D),
+    );
+    h.world.ecs_mut().insert_resource(actions);
+    let players = h.world.ecs_mut().resource_mut::<Players>().unwrap();
+    players
+        .player_mut(0)
+        .unwrap()
+        .user
+        .add_context(Arc::new(context), 0);
+
+    let e = h
+        .world
+        .ecs_mut()
+        .spawn((Transform::IDENTITY, SpectatorMovement { speed: 10.0 }));
+    for _ in 0..5 {
+        let w = InputFrame::empty().with_key(Key::W);
+        h.world
+            .ecs_mut()
+            .resource_mut::<Players>()
+            .unwrap()
+            .set_input(0, w);
+        h.frame(0.1);
+    }
+    // Looking down -Z: forward is -Z, 10 m/s for half a second.
+    let at = h.world.ecs().get::<Transform>(e).unwrap().translation;
+    assert!(at.abs_diff_eq(DVec3::new(0.0, 0.0, -5.0), 1e-4), "{at:?}");
 }

@@ -69,6 +69,7 @@ marlin-audio = { path = "runtime/engine/audio" }
 marlin-nav = { path = "runtime/engine/nav" }
 marlin-vfx = { path = "runtime/engine/vfx" }
 marlin-gameplay = { path = "runtime/engine/gameplay" }
+marlin-input-action = { path = "runtime/engine/input_action" }
 marlin-renderer = { path = "runtime/engine/renderer" }
 marlin-framework = { path = "runtime/engine/framework" }
 # --- umbrella ---

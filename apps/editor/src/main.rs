@@ -22,6 +22,9 @@ use marlin_asset_db::{Options, Project};
 use marlin_cookd::{Cookd, CookdOptions, bind};
 use marlin_cooker::{engine_cookers, open_ddc};
 use marlin_diag::{error, info};
+use marlin_framework::input::{
+    ViewportInput, apply_cursor, give_player_input, input_settings, player_zero,
+};
 use marlin_framework::{ContentSettings, Engine, mount};
 use marlin_jobs::{Config, JobSystem};
 use marlin_math::Vec2;
@@ -233,6 +236,8 @@ fn run(
         None => None,
     };
     let mut viewport_version = 0u64;
+    let mut viewport_input = ViewportInput::editor();
+    let mut cursor_mode = None;
 
     let mut minimized = false;
     // The last frame drew nothing new (§5.5): wait for events instead of spinning.
@@ -290,12 +295,24 @@ fn run(
             ((view.height() * scale) as u32).max(1),
         );
 
-        // The scene: its fly camera follows the input while the cursor is over the viewport.
+        // The scene: a click focuses the viewport; holding the right button over it flies the
+        // camera with the cursor locked (0019 §9.3).
         if let Some(scene) = &mut scene {
             let over = cursor.is_some_and(|c| {
                 c.x >= view.min.x && c.x < view.max.x && c.y >= view.min.y && c.y < view.max.y
             });
-            engine.frame(&mut world, dt, over.then(|| input.state()), Some(&jobs));
+            let state = input.state();
+            let route = viewport_input.route(
+                state,
+                player_zero(state),
+                over,
+                false,
+                false,
+                input_settings(&world),
+            );
+            apply_cursor(&window, route.cursor, &mut cursor_mode);
+            give_player_input(&mut world, 0, route.world);
+            engine.frame(&mut world, dt, Some(&jobs));
             scene.collect_feedback(&mut frames);
             if let Some(delta) = marlin_renderer::take_delta(&mut world) {
                 scene.apply(&device, &delta).map_err(|e| format!("{e}"))?;

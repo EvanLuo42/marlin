@@ -26,7 +26,6 @@ mod tools {
     use marlin_config::CvarBool;
     use marlin_diag::{FixedBuf, chain, warn};
     use marlin_font::Font;
-    use marlin_input::{InputState, Key};
     use marlin_jobs::JobSystem;
     use marlin_render_graph::{FrameContext, RenderGraph, TextureHandle};
     use marlin_rhi::{Device, Format};
@@ -94,12 +93,12 @@ mod tools {
             }
         }
 
-        /// The start of a frame `interval` seconds after the last: F3 toggles the overlay, made
-        /// the first time it is shown from the engine's shaders `library`, drawing over
-        /// `output`.
+        /// The start of a frame `interval` seconds after the last: `toggle` (the host's stats
+        /// command) shows or hides the overlay, made the first time it is shown from the engine's
+        /// shaders `library`, drawing over `output`.
         pub(crate) fn begin_frame(
             &mut self,
-            input: &InputState,
+            toggle: bool,
             interval: f32,
             device: &Device,
             library: Option<&ShaderLibrary>,
@@ -109,7 +108,7 @@ mod tools {
             if !self.enabled {
                 return;
             }
-            if input.key_pressed(Key::F3) {
+            if toggle {
                 self.show = !self.show;
             }
             if self.show && self.hud.is_none() {
@@ -218,7 +217,6 @@ mod stub {
 
     use marlin_app::Window;
     use marlin_asset::{Loaders, Vfs};
-    use marlin_input::InputState;
     use marlin_jobs::JobSystem;
     use marlin_render_graph::{FrameContext, RenderGraph, TextureHandle};
     use marlin_rhi::{Device, Format};
@@ -239,7 +237,7 @@ mod stub {
         #[inline]
         pub(crate) fn begin_frame(
             &mut self,
-            _: &InputState,
+            _: bool,
             _: f32,
             _: &Device,
             _: Option<&ShaderLibrary>,

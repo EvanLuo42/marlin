@@ -29,6 +29,7 @@ marlin-cook-text.workspace = true
 marlin-cook-texture.workspace = true
 marlin-font.workspace = true
 marlin-framework.workspace = true
+marlin-input-action.workspace = true
 marlin-masset.workspace = true
 marlin-render.workspace = true
 marlin-shader.workspace = true

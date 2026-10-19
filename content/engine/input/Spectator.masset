@@ -1,0 +1,62 @@
+!Version 1
+
+// The spectator's actions and their bindings (docs/design/0019-engine-framework-and-world.md §9):
+// fly with WASD and Q/E or the left stick and triggers, look with the mouse while its right
+// button is held or with the right stick, Shift to go faster. The engine finds them by name.
+
+InputAction
+{
+    !Uuid = "019a5e00-1000-7000-8000-000000000001"
+    !Name = "Marlin.Engine.Input.Move"
+    Value = Axis2D
+}
+
+InputAction
+{
+    !Uuid = "019a5e00-1000-7000-8000-000000000002"
+    !Name = "Marlin.Engine.Input.Look"
+    Value = Axis2D
+}
+
+InputAction
+{
+    !Uuid = "019a5e00-1000-7000-8000-000000000003"
+    !Name = "Marlin.Engine.Input.LookEnable"
+}
+
+InputAction
+{
+    !Uuid = "019a5e00-1000-7000-8000-000000000004"
+    !Name = "Marlin.Engine.Input.Rise"
+    Value = Axis1D
+}
+
+InputAction
+{
+    !Uuid = "019a5e00-1000-7000-8000-000000000005"
+    !Name = "Marlin.Engine.Input.Boost"
+}
+
+MappingContext
+{
+    !Uuid = "019a5e00-1000-7000-8000-000000000010"
+    !Name = "Marlin.Engine.Input.Spectator"
+    Mappings = [
+        { Action = <:Marlin.Engine.Input.Move #019a5e00-1000-7000-8000-000000000001>, Source = Key("W"), Modifiers = [Swizzle(Yxz)] },
+        { Action = <:Marlin.Engine.Input.Move #019a5e00-1000-7000-8000-000000000001>, Source = Key("S"), Modifiers = [Swizzle(Yxz), Negate] },
+        { Action = <:Marlin.Engine.Input.Move #019a5e00-1000-7000-8000-000000000001>, Source = Key("D") },
+        { Action = <:Marlin.Engine.Input.Move #019a5e00-1000-7000-8000-000000000001>, Source = Key("A"), Modifiers = [Negate] },
+        { Action = <:Marlin.Engine.Input.Move #019a5e00-1000-7000-8000-000000000001>, Source = LeftStick },
+        // Radians per pixel; the screen's y points down, pitch up.
+        { Action = <:Marlin.Engine.Input.Look #019a5e00-1000-7000-8000-000000000002>, Source = MouseMotion, Modifiers = [Scale { Factor = (0.003, -0.003, 0.0) }], Triggers = [Chord(<:Marlin.Engine.Input.LookEnable #019a5e00-1000-7000-8000-000000000003>)] },
+        // Radians per second at full tilt.
+        { Action = <:Marlin.Engine.Input.Look #019a5e00-1000-7000-8000-000000000002>, Source = RightStick, Modifiers = [Scale { Factor = (2.5, 2.5, 0.0) }, ScaleByDeltaTime] },
+        { Action = <:Marlin.Engine.Input.LookEnable #019a5e00-1000-7000-8000-000000000003>, Source = Mouse(Right) },
+        { Action = <:Marlin.Engine.Input.Rise #019a5e00-1000-7000-8000-000000000004>, Source = Key("E") },
+        { Action = <:Marlin.Engine.Input.Rise #019a5e00-1000-7000-8000-000000000004>, Source = Key("Q"), Modifiers = [Negate] },
+        { Action = <:Marlin.Engine.Input.Rise #019a5e00-1000-7000-8000-000000000004>, Source = RightTrigger },
+        { Action = <:Marlin.Engine.Input.Rise #019a5e00-1000-7000-8000-000000000004>, Source = LeftTrigger, Modifiers = [Negate] },
+        { Action = <:Marlin.Engine.Input.Boost #019a5e00-1000-7000-8000-000000000005>, Source = Key("Left Shift") },
+        { Action = <:Marlin.Engine.Input.Boost #019a5e00-1000-7000-8000-000000000005>, Source = Key("Right Shift") },
+    ]
+}

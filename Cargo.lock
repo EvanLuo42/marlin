@@ -233,6 +233,7 @@ dependencies = [
  "marlin-gameplay",
  "marlin-hash",
  "marlin-input",
+ "marlin-input-action",
  "marlin-jobs",
  "marlin-math",
  "marlin-nav",
@@ -521,6 +522,7 @@ dependencies = [
  "marlin-cook-texture",
  "marlin-font",
  "marlin-framework",
+ "marlin-input-action",
  "marlin-masset",
  "marlin-render",
  "marlin-shader",
@@ -671,6 +673,7 @@ dependencies = [
  "marlin-font",
  "marlin-gpu-test-support",
  "marlin-input",
+ "marlin-input-action",
  "marlin-io",
  "marlin-jobs",
  "marlin-math",
@@ -729,8 +732,10 @@ name = "marlin-gameplay"
 version = "0.1.0"
 dependencies = [
  "marlin-asset",
+ "marlin-diag",
  "marlin-ecs",
  "marlin-input",
+ "marlin-input-action",
  "marlin-jobs",
  "marlin-math",
  "marlin-reflect",
@@ -787,6 +792,23 @@ dependencies = [
  "marlin-sync",
  "marlin-test-support",
  "windows-sys",
+]
+
+[[package]]
+name = "marlin-input-action"
+version = "0.1.0"
+dependencies = [
+ "marlin-asset",
+ "marlin-containers",
+ "marlin-diag",
+ "marlin-ecs",
+ "marlin-input",
+ "marlin-jobs",
+ "marlin-math",
+ "marlin-reflect",
+ "marlin-serial",
+ "marlin-test-support",
+ "marlin-world",
 ]
 
 [[package]]

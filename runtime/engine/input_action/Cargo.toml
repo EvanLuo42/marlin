@@ -1,0 +1,24 @@
+[package]
+name = "marlin-input-action"
+description = "Input actions: action and mapping-context assets, their evaluation per player, and input modes."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+marlin-asset.workspace = true
+marlin-containers.workspace = true
+marlin-diag.workspace = true
+marlin-ecs.workspace = true
+marlin-input.workspace = true
+marlin-jobs.workspace = true
+marlin-math.workspace = true
+marlin-reflect.workspace = true
+marlin-world.workspace = true
+
+[dev-dependencies]
+marlin-serial.workspace = true
+marlin-test-support.workspace = true
+
+[lints]
+workspace = true

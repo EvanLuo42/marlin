@@ -549,3 +549,48 @@ W6 之后再回到 render（R4f 剩下的部分、R5）。physics、audio、anim
   - 构建：workspace check、clippy、check-layers 都干净；shipping 构建能编译。
   - 手动冒烟测试：cook 并打包 `samples/basic` 后运行 `marlin-game` 15 秒，日志显示 "level loaded: 13 entities, 3 meshes"，运行期间没有错误。`marlin-game` 本身仍然没有自动化测试。
   - 冒烟测试中发现的问题：只重新打包、没有重新 cook 时，包里还是旧组件类型 id 的关卡，这些组件读回来是空的，实体会悄悄缺少组件。现在 `CookedLevel::unknown_components` 会统计这类组件，spawn 关卡、子关卡或 Prefab 时记录警告，提示重新 cook。
+
+### W4（2026-10-19）：输入 action 和路由
+
+- **`marlin-input-action`（新 crate）**：
+  - **资产**：
+    - `InputAction { Value = Bool | Axis1D | Axis2D | Axis3D }`。
+    - `MappingContext { Mappings = [{ Action, Source, Modifiers, Triggers }] }`。
+    - 数据源（`InputSource`）：`Key("Left Shift")`，名字不对时在读文本时就报错（`KeyCode` 通过 proxy 写成字符串）；`Mouse(Right)`、`MouseMotion`、`MouseWheel`、`Pad(Start)`、`LeftStick` / `RightStick`、`LeftTrigger` / `RightTrigger`。
+    - modifier：`Negate`、`Swizzle(Yxz…)`、`Scale { Factor }`、`ScaleByDeltaTime`、`DeadZone { Lower, Upper }`。
+    - trigger：`Down`（不写时的默认）、`Pressed`、`Released`、`Hold { Seconds }`、`Tap { Seconds }`、`Chord(<action>)`。
+    - 两种资产都用 `register_named_generic` cook（按原样序列化），引擎按 `!Name` 找自己的那些。
+  - **`InputFrame`**：一个用户一帧的原始输入，由 `InputState` 按设备生成（`Devices`：键鼠、第几个手柄）。在一帧内按下又松开的键也算按下，所以不会丢掉短按。路由的每一层可以 `consume` 掉自己用过的输入源。
+  - **`InputUser`**：按优先级排列的 `CompiledContext` 栈。
+    - 每个 mapping 依次读输入源、应用 modifier、判断 trigger：显式 trigger 只要有一个触发即可；chord 必须全部满足。
+    - action 只要有一个 mapping 触发就算触发，值是这些 mapping 的值之和（按钮型 action 为 1）。
+    - 触发了的 mapping 会消耗它的输入源，优先级更低的 context 和下一层路由都看不到。
+    - chord 在所有 context 都读完后才判断，所以带 chord 的 mapping 只对下一层消耗输入，不会对同一用户里优先级更低的 context 消耗（Alt+Enter 中的 Enter）。
+    - `ActionState` 有 `value`、`triggered`、`started`、`completed` 四项。
+  - **`InputModule`**：
+    - World 资源 `Players`：默认 1 个玩家；host 用 `set_input` 把路由后的输入交给玩家，`FrameStart` 用不受时间缩放影响的 dt 求值，所以暂停时菜单仍然能用。
+    - 玩家通过 `add_context(asset, priority)` 请求 context，模块在 `pre_world_frame` 里加载、编译后加入栈。`world_ready` 会等这些 context 加载完。
+    - World 资源 `InputSettings { mode: GameOnly | UiOnly | GameAndUi, cursor: Visible | Hidden | Locked }`，由玩法设置，host 照着执行。
+    - `load_context`：host 启动时按名字阻塞加载 context。
+- **引擎内容 `content/engine/input`**：
+  - `Spectator.masset`：Move、Look、LookEnable、Rise、Boost，以及 context `Marlin.Engine.Input.Spectator`。手感和原来写死的按键一致：鼠标每像素 0.003 rad，只有按住右键时生效；摇杆 2.5 rad/s；Shift 加速 ×3。
+  - `Host.masset`：
+    - `Marlin.Engine.Input.Host`（所有构建都有）：F11、Alt+Enter 切换全屏。
+    - `Marlin.Engine.Input.Dev`（只在开发构建中加载）：Esc 或手柄 Start 退出、V 切换 vsync、F3 显示统计。
+    - 按 §12 的约定，shipping 游戏的退出由游戏自己负责。
+- **玩法**：`GameplayModule` 启动时按名字找到 spectator 的 action，在每个 World 里给玩家 0 加上 spectator context；spectate system 读取玩家 0 的 action。玩法代码不再出现任何按键。
+- **Host 路由**（`marlin_framework::input`）：
+  - `HostInput` 先求值 host 的 context，返回命令（quit、fullscreen、vsync、stats）和消耗之后剩下的输入。
+  - `ViewportInput` 实现 §9.3 的状态机：
+    - game 视口一开始就处于 GameCapture，按 input mode 把输入交给 World；收到 release 命令时回到 Focused。
+    - editor 视口点击后进入 Focused；鼠标悬停时按住右键进入 Captured（光标锁定，World 收到输入），松开回到 Focused；点击视口外面回到 Unfocused。
+    - 有文本焦点时去掉键盘输入。
+  - `apply_cursor` 把光标模式应用到窗口。
+  - `run` 和 editor 都走这条路径：`Engine::frame` 不再接收原始输入，输入经路由交给玩家（`give_player_input`）。
+  - editor 的场景视口改成"点击聚焦、按住右键飞行并锁定光标"。
+  - 还没做：Shift+F1 释放捕获（PIE，W5）；UI 层的悬停和文本焦点（等 editor UI 框架）。
+- **验证**：
+  - 单元测试：input_action（轴累加、chord、按下沿、Hold/Tap、优先级与消耗、dead zone 与 dt、序列化往返）、gameplay（spectator 按 action 移动）、framework 路由（editor 的捕获和释放、game 视口的 input mode、文本焦点、release、host 消耗输入）都通过。
+  - GPU 测试：framework 原有的全部通过；新增一个测试用 cook 出来的真实引擎绑定验证：Esc 退出并被消耗，W 让 spectator 沿视线前进 8 m，右键加鼠标移动 100 px 转 0.3 rad，只移动鼠标不转。editor 的 GPU 测试也通过。
+  - 构建：workspace check、clippy、check-layers 干净；shipping 构建能编译。
+  - 冒烟测试：运行 `marlin-game` 12 秒，正常加载关卡，没有关于 context 缺失的警告。没有在窗口里手动按键试过；按键到 action 的整条链路由上面的 end-to-end 测试覆盖。

@@ -9,7 +9,7 @@ use core::time::Duration;
 
 use marlin_app::{App, Event, Surface, Window, WindowDesc};
 use marlin_diag::info;
-use marlin_input::{GamepadButton, Input, Key};
+use marlin_input::Input;
 use marlin_jobs::{Config, JobSystem};
 use marlin_profile::profile_scope;
 use marlin_render_graph::{FrameContext, FrameContextDesc, GpuTimeline};
@@ -25,6 +25,9 @@ use marlin_world::{Modules, Transform, WorldKind};
 
 use crate::dev::DevTools;
 use crate::engine::{Engine, EngineError};
+use crate::input::{
+    HostInput, ViewportInput, apply_cursor, give_player_input, input_settings, player_zero,
+};
 
 #[derive(Debug, marlin_error::Error)]
 pub enum RunError {
@@ -49,11 +52,13 @@ enum Step {
 }
 
 /// Runs the game of `modules` (registered before `boot` read its configuration) in a window until
-/// it is closed (or Esc / gamepad Start): a game world with the entry level, drawn by a
+/// it is closed (or the host's quit command): a game world with the entry level, drawn by a
 /// [`WorldRenderer`].
 ///
-/// Keys: F11 or Alt+Enter, borderless fullscreen; V, vsync; F3, the stats overlay (not in
-/// shipping builds, [`dev`](crate::dev)).
+/// The host's commands are input actions (`content/engine/input/Host.masset`): F11 or Alt+Enter,
+/// borderless fullscreen; and in development builds Esc or gamepad Start, quit; V, vsync; F3, the
+/// stats overlay ([`dev`](crate::dev)). The rest reaches player 0 as the world's input settings
+/// say ([`crate::input`]).
 pub fn run(boot: &Boot, title: &str, modules: Modules) -> Result<(), RunError> {
     let mut app = App::new()?;
     let window = app.create_window(&WindowDesc {
@@ -115,6 +120,11 @@ pub fn run(boot: &Boot, title: &str, modules: Modules) -> Result<(), RunError> {
         marlin_renderer::scene_ids(&world).ok_or(RunError::NoRenderer)?,
     )?;
 
+    // The host's commands, and the window as one game viewport.
+    let mut host_input = HostInput::load(&mut engine.assets, &boot.vfs, Some(&jobs));
+    let mut viewport = ViewportInput::game();
+    let mut cursor = None;
+
     let mut dev = DevTools::new(
         &boot.vfs,
         engine.modules().has("DevTools"),
@@ -147,22 +157,27 @@ pub fn run(boot: &Boot, title: &str, modules: Modules) -> Result<(), RunError> {
         }
         input.update();
         let state = input.state();
-        if state.key_pressed(Key::ESCAPE) || state.gamepad(0).pressed(GamepadButton::Start) {
-            return Ok(Step::Quit);
-        }
-        if state.key_pressed(Key::F11) || (state.alt() && state.key_pressed(Key::ENTER)) {
-            window.toggle_fullscreen()?;
-        }
-        if state.key_pressed(Key::V) {
-            vsync = !vsync;
-            set_vsync(&mut swapchain, vsync);
-        }
         let now = Instant::now();
         let interval = now.duration_since(last).as_secs_f32();
         let dt = interval.min(0.1);
         last = now;
+        // Routing (0019 §9.2): the host's commands, then the window's one viewport, then player 0.
+        let (commands, rest) = host_input.route(player_zero(state), interval);
+        if commands.quit {
+            return Ok(Step::Quit);
+        }
+        if commands.fullscreen {
+            window.toggle_fullscreen()?;
+        }
+        if commands.vsync {
+            vsync = !vsync;
+            set_vsync(&mut swapchain, vsync);
+        }
+        let route = viewport.route(state, rest, true, false, false, input_settings(&world));
+        apply_cursor(&window, route.cursor, &mut cursor);
+        give_player_input(&mut world, 0, route.world);
         dev.begin_frame(
-            state,
+            commands.stats,
             interval,
             &device,
             engine.assets.get(&library),
@@ -180,7 +195,7 @@ pub fn run(boot: &Boot, title: &str, modules: Modules) -> Result<(), RunError> {
         jobs.scope(|s| {
             s.spawn(|| {
                 profile_scope!("Simulate");
-                engine_ref.frame(world_ref, dt, Some(state), Some(jobs_ref));
+                engine_ref.frame(world_ref, dt, Some(jobs_ref));
                 next = marlin_renderer::take_delta(world_ref);
             });
             if let Some(delta) = pending.take()

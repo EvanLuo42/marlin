@@ -10,6 +10,7 @@ marlin-std.workspace = true
 marlin-app.workspace = true
 marlin-audio-device.workspace = true
 marlin-input.workspace = true
+marlin-input-action.workspace = true
 marlin-net.workspace = true
 marlin-rhi.workspace = true
 marlin-services.workspace = true

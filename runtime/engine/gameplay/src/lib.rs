@@ -4,19 +4,23 @@
 //! - [`RotatingMovement`]: turns an entity at a constant rate.
 //! - [`SpectatorMovement`]: free flight driven by the frame's input.
 //!
-//! Both run in `PrePhysics`. The input is the world's [`InputState`] resource, which the host
-//! sets each frame (none: spectators stand still). Input actions replace it (0019 §9).
+//! Both run in `PrePhysics`. Spectators read player 0's actions (0019 §9): the engine's spectator
+//! context (`Marlin.Engine.Input.Spectator`, `content/engine/input`), which the module adds to
+//! player 0 in every world when the content has it.
 #![cfg_attr(not(test), no_std)]
 
 extern crate alloc;
 
 use alloc::vec::Vec;
 
+use marlin_asset::Uuid;
 use marlin_ecs::{Entity, IntoSystem, StorageType, With, Without};
-use marlin_input::{InputState, Key, MouseButton};
+use marlin_input_action::{InputModule, Players};
 use marlin_math::{Quat, Vec3};
 use marlin_reflect::Reflect;
-use marlin_world::{ComponentFlags, Module, Registry, TickGroup, Time, Transform};
+use marlin_world::{
+    ComponentFlags, EngineContext, Module, ModuleError, Registry, TickGroup, Time, Transform, World,
+};
 
 /// Turns the entity about `axis` at `speed`, from the rotation it had when the component was
 /// added.
@@ -97,23 +101,24 @@ pub fn spectate(world: &mut marlin_ecs::World) {
         };
         world.insert(e, look);
     }
-    let Some(&state) = world.resource::<InputState>() else {
+    let (Some(&actions), Some(players)) = (
+        world.resource::<SpectatorActions>(),
+        world.resource::<Players>(),
+    ) else {
         return;
     };
+    let Some(player) = players.player(0) else {
+        return;
+    };
+    let look = player.action(actions.look).axis2();
+    let [right, forward] = player.action(actions.movement).axis2();
+    let up = player.action(actions.rise).axis1();
+    let boost = if player.action(actions.boost).triggered {
+        3.0
+    } else {
+        1.0
+    };
     let dt = world.resource::<Time>().map_or(0.0, Time::delta);
-    let pad = state.gamepad(0);
-    let mut look = pad.right_stick().map(|v| v * 2.5 * dt);
-    if state.mouse().down(MouseButton::Right) {
-        let [dx, dy] = state.mouse().delta();
-        look[0] += dx * 0.003;
-        look[1] -= dy * 0.003;
-    }
-    let key = |k| if state.key_down(k) { 1.0 } else { 0.0 };
-    let [stick_x, stick_y] = pad.left_stick();
-    let right = key(Key::D) - key(Key::A) + stick_x;
-    let forward = key(Key::W) - key(Key::S) + stick_y;
-    let up = key(Key::E) - key(Key::Q) + pad.right_trigger() - pad.left_trigger();
-    let boost = if state.shift() { 3.0 } else { 1.0 };
     for (mut transform, mut fly, spectator) in
         world.query::<(&mut Transform, &mut SpectatorLook, &SpectatorMovement)>()
     {
@@ -130,11 +135,45 @@ pub fn spectate(world: &mut marlin_ecs::World) {
     }
 }
 
+/// The spectator's context and actions, by asset (a world resource; an engine resource of the
+/// gameplay module once started, when the content has them).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct SpectatorActions {
+    pub context: Uuid,
+    pub movement: Uuid,
+    pub look: Uuid,
+    pub rise: Uuid,
+    pub boost: Uuid,
+}
+
+impl SpectatorActions {
+    /// The spectator's mapping context.
+    pub const CONTEXT: &'static str = "Marlin.Engine.Input.Spectator";
+
+    /// Finds them by name in `vfs`.
+    pub fn find(vfs: &marlin_asset::Vfs) -> Option<Self> {
+        Some(Self {
+            context: vfs.named(Self::CONTEXT)?,
+            movement: vfs.named("Marlin.Engine.Input.Move")?,
+            look: vfs.named("Marlin.Engine.Input.Look")?,
+            rise: vfs.named("Marlin.Engine.Input.Rise")?,
+            boost: vfs.named("Marlin.Engine.Input.Boost")?,
+        })
+    }
+}
+
 /// The gameplay module: its components and their systems.
-pub struct GameplayModule;
+#[derive(Default)]
+pub struct GameplayModule {
+    spectator: Option<SpectatorActions>,
+}
 
 impl GameplayModule {
     pub const NAME: &'static str = "Gameplay";
+
+    pub fn new() -> Self {
+        Self::default()
+    }
 }
 
 impl Module for GameplayModule {
@@ -143,7 +182,7 @@ impl Module for GameplayModule {
     }
 
     fn dependencies(&self) -> &'static [&'static str] {
-        &[marlin_world::WorldModule::NAME]
+        &[marlin_world::WorldModule::NAME, InputModule::NAME]
     }
 
     fn register(&self, r: &mut Registry) {
@@ -158,5 +197,30 @@ impl Module for GameplayModule {
         .add_system(TickGroup::PrePhysics, || {
             (spectate as fn(&mut marlin_ecs::World)).named("spectate")
         });
+    }
+
+    fn startup(&mut self, cx: &mut EngineContext<'_, '_>) -> Result<(), ModuleError> {
+        self.spectator = SpectatorActions::find(cx.vfs);
+        if self.spectator.is_none() {
+            marlin_diag::warn!(
+                "no `{}` in the mounted content: spectators do not move",
+                SpectatorActions::CONTEXT
+            );
+        }
+        Ok(())
+    }
+
+    fn init_world(&mut self, world: &mut World, _: &mut EngineContext<'_, '_>) {
+        let Some(actions) = self.spectator else {
+            return;
+        };
+        world.ecs_mut().insert_resource(actions);
+        if let Some(p) = world
+            .ecs_mut()
+            .resource_mut::<Players>()
+            .and_then(|p| p.player_mut(0))
+        {
+            p.add_context(actions.context, 0);
+        }
     }
 }

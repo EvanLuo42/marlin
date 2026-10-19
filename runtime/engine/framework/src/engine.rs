@@ -6,7 +6,6 @@
 use alloc::sync::Arc;
 
 use marlin_asset::{AssetServer, BlobStreamer, Loaders, Vfs};
-use marlin_input::InputState;
 use marlin_io::IoQueue;
 use marlin_jobs::{Config, JobSystem};
 use marlin_world::{EngineContext, ModuleError, Modules, Resources, World, WorldKind};
@@ -108,28 +107,16 @@ impl<'v> Engine<'v> {
     }
 
     /// One frame of `world`, `dt` seconds after its last: the engine's loads and streaming,
-    /// then the world's frame between the modules' hooks. `input` is the world's
-    /// [`InputState`] resource for the frame (none: removed). `jobs` runs the world's systems
-    /// and decompresses loads.
-    pub fn frame(
-        &mut self,
-        world: &mut World,
-        dt: f32,
-        input: Option<&InputState>,
-        jobs: Option<&JobSystem>,
-    ) {
+    /// then the world's frame between the modules' hooks. Input reaches the world's players
+    /// through routing first ([`crate::input`]). `jobs` runs the world's systems and
+    /// decompresses loads.
+    pub fn frame(&mut self, world: &mut World, dt: f32, jobs: Option<&JobSystem>) {
         if jobs.is_none() && self.own_jobs.is_none() {
             self.own_jobs = Some(fallback_jobs());
         }
         let jobs = jobs.or(self.own_jobs.as_ref()).expect("one or the other");
         self.assets.update(self.vfs, &mut self.io, Some(jobs));
         self.streamer.update(self.vfs, &mut self.stream_io);
-        match input {
-            Some(&input) => world.ecs_mut().insert_resource(input),
-            None => {
-                world.ecs_mut().remove_resource::<InputState>();
-            }
-        }
         let mut cx = EngineContext {
             assets: &mut self.assets,
             vfs: self.vfs,
