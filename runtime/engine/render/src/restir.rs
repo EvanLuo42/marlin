@@ -43,18 +43,20 @@ pub struct RestirShaders<'a> {
     pub temporal: ShaderModule<'a>,
     pub spatial_shift: ShaderModule<'a>,
     pub spatial: ShaderModule<'a>,
+    pub spatial_biased: ShaderModule<'a>,
     pub shade: ShaderModule<'a>,
     pub duplication: ShaderModule<'a>,
 }
 
 impl<'a> RestirShaders<'a> {
     /// The entries, in field order.
-    pub const ENTRIES: [EntryDesc; 7] = [
+    pub const ENTRIES: [EntryDesc; 8] = [
         EntryDesc::compute("Marlin.Engine.Lighting.RestirInitial").push::<RestirArgs>(),
         EntryDesc::compute("Marlin.Engine.Lighting.RestirInitialVisibility").push::<RestirArgs>(),
         EntryDesc::compute("Marlin.Engine.Lighting.RestirTemporal").push::<RestirArgs>(),
         EntryDesc::compute("Marlin.Engine.Lighting.RestirSpatialShift").push::<RestirArgs>(),
         EntryDesc::compute("Marlin.Engine.Lighting.RestirSpatial").push::<RestirArgs>(),
+        EntryDesc::compute("Marlin.Engine.Lighting.RestirSpatialBiased").push::<RestirArgs>(),
         EntryDesc::compute("Marlin.Engine.Lighting.RestirShade").push::<RestirArgs>(),
         EntryDesc::compute("Marlin.Engine.Lighting.RestirDuplication").push::<RestirArgs>(),
     ];
@@ -67,9 +69,10 @@ impl<'a> RestirShaders<'a> {
             temporal,
             spatial_shift,
             spatial,
+            spatial_biased,
             shade,
             duplication,
-        ]: [ShaderModule<'a>; 7],
+        ]: [ShaderModule<'a>; 8],
     ) -> Self {
         Self {
             initial,
@@ -77,6 +80,7 @@ impl<'a> RestirShaders<'a> {
             temporal,
             spatial_shift,
             spatial,
+            spatial_biased,
             shade,
             duplication,
         }
@@ -200,6 +204,7 @@ pub struct RestirDi {
     duplication_pass: ComputePipeline,
     spatial_shift_pass: ComputePipeline,
     spatial_pass: ComputePipeline,
+    spatial_biased_pass: ComputePipeline,
     /// The pairing patterns, as `Pairing` reads them; how many there are.
     _pairing: Buffer,
     pairing_view: ShaderView,
@@ -221,6 +226,10 @@ pub struct RestirDi {
     /// A shadow ray for each sample shifted to a neighbor (0010 §2.6: L2 and up); without, the
     /// final shading's ray alone (biased, cheaper).
     pub spatial_visibility: bool,
+    /// The biased spatial reuse (Bitterli et al. 2020): confidence-weighted (1/M) instead of
+    /// pairwise MIS, no shift pass and no shadow rays for the partners' samples. Cheaper; brighter
+    /// or darker than right at shadow edges.
+    pub biased_spatial: bool,
     /// Reservoirs for half the pixels, a checkerboard whose parity alternates a frame (0010 §3,
     /// L2); the shading resamples the others from their neighbors (§2.6). Off: a reservoir a
     /// pixel (L3).
@@ -253,6 +262,7 @@ impl RestirDi {
             duplication_pass: compute(shaders.duplication)?,
             spatial_shift_pass: compute(shaders.spatial_shift)?,
             spatial_pass: compute(shaders.spatial)?,
+            spatial_biased_pass: compute(shaders.spatial_biased)?,
             _pairing: pairing_buffer,
             pairing_view,
             patterns: pairing.sizes.len() as u32,
@@ -263,6 +273,7 @@ impl RestirDi {
             duplication: Some(0.1),
             spatial_neighbors: 2,
             spatial_visibility: true,
+            biased_spatial: false,
             checkerboard: true,
             last_parity: AtomicU32::new(2),
         })
@@ -452,7 +463,32 @@ impl RestirDi {
         });
 
         // Paired spatial reuse (0010 §2.5): both shifts of every pair, then the resampling.
-        let reservoirs = if neighbors > 0 {
+        let reservoirs = if neighbors > 0 && self.biased_spatial {
+            // One pass: the partners' samples weighed here, by confidence (`RestirSpatialBiased`).
+            let pairing = self.pairing_view.index();
+            g.add_compute("RestirSpatial", |b| {
+                let material = b.read_texture(material, Access::ComputeRead);
+                let depth = b.read_texture(depth, Access::ComputeRead);
+                let lights = b.read_buffer(lights, Access::ComputeRead);
+                let input = b.read_buffer(reservoirs, Access::ComputeRead);
+                let output = b.write_buffer(history.cur, Access::ComputeWrite);
+                (output, move |ctx: &mut PassContext<'_>| {
+                    ctx.set_pipeline(&self.spatial_biased_pass);
+                    let args = RestirArgs {
+                        constants: ctx.upload(&constants),
+                        material: ctx.srv(material),
+                        depth: ctx.srv(depth),
+                        lights: ctx.srv(lights),
+                        input: ctx.srv(input),
+                        pairing,
+                        output: ctx.uav(output),
+                        ..RestirArgs::default()
+                    };
+                    ctx.push(&args);
+                    ctx.dispatch(groups.0, groups.1, 1);
+                })
+            })
+        } else if neighbors > 0 {
             let shifts = g.create_buffer(
                 "DiShifts",
                 BufferDesc::structured::<f32>(cells * u64::from(neighbors)),

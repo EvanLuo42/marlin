@@ -575,6 +575,61 @@ bool Neighbor(in RestirConstants c, in RestirArgs a, uint2 px, uint k, uint pass
     return pass != 0 || same;
 }
 
+/// Spatial reuse, the biased kind (`BiasedSpatial`; Bitterli et al. 2020's biased variant): every
+/// cell resamples its partners' reservoirs, each sample's target evaluated here, weighed by its
+/// confidence (1/M MIS) instead of pairwise MIS, and without shadow rays for the partners'
+/// samples (the shading's ray tests the one kept). No shift pass: no partner needs this cell's
+/// sample at its own surface. Brighter or darker than right where the partners' visibility or
+/// targets differ (shadow edges), which the denoiser mostly hides; cheaper.
+[Compute(8, 8, 1)]
+public void RestirSpatialBiased([DispatchThreadId] uint3 id, [Push] in RestirArgs a)
+{
+    RestirConstants c = a.Constants.Value;
+    if (id.x >= c.GridWidth || id.y >= c.Height)
+        return;
+    uint pixel = CellIndex(c, id.xy);
+    DiReservoir r = a.Input[pixel];
+    if (r.Distance <= 0)
+    {
+        a.Output[pixel] = r;
+        return;
+    }
+    uint2 px = PixelOf(c, id.xy);
+    Proxy p = UnpackProxy(a.MaterialBuffer.Load((int2)px));
+    float3 x = WorldAt(c, px, a.Depth.Load((int2)px));
+    DiReservoir s = r;
+    float sum = r.Light != NoLight ? r.Target * r.W * r.M : 0;
+    float total = r.M;
+    float fresh = r.M * r.Fresh;
+    uint seed = Hash(c.Seed ^ 0x7F4A7C15) ^ pixel;
+    for (uint k = 0; k < c.Neighbors; k++)
+    {
+        int2 q = Partner(c, a, k, id.xy);
+        if (q.x < 0)
+            continue;
+        DiReservoir n = a.Input[CellIndex(c, uint2((uint)q.x, (uint)q.y))];
+        if (!SameSurface(r, n))
+            continue;
+        total += n.M;
+        fresh += n.M * n.Fresh;
+        if (n.Light == NoLight || n.W <= 0)
+            continue;
+        float target = Luminance(Contribution(a.Lights[n.Light], x, p.Normal, p.Albedo));
+        float weight = target * n.W * n.M;
+        sum += weight;
+        if (weight > 0 && Random(Hash(seed + k * 0x9E3779B9)) * sum < weight)
+        {
+            s.Light = n.Light;
+            s.Sample = n.Sample;
+            s.Target = target;
+        }
+    }
+    s.M = total;
+    s.W = s.Target > 0 && s.Light != NoLight ? sum / (total * s.Target) : 0;
+    s.Fresh = fresh / total;
+    a.Output[pixel] = s;
+}
+
 /// Pixel `px`'s reservoir for the shading. A pixel with a cell of its own takes its reservoir.
 /// In checkerboard the others resample their four neighbors' (which have cells) by RIS with
 /// this pixel's own target (0010 §2.6's reservoir upsampling): those on its surface, or all of
