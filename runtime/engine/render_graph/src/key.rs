@@ -19,7 +19,7 @@ const fn load_kind<T>(op: &LoadOp<T>) -> u8 {
 
 pub(crate) fn topology_key<B: Backend>(g: &RenderGraph<'_, B>) -> u64 {
     let mut h = FastHasher::default();
-    g.single_queue.hash(&mut h);
+    (g.single_queue, g.overlap).hash(&mut h);
     g.textures.len().hash(&mut h);
     for t in &g.textures {
         t.desc.hash(&mut h);
@@ -57,7 +57,7 @@ pub(crate) fn topology_key<B: Backend>(g: &RenderGraph<'_, B>) -> u64 {
         let recs = &g.accesses[p.accesses.start as usize..p.accesses.end as usize];
         recs.len().hash(&mut h);
         for r in recs {
-            (r.res, r.range, r.bytes, r.usage, r.effect).hash(&mut h);
+            (r.res, r.range, r.bytes, r.usage, r.effect, r.unordered).hash(&mut h);
         }
         p.colors.len().hash(&mut h);
         for c in &p.colors {

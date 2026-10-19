@@ -29,7 +29,7 @@ pub(crate) fn compile<B: Backend>(
 ) -> Result<CompiledPlan> {
     let subs = SubIndex::new(g);
     let needed = cull(g, &subs);
-    let retained: Vec<u32> = (0..g.passes.len() as u32)
+    let declared: Vec<u32> = (0..g.passes.len() as u32)
         .filter(|&p| needed[p as usize])
         .collect();
     let culled = (0..g.passes.len() as u32)
@@ -44,12 +44,24 @@ pub(crate) fn compile<B: Backend>(
     } else {
         B::queues(device)
     };
-    let queues: Vec<u8> = retained
-        .iter()
-        .map(|&p| sync::queue_index(sync::resolve(g.passes[p as usize].queue, available)))
-        .collect();
+    let queue_of = |p: u32| sync::queue_index(sync::resolve(g.passes[p as usize].queue, available));
+    // Passes that need no order between them run together (§4.8).
+    let (retained, groups) = if !g.overlap {
+        let groups = (0..declared.len() as u32).map(|p| p..p + 1).collect();
+        (declared, groups)
+    } else {
+        let queues: Vec<u8> = declared.iter().map(|&p| queue_of(p)).collect();
+        let edges = sync::dependencies(g, &declared, &subs.base, subs.total);
+        schedule(&declared, &queues, &edges)
+    };
+    let queues: Vec<u8> = retained.iter().map(|&p| queue_of(p)).collect();
     let edges = sync::dependencies(g, &retained, &subs.base, subs.total);
-    let windows = sync::windows(&queues, &edges);
+    let mut windows = sync::windows(&queues, &edges);
+    // A group's passes may run at once: what they use is alive over the whole group.
+    for (pos, w) in windows.iter_mut().enumerate() {
+        let group = &groups[pos];
+        *w = (w.0.min(group.start), w.1.max(group.end - 1));
+    }
 
     let (mut textures, mut buffers) = usage_and_lifetimes(g, &retained, &windows);
     let heap_sizes = place(g, device, &mut textures, &mut buffers)?;
@@ -61,6 +73,20 @@ pub(crate) fn compile<B: Backend>(
             states.access(pos as u32, queues[pos], rec);
         }
     }
+    let (segments, segment_passes) = sync::segments(&queues, &edges);
+    // A group's barriers all go before its first pass in the segment, so they do not stand
+    // between the passes.
+    let mut first_in_segment = alloc::vec![0u32; retained.len()];
+    for s in &segments {
+        let passes = &segment_passes[s.passes.start as usize..s.passes.end as usize];
+        for &p in passes {
+            first_in_segment[p as usize] = passes[0];
+        }
+    }
+    let hoist: Vec<u32> = (0..retained.len())
+        .map(|pos| groups[pos].start.max(first_in_segment[pos]))
+        .collect();
+    states.hoist(&hoist);
     let (texture_barriers, buffer_barriers, ranges) = states.coalesce(retained.len());
     let passes = retained
         .iter()
@@ -79,7 +105,6 @@ pub(crate) fn compile<B: Backend>(
         })
         .collect();
     let (texture_finals, buffer_finals) = states.finals();
-    let (segments, segment_passes) = sync::segments(&queues, &edges);
     Ok(CompiledPlan {
         key,
         passes,
@@ -97,6 +122,48 @@ pub(crate) fn compile<B: Backend>(
         segments,
         segment_passes,
     })
+}
+
+/// The order the retained passes (`declared`, in declaration order, on `queues`, with the
+/// dependencies `edges`) run in (0007 §4.8): by level, each pass as late as what depends on it
+/// allows (a pass's level is the longest chain of passes depending on it, counted from the end),
+/// then by queue, then in declaration order. The passes of one level and queue are a group: none
+/// depends on another, so they may run at once. Returns the passes in that order and, per position, its group's positions.
+fn schedule(
+    declared: &[u32],
+    queues: &[u8],
+    edges: &[(u32, u32)],
+) -> (Vec<u32>, Vec<core::ops::Range<u32>>) {
+    let n = declared.len();
+    let mut succs: Vec<SmallVec<u32, 4>> = (0..n).map(|_| SmallVec::new()).collect();
+    for &(a, b) in edges {
+        succs[a as usize].push(b);
+    }
+    // Edges go from earlier to later declarations.
+    let mut height = alloc::vec![0u32; n];
+    for p in (0..n).rev() {
+        height[p] = succs[p]
+            .iter()
+            .map(|&s| height[s as usize] + 1)
+            .max()
+            .unwrap_or(0);
+    }
+    let top = height.iter().copied().max().unwrap_or(0);
+    let key = |p: u32| (top - height[p as usize], queues[p as usize]);
+    let mut order: Vec<u32> = (0..n as u32).collect();
+    order.sort_by_key(|&p| (key(p), p));
+    let mut groups = alloc::vec![0..0; n];
+    let mut start = 0;
+    for i in 1..=n {
+        if i == n || key(order[i]) != key(order[start]) {
+            groups[start..i].fill(start as u32..i as u32);
+            start = i;
+        }
+    }
+    (
+        order.iter().map(|&p| declared[p as usize]).collect(),
+        groups,
+    )
 }
 
 /// Flat indices of every texture's subresources: layer-major, `base[t] + layer * mips + mip`.
@@ -361,6 +428,8 @@ struct Track<S> {
     /// barrier on that queue that made the write visible to them (which later readers widen).
     reads: [Option<(S, Option<u32>)>; 3],
     touched: bool,
+    /// The last write was unordered: the next unordered write in its state needs no barrier.
+    unordered: bool,
 }
 
 impl<S: SyncState> Track<S> {
@@ -371,6 +440,7 @@ impl<S: SyncState> Track<S> {
             writer: None,
             reads: [None; 3],
             touched: false,
+            unordered: false,
         };
         let defined = initial.layout() != Layout::Undefined || !S::HAS_LAYOUT;
         let nothing = initial.stage().is_empty() && initial.access().is_empty();
@@ -439,12 +509,15 @@ enum Step<S> {
 }
 
 /// One access on queue `q` of a tracked subresource; `fresh` is the stage a transient's first
-/// use waits for (the last uses of the memory's previous holders). Updates the track.
+/// use waits for (the last uses of the memory's previous holders); `unordered` for an unordered
+/// write. Updates the track.
+#[allow(clippy::too_many_arguments, reason = "one access")]
 fn step<S: SyncState>(
     track: &mut Track<S>,
     q: u8,
     want: S,
     effect: Effect,
+    unordered: bool,
     fresh: Option<Stage>,
     next_raw: u32,
 ) -> Step<S> {
@@ -472,6 +545,15 @@ fn step<S: SyncState>(
                 matches!(out, Step::Barrier { .. }).then_some(next_raw),
             ));
         }
+    } else if unordered
+        && effect.writes()
+        && track.unordered
+        && track.writer == Some((q, want))
+        && track.reads.iter().all(Option::is_none)
+        && (!S::HAS_LAYOUT || want.layout() == track.layout)
+    {
+        // Joins the run of unordered writes before it.
+        out = Step::Nothing;
     } else if effect.writes()
         || (S::HAS_LAYOUT && (want.layout() != track.layout || track.layout == Layout::Undefined))
     {
@@ -552,12 +634,18 @@ fn step<S: SyncState>(
         (false, _) => track.reads[q as usize].map_or(want, |(s, _)| s),
         _ => want,
     };
+    if effect.writes() {
+        track.unordered = unordered;
+    }
     track.layout = track.state.layout();
     track.touched = true;
     out
 }
 
 /// Walks the retained passes in order, tracking each subresource's state.
+/// Per pass, its ranges of texture and of buffer transitions.
+type PassBarriers = Vec<(core::ops::Range<u32>, core::ops::Range<u32>)>;
+
 struct States<'a, 'g, B: Backend> {
     g: &'a RenderGraph<'g, B>,
     subs: &'a SubIndex,
@@ -646,6 +734,7 @@ impl<'a, 'g, B: Backend> States<'a, 'g, B> {
                         q,
                         want,
                         rec.effect,
+                        rec.unordered,
                         if fresh { pred_stage } else { None },
                         next,
                     );
@@ -659,7 +748,15 @@ impl<'a, 'g, B: Backend> States<'a, 'g, B> {
                     self.g.buffers[b as usize].import.is_none() && !self.buf[b as usize].touched;
                 let pred = fresh.then(|| self.alias_stage(Res::Buffer(b), q));
                 let next = self.raw_buf.len() as u32;
-                let s = step(&mut self.buf[b as usize], q, want, rec.effect, pred, next);
+                let s = step(
+                    &mut self.buf[b as usize],
+                    q,
+                    want,
+                    rec.effect,
+                    rec.unordered,
+                    pred,
+                    next,
+                );
                 let after = self.buf[b as usize].state;
                 record(&mut self.raw_buf, s, pos, b, b, want, after, fresh);
             }
@@ -717,14 +814,21 @@ impl<'a, 'g, B: Backend> States<'a, 'g, B> {
     /// Merges per-subresource barriers into ranges, per pass. Returns the barriers and each
     /// pass's texture and buffer ranges.
     #[allow(clippy::type_complexity)]
+    /// Moves each pass's barriers to the pass `to[pass]` (an earlier one or itself, never
+    /// decreasing with the pass), so a group's barriers come before all of it.
+    fn hoist(&mut self, to: &[u32]) {
+        for raw in &mut self.raw_tex {
+            raw.pass = to[raw.pass as usize];
+        }
+        for raw in &mut self.raw_buf {
+            raw.pass = to[raw.pass as usize];
+        }
+    }
+
     fn coalesce(
         &mut self,
         passes: usize,
-    ) -> (
-        Vec<TextureTransition>,
-        Vec<BufferTransition>,
-        Vec<(core::ops::Range<u32>, core::ops::Range<u32>)>,
-    ) {
+    ) -> (Vec<TextureTransition>, Vec<BufferTransition>, PassBarriers) {
         for raw in &mut self.raw_tex {
             if raw.first_use {
                 raw.undefined_from = match self.tex[raw.sub as usize].state.layout {

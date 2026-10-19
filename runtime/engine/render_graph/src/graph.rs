@@ -94,6 +94,9 @@ pub(crate) struct AccessRec {
     pub bytes: (u64, u64),
     pub usage: Use,
     pub effect: Effect,
+    /// A write that commutes with the next pass's unordered write of the same use: no order
+    /// between them ([`PassBuilder::write_buffer_unordered`]).
+    pub unordered: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -178,6 +181,8 @@ pub struct RenderGraph<'g, B: Backend = Rhi> {
     pub(crate) invalidated: Vec<u64, &'g Arena>,
     /// Runs every pass on the graphics queue, whatever queues the device has.
     pub(crate) single_queue: bool,
+    /// Runs passes that need no order between them together (0007 §4.8).
+    pub(crate) overlap: bool,
 }
 
 impl<'g, B: Backend> RenderGraph<'g, B> {
@@ -201,6 +206,7 @@ impl<'g, B: Backend> RenderGraph<'g, B> {
             retained: Vec::new_in(arena),
             invalidated: Vec::new_in(arena),
             single_queue: false,
+            overlap: false,
         }
     }
 
@@ -216,6 +222,13 @@ impl<'g, B: Backend> RenderGraph<'g, B> {
     /// the work spread over queues, or to rule the other queues out.
     pub fn set_single_queue(&mut self, single: bool) {
         self.single_queue = single;
+    }
+
+    /// Lets the graph reorder passes so that those needing no order between them run together,
+    /// with no barrier between (0007 §4.8). Faster when the frame has independent chains of
+    /// small passes, but what overlapping passes use cannot share memory: off by default.
+    pub fn set_overlap(&mut self, overlap: bool) {
+        self.overlap = overlap;
     }
 
     /// The frame this graph is for: its state table's.
@@ -557,6 +570,40 @@ impl<'g, B: Backend> PassBuilder<'_, 'g, B> {
         self.buffer_access(h, Use::Shader(access), Effect::Modify)
     }
 
+    /// [`write_buffer`](Self::write_buffer) for writes that commute with other passes' unordered
+    /// writes of the same `access`: atomics, or stores whose order does not matter (each writes
+    /// the same value, or its own part). Passes whose unordered writes follow one another need
+    /// no order between them, so the graph may run them together, with no barrier between
+    /// (0007 §4.8). Accesses in between order them as usual.
+    pub fn write_buffer_unordered(
+        &mut self,
+        h: BufferHandle<'g>,
+        access: Access,
+    ) -> BufferHandle<'g> {
+        let out = self.write_buffer(h, access);
+        self.mark_unordered();
+        out
+    }
+
+    /// [`write_buffer_unordered`](Self::write_buffer_unordered) for a texture.
+    pub fn write_texture_unordered(
+        &mut self,
+        h: TextureHandle<'g>,
+        access: Access,
+    ) -> TextureHandle<'g> {
+        let out = self.write_texture(h, access);
+        self.mark_unordered();
+        out
+    }
+
+    fn mark_unordered(&mut self) {
+        self.graph
+            .accesses
+            .last_mut()
+            .expect("just declared")
+            .unordered = true;
+    }
+
     /// The next color attachment: one mip and layer of `h`. Returns the next version.
     pub fn color(
         &mut self,
@@ -786,6 +833,7 @@ impl<'g, B: Backend> PassBuilder<'_, 'g, B> {
             bytes: (0, u64::MAX),
             usage,
             effect,
+            unordered: false,
         });
         if effect.writes() {
             TextureHandle::new(h.index, h.version + 1)
@@ -844,6 +892,7 @@ impl<'g, B: Backend> PassBuilder<'_, 'g, B> {
             bytes: (h.offset, size),
             usage,
             effect,
+            unordered: false,
         });
         if effect.writes() {
             BufferHandle::new(h.index, h.version + 1)

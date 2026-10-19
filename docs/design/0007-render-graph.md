@@ -216,6 +216,17 @@ let lum = g.add_compute("Luminance", |b| {
 - 跨队列的同步点必然是段边界。
 - 每段是一个 job、一个 command list。
 
+### 4.8 重叠调度（2026-10-18）
+
+一串很小的 pass 每个之间都隔着 barrier，GPU 大部分时间在等上一个 pass 排空。几条互不依赖的链按声明顺序一条接一条执行时（比如 VSM 的 14 级，每级 cull → 光栅），本来可以并行的 dispatch 被串成一长串。`RenderGraph::set_overlap(true)`（`FrameContextDesc::overlap`）让 graph 重排：
+
+- **按层级排序**：剔除后，每个 pass 的层级 = 从帧尾倒数，依赖它的最长链的长度（尽量晚，ALAP），按（层级、队列、声明顺序）稳定排序。同一层级、同一队列的 pass 是一个**组**：组内互不依赖。用 ALAP 而不是 ASAP，是为了不把无依赖的生产者（清除、重置）挪到帧首，拉长瞬态资源的生命周期。
+- **barrier 提前**：组内每个 pass 的 barrier 都挪到组内第一个 pass 之前一次发出（不越过所在的段，跨队列的等待仍在需要它的 pass 之前），所以组内的 dispatch 之间没有 barrier，可以在 GPU 上并行。barrier 的源都在更早的层级，提前是安全的；两个读改 layout 的情况本来就有依赖边（§4.2），不会落在同一组。
+- **内存**：一组 pass 可能同时执行，它们用到的瞬态资源的生命周期扩到整个组，组内不互相别名。代价是峰值内存变大：两条声明顺序上一前一后、可以共用一块内存的链，重叠以后同时存活。所以默认关闭；游戏的帧（`marlin_framework::run`，以及测试用的 `Offscreen`）打开。
+- **无序写**（`PassBuilder::write_buffer_unordered` / `write_texture_unordered`）：原子操作或顺序无关的写（写同样的值、各写各的部分）。同一资源上紧接着的几个同 use 的无序写之间没有依赖边，也没有 barrier；之后的访问依赖它们全部。中间夹着其他访问就照常排序。
+- **和手动合并的区别**：手动把几级的 dispatch 放进一个 pass（`Visibility::add_shadow_views`），GPU 上的效果相同，但 CPU 上只有一个 pass 的开销（闭包、barrier 推导、两个 timestamp、调试标记）；自动的仍是一级一个 pass，每个约 2–3 µs。不关心这点开销时，按级声明、交给重叠调度即可。
+- 不开时，pass 按声明顺序执行，和以前完全一样。
+
 ## 5. 编译缓存
 
 ### 5.1 拓扑键

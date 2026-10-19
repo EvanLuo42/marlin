@@ -53,6 +53,8 @@ pub struct FrameContextDesc {
     pub upload_chunk: u64,
     /// Run every pass on the graphics queue ([`RenderGraph::set_single_queue`]).
     pub single_queue: bool,
+    /// Let independent passes run together ([`RenderGraph::set_overlap`]).
+    pub overlap: bool,
     /// Where the passes' GPU times go, for the profiler ([`marlin_profile::set_gpu_timings`]).
     pub timeline: Option<&'static GpuTimeline>,
 }
@@ -63,6 +65,7 @@ impl Default for FrameContextDesc {
             arena_capacity: 256 << 20,
             upload_chunk: 4 << 20,
             single_queue: false,
+            overlap: false,
             timeline: None,
         }
     }
@@ -207,9 +210,16 @@ struct Cached {
     frame: u64,
 }
 
+/// The smallest readback buffer; larger ones are powers of two, so recycled ones fit.
+const READBACK_MIN: u64 = 256;
+/// Most taken readback buffers kept for reuse.
+const READBACK_POOL: usize = 64;
+
 struct PendingReadback {
     ticket: Readback,
     buffer: Buffer,
+    /// Bytes the readback holds: the buffer may be larger (it is recycled).
+    size: usize,
     /// Fence value after which it holds the data.
     value: u64,
     /// Texture rows: bytes per row, row pitch, rows.
@@ -236,8 +246,11 @@ pub struct FrameContext {
     /// Objects to drop once the fence reaches the value.
     retired: Vec<(u64, Box<dyn Send>)>,
     readbacks: Vec<PendingReadback>,
+    /// Readback buffers whose data was taken, by size (powers of two), for the next ones.
+    free_readbacks: Vec<Buffer>,
     stats: Option<FrameStats>,
     single_queue: bool,
+    overlap: bool,
     /// Recording time per pass name (hash), microseconds, smoothed: how passes are split into
     /// command lists.
     costs: HashMap<u64, u32>,
@@ -293,8 +306,10 @@ impl FrameContext {
             retained: HashMap::new(),
             retired: Vec::new(),
             readbacks: Vec::new(),
+            free_readbacks: Vec::new(),
             stats: None,
             single_queue: desc.single_queue,
+            overlap: desc.overlap,
             costs: HashMap::new(),
             timeline: desc.timeline,
             gpu_times: Vec::new(),
@@ -374,8 +389,10 @@ impl FrameContext {
             retained,
             retired,
             readbacks,
+            free_readbacks,
             stats,
             single_queue,
+            overlap,
             costs,
             timeline,
             gpu_times,
@@ -401,6 +418,7 @@ impl FrameContext {
 
         let mut g = RenderGraph::with_states(arena, states);
         g.set_single_queue(*single_queue);
+        g.set_overlap(*overlap);
         let out = {
             marlin_profile::profile_scope!("Declare");
             declare(&mut g, &info)
@@ -630,15 +648,26 @@ impl FrameContext {
                 }
                 _ => continue,
             };
-            let buffer = device.create_buffer(&RhiBufferDesc {
-                size: size.max(4),
-                usage: BufferUsage::COPY_DST,
-                memory: MemoryLocation::Readback,
-            })?;
-            buffer.set_name("RenderGraphReadback");
+            // A taken buffer of the size class, or a new one: a new one each frame costs a
+            // driver allocation.
+            let class = size.max(READBACK_MIN).next_power_of_two();
+            let buffer = match free_readbacks.iter().position(|b| b.size() == class) {
+                Some(i) => free_readbacks.swap_remove(i),
+                None => {
+                    let buffer = device.create_buffer(&RhiBufferDesc {
+                        size: class,
+                        usage: BufferUsage::COPY_DST,
+                        memory: MemoryLocation::Readback,
+                    })?;
+                    buffer.set_name("RenderGraphReadback");
+                    created += 1;
+                    buffer
+                }
+            };
             readbacks.push(PendingReadback {
                 ticket: Readback { frame, index },
                 buffer,
+                size: size as usize,
                 value: *next_value,
                 rows,
             });
@@ -970,11 +999,11 @@ impl FrameContext {
         }
         let r = self.readbacks.swap_remove(i);
         let base = r.buffer.mapped().expect("readback memory is mapped");
-        let size = r.buffer.size() as usize;
-        // SAFETY: the buffer is mapped for its life, `size` bytes long, and the GPU finished
-        // writing it (the fence passed its value).
+        let size = r.size;
+        // SAFETY: the buffer is mapped for its life, at least `size` bytes long, and the GPU
+        // finished writing it (the fence passed its value).
         let bytes = unsafe { core::slice::from_raw_parts(base.as_ptr(), size) };
-        Some(match r.rows {
+        let out = match r.rows {
             None => bytes.to_vec(),
             Some((row_bytes, pitch, rows)) => {
                 let mut out = Vec::with_capacity(row_bytes as usize * rows as usize);
@@ -984,7 +1013,12 @@ impl FrameContext {
                 }
                 out
             }
-        })
+        };
+        // The GPU is done with it: the next readback of its size takes it.
+        if self.free_readbacks.len() < READBACK_POOL {
+            self.free_readbacks.push(r.buffer);
+        }
+        Some(out)
     }
 
     /// As [`readback`](Self::readback), waiting for the GPU.

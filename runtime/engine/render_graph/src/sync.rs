@@ -7,6 +7,7 @@ use core::ops::Range;
 
 use marlin_rhi::{Layout, QueueType};
 
+use crate::access::Use;
 use crate::backend::{Backend, Queues};
 use crate::graph::{AccessRec, RenderGraph, Res};
 
@@ -41,7 +42,9 @@ pub(crate) const fn resolve(asked: QueueType, queues: Queues) -> QueueType {
 
 /// Dependencies between retained passes (positions), from earlier to later, sorted and unique:
 /// read after write, write after read, write after write, and reads that change a texture's
-/// layout after the reads before them (the transition writes the texture).
+/// layout after the reads before them (the transition writes the texture). Unordered writes of
+/// the same use that follow one another (no access between) have no edges between them: what
+/// comes after depends on all of them.
 pub(crate) fn dependencies<B: Backend>(
     g: &RenderGraph<'_, B>,
     retained: &[u32],
@@ -49,12 +52,15 @@ pub(crate) fn dependencies<B: Backend>(
     total: u32,
 ) -> Vec<(u32, u32)> {
     struct Sub {
-        writer: Option<u32>,
+        /// The last write, or the run of unordered writes of the use `unordered`.
+        writers: Vec<u32>,
+        unordered: Option<Use>,
         readers: Vec<u32>,
         layout: Layout,
     }
     let fresh = || Sub {
-        writer: None,
+        writers: Vec::new(),
+        unordered: None,
         readers: Vec::new(),
         layout: Layout::Undefined,
     };
@@ -75,12 +81,19 @@ pub(crate) fn dependencies<B: Backend>(
     let mut buf: Vec<Sub> = (0..g.buffers.len()).map(|_| fresh()).collect();
     let mut edges = Vec::new();
     let mut step = |sub: &mut Sub, pos: u32, rec: &AccessRec, layout: Option<Layout>| {
-        if let Some(w) = sub.writer
-            && w != pos
-        {
-            edges.push((w, pos));
-        }
         let relayout = layout.is_some_and(|l| l != sub.layout);
+        let joins = rec.effect.writes()
+            && rec.unordered
+            && sub.unordered == Some(rec.usage)
+            && sub.readers.is_empty()
+            && !relayout;
+        if !joins {
+            for &w in &sub.writers {
+                if w != pos {
+                    edges.push((w, pos));
+                }
+            }
+        }
         if rec.effect.writes() || relayout {
             for &r in &sub.readers {
                 if r != pos {
@@ -90,7 +103,13 @@ pub(crate) fn dependencies<B: Backend>(
             sub.readers.clear();
         }
         if rec.effect.writes() {
-            sub.writer = Some(pos);
+            if !joins {
+                sub.writers.clear();
+            }
+            if !sub.writers.contains(&pos) {
+                sub.writers.push(pos);
+            }
+            sub.unordered = rec.unordered.then_some(rec.usage);
         } else if sub.readers.last() != Some(&pos) {
             sub.readers.push(pos);
         }

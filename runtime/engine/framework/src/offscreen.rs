@@ -23,7 +23,14 @@ impl Offscreen {
         Ok(Self {
             width,
             height,
-            frame: FrameContext::new(device, &FrameContextDesc::default())?,
+            // As the game runs its frames.
+            frame: FrameContext::new(
+                device,
+                &FrameContextDesc {
+                    overlap: true,
+                    ..FrameContextDesc::default()
+                },
+            )?,
         })
     }
 

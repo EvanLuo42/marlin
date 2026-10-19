@@ -80,11 +80,7 @@ pub fn run(boot: &Boot, title: &str) -> Result<(), RunError> {
         )
     }?;
     let mut vsync = R_VSYNC.get();
-    swapchain.set_present_mode(if vsync {
-        PresentMode::Fifo
-    } else {
-        PresentMode::Immediate
-    });
+    set_vsync(&mut swapchain, vsync);
     // The passes' GPU times, for the profiler.
     static TIMELINE: GpuTimeline = GpuTimeline::new();
     marlin_profile::set_gpu_timings(Some(&TIMELINE));
@@ -92,6 +88,8 @@ pub fn run(boot: &Boot, title: &str) -> Result<(), RunError> {
         &device,
         &FrameContextDesc {
             timeline: Some(&TIMELINE),
+            // Independent passes run side by side (0007 §4.8).
+            overlap: true,
             ..FrameContextDesc::default()
         },
     )?;
@@ -151,11 +149,7 @@ pub fn run(boot: &Boot, title: &str) -> Result<(), RunError> {
         }
         if state.key_pressed(Key::V) {
             vsync = !vsync;
-            swapchain.set_present_mode(if vsync {
-                PresentMode::Fifo
-            } else {
-                PresentMode::Immediate
-            });
+            set_vsync(&mut swapchain, vsync);
         }
         let now = Instant::now();
         let dt = now.duration_since(last).as_secs_f32().min(0.1);
@@ -342,4 +336,17 @@ fn log_stats(fps: f32) {
             }
         }
     });
+}
+
+/// Presents at vertical blank or as soon as a frame is done. Without vsync a frame more may be
+/// queued: with two, the GPU idles while the CPU waits for the presentation engine to take the
+/// last one.
+fn set_vsync(swapchain: &mut Swapchain, vsync: bool) {
+    if vsync {
+        swapchain.set_present_mode(PresentMode::Fifo);
+        swapchain.set_max_frame_latency(2);
+    } else {
+        swapchain.set_present_mode(PresentMode::Immediate);
+        swapchain.set_max_frame_latency(3);
+    }
 }
