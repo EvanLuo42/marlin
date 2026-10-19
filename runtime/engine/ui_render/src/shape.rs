@@ -166,6 +166,21 @@ pub fn bounds(c: &CommandWords, s: &Scene<'_>, width: u32, height: u32) -> Bound
             ([x0 - e, y0 - e, x1 + e, y1 + e], None)
         }
         Some(Kind::Image) => ([w(p, 0), w(p, 1), w(p, 2), w(p, 3)], None),
+        Some(Kind::Path) => {
+            // Flattened onto the screen when recorded.
+            let bbox = pixels(
+                w(p, 5) - 0.5,
+                w(p, 6) - 0.5,
+                w(p, 7) + 0.5,
+                w(p, 8) + 0.5,
+                width,
+                height,
+            );
+            return Bounds {
+                bbox: intersect(bbox, clip_box),
+                interior: none,
+            };
+        }
         Some(Kind::Effect) => {
             // On the screen: the members' box, moved by the shadow's offset and grown by its
             // blur or the glow's radius.
@@ -513,6 +528,7 @@ fn shade_unclipped(
         (d, pixels_per_unit(g, x, y, d, dist))
     };
     match Kind::from_word(c[0]) {
+        Some(Kind::Path) => scale4(paint, path_coverage(p, x, y)),
         Some(Kind::Effect) => effect(c, s, paint, x, y),
         Some(Kind::Rect) => {
             let (d, k) = measure(&|q| rect_distance(p, q[0], q[1]));
@@ -646,6 +662,16 @@ fn member_distance(c: &CommandWords, s: &Scene<'_>, x: f32, y: f32) -> f32 {
                 0.0,
             );
         }
+        Some(Kind::Path) => {
+            let (x0, y0, x1, y1) = (w(p, 5), w(p, 6), w(p, 7), w(p, 8));
+            return round_box(
+                x - (x0 + x1) * 0.5,
+                y - (y0 + y1) * 0.5,
+                (x1 - x0) * 0.5,
+                (y1 - y0) * 0.5,
+                0.0,
+            );
+        }
         Some(Kind::Effect) | None => return f32::MAX,
     };
     d * k
@@ -700,4 +726,30 @@ fn effect(c: &CommandWords, s: &Scene<'_>, paint: [f32; 4], x: f32, y: f32) -> [
         }
     };
     scale4(paint, a)
+}
+
+/// A path's coverage of the pixel whose center is `(x, y)`: the signed area its band's segments
+/// sweep to the pixel's right, by its fill rule.
+pub fn path_coverage(p: &[u32], x: f32, y: f32) -> f32 {
+    let (px, py) = (floor(x), floor(y));
+    let band = floor((py - w(p, 2)) / crate::path::BAND);
+    if band < 0.0 || band >= p[3] as f32 {
+        return 0.0;
+    }
+    let b = 9 + 2 * band as usize;
+    let (list, count) = (p[b] as usize, p[b + 1] as usize);
+    let segs = p[1] as usize - 4 * p[4] as usize;
+    let mut acc = 0.0;
+    for &i in &p[list..list + count] {
+        let at = segs + 4 * i as usize;
+        let s = [w(p, at), w(p, at + 1), w(p, at + 2), w(p, at + 3)];
+        acc += crate::path::cell_area(s, px, py);
+    }
+    let a = acc.abs();
+    if p[0] == 0 {
+        a.min(1.0)
+    } else {
+        let m = a - 2.0 * floor(a * 0.5);
+        m.min(2.0 - m)
+    }
 }

@@ -214,7 +214,7 @@ pub fn resolved(c: &marlin_ui_render::command::Chunk) -> Vec<Resolved> {
         .map(|cmd| {
             let kind = Kind::from_word(cmd[0]).unwrap();
             let at = cmd[3] as usize;
-            let payload = c.payload[at..at + kind.payload_words() as usize].to_vec();
+            let payload = c.payload[at..at + kind.payload_len(&c.payload[at..])].to_vec();
             // Without the shadow's member range (words 15, 16): positions, not content.
             let mut group = c.groups[group_of(cmd) as usize].to_vec();
             group[15] = 0;

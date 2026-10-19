@@ -9,6 +9,7 @@ mod support;
 
 mod binning;
 mod groups;
+mod paths;
 mod shading;
 
 use marlin_gpu_test_support::{hardware_device, shader};

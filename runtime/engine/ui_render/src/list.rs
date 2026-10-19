@@ -28,8 +28,9 @@ use crate::command::{
     CLIP_WORDS, Chunk, ClipWords, DEFAULT_SAMPLER, GROUP_AXIS_ALIGNED, GROUP_NONUNIFORM,
     GROUP_WORDS, GroupWords, IMAGE_SRGB_PREMULTIPLIED, Kind, OPAQUE, f,
 };
+use crate::path::{FillRule, Path};
 use crate::style::{
-    Affine2, Color, Corners, GroupDesc, ImageColor, ImageSource, ImageStyle, LineCap, Rect,
+    Affine2, Color, Corners, GroupDesc, ImageColor, ImageSource, ImageStyle, LineCap, Paint, Rect,
     RectStyle, ShapeStyle, StrokeStyle,
 };
 
@@ -295,6 +296,19 @@ fn translate(chunk: &mut Chunk, dx: f32, dy: f32) {
                 for k in 0..3 {
                     mv(&mut p[2 * k], dx);
                     mv(&mut p[2 * k + 1], dy);
+                }
+            }
+            Some(Kind::Path) => {
+                mv(&mut p[2], dy);
+                for (i, d) in [(5, dx), (6, dy), (7, dx), (8, dy)] {
+                    mv(&mut p[i], d);
+                }
+                let (len, segs) = (p[1] as usize, p[4] as usize);
+                for s in 0..segs {
+                    let at = len - 4 * segs + 4 * s;
+                    for (k, d) in [(0, dx), (1, dy), (2, dx), (3, dy)] {
+                        mv(&mut p[at + k], d);
+                    }
                 }
             }
             _ => {}
@@ -758,6 +772,28 @@ impl Painter<'_> {
         });
     }
 
+    /// Fills `path` (logical pixels in the current space) by `rule` (§4.2). It is flattened onto
+    /// the screen here, so it keeps the group's opacity and clip but not the group itself.
+    pub fn fill_path(&mut self, path: &Path, rule: FillRule, paint: &Paint) {
+        let segs = path.flatten(self.to_screen());
+        let Some(payload) = crate::path::payload(&segs, rule) else {
+            return;
+        };
+        let scope = self.list.scope();
+        let clip = self.list.clip();
+        let Paint::Solid(mut color) = *paint;
+        color.a = (f32::from(color.a) * scope.opacity + 0.5) as u8;
+        if !self.list.effects.is_empty() {
+            let b = |i: usize| f32::from_bits(payload[i]);
+            self.list
+                .union_box(Affine2::IDENTITY, [b(5), b(6), b(7), b(8)]);
+        }
+        let own = &mut self.list.own;
+        let paint = own.solid(color);
+        own.push(Kind::Path, 0, 0, clip, paint, &payload);
+        self.list.extend_own();
+    }
+
     /// A texture in `r`, through `style`'s UV rectangle, tint and corners.
     pub fn image(&mut self, r: Rect, src: ImageSource, style: &ImageStyle) {
         let ImageSource::Texture {
@@ -863,7 +899,7 @@ fn local_box(kind: Kind, p: &[u32]) -> Option<[f32; 4]> {
             ]
         }
         Kind::Image => [w(0), w(1), w(2), w(3)],
-        Kind::Glyph | Kind::Effect => return None,
+        Kind::Glyph | Kind::Effect | Kind::Path => return None,
     })
 }
 

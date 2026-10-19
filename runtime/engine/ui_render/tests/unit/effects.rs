@@ -198,13 +198,7 @@ fn effects_are_listed_wherever_they_have_ink() {
     for y in 0..h {
         for x in 0..w {
             for (i, c) in chunk.commands[..2].iter().enumerate() {
-                let a = shade(
-                    c,
-                    &scene,
-                    &NoTextures,
-                    x as f32 + 0.5,
-                    y as f32 + 0.5,
-                )[3];
+                let a = shade(c, &scene, &NoTextures, x as f32 + 0.5, y as f32 + 0.5)[3];
                 // Gaussian tails beyond 3σ are below a level of 8-bit alpha.
                 if a > 1.0 / 512.0 {
                     let tile = &tiles[((y / 16) * tx + x / 16) as usize];

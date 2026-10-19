@@ -371,3 +371,9 @@ impl Default for GroupDesc {
         }
     }
 }
+
+/// What fills a path (§2.1).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Paint {
+    Solid(Color),
+}

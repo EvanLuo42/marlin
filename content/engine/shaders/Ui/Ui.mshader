@@ -52,6 +52,10 @@ const uint KindTriangle = 4;
 const uint KindGlyph = 5;
 const uint KindImage = 6;
 const uint KindEffect = 7;
+const uint KindPath = 8;
+
+/// Rows of pixels a path band holds (`marlin_ui_render::path::BAND`).
+const float PathBand = 16;
 
 /// Members a group effect follows exactly (`marlin_ui_render::list::MAX_EFFECT_MEMBERS`).
 const uint MaxEffectMembers = 16;
@@ -213,7 +217,12 @@ uint4 CommandBounds(
     }
     int4 box = int4(0, 0, 0, 0);
     int4 interior = int4(0, 0, 0, 0);
-    if (kind == KindEffect)
+    if (kind == KindPath)
+    {
+        // Flattened onto the screen when recorded.
+        box = Intersect(Pixels(P(p, at + 5) - 0.5, P(p, at + 6) - 0.5, P(p, at + 7) + 0.5, P(p, at + 8) + 0.5, f), clipBox);
+    }
+    else if (kind == KindEffect)
     {
         // On the screen: the members' box, moved by the shadow's offset and grown by its blur
         // or the glow's radius.
@@ -621,6 +630,51 @@ public struct FineArgs
     public StorageTexture2D<float4> Output;
 }
 
+/// The signed area segment `s` sweeps to the right inside the pixel cell at `cell` (its top-left
+/// corner).
+float CellArea(float4 s, float2 cell)
+{
+    if (s.y == s.w)
+        return 0;
+    float dir = s.w > s.y ? 1.0 : -1.0;
+    float ya = Max(Min(s.y, s.w), cell.y);
+    float yb = Min(Max(s.y, s.w), cell.y + 1);
+    if (yb <= ya)
+        return 0;
+    float dxdy = (s.z - s.x) / (s.w - s.y);
+    float ta = s.x + (ya - s.y) * dxdy - cell.x;
+    float tb = s.x + (yb - s.y) * dxdy - cell.x;
+    float ga = ta <= 0 ? ta : (ta >= 1 ? 0.5 : ta - ta * ta * 0.5);
+    float gb = tb <= 0 ? tb : (tb >= 1 ? 0.5 : tb - tb * tb * 0.5);
+    float avg = Abs(tb - ta) < 0.000001 ? Clamp(1 - ta, 0, 1) : (gb - ga) / (tb - ta);
+    return dir * avg * (yb - ya);
+}
+
+/// A path's coverage of the pixel centered at `px`: the signed area its band's segments sweep to
+/// the pixel's right, by its fill rule.
+float PathCoverage(ReadOnlyBuffer<uint> p, uint at, float2 px)
+{
+    float2 cell = float2(Floor(px.x), Floor(px.y));
+    float band = Floor((cell.y - P(p, at + 2)) / PathBand);
+    if (band < 0 || band >= (float)p[at + 3])
+        return 0;
+    uint b = at + 9 + 2 * (uint)band;
+    uint list = at + p[b];
+    uint count = p[b + 1];
+    uint segs = at + p[at + 1] - 4 * p[at + 4];
+    float acc = 0;
+    for (uint k = 0; k < count; k++)
+    {
+        uint s = segs + 4 * p[list + k];
+        acc = acc + CellArea(float4(P(p, s), P(p, s + 1), P(p, s + 2), P(p, s + 3)), cell);
+    }
+    float a = Abs(acc);
+    if (p[at] == 0)
+        return Min(a, 1);
+    float m = a - 2 * Floor(a * 0.5);
+    return Min(m, 2 - m);
+}
+
 /// `erf(x)`, Abramowitz and Stegun 7.1.26.
 float Erf(float x)
 {
@@ -636,8 +690,16 @@ float MemberDistance(uint4 c, in FineArgs a, float2 px)
     uint kind = c.x & 63;
     uint at = c.w;
     ReadOnlyBuffer<uint> p = a.Payload;
-    if (kind == KindEffect || kind < KindRect || kind > KindEffect)
+    if (kind == KindEffect || kind < KindRect || kind > KindPath)
         return 3.4e38;
+    if (kind == KindPath)
+    {
+        float x0 = P(p, at + 5);
+        float y0 = P(p, at + 6);
+        float x1 = P(p, at + 7);
+        float y1 = P(p, at + 8);
+        return RoundBox(float2(px.x - (x0 + x1) * 0.5, px.y - (y0 + y1) * 0.5), float2((x1 - x0) * 0.5, (y1 - y0) * 0.5), 0);
+    }
     if (kind == KindGlyph)
     {
         uint4 gr = a.Glyphs[p[at + 2]];
@@ -717,6 +779,8 @@ float4 ShadeUnclipped(uint4 c, in FineArgs a, float2 px)
     ReadOnlyBuffer<uint> p = a.Payload;
     UiPaint paint = a.Paints[c.z];
     float4 color = Premultiplied(paint.Color);
+    if (kind == KindPath)
+        return color * PathCoverage(p, at, px);
     if (kind == KindEffect)
         return Effect(c, a, color, px);
     if (kind == KindGlyph)

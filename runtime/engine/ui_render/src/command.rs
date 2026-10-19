@@ -26,6 +26,7 @@
 //! | `Glyph` | pen x, pen y (whole pixels, `i32`), glyph id |
 //! | `Image` | x0 y0 x1 y1, u0 v0 u1 v1, texture width \| height << 16, radii ×4 |
 //! | `Effect` | 0 shadow / 1 glow, 0, the members' screen box x0 y0 x1 y1 (`f32`), and the radius of the box used instead of the members' shape (`f32`, negative: their shape) |
+//! | `Path` | fill rule (0 non-zero, 1 even-odd), the payload's length, band origin y (`f32`), bands, segments, screen box x0 y0 x1 y1 (`f32`); per 16-pixel band from the origin, the offset (from the payload's start) and length of its segment list; the lists; the segments as x0 y0 x1 y1 (`f32`, screen pixels) |
 
 use alloc::vec::Vec;
 
@@ -60,6 +61,8 @@ pub enum Kind {
     Image = 6,
     /// A group's shadow or glow, before its members (§4.3).
     Effect = 7,
+    /// A filled path (§4.2).
+    Path = 8,
 }
 
 impl Kind {
@@ -72,11 +75,20 @@ impl Kind {
             5 => Self::Glyph,
             6 => Self::Image,
             7 => Self::Effect,
+            8 => Self::Path,
             _ => return None,
         })
     }
 
-    /// Payload words.
+    /// Payload words: a path's are its word 1.
+    pub fn payload_len(self, payload: &[u32]) -> usize {
+        match self {
+            Self::Path => payload[1] as usize,
+            k => k.payload_words() as usize,
+        }
+    }
+
+    /// Payload words, for every kind but paths (0).
     pub const fn payload_words(self) -> u32 {
         match self {
             Self::Rect => 10,
@@ -86,6 +98,7 @@ impl Kind {
             Self::Glyph => 3,
             Self::Image => 13,
             Self::Effect => 7,
+            Self::Path => 0,
         }
     }
 }
@@ -233,7 +246,7 @@ impl Chunk {
         paint: u32,
         payload: &[u32],
     ) {
-        debug_assert_eq!(payload.len() as u32, kind.payload_words());
+        debug_assert_eq!(payload.len(), kind.payload_len(payload));
         self.commands.push([
             kind as u32 | flags | group << 16,
             clip,

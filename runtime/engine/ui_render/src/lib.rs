@@ -13,17 +13,19 @@ extern crate alloc;
 
 pub mod command;
 pub mod list;
+pub mod path;
 pub mod reference;
 pub mod renderer;
 pub mod shape;
 pub mod style;
 
 pub use list::{ChunkSlot, Painter, RetainedChunk, UiDrawList};
+pub use path::{FillRule, Path};
 pub use renderer::{
     UI_ENTRIES, UI_FORMAT, UI_PUSH_BYTES, UiFrameData, UiOutput, UiRenderer, UiRendererDesc,
     UiShaders,
 };
 pub use style::{
     Affine2, Color, Corners, Dash, Glow, GroupDesc, ImageColor, ImageSource, ImageStyle, LineCap,
-    Rect, RectStyle, Shadow, ShapeStyle, Stroke, StrokeStyle,
+    Paint, Rect, RectStyle, Shadow, ShapeStyle, Stroke, StrokeStyle,
 };
