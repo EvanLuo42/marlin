@@ -331,7 +331,7 @@ pub const RESOLVE: &str = "Marlin.Engine.Material.ResolvePixel";
 /// stages and the push constants marlin-ui-render sets.
 pub fn ui_shaders(library: &ShaderLibrary) -> Result<UiShaders<'_>, ShaderError> {
     use marlin_ui_render::{UI_ENTRIES, UI_PUSH_BYTES};
-    const STAGES: [Stage; 8] = [
+    const STAGES: [Stage; 9] = [
         Stage::Compute,
         Stage::Compute,
         Stage::Compute,
@@ -339,6 +339,7 @@ pub fn ui_shaders(library: &ShaderLibrary) -> Result<UiShaders<'_>, ShaderError>
         Stage::Compute,
         Stage::Vertex,
         Stage::Pixel,
+        Stage::Compute,
         Stage::Compute,
     ];
     let get = |i: usize| {
@@ -367,6 +368,7 @@ pub fn ui_shaders(library: &ShaderLibrary) -> Result<UiShaders<'_>, ShaderError>
         encode_vs: get(5)?,
         encode_ps: get(6)?,
         blur: get(7)?,
+        path_tiles: get(8)?,
     })
 }
 

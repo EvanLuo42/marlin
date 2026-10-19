@@ -3,6 +3,7 @@
 use marlin_gpu_test_support::{assert_image, hardware_device};
 use marlin_math::Vec2;
 use marlin_render_graph::{FrameContext, FrameContextDesc};
+use marlin_ui_render::path;
 use marlin_ui_render::{
     Affine2, Color, Corners, FillRule, GroupDesc, Paint, Painter, Path, Rect, RectStyle,
     UiDrawList, UiRendererDesc,
@@ -198,5 +199,86 @@ fn text_as_paths_shades_like_the_reference() {
     close(&gpu, &cpu, 3, 0.01);
     compare(&mut r, &mut frames, &list, 320, 200);
     assert_image!("ui_text_paths", &gpu);
+    finish(&mut frames, &r);
+}
+
+/// Every path tile the GPU builds, against the CPU's walk: the same backdrops, and the same
+/// segments with the same edge crossings (in any order). The walk compares products, not
+/// quotients, so the two decide every corner alike.
+#[test]
+fn path_tiles_match_the_reference() {
+    let mut r = renderer(&UiRendererDesc::default());
+    let mut frames = FrameContext::new(hardware_device(), &FrameContextDesc::default()).unwrap();
+    let mut list = UiDrawList::new(1.0);
+    {
+        let mut p = list.painter(&r.glyph_cache().ids);
+        scene(&mut p);
+        // Many long spikes, past the surface's left and top, and a star wound in a group.
+        let mut spikes = Path::new();
+        for k in 0..600 {
+            let a = k as f32 * core::f32::consts::TAU / 600.0;
+            let radius = if k % 2 == 0 { 230.0 } else { 40.0 };
+            let q = Vec2::new(90.0, 60.0) + Vec2::new(a.cos(), a.sin()) * radius;
+            if k == 0 {
+                spikes.move_to(q);
+            } else {
+                spikes.line_to(q);
+            }
+        }
+        spikes.close();
+        p.fill_path(
+            &spikes,
+            FillRule::EvenOdd,
+            &Paint::Solid(Color::rgba(40, 120, 220, 120)),
+        );
+    }
+    let fonts: [marlin_font::FontView<'_>; 1] = [crate::support::inter()];
+    let (w, h) = (320, 200);
+    let data = r.prepare(&list, &fonts, None);
+    let (tiles, entries) = frames
+        .execute(hardware_device(), |g, _| {
+            let out = r.add_passes(g, &data, w, h, Color::BLACK);
+            let (t, e) = out.paths.expect("paths with tiles");
+            (g.readback(t), g.readback(e))
+        })
+        .unwrap();
+    let tiles = frames.wait_readback(tiles).unwrap();
+    let entries = frames.wait_readback(entries).unwrap();
+    let word = |b: &[u8], i: usize| u32::from_le_bytes(b[4 * i..4 * i + 4].try_into().unwrap());
+    let chunk = data.commands();
+    let layout = path::layout(chunk, data.glyph_table(), w, h);
+    let (mut checked, mut listed) = (0, 0);
+    for rec in &layout.records {
+        let p = &chunk.payload[rec[0] as usize..];
+        let (gx0, gy0, gx1, gy1) = (rec[1] as i32, rec[2] as i32, rec[3] as i32, rec[4] as i32);
+        for y in gy0..gy1 {
+            for x in gx0..gx1 {
+                let t = (rec[5] as i32 + (y - gy0) * (gx1 - gx0) + (x - gx0)) as usize
+                    * path::PATH_TILE_WORDS;
+                let cpu = path::tile(p, x, y);
+                let backdrop = word(&tiles, t) as i32;
+                let (count, first) = (word(&tiles, t + 1), word(&tiles, t + 2));
+                let mut gpu: Vec<(u32, bool)> = (first..first + count)
+                    .map(|i| {
+                        let e = word(&entries, i as usize);
+                        (e & 0x7FFF_FFFF, e >> 31 != 0)
+                    })
+                    .collect();
+                gpu.sort_unstable();
+                assert_eq!(
+                    (backdrop, &gpu[..]),
+                    (cpu.backdrop, &cpu.segments[..]),
+                    "path at {} tile ({x}, {y})",
+                    rec[0]
+                );
+                checked += 1;
+                listed += gpu.len();
+            }
+        }
+    }
+    assert!(
+        checked > 100 && listed > 1000,
+        "{checked} tiles, {listed} entries"
+    );
     finish(&mut frames, &r);
 }

@@ -108,6 +108,7 @@ pub fn shared_renderer(desc: &UiRendererDesc) -> UiRenderer {
             encode_vs: s(5),
             encode_ps: s(6),
             blur: s(7),
+            path_tiles: s(8),
         },
         desc,
     )

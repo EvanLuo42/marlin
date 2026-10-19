@@ -313,13 +313,11 @@ fn translate(chunk: &mut Chunk, dx: f32, dy: f32) {
                 }
             }
             Some(Kind::Path) => {
-                mv(&mut p[2], dy);
                 for (i, d) in [(5, dx), (6, dy), (7, dx), (8, dy)] {
                     mv(&mut p[i], d);
                 }
-                let (len, segs) = (p[1] as usize, p[4] as usize);
-                for s in 0..segs {
-                    let at = len - 4 * segs + 4 * s;
+                for s in 0..p[2] as usize {
+                    let at = crate::path::SEGMENTS + 4 * s;
                     for (k, d) in [(0, dx), (1, dy), (2, dx), (3, dy)] {
                         mv(&mut p[at + k], d);
                     }

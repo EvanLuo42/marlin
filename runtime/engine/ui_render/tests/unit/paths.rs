@@ -1,5 +1,5 @@
 //! Path fill (§4.2): coverage under both fill rules against supersampled shapes, curves
-//! flattened within tolerance, rows of bands, and replays moving paths.
+//! flattened within tolerance, tiles and their backdrops, and replays moving paths.
 
 use marlin_font::GlyphIds;
 use marlin_math::Vec2;
@@ -221,8 +221,8 @@ fn curves_flatten_within_tolerance() {
 }
 
 #[test]
-fn tall_paths_span_bands() {
-    // A thin diagonal sliver from top to bottom crosses every band.
+fn tall_paths_cross_tile_rows() {
+    // A thin diagonal sliver from top to bottom crosses every tile row.
     let pts = [
         Vec2::new(10.0, 2.0),
         Vec2::new(14.0, 2.0),
@@ -237,7 +237,15 @@ fn tall_paths_span_bands() {
         )
     });
     let p = &chunk.payload[chunk.commands[0][3] as usize..];
-    assert_eq!(p[3], 8, "126 rows from y = 2: 8 bands of 16");
+    assert_eq!(p[2], 4);
+    // Right of the sliver in row 4, every tile's backdrop counts both sides: zero.
+    let t = marlin_ui_render::path::tile(p, 7, 4);
+    assert_eq!((t.backdrop, t.segments.len()), (0, 0));
+    // Tile (2, 4) holds both sides; the upward one crosses the row's top left of it and the
+    // tile's left side inside it.
+    let t = marlin_ui_render::path::tile(p, 2, 4);
+    assert_eq!(t.backdrop, -1);
+    assert_eq!(t.segments, [(1, false), (3, true)]);
     let (worst, _) = compare(&chunk, 128, |x, y| winding(&pts, x, y) != 0);
     assert!(worst < 0.05, "{worst}");
 }
@@ -260,7 +268,7 @@ fn replays_move_paths() {
         .replay(&retained, Vec2::new(7.0, 13.0));
     let mut direct = UiDrawList::new(1.0);
     draw(&mut direct.painter(&ids), Vec2::new(10.0, 17.0));
-    // The same coverage everywhere (the bands' origin moved with the path).
+    // The same coverage everywhere (the tiles the path crosses moved with it).
     let (a, b) = (replayed.flatten(), direct.flatten());
     assert_eq!(resolved(&a).len(), 1);
     for y in 0..64 {
@@ -269,6 +277,55 @@ fn replays_move_paths() {
             let ca = shade(&a.commands[0], &Scene::new(&a, &[]), &NoTextures, fx, fy)[3];
             let cb = shade(&b.commands[0], &Scene::new(&b, &[]), &NoTextures, fx, fy)[3];
             assert!((ca - cb).abs() < 1e-4, "({x}, {y}): {ca} {cb}");
+        }
+    }
+}
+
+#[test]
+fn backdrops_are_the_winding_at_tile_corners() {
+    // Random self-crossing polygons, partly off the top and left: every tile's backdrop is
+    // the winding number just inside its top-left corner, and a tile walked alone lists what
+    // the whole grid's walk lists there.
+    let mut rng = marlin_math::Rng::new(0x0bac_4d40);
+    for _ in 0..6 {
+        let pts: Vec<Vec2> = (0..30)
+            .map(|_| Vec2::new(rng.range_f32(-40.0, 130.0), rng.range_f32(-40.0, 130.0)))
+            .collect();
+        let chunk = record(|p| {
+            p.fill_path(
+                &polygon(&pts),
+                FillRule::NonZero,
+                &Paint::Solid(Color::WHITE),
+            )
+        });
+        let p = &chunk.payload[chunk.commands[0][3] as usize..];
+        let grid = [0, 0, 6, 6];
+        let mut whole = vec![marlin_ui_render::path::PathTile::default(); 36];
+        for i in 0..p[2] as usize {
+            let s = marlin_ui_render::path::segment(p, i);
+            marlin_ui_render::path::walk(s, grid, |step| match step {
+                marlin_ui_render::path::Step::Tile { x, y, edge } => {
+                    whole[(y * 6 + x) as usize].segments.push((i as u32, edge))
+                }
+                marlin_ui_render::path::Step::Backdrop { x, y, d } => {
+                    for t in &mut whole[(y * 6 + x) as usize..(y * 6 + 6) as usize] {
+                        t.backdrop += d;
+                    }
+                }
+            });
+        }
+        for ty in 0..6 {
+            for tx in 0..6 {
+                let t = marlin_ui_render::path::tile(p, tx, ty);
+                assert_eq!(t, whole[(ty * 6 + tx) as usize], "tile ({tx}, {ty})");
+                // Crossings left of the corner sum to minus those right of it.
+                let corner = (tx as f32 * 16.0 + 1e-3, ty as f32 * 16.0 + 1e-3);
+                assert_eq!(
+                    t.backdrop,
+                    -winding(&pts, corner.0, corner.1),
+                    "({tx}, {ty})"
+                );
+            }
         }
     }
 }

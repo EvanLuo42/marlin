@@ -769,24 +769,24 @@ fn effect(c: &CommandWords, s: &Scene<'_>, paint: [f32; 4], x: f32, y: f32) -> [
     scale4(paint, a)
 }
 
-/// A path's coverage of the pixel whose center is `(x, y)`: the signed area its band's segments
-/// sweep to the pixel's right, by its fill rule.
+/// A path's coverage of the pixel whose center is `(x, y)`: its tile's backdrop and the signed
+/// area its tile's segments sweep to the pixel's right (§4.2), by its fill rule.
 pub fn path_coverage(p: &[u32], x: f32, y: f32) -> f32 {
+    let t = crate::command::TILE as f32;
+    let (tx, ty) = (floor(x / t) as i32, floor(y / t) as i32);
+    tile_coverage(p, &crate::path::tile(p, tx, ty), tx, x, y)
+}
+
+/// [`path_coverage`] at `(x, y)` in tile column `tx`, from the tile.
+pub fn tile_coverage(p: &[u32], tile: &crate::path::PathTile, tx: i32, x: f32, y: f32) -> f32 {
     let (px, py) = (floor(x), floor(y));
-    let band = floor((py - w(p, 2)) / crate::path::BAND);
-    if band < 0.0 || band >= p[3] as f32 {
-        return 0.0;
+    let x0 = (tx * crate::command::TILE as i32) as f32;
+    let mut acc = tile.backdrop * crate::path::COVERAGE_UNIT as i32;
+    for &(i, edge) in &tile.segments {
+        let s = crate::path::segment(p, i as usize);
+        acc += crate::path::segment_coverage(s, edge, x0, px, py);
     }
-    let b = 9 + 2 * band as usize;
-    let (list, count) = (p[b] as usize, p[b + 1] as usize);
-    let segs = p[1] as usize - 4 * p[4] as usize;
-    let mut acc = 0.0;
-    for &i in &p[list..list + count] {
-        let at = segs + 4 * i as usize;
-        let s = [w(p, at), w(p, at + 1), w(p, at + 2), w(p, at + 3)];
-        acc += crate::path::cell_area(s, px, py);
-    }
-    let a = acc.abs();
+    let a = (acc as f32 * (1.0 / crate::path::COVERAGE_UNIT)).abs();
     if p[0] == 0 {
         a.min(1.0)
     } else {

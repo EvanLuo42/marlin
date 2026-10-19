@@ -36,6 +36,10 @@ pub fn command_hashes(
         let kind = Kind::from_word(c[0]);
         let len = kind.map_or(0, |k| k.payload_len(&chunk.payload[at..]));
         words.extend_from_slice(&chunk.payload[at..at + len]);
+        if kind == Some(Kind::Path) {
+            // The path's index among the frame's.
+            words[1 + 4] = 0;
+        }
         let paint = chunk.paints[c[2] as usize];
         words.extend_from_slice(&paint);
         match paint[0] {

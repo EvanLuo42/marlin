@@ -2,22 +2,22 @@
 //! even-odd rule.
 //!
 //! The painter flattens a path into line segments on the screen when it records it (curves to
-//! within [`FLATTEN_TOLERANCE`] of a pixel), and indexes the segments by 16-pixel rows. A pixel's
-//! coverage is the exact signed area the segments in its row sweep to its right: segments left
-//! of the pixel count fully, as the backdrop does in a tile renderer, so no separate pass sums
-//! winding numbers.
+//! within [`FLATTEN_TOLERANCE`] of a pixel). Each frame the GPU walks every segment through the
+//! 16 × 16 tiles it crosses ([`walk`]): a tile gets the segments passing through it, and its
+//! backdrop, the winding number at its top-left corner, is a prefix sum along its row of where
+//! segments cross the tops of tiles. A pixel's coverage is its tile's backdrop plus the exact
+//! signed area its tile's segments sweep to its right ([`segment_coverage`]).
 
 use alloc::vec::Vec;
 
 use marlin_math::Vec2;
 use marlin_math::scalar::{ceil, floor, sqrt};
 
+use crate::command::TILE;
 use crate::style::Affine2;
 
 /// How far flattened curves stray from the true curve, in screen pixels.
 pub const FLATTEN_TOLERANCE: f32 = 0.05;
-/// Rows of pixels a band holds.
-pub const BAND: f32 = 16.0;
 
 /// Which points a path covers.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -159,30 +159,21 @@ impl Path {
 /// A path command's payload for screen segments `segs` (see `crate::command`), or `None` for a
 /// path with no area.
 pub(crate) fn payload(segs: &[[f32; 4]], rule: FillRule) -> Option<Vec<u32>> {
-    // Horizontal segments sweep no area.
-    let segs: Vec<[f32; 4]> = segs.iter().copied().filter(|s| s[1] != s[3]).collect();
-    if segs.is_empty() {
+    // Horizontal segments sweep no area, but stay: where they cross a tile's left side they
+    // change the winding number below them.
+    if segs.iter().all(|s| s[1] == s[3]) {
         return None;
     }
     let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
-    for s in &segs {
+    let mut visits = 0u32;
+    for s in segs {
         x0 = x0.min(s[0]).min(s[2]);
         y0 = y0.min(s[1]).min(s[3]);
         x1 = x1.max(s[0]).max(s[2]);
         y1 = y1.max(s[1]).max(s[3]);
+        visits = visits.saturating_add(visit_bound(*s));
     }
-    let origin = floor(y0);
-    let bands = (floor((y1 - origin) / BAND) as usize) + 1;
-    let mut lists: Vec<Vec<u32>> = alloc::vec![Vec::new(); bands];
-    for (i, s) in segs.iter().enumerate() {
-        let lo = floor((s[1].min(s[3]) - origin) / BAND) as usize;
-        let hi = (floor((s[1].max(s[3]) - origin) / BAND) as usize).min(bands - 1);
-        for list in &mut lists[lo..=hi] {
-            list.push(i as u32);
-        }
-    }
-    let indices: usize = lists.iter().map(Vec::len).sum();
-    let len = 9 + 2 * bands + indices + 4 * segs.len();
+    let len = SEGMENTS + 4 * segs.len();
     let mut p = Vec::with_capacity(len);
     p.extend_from_slice(&[
         match rule {
@@ -190,28 +181,160 @@ pub(crate) fn payload(segs: &[[f32; 4]], rule: FillRule) -> Option<Vec<u32>> {
             FillRule::EvenOdd => 1,
         },
         len as u32,
-        origin.to_bits(),
-        bands as u32,
         segs.len() as u32,
+        visits,
+        0,
         x0.to_bits(),
         y0.to_bits(),
         x1.to_bits(),
         y1.to_bits(),
     ]);
-    let mut at = 9 + 2 * bands;
-    for l in &lists {
-        p.push(at as u32);
-        p.push(l.len() as u32);
-        at += l.len();
-    }
-    for l in &lists {
-        p.extend_from_slice(l);
-    }
-    for s in &segs {
+    for s in segs {
         p.extend(s.iter().map(|v| v.to_bits()));
     }
     debug_assert_eq!(p.len(), len);
     Some(p)
+}
+
+/// The payload word a path's segments start at.
+pub const SEGMENTS: usize = 9;
+
+/// The most tiles segment `s` visits ([`walk`]), wherever whole pixels move it: one more than
+/// the tile columns and rows it crosses.
+fn visit_bound(s: [f32; 4]) -> u32 {
+    let k = 1.0 / TILE as f32;
+    (floor((s[2] - s[0]).abs() * k) + floor((s[3] - s[1]).abs() * k)) as u32 + 3
+}
+
+/// What [`walk`] meets along a segment.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Step {
+    /// The segment passes through tile `(x, y)`; `edge`: it crosses the tile's left side there.
+    Tile { x: i32, y: i32, edge: bool },
+    /// The segment crosses the top of tile row `y` left of tile `x`: the winding number of
+    /// every tile from `x` on in that row changes by `d` (§4.2's backdrop, before the prefix
+    /// sum along the row).
+    Backdrop { x: i32, y: i32, d: i32 },
+}
+
+/// The tile column (or row) holding coordinate `v`, with everything before tile `lo` in `lo - 1`
+/// and everything from `hi` on in `hi`.
+fn cell(v: f32, lo: i32, hi: i32) -> i32 {
+    floor(v * (1.0 / TILE as f32)).clamp((lo - 1) as f32, hi as f32) as i32
+}
+
+/// Walks segment `s` through the tiles of `grid` (x0 y0 x1 y1 in tiles, half-open), in order:
+/// what `UiPathTiles` does on the GPU for each segment (0012 §4.2). Columns left of the grid
+/// count as one, so do rows above it, and columns and rows past it.
+///
+/// Which side of a corner the segment passes is decided by comparing products of differences
+/// (no division), which round the same on the CPU and the GPU; and the order in which it meets
+/// two grid lines does not depend on the other lines, so a smaller grid sees the same steps in
+/// its tiles.
+pub fn walk(s: [f32; 4], grid: [i32; 4], mut visit: impl FnMut(Step)) {
+    let [x0, y0, x1, y1] = s;
+    let [gx0, gy0, gx1, gy1] = grid;
+    let (mut c, mut r) = (cell(x0, gx0, gx1), cell(y0, gy0, gy1));
+    let (c1, r1) = (cell(x1, gx0, gx1), cell(y1, gy0, gy1));
+    let (sx, sy) = ((c1 - c).signum(), (r1 - r).signum());
+    let (mut nx, mut ny) = ((c1 - c).abs(), (r1 - r).abs());
+    let (adx, ady) = ((x1 - x0).abs(), (y1 - y0).abs());
+    let t = TILE as i32;
+    let mut edge = false;
+    loop {
+        // The next grid line is a column's when the segment meets it first.
+        let x_step = nx > 0
+            && (ny == 0 || {
+                let bx = (t * if sx > 0 { c + 1 } else { c }) as f32;
+                let by = (t * if sy > 0 { r + 1 } else { r }) as f32;
+                (bx - x0) * sx as f32 * ady < (by - y0) * sy as f32 * adx
+            });
+        if gx0 <= c && c < gx1 && gy0 <= r && r < gy1 {
+            visit(Step::Tile {
+                x: c,
+                y: r,
+                edge: edge || (x_step && sx < 0),
+            });
+        }
+        if nx == 0 && ny == 0 {
+            break;
+        }
+        if x_step {
+            c += sx;
+            nx -= 1;
+            edge = sx > 0;
+        } else {
+            let row = if sy > 0 { r + 1 } else { r };
+            if gy0 <= row && row < gy1 && c + 1 < gx1 {
+                visit(Step::Backdrop {
+                    x: c + 1,
+                    y: row,
+                    d: sy,
+                });
+            }
+            r += sy;
+            ny -= 1;
+            edge = false;
+        }
+    }
+}
+
+/// One tile of a path: the winding number at its top-left corner, and the segments (their
+/// indices in the payload) that pass through it, each with whether it crosses its left side.
+#[derive(Clone, Default, PartialEq, Eq, Debug)]
+pub struct PathTile {
+    pub backdrop: i32,
+    pub segments: Vec<(u32, bool)>,
+}
+
+/// Segment `i` of the path whose payload is `p`.
+pub fn segment(p: &[u32], i: usize) -> [f32; 4] {
+    let at = SEGMENTS + 4 * i;
+    [0, 1, 2, 3].map(|k| f32::from_bits(p[at + k]))
+}
+
+/// Tile `(x, y)` of the path whose payload is `p`, as the GPU builds it (the segments in
+/// payload order; the GPU's are in any order).
+pub fn tile(p: &[u32], x: i32, y: i32) -> PathTile {
+    let mut out = PathTile::default();
+    let t = TILE as f32;
+    let (top, bottom) = (y as f32 * t, (y + 1) as f32 * t);
+    for i in 0..p[2] as usize {
+        let s = segment(p, i);
+        // Only segments reaching the row or its top line meet the tile.
+        if s[1].max(s[3]) < top || s[1].min(s[3]) >= bottom {
+            continue;
+        }
+        walk(s, [x, y, x + 1, y + 1], |step| match step {
+            Step::Tile { edge, .. } => out.segments.push((i as u32, edge)),
+            Step::Backdrop { d, .. } => out.backdrop += d,
+        });
+    }
+    out
+}
+
+/// Fixed-point units of coverage the shading sums in: integers add the same in any order, so a
+/// tile's pixels do not depend on the order the GPU listed its segments in.
+pub const COVERAGE_UNIT: f32 = 1_048_576.0;
+
+/// What segment `s` adds to the pixel cell `(px, py)` of a tile whose left side is at `x0`, in
+/// [`COVERAGE_UNIT`]s: its signed area right of the tile's side, and when it crosses that side
+/// (`edge`), the change of winding number the crossing makes below it.
+pub fn segment_coverage(s: [f32; 4], edge: bool, x0: f32, px: f32, py: f32) -> i32 {
+    let mut s = s;
+    let mut area = 0.0;
+    if edge {
+        let ye = s[1] + (s[3] - s[1]) * ((x0 - s[0]) / (s[2] - s[0]));
+        let d = if s[2] > s[0] { -1.0 } else { 1.0 };
+        area = d * (py + 1.0 - ye).clamp(0.0, 1.0);
+        s = if s[0] < x0 {
+            [x0, ye, s[2], s[3]]
+        } else {
+            [s[0], s[1], x0, ye]
+        };
+    }
+    area += cell_area(s, px, py);
+    floor(area * COVERAGE_UNIT + 0.5) as i32
 }
 
 /// The signed area segment `s` sweeps to the right inside pixel cell `(px, py)` (its top-left
@@ -247,4 +370,85 @@ pub fn cell_area(s: [f32; 4], px: f32, py: f32) -> f32 {
         (g(tb) - g(ta)) / (tb - ta)
     };
     dir * avg * (yb - ya)
+}
+
+/// Words of a path's record for the GPU: its payload offset, its tile grid x0 y0 x1 y1, its
+/// first tile in the frame's path tiles, and its first segment and first tile row among the
+/// frame's (those of paths with tiles, in order).
+pub const PATH_RECORD_WORDS: usize = 8;
+/// Words of a path tile on the GPU: the backdrop (`i32`), its segments, its first entry, the
+/// entries written.
+pub const PATH_TILE_WORDS: usize = 4;
+/// The most path tile entries a frame has room for (128 MiB).
+pub const MAX_PATH_ENTRIES: u64 = 1 << 25;
+
+/// Where a surface's frame keeps its paths' tiles (§4.2): per path a record, its tile grid the
+/// tiles its bounds touch. The GPU takes the segments of every path with tiles, and their tile
+/// rows, as one run each, a thread per segment or row.
+#[derive(Clone, Default, PartialEq, Eq, Debug)]
+pub struct PathLayout {
+    /// Per path, in command order (a path's index in its payload): [`PATH_RECORD_WORDS`] words.
+    pub records: Vec<[u32; PATH_RECORD_WORDS]>,
+    /// Tiles of every grid.
+    pub tiles: u32,
+    /// Room for every path's tile entries.
+    pub entries: u32,
+    /// Per segment of the run: its path.
+    pub segment_paths: Vec<u32>,
+    /// Per tile row of the run: its path.
+    pub row_paths: Vec<u32>,
+}
+
+/// The path layout of `chunk` on a `width` × `height` surface.
+pub fn layout(
+    chunk: &crate::command::Chunk,
+    glyphs: &[marlin_font::GlyphRecord],
+    width: u32,
+    height: u32,
+) -> PathLayout {
+    use crate::command::Kind;
+    let scene = crate::shape::Scene::new(chunk, glyphs);
+    let mut out = PathLayout::default();
+    let mut entries = 0u64;
+    let t = TILE as i32;
+    for c in &chunk.commands {
+        if Kind::from_word(c[0]) != Some(Kind::Path) {
+            continue;
+        }
+        let p = &chunk.payload[c[3] as usize..];
+        let b = crate::shape::bounds(c, &scene, width, height);
+        let grid = if b.is_empty() {
+            [0; 4]
+        } else {
+            [
+                b.bbox[0] / t,
+                b.bbox[1] / t,
+                (b.bbox[2] + t - 1) / t,
+                (b.bbox[3] + t - 1) / t,
+            ]
+        };
+        let (w, h) = ((grid[2] - grid[0]) as u32, (grid[3] - grid[1]) as u32);
+        out.records.push([
+            c[3],
+            grid[0] as u32,
+            grid[1] as u32,
+            grid[2] as u32,
+            grid[3] as u32,
+            out.tiles,
+            out.segment_paths.len() as u32,
+            out.row_paths.len() as u32,
+        ]);
+        if w * h == 0 {
+            continue;
+        }
+        let path = out.records.len() as u32 - 1;
+        out.segment_paths
+            .extend(core::iter::repeat_n(path, p[2] as usize));
+        out.row_paths.extend(core::iter::repeat_n(path, h as usize));
+        out.tiles += w * h;
+        // No segment visits more of the grid than a row and a column of it.
+        entries += u64::from(p[3]).min(u64::from(p[2]) * u64::from(w + h - 1));
+    }
+    out.entries = entries.min(MAX_PATH_ENTRIES) as u32;
+    out
 }

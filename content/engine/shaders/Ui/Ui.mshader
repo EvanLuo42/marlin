@@ -8,6 +8,8 @@ namespace Marlin.Engine.Ui;
 // 3. `Coarse`: one workgroup per bin, one thread per 16 × 16 tile: walks the masks in command
 //    order and appends each command that reaches the tile to the tile's list; an opaque command
 //    covering the whole tile empties the list first. Lists are 32-word blocks from a pool.
+//    `PathTiles`, beside them: every path segment walked through the tiles it crosses, giving
+//    each tile of a path its segments and its backdrop (the winding number at its corner).
 // 4. `Fine`: one workgroup per tile, one thread per pixel: every listed command's coverage and
 //    color, blended in registers (premultiplied, sRGB-encoded), into the UI target.
 // 5. `EncodeVs`/`EncodePs`: the UI target into the swapchain.
@@ -58,8 +60,18 @@ const uint KindEffect = 7;
 const uint KindPath = 8;
 const uint KindBlur = 9;
 
-/// Rows of pixels a path band holds (`marlin_ui_render::path::BAND`).
-const float PathBand = 16;
+/// The payload word a path's segments start at (`marlin_ui_render::path::SEGMENTS`).
+const uint PathSegments = 9;
+/// Words of a path's record: its payload offset, its tile grid x0 y0 x1 y1 (tiles), its first
+/// tile in the path tiles.
+const uint PathRecordWords = 8;
+/// Words of a path tile: the backdrop (`int`; a delta before the prefix sum), its segments, its
+/// first entry, the entries written.
+const uint PathTileWords = 4;
+/// A path tile entry's bit: the segment crosses the tile's left side.
+const uint PathEdge = 2147483648;
+/// Fixed-point units of path coverage (`marlin_ui_render::path::COVERAGE_UNIT`).
+const float CoverageUnit = 1048576;
 
 /// Members a group effect follows exactly (`marlin_ui_render::list::MAX_EFFECT_MEMBERS`).
 const uint MaxEffectMembers = 16;
@@ -472,6 +484,145 @@ public void Coarse([GroupId] uint3 group, [GroupThreadId] uint3 thread, [Push] i
     }
 }
 
+public struct PathTilesArgs
+{
+    public ReadOnlyBuffer<uint> Payload;
+    /// Per path: `PathRecordWords` words.
+    public ReadOnlyBuffer<uint> Paths;
+    /// Per segment (modes 0 and 2) or tile row (mode 1) of every path with tiles: its path.
+    public ReadOnlyBuffer<uint> Items;
+    /// `PathTileWords` words per tile of every path's grid. Cleared before.
+    public Buffer<uint> Tiles;
+    /// 0: entries taken. Cleared before.
+    public Buffer<uint> Counter;
+    /// Per tile, its segments' indices, `PathEdge` set for those crossing its left side.
+    public Buffer<uint> Entries;
+    public uint EntryCapacity;
+    /// 0: count each tile's segments and backdrop deltas; 1: sum the backdrops along each tile
+    /// row and give each tile its entries; 2: write the entries.
+    public uint Mode;
+    /// The segments (modes 0 and 2) or tile rows (mode 1) of every path with tiles.
+    public uint Count;
+}
+
+/// The tile column (or row) holding coordinate `v`: everything before tile `lo` in `lo - 1`,
+/// everything from `hi` on in `hi`.
+int PathCell(float v, int lo, int hi) => (int)Clamp(Floor(v * 0.0625), (float)(lo - 1), (float)hi);
+
+/// Walks segment `index` of the path whose record is at `rec` through the tiles of its grid
+/// (`marlin_ui_render::path::walk`), counting (mode 0) or listing (mode 2) it in each.
+void PathWalk(in PathTilesArgs a, uint rec, uint index)
+{
+    uint s = a.Paths[rec] + PathSegments + 4 * index;
+    float x0 = P(a.Payload, s);
+    float y0 = P(a.Payload, s + 1);
+    float x1 = P(a.Payload, s + 2);
+    float y1 = P(a.Payload, s + 3);
+    int gx0 = (int)a.Paths[rec + 1];
+    int gy0 = (int)a.Paths[rec + 2];
+    int gx1 = (int)a.Paths[rec + 3];
+    int gy1 = (int)a.Paths[rec + 4];
+    uint firstTile = a.Paths[rec + 5];
+    int c = PathCell(x0, gx0, gx1);
+    int r = PathCell(y0, gy0, gy1);
+    int c1 = PathCell(x1, gx0, gx1);
+    int r1 = PathCell(y1, gy0, gy1);
+    int sx = c1 > c ? 1 : (c1 < c ? -1 : 0);
+    int sy = r1 > r ? 1 : (r1 < r ? -1 : 0);
+    int nx = (c1 - c) * sx;
+    int ny = (r1 - r) * sy;
+    float adx = Abs(x1 - x0);
+    float ady = Abs(y1 - y0);
+    bool edge = false;
+    int steps = nx + ny;
+    for (int k = 0; k <= steps; k++)
+    {
+        // The next grid line is a column's when the segment meets it first.
+        bool xStep = false;
+        if (nx > 0)
+        {
+            if (ny == 0)
+                xStep = true;
+            else
+            {
+                float bx = (float)(16 * (sx > 0 ? c + 1 : c));
+                float by = (float)(16 * (sy > 0 ? r + 1 : r));
+                xStep = (bx - x0) * (float)sx * ady < (by - y0) * (float)sy * adx;
+            }
+        }
+        if (c >= gx0 && c < gx1 && r >= gy0 && r < gy1)
+        {
+            uint t = (firstTile + (uint)((r - gy0) * (gx1 - gx0) + (c - gx0))) * PathTileWords;
+            if (a.Mode == 0)
+                a.Tiles.AtomicAdd(t + 1, 1);
+            else
+            {
+                uint at = a.Tiles[t + 2] + a.Tiles.AtomicAdd(t + 3, 1);
+                if (at < a.EntryCapacity)
+                    a.Entries[at] = index | (edge || (xStep && sx < 0) ? PathEdge : 0u);
+            }
+        }
+        if (k == steps)
+            break;
+        if (xStep)
+        {
+            c = c + sx;
+            nx = nx - 1;
+            edge = sx > 0;
+        }
+        else
+        {
+            int row = sy > 0 ? r + 1 : r;
+            if (a.Mode == 0 && row >= gy0 && row < gy1 && c + 1 < gx1)
+            {
+                uint t = (firstTile + (uint)((row - gy0) * (gx1 - gx0) + (c + 1 - gx0))) * PathTileWords;
+                a.Tiles.AtomicAdd(t, (uint)sy);
+            }
+            r = r + sy;
+            ny = ny - 1;
+            edge = false;
+        }
+    }
+}
+
+/// Paths' tiles (§4.2), in three dispatches over the segments (or tile rows) of every path with
+/// tiles, one a thread: each segment counted in the tiles it crosses, with where it crosses tile
+/// rows' tops; each tile row's backdrops summed along it and its tiles' entries taken from the
+/// pool; each segment written into its tiles' entries. The group index is split over x and y
+/// past 65535.
+[Compute(256, 1, 1)]
+public void PathTiles([GroupId] uint3 group, [GroupThreadId] uint3 thread, [Push] in PathTilesArgs a)
+{
+    uint item = (group.y * 65535 + group.x) * 256 + thread.x;
+    if (item >= a.Count)
+        return;
+    if (a.Mode == 1)
+    {
+        uint record = a.Items[item] * PathRecordWords;
+        uint w = a.Paths[record + 3] - a.Paths[record + 1];
+        uint t0 = (a.Paths[record + 5] + (item - a.Paths[record + 7]) * w) * PathTileWords;
+        int run = 0;
+        uint total = 0;
+        for (uint x = 0; x < w; x++)
+        {
+            uint t = t0 + x * PathTileWords;
+            run = run + (int)a.Tiles[t];
+            a.Tiles[t] = (uint)run;
+            total = total + a.Tiles[t + 1];
+        }
+        uint at = a.Counter.AtomicAdd(0, total);
+        for (uint x = 0; x < w; x++)
+        {
+            uint t = t0 + x * PathTileWords;
+            a.Tiles[t + 2] = at;
+            at = at + a.Tiles[t + 1];
+        }
+        return;
+    }
+    uint rec = a.Items[item] * PathRecordWords;
+    PathWalk(a, rec, item - a.Paths[rec + 6]);
+}
+
 /// Signed distance to a box of half size `b` around the origin, rounded by `r`.
 float RoundBox(float2 p, float2 b, float r)
 {
@@ -675,6 +826,10 @@ public struct FineArgs
     /// Per backdrop blur: its image's texel 0 on the screen (x | y << 16), its size (width |
     /// height << 16), and screen pixels per texel.
     public ReadOnlyBuffer<uint4> Backdrops;
+    /// Per path: its record; its tiles; their segments (`PathTiles`).
+    public ReadOnlyBuffer<uint> Paths;
+    public ReadOnlyBuffer<uint> PathTiles;
+    public ReadOnlyBuffer<uint> PathEntries;
 }
 
 /// The signed area segment `s` sweeps to the right inside the pixel cell at `cell` (its top-left
@@ -697,28 +852,55 @@ float CellArea(float4 s, float2 cell)
     return dir * avg * (yb - ya);
 }
 
-/// A path's coverage of the pixel centered at `px`: the signed area its band's segments sweep to
-/// the pixel's right, by its fill rule.
-float PathCoverage(ReadOnlyBuffer<uint> p, uint at, float2 px)
+/// What segment `s` adds to the pixel cell at `cell` of a tile whose left side is at `x0`, in
+/// coverage units: its signed area right of the tile's side, and when it crosses that side
+/// (`edge`), the change of winding number the crossing makes below it
+/// (`marlin_ui_render::path::segment_coverage`).
+int SegmentCoverage(float4 s, bool edge, float x0, float2 cell)
 {
-    float2 cell = float2(Floor(px.x), Floor(px.y));
-    float band = Floor((cell.y - P(p, at + 2)) / PathBand);
-    if (band < 0 || band >= (float)p[at + 3])
+    float4 q = s;
+    float area = 0;
+    if (edge)
+    {
+        float ye = s.y + (s.w - s.y) * ((x0 - s.x) / (s.z - s.x));
+        float d = s.z > s.x ? -1.0 : 1.0;
+        area = d * Clamp(cell.y + 1 - ye, 0, 1);
+        q = s.x < x0 ? float4(x0, ye, s.z, s.w) : float4(s.x, s.y, x0, ye);
+    }
+    area = area + CellArea(q, cell);
+    return (int)Floor(area * CoverageUnit + 0.5);
+}
+
+/// A path's coverage of the pixel centered at `px`: its tile's backdrop and the signed area its
+/// tile's segments sweep to the pixel's right (§4.2), by its fill rule.
+float PathCoverage(in FineArgs a, uint at, float2 px)
+{
+    ReadOnlyBuffer<uint> p = a.Payload;
+    uint rec = p[at + 4] * PathRecordWords;
+    int tx = (int)Floor(px.x * 0.0625);
+    int ty = (int)Floor(px.y * 0.0625);
+    int gx0 = (int)a.Paths[rec + 1];
+    int gy0 = (int)a.Paths[rec + 2];
+    int gx1 = (int)a.Paths[rec + 3];
+    int gy1 = (int)a.Paths[rec + 4];
+    if (tx < gx0 || tx >= gx1 || ty < gy0 || ty >= gy1)
         return 0;
-    uint b = at + 9 + 2 * (uint)band;
-    uint list = at + p[b];
-    uint count = p[b + 1];
-    uint segs = at + p[at + 1] - 4 * p[at + 4];
-    float acc = 0;
+    uint t = (a.Paths[rec + 5] + (uint)((ty - gy0) * (gx1 - gx0) + (tx - gx0))) * PathTileWords;
+    int acc = (int)a.PathTiles[t] * 1048576;
+    uint count = a.PathTiles[t + 1];
+    uint first = a.PathTiles[t + 2];
+    float2 cell = float2(Floor(px.x), Floor(px.y));
+    float x0 = (float)(tx * 16);
     for (uint k = 0; k < count; k++)
     {
-        uint s = segs + 4 * p[list + k];
-        acc = acc + CellArea(float4(P(p, s), P(p, s + 1), P(p, s + 2), P(p, s + 3)), cell);
+        uint e = a.PathEntries[first + k];
+        uint s = at + PathSegments + 4 * (e & (PathEdge - 1));
+        acc = acc + SegmentCoverage(float4(P(p, s), P(p, s + 1), P(p, s + 2), P(p, s + 3)), e >= PathEdge, x0, cell);
     }
-    float a = Abs(acc);
+    float c = Abs((float)acc * (1 / CoverageUnit));
     if (p[at] == 0)
-        return Min(a, 1);
-    float m = a - 2 * Floor(a * 0.5);
+        return Min(c, 1);
+    float m = c - 2 * Floor(c * 0.5);
     return Min(m, 2 - m);
 }
 
@@ -879,7 +1061,7 @@ float4 ShadeUnclipped(uint4 c, in FineArgs a, float2 px)
     UiPaint paint = a.Paints[c.z];
     float4 color = PaintColor(paint, a.Gradients, px);
     if (kind == KindPath)
-        return color * PathCoverage(p, at, px);
+        return color * PathCoverage(a, at, px);
     if (kind == KindBlur)
     {
         float e = RectDistance(p, at, at + 4, Apply(a.Groups, g, 6, px));

@@ -11,8 +11,9 @@
 //! 2. [`UiSurface::needs_redraw`]: whether a surface's frame draws anything new; when not, the
 //!    caller declares nothing for it and does not present it (§5.5's whole-frame skip).
 //! 3. [`UiRenderer::begin`], once: the new glyphs into the pages.
-//! 4. [`UiRenderer::add_passes`] per surface: bounds, binning, damage and shading into its UI
-//!    target, with the frame's external images (viewports, §7) read where they are drawn.
+//! 4. [`UiRenderer::add_passes`] per surface: bounds, binning, paths' tiles, damage and shading
+//!    into its UI target, with the frame's external images (viewports, §7) read where they are
+//!    drawn.
 //! 5. [`UiRenderer::encode`]: a UI target into a window's image.
 //!
 //! The tile lists come from a pool of blocks sized from what earlier frames used: each frame
@@ -45,6 +46,7 @@ use crate::command::{
 };
 use crate::damage::{command_hashes, frame_hash};
 use crate::list::UiDrawList;
+use crate::path::PATH_TILE_WORDS;
 use crate::style::{Color, ExternalImageId};
 
 /// The most tile list blocks the pool grows to (256 MiB).
@@ -64,10 +66,11 @@ pub struct UiShaders<'a> {
     pub encode_vs: ShaderModule<'a>,
     pub encode_ps: ShaderModule<'a>,
     pub blur: ShaderModule<'a>,
+    pub path_tiles: ShaderModule<'a>,
 }
 
 /// The entries, in [`UiShaders`] order.
-pub const UI_ENTRIES: [&str; 8] = [
+pub const UI_ENTRIES: [&str; 9] = [
     "Marlin.Engine.Ui.GlyphUpload",
     "Marlin.Engine.Ui.Bounds",
     "Marlin.Engine.Ui.Bin",
@@ -76,11 +79,12 @@ pub const UI_ENTRIES: [&str; 8] = [
     "Marlin.Engine.Ui.EncodeVs",
     "Marlin.Engine.Ui.EncodePs",
     "Marlin.Engine.Ui.Blur",
+    "Marlin.Engine.Ui.PathTiles",
 ];
 
 /// Push constant bytes of each entry, in [`UI_ENTRIES`] order (the encode vertex shader has
 /// none).
-pub const UI_PUSH_BYTES: [Option<u32>; 8] = [
+pub const UI_PUSH_BYTES: [Option<u32>; 9] = [
     Some(size_of::<GlyphUploadArgs>() as u32),
     Some(size_of::<BoundsArgs>() as u32),
     Some(size_of::<BinArgs>() as u32),
@@ -89,6 +93,7 @@ pub const UI_PUSH_BYTES: [Option<u32>; 8] = [
     None,
     Some(size_of::<EncodeArgs>() as u32),
     Some(size_of::<BlurArgs>() as u32),
+    Some(size_of::<PathTilesArgs>() as u32),
 ];
 
 #[repr(C)]
@@ -176,6 +181,23 @@ struct FineArgs {
     end: u32,
     previous: u32,
     backdrops: u32,
+    paths: u32,
+    path_tiles: u32,
+    path_entries: u32,
+}
+
+#[repr(C)]
+#[derive(Pod, Clone, Copy)]
+struct PathTilesArgs {
+    payload: u32,
+    paths: u32,
+    items: u32,
+    tiles: u32,
+    counter: u32,
+    entries: u32,
+    entry_capacity: u32,
+    mode: u32,
+    count: u32,
 }
 
 #[repr(C)]
@@ -196,6 +218,16 @@ struct BlurArgs {
 struct EncodeArgs {
     ui: u32,
     decode: u32,
+}
+
+/// Workgroups a dispatch's dimension takes at most.
+const MAX_GROUPS: u32 = 65535;
+
+/// A surface's paths in this frame's graph: their records, and when any has tiles on the
+/// surface, the tiles and their entries.
+struct PathTiles<'g> {
+    records: Vec<u32>,
+    buffers: Option<(BufferHandle<'g>, BufferHandle<'g>)>,
 }
 
 /// How a [`UiRenderer`] is set up.
@@ -276,6 +308,9 @@ pub struct UiOutput<'g> {
     pub heads: BufferHandle<'g>,
     /// The blocks: [`BLOCK_WORDS`] words each, the last one the next block.
     pub pool: BufferHandle<'g>,
+    /// When a path has tiles on the surface: every path tile ([`crate::path::PATH_TILE_WORDS`]
+    /// words, at its record's first tile, row by row), and their entries (§4.2).
+    pub paths: Option<(BufferHandle<'g>, BufferHandle<'g>)>,
 }
 
 /// How a [`UiSurface`] is set up.
@@ -451,6 +486,7 @@ pub struct UiRenderer {
     coarse: ComputePipeline,
     fine: ComputePipeline,
     blur: ComputePipeline,
+    path_tiles: ComputePipeline,
     encode: Option<(GraphicsPipeline, bool)>,
     sampler: Sampler,
     glyphs: GlyphCache,
@@ -512,6 +548,7 @@ impl UiRenderer {
             coarse: compute(shaders.coarse)?,
             fine: compute(shaders.fine)?,
             blur: compute(shaders.blur)?,
+            path_tiles: compute(shaders.path_tiles)?,
             encode,
             sampler: device.create_sampler(&SamplerDesc {
                 address_u: AddressMode::ClampToEdge,
@@ -573,9 +610,18 @@ impl UiRenderer {
         let glyphs = self.glyphs.table();
         let surfaces = chunks
             .into_iter()
-            .map(|chunk| UiFrameData {
-                hashes: command_hashes(&chunk, &glyphs, externals),
-                chunk,
+            .map(|mut chunk| {
+                let hashes = command_hashes(&chunk, &glyphs, externals);
+                // Paths: their index among the frame's, for their records (the hashes leave
+                // it out).
+                let mut paths = 0;
+                for c in &chunk.commands {
+                    if Kind::from_word(c[0]) == Some(Kind::Path) {
+                        chunk.payload[c[3] as usize + 4] = paths;
+                        paths += 1;
+                    }
+                }
+                UiFrameData { hashes, chunk }
             })
             .collect();
         UiPrepared {
@@ -807,6 +853,8 @@ impl UiRenderer {
             })
         });
 
+        let path_tiles = self.add_path_tiles(g, data, glyphs, width, height, payload);
+
         // Per blur: where its image is, for the shading.
         let backdrops: Vec<[u32; 4]> = plan
             .jobs
@@ -858,6 +906,13 @@ impl UiRenderer {
                     .map(|&(i, t)| (i, b.read_texture(t, Access::ComputeRead)))
                     .collect();
                 let previous = below.map(|t| b.read_texture(t, Access::ComputeRead));
+                let path_buffers = path_tiles.buffers.map(|(t, e)| {
+                    (
+                        b.read_buffer(t, Access::ComputeRead),
+                        b.read_buffer(e, Access::ComputeRead),
+                    )
+                });
+                let path_records = path_tiles.records.clone();
                 let out = b.write_texture(out.mip(0), Access::ComputeWrite);
                 (out, move |ctx: &mut PassContext<'_>| {
                     // External images and blurred backdrops get their views now; one without a
@@ -893,6 +948,21 @@ impl UiRenderer {
                         end,
                         previous: previous.map_or(0, |t| ctx.srv(t)),
                         backdrops: ctx.upload_slice(&backdrops),
+                        paths: ctx.upload_slice(&path_records),
+                        path_tiles: 0,
+                        path_entries: 0,
+                    };
+                    let args = match path_buffers {
+                        Some((t, e)) => FineArgs {
+                            path_tiles: ctx.srv(t),
+                            path_entries: ctx.srv(e),
+                            ..args
+                        },
+                        None => FineArgs {
+                            path_tiles: ctx.upload_slice(&[0u32; 4]),
+                            path_entries: ctx.upload_slice(&[0u32]),
+                            ..args
+                        },
                     };
                     ctx.set_pipeline(pipeline);
                     ctx.push(&args);
@@ -940,6 +1010,91 @@ impl UiRenderer {
             target,
             heads,
             pool,
+            paths: path_tiles.buffers,
+        }
+    }
+
+    /// The passes that give every path its tiles (§4.2): each segment counted in the tiles it
+    /// crosses, the backdrops summed along the rows and the entries allocated, each segment
+    /// listed. Beside the binning: they only read the payload.
+    fn add_path_tiles<'g>(
+        &'g self,
+        g: &mut RenderGraph<'g>,
+        data: &UiFrameData,
+        glyphs: &[[u32; 4]],
+        width: u32,
+        height: u32,
+        payload: &'g [u32],
+    ) -> PathTiles<'g> {
+        let layout = crate::path::layout(&data.chunk, glyphs, width, height);
+        let records: Vec<u32> = if layout.records.is_empty() {
+            alloc::vec![0; crate::path::PATH_RECORD_WORDS]
+        } else {
+            layout.records.as_flattened().to_vec()
+        };
+        if layout.segment_paths.is_empty() {
+            return PathTiles {
+                records,
+                buffers: None,
+            };
+        }
+        let tiles = g.create_buffer(
+            "UiPathTiles",
+            BufferDesc::structured::<u32>(u64::from(layout.tiles) * PATH_TILE_WORDS as u64),
+        );
+        let entries = g.create_buffer(
+            "UiPathEntries",
+            BufferDesc::structured::<u32>(u64::from(layout.entries.max(1))),
+        );
+        let counter = g.create_buffer("UiPathCounter", BufferDesc::structured::<u32>(1));
+        let (mut tiles, counter) = g.add_compute("UiPathClear", |b| {
+            let t = b.write_buffer(tiles, Access::Clear);
+            let k = b.write_buffer(counter, Access::Clear);
+            ((t, k), move |ctx: &mut PassContext<'_>| {
+                ctx.fill_buffer(t, 0);
+                ctx.fill_buffer(k, 0);
+            })
+        });
+        let mut entries = entries;
+        for (mode, name) in [(0, "UiPathCount"), (1, "UiPathAlloc"), (2, "UiPathFill")] {
+            let items = if mode == 1 {
+                layout.row_paths.clone()
+            } else {
+                layout.segment_paths.clone()
+            };
+            let count = items.len() as u32;
+            let records = records.clone();
+            let pipeline = &self.path_tiles;
+            let capacity = layout.entries;
+            (tiles, entries) = g.add_compute(name, |b| {
+                let t = b.write_buffer(tiles, Access::ComputeWrite);
+                let k = (mode == 1).then(|| b.write_buffer(counter, Access::ComputeWrite));
+                let e = (mode == 2).then(|| b.write_buffer(entries, Access::ComputeWrite));
+                (
+                    (t, e.unwrap_or(entries)),
+                    move |ctx: &mut PassContext<'_>| {
+                        let args = PathTilesArgs {
+                            payload: ctx.upload_slice(payload),
+                            paths: ctx.upload_slice(&records),
+                            items: ctx.upload_slice(&items),
+                            tiles: ctx.uav(t),
+                            counter: k.map_or(0, |k| ctx.uav(k)),
+                            entries: e.map_or(0, |e| ctx.uav(e)),
+                            entry_capacity: capacity,
+                            mode,
+                            count,
+                        };
+                        ctx.set_pipeline(pipeline);
+                        ctx.push(&args);
+                        let groups = count.div_ceil(256);
+                        ctx.dispatch(groups.min(MAX_GROUPS), groups.div_ceil(MAX_GROUPS), 1);
+                    },
+                )
+            });
+        }
+        PathTiles {
+            records,
+            buffers: Some((tiles, entries)),
         }
     }
 

@@ -255,6 +255,7 @@ mod windows {
                 encode_vs: s(5),
                 encode_ps: s(6),
                 blur: s(7),
+                path_tiles: s(8),
             },
             &UiRendererDesc {
                 damage,
@@ -716,7 +717,7 @@ mod windows {
         for (i, line) in [
             "Text drawn from its outlines while it zooms:",
             "every glyph one path, flattened on the CPU,",
-            "shaded from its band's segments on the GPU.",
+            "shaded from its tiles' segments on the GPU.",
         ]
         .iter()
         .enumerate()

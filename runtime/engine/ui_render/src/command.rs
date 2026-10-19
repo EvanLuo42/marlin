@@ -28,7 +28,7 @@
 //! | `Image` | x0 y0 x1 y1, u0 v0 u1 v1, texture width \| height << 16, radii ×4 |
 //! | `Effect` | 0 shadow / 1 glow, 0, the members' screen box x0 y0 x1 y1 (`f32`), and the radius of the box used instead of the members' shape (`f32`, negative: their shape) |
 //! | `Blur` | x0 y0 x1 y1, radii ×4, blur radius (screen pixels, `f32`), its index among the frame's blurs (set when the frame is prepared) |
-//! | `Path` | fill rule (0 non-zero, 1 even-odd), the payload's length, band origin y (`f32`), bands, segments, screen box x0 y0 x1 y1 (`f32`); per 16-pixel band from the origin, the offset (from the payload's start) and length of its segment list; the lists; the segments as x0 y0 x1 y1 (`f32`, screen pixels) |
+//! | `Path` | fill rule (0 non-zero, 1 even-odd), the payload's length, segments, the most tiles they visit ([`crate::path::walk`]), its index among the frame's paths (set when the frame is prepared), screen box x0 y0 x1 y1 (`f32`); the segments as x0 y0 x1 y1 (`f32`, screen pixels) |
 
 use alloc::vec::Vec;
 
