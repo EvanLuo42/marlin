@@ -218,5 +218,5 @@ let tree = snap.get::<ItemTree>(&file)?;                    // Err(Cancelled)：
 - 在局部声明之前用到它的名字（C# 的 CS0841）：现在作用域查不到这个局部，由 `hir_ty` 报错。
 - 局部函数自己的类型参数还没进名字查找。
 - query 的内存回收（LRU、按 revision 清理不再用到的 memo）：等内存成为问题时再做。
-- VM 语言的 dialect 和它的专有构造：VM 语言设计时定。
-- VM 语言是否需要 `protected`，以及它的默认可见性。
+- VM 语言的 dialect 和它的专有构造：见 [0018](0018-vm-language.md) §2。
+- VM 语言保留 `protected`，默认可见性照 C#（0018 §2.1）。
