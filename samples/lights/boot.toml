@@ -1,0 +1,9 @@
+# The many-lights sample's boot configuration (see marlin_framework::boot).
+# Cook and package the project first; its build holds the engine's content too:
+#   marlin-cook cook samples/lights  then  marlin-cook package samples/lights
+
+[content]
+package = ".marlin/build/{platform}.mpak"
+
+[game]
+level = "01992d10-0000-7000-8000-000000000001"

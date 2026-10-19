@@ -30,6 +30,7 @@ pub mod lights;
 mod meshes;
 mod post;
 pub mod raytracing;
+pub mod restir;
 pub mod scene;
 pub mod shadows;
 pub mod visibility;

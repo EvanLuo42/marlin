@@ -17,6 +17,7 @@ use marlin_material::{DEFAULT_PERMUTATION, MaterialShaders, Materials, RESOLVE};
 use marlin_math::Transform;
 use marlin_render::lights::LightTiles;
 use marlin_render::raytracing::{RtShaders, Tlas};
+use marlin_render::restir::{RestirDi, RestirInputs, RestirShaders};
 use marlin_render::scene::{MeshId, MeshUpdate};
 use marlin_render::shadows::{Vsm, VsmSettings, VsmShaders};
 use marlin_render::visibility::{ViewDesc, counters};
@@ -73,6 +74,8 @@ pub struct RenderSide {
     pub tlas: Tlas,
     /// The frame's presampled light tiles (0010 §2.8).
     pub light_tiles: LightTiles,
+    /// Local lights: ReSTIR DI (0010 §2).
+    pub restir: RestirDi,
     /// Tonemaps the [`HDR_FORMAT`](marlin_render::HDR_FORMAT) scene into the output.
     pub post: PostProcess,
     pub scene: RenderScene,
@@ -124,6 +127,7 @@ impl RenderSide {
             vsm: Vsm::new(device, &VsmShaders::bind(engine)?, VsmSettings::DEFAULT)?,
             tlas: Tlas::new(device, &RtShaders::bind(engine)?)?,
             light_tiles: LightTiles::new(device, bind_one(engine, &LightTiles::ENTRY)?)?,
+            restir: RestirDi::new(device, &RestirShaders::bind(engine)?)?,
             post: PostProcess::new(device, &PostShaders::bind(engine)?, output)?,
             scene: RenderScene::with_ids(ids),
             scatter: ScatterShader::new(device, bind_one(engine, &ScatterShader::ENTRY)?)?,
@@ -224,6 +228,7 @@ impl RenderSide {
             post,
             tlas,
             light_tiles,
+            restir,
             frame,
             scene,
             scatter,
@@ -236,10 +241,9 @@ impl RenderSide {
         let pool = meshes.add_passes(g, uploads);
         let gpu = scene.add_passes(g, scatter);
         let rows = scene.instance_rows();
-        // Built every frame; ray query passes read it (R3c on).
-        let _rt = tlas.add_passes(g, gpu, &pool, rows);
-        // Drawn every frame; ReSTIR reads them (R3c on).
-        let _tiles = light_tiles.add_passes(g, scene, *frame as u32);
+        let rt = tlas.add_passes(g, gpu, &pool, rows);
+        let seed = *frame as u32;
+        let tiles = light_tiles.add_passes(g, scene, seed);
         let scene: &'g RenderScene = scene;
         let visibility: &'g Visibility = visibility;
         let env = *scene.environment();
@@ -279,9 +283,21 @@ impl RenderSide {
                     g.readback(shadow.used),
                 ],
             ));
-            (material, shadow.mask)
+            (material, shadow.mask, vis.depth, camera)
         });
-        let scene = lighting.add_passes(g, lit.map(|l| l.0), lit.map(|l| l.1), &env, width, height);
+        let mut scene =
+            lighting.add_passes(g, lit.map(|l| l.0), lit.map(|l| l.1), &env, width, height);
+        // The local lights, if there are any to draw.
+        if let (Some((material, _, depth, camera)), Some(tiles)) = (lit, tiles) {
+            let inputs = RestirInputs {
+                material,
+                depth,
+                lights: gpu.lights,
+                rt,
+                tiles,
+            };
+            scene = restir.add_passes(g, scene, inputs, camera, width, height, seed);
+        }
         post.add_passes(g, scene, target, MAIN_VIEW, dt).output
     }
 

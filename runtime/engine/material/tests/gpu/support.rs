@@ -5,6 +5,9 @@
 use marlin_gpu_test_support::{Image, Shader, engine_shaders, hardware_device};
 use marlin_material::{DefaultMaterial, MaterialDebug, MaterialShaders, Materials, RESOLVE};
 use marlin_math::{Transform, Vec3};
+use marlin_render::lights::LightTiles;
+use marlin_render::raytracing::{RtShaders, Tlas};
+use marlin_render::restir::{RestirDi, RestirInputs, RestirShaders};
 use marlin_render::scene::{
     InstanceDesc, InstanceId, InstanceUpdate, MaterialDesc, MaterialId, MaterialUpdate, MeshId,
     MeshUpdate,
@@ -39,6 +42,10 @@ pub struct Harness {
     pub materials: Materials,
     lighting: Lighting,
     unorm: &'static ComputePipeline,
+    /// The ray tracing scene, the light tiles and ReSTIR DI.
+    pub tlas: Tlas,
+    light_tiles: LightTiles,
+    pub restir: RestirDi,
     pub updates: SceneUpdates,
     pub camera: (Transform, Camera),
     /// The camera of the last frame.
@@ -98,6 +105,17 @@ impl Harness {
             .unwrap();
         assert_eq!((default, stripes), (DEFAULT, STRIPES));
         let lighting = Lighting::new(device, engine_shaders(&[Lighting::ENTRY])[0]).unwrap();
+        let tlas = Tlas::new(
+            device,
+            &RtShaders::from_modules(engine_shaders(&RtShaders::ENTRIES)),
+        )
+        .unwrap();
+        let light_tiles = LightTiles::new(device, engine_shaders(&[LightTiles::ENTRY])[0]).unwrap();
+        let restir = RestirDi::new(
+            device,
+            &RestirShaders::from_modules(engine_shaders(&RestirShaders::ENTRIES)),
+        )
+        .unwrap();
         let unorm = Box::leak(Box::new(
             device
                 .create_compute_pipeline(&ComputePipelineDesc {
@@ -131,6 +149,9 @@ impl Harness {
             materials,
             lighting,
             unorm,
+            tlas,
+            light_tiles,
+            restir,
             updates: SceneUpdates {
                 environment: Some(relative_environment()),
                 ..SceneUpdates::default()
@@ -142,6 +163,29 @@ impl Harness {
             previous: None,
             frame: FrameContext::new(device, &FrameContextDesc::default()).unwrap(),
         }
+    }
+
+    /// Loads a prefab test scene: its meshes, its instances under the default material (their
+    /// albedos the instance colors), its lights, environment and camera.
+    pub fn load(&mut self, scene: &marlin_test_scenes::Scene) {
+        let meshes: Vec<MeshId> = scene
+            .meshes
+            .iter()
+            .map(|m| self.upload(&m.cooked()))
+            .collect();
+        let material = self.default_material(DefaultMaterial::default());
+        for i in &scene.instances {
+            let [r, g, b] = i.albedo;
+            self.add(meshes[i.mesh], material, i.transform, [r, g, b, 1.0]);
+        }
+        for &light in &scene.lights {
+            let id = self.scene.ids().lights.reserve();
+            self.updates
+                .lights
+                .push(id, marlin_render::scene::LightUpdate::Add(light));
+        }
+        self.updates.environment = Some(scene.environment);
+        self.camera = scene.camera;
     }
 
     pub fn upload(&mut self, mesh: &cook::Cooked) -> MeshId {
@@ -357,6 +401,81 @@ impl Harness {
     }
 }
 
+impl Harness {
+    /// Applies the pending updates and draws one `WIDTH` × `HEIGHT` frame lit by the sun, the
+    /// ambient light and, through ReSTIR DI drawn with `seed`, the scene's local lights: the HDR
+    /// scene's RGB, row-major.
+    pub fn restir_frame(&mut self, seed: u32) -> Vec<[f32; 3]> {
+        self.restir_frame_at(seed, WIDTH, HEIGHT)
+    }
+
+    /// [`restir_frame`](Self::restir_frame) at `width` × `height`.
+    pub fn restir_frame_at(&mut self, seed: u32, width: u32, height: u32) -> Vec<[f32; 3]> {
+        let updates = core::mem::take(&mut self.updates);
+        self.scene.apply(&updates);
+        self.meshes.prepare_rt(self.device).unwrap();
+        let rows = self.scene.instance_rows();
+        self.tlas.prepare(self.device, rows).unwrap();
+        self.tlas.release(&mut self.frame);
+        let uploads = self.meshes.take_uploads();
+        let (meshes, scene, scatter, vis, materials, lighting) = (
+            &self.meshes,
+            &mut self.scene,
+            &self.scatter,
+            &self.vis,
+            &self.materials,
+            &self.lighting,
+        );
+        let (tlas, tiles, restir) = (&self.tlas, &self.light_tiles, &self.restir);
+        let (camera, previous) = (self.camera, self.previous);
+        let ticket = self
+            .frame
+            .execute(self.device, |g, _| {
+                let pool = meshes.add_passes(g, uploads);
+                let gpu = scene.add_passes(g, scatter);
+                let rt = tlas.add_passes(g, gpu, &pool, rows);
+                let drawn = tiles.add_passes(g, scene, seed);
+                let view = marlin_render::visibility::ViewDesc {
+                    id: 0,
+                    camera,
+                    previous,
+                    width,
+                    height,
+                };
+                let v = vis.add_passes(g, meshes, scene, gpu, pool, &view);
+                let out = materials.add_passes(g, gpu, &v, camera, previous, width, height);
+                let env = *scene.environment();
+                let mut lit = lighting.add_passes(g, Some(out.material), None, &env, width, height);
+                if let Some(tiles) = drawn {
+                    let inputs = RestirInputs {
+                        material: out.material,
+                        depth: v.depth,
+                        lights: gpu.lights,
+                        rt,
+                        tiles,
+                    };
+                    lit = restir.add_passes(g, lit, inputs, camera, width, height, seed);
+                }
+                g.readback_texture(lit)
+            })
+            .unwrap();
+        let bytes = self.frame.wait_readback(ticket).unwrap();
+        assert_eq!(self.device.validation_errors(), 0);
+        self.previous = Some(self.camera);
+        bytes
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|p| {
+                let h = |i: usize| {
+                    marlin_render::asset::mesh::f16_to_f32(u16::from_le_bytes([p[i], p[i + 1]]))
+                };
+                [h(0), h(2), h(4)]
+            })
+            .collect()
+    }
+}
+
 /// The environment these tests light with: their pictures are the lit scene read without
 /// exposure, so R1's relative values (a sun whose illuminance over π is 1, its ambient and
 /// background) rather than physical ones.
@@ -366,5 +485,16 @@ fn relative_environment() -> Environment {
         ambient: [0.08, 0.09, 0.12],
         clear_color: [0.02, 0.02, 0.03, 1.0],
         ..Environment::default()
+    }
+}
+
+impl Harness {
+    /// The GPU time of each pass of a recent frame, in milliseconds, by name.
+    pub fn pass_times(&self) -> Vec<(&'static str, f64)> {
+        self.frame
+            .gpu_timings()
+            .iter()
+            .map(|t| (t.name, t.nanoseconds as f64 / 1e6))
+            .collect()
     }
 }

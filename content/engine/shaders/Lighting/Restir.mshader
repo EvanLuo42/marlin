@@ -1,0 +1,204 @@
+namespace Marlin.Engine.Lighting;
+
+// ReSTIR DI (0010 §2, the §2.9 configuration where the reservoir owns `Dnee`; R3c): local lights
+// over the material buffer's proxy lobe. marlin-render's `RestirDi` declares, a frame:
+//
+// 1. `RestirInitial`: every pixel draws `Candidates` lights from one presampled light tile (the
+//    same tile for its 8×8 screen tile, `LightTiles.mshader`) and keeps one by resampled
+//    importance sampling (RIS): weight = target / source pdf, the target the unshadowed
+//    contribution (no visibility).
+// 2. `RestirShade`: the kept light's contribution, its visibility from one shadow ray to a point
+//    of its sphere (a ray query against the TLAS), times the reservoir's weight `W`, added to
+//    the HDR scene.
+//
+// Lambert diffuse for now, like the sun (`Lighting.mshader`): the exact BSDF comes with the
+// final shading (0010 §2.6). Light units: candela times color (`LightDesc`); a light fades out
+// at its range with UE's window `saturate(1 − (d/range)⁴)²`.
+
+using Marlin.Substrate;
+
+/// A row of the light table (`marlin_render::scene::gpu`).
+public struct LightRow
+{
+    /// 0 directional, 1 point, 2 spot.
+    public uint Kind;
+    public float Range;
+    /// Spot: cosines of the inner and outer half angles.
+    public float2 Cone;
+    /// Candela times the linear color.
+    public float3 Intensity;
+    /// The emitting sphere's radius.
+    public float Radius;
+    public float3 Position;
+    public uint Spare0;
+    /// Where a spot light shines.
+    public float3 Direction;
+    public uint Spare1;
+}
+
+/// A pixel's reservoir (32 bytes, 0010 §2.1's reconnection format as far as DI needs it).
+public struct DiReservoir
+{
+    /// The light's row; `0xFFFFFFFF`: none.
+    public uint Light;
+    /// Where on the light's sphere the shadow ray goes: two unorm16 random numbers.
+    public uint Sample;
+    /// The unbiased contribution weight: Σ weights / (M · target of the kept sample).
+    public float W;
+    /// Confidence: candidates' worth of samples behind it.
+    public float M;
+    /// The target of the kept sample at this pixel.
+    public float Target;
+    public uint3 Spare;
+}
+
+public struct RestirConstants
+{
+    /// The camera's clip space to world. Column-major.
+    public float4x4 InverseViewProjection;
+    /// xyz: the camera.
+    public float4 Eye;
+    public uint Width;
+    public uint Height;
+    /// Lights each pixel draws.
+    public uint Candidates;
+    /// A new one each frame.
+    public uint Seed;
+    public uint TileCount;
+    public uint TileSize;
+    public uint2 Spare;
+}
+
+public struct RestirArgs
+{
+    public Uniform<RestirConstants> Constants;
+    public Texture2D<uint4> MaterialBuffer;
+    /// The camera's depth (`R32Float`, reverse-Z, 0 where nothing is).
+    public Texture2D<float> Depth;
+    public ReadOnlyBuffer<LightRow> Lights;
+    /// Presampled light tiles: per entry the light's row and its probability (float bits).
+    public ReadOnlyBuffer<uint2> Tiles;
+    public Buffer<DiReservoir> Reservoirs;
+    public AccelerationStructure Tlas;
+    /// The HDR scene the shading adds to.
+    public StorageTexture2D<float4> Scene;
+}
+
+const uint NoLight = 4294967295;
+
+float Luminance(float3 c) => Dot(c, float3(0.2126, 0.7152, 0.0722));
+
+/// The world position of screen pixel `px` at `depth`.
+float3 WorldAt(in RestirConstants c, uint2 px, float depth)
+{
+    float2 ndc = float2(((float)px.x + 0.5) / (float)c.Width * 2 - 1, 1 - ((float)px.y + 0.5) / (float)c.Height * 2);
+    float4 p = c.InverseViewProjection * float4(ndc, depth, 1);
+    return p.xyz / p.w;
+}
+
+/// The light a Lambert surface at `x`, facing `n`, of albedo `albedo`, reflects toward the eye
+/// from light `l` (without shadows): albedo / π · I · cos θ / d², faded by the range window and a
+/// spot's cone.
+float3 Contribution(in LightRow l, float3 x, float3 n, float3 albedo)
+{
+    float3 d = l.Position - x;
+    float d2 = Max(Dot(d, d), 0.0001);
+    float dist = Sqrt(d2);
+    float3 toward = d / dist;
+    float cosine = Saturate(Dot(n, toward));
+    float window = Saturate(1 - Pow(dist / Max(l.Range, 0.0001), 4));
+    float falloff = window * window / d2;
+    float spot = 1;
+    if (l.Kind == 2)
+    {
+        float c = Dot(-toward, l.Direction);
+        float s = Saturate((c - l.Cone.y) / Max(l.Cone.x - l.Cone.y, 0.0001));
+        spot = s * s;
+    }
+    if (l.Kind == 0)
+        return float3(0, 0, 0);
+    return albedo * 0.31830989 * l.Intensity * (falloff * spot * cosine);
+}
+
+/// `x` as a float in [0, 1), from a hash.
+float Random(uint x) => Unit(Hash(x));
+
+[Compute(8, 8, 1)]
+public void RestirInitial([DispatchThreadId] uint3 id, [Push] in RestirArgs a)
+{
+    RestirConstants c = a.Constants.Value;
+    if (id.x >= c.Width || id.y >= c.Height)
+        return;
+    uint pixel = id.y * c.Width + id.x;
+    DiReservoir r = DiReservoir { Light = NoLight, Sample = 0, W = 0, M = 0, Target = 0, Spare = uint3(0, 0, 0) };
+    float depth = a.Depth.Load((int2)id.xy);
+    Proxy p = UnpackProxy(a.MaterialBuffer.Load((int2)id.xy));
+    if (depth <= 0 || p.Count == 0)
+    {
+        a.Reservoirs[pixel] = r;
+        return;
+    }
+    float3 x = WorldAt(c, id.xy, depth);
+    // One tile per 8×8 screen tile, a new one each frame.
+    uint seed = Hash(c.Seed ^ Hash(pixel));
+    uint tile = Hash(c.Seed ^ Hash((id.y / 8) * 65536 + id.x / 8)) % c.TileCount;
+    float sum = 0;
+    for (uint i = 0; i < c.Candidates; i++)
+    {
+        uint h = Hash(seed + i * 0x9E3779B9);
+        uint2 entry = a.Tiles[tile * c.TileSize + h % c.TileSize];
+        float source = AsFloat(entry.y);
+        if (source <= 0)
+            continue;
+        float target = Luminance(Contribution(a.Lights[entry.x], x, p.Normal, p.Albedo));
+        float weight = target / source;
+        sum += weight;
+        if (weight > 0 && Random(h ^ 0x68E31DA4) * sum < weight)
+        {
+            r.Light = entry.x;
+            r.Target = target;
+        }
+    }
+    if (r.Light != NoLight)
+    {
+        r.M = 1;
+        r.W = sum / ((float)c.Candidates * r.Target);
+        r.Sample = Hash(seed ^ 0xB5297A4D);
+    }
+    a.Reservoirs[pixel] = r;
+}
+
+[Compute(8, 8, 1)]
+public void RestirShade([DispatchThreadId] uint3 id, [Push] in RestirArgs a)
+{
+    RestirConstants c = a.Constants.Value;
+    if (id.x >= c.Width || id.y >= c.Height)
+        return;
+    DiReservoir r = a.Reservoirs[id.y * c.Width + id.x];
+    if (r.Light == NoLight || r.W <= 0)
+        return;
+    float depth = a.Depth.Load((int2)id.xy);
+    Proxy p = UnpackProxy(a.MaterialBuffer.Load((int2)id.xy));
+    float3 x = WorldAt(c, id.xy, depth);
+    LightRow l = a.Lights[r.Light];
+    // A point of the light's sphere, on the half facing the surface.
+    float u = (float)(r.Sample & 0xFFFF) / 65536.0;
+    float v = (float)(r.Sample >> 16) / 65536.0;
+    float3 toward = Normalize(x - l.Position);
+    float z = u;
+    float ring = Sqrt(Max(1 - z * z, 0));
+    float phi = v * 6.2831853;
+    float3 t = Normalize(Cross(Abs(toward.y) < 0.99 ? float3(0, 1, 0) : float3(1, 0, 0), toward));
+    float3 b = Cross(toward, t);
+    float3 target = l.Position + l.Radius * (toward * z + t * (ring * Cos(phi)) + b * (ring * Sin(phi)));
+    // From just off the surface, scaled with the distance to the eye.
+    float3 origin = x + p.Normal * (0.001 + 0.0005 * Length(x - c.Eye.xyz));
+    float3 d = target - origin;
+    float dist = Length(d);
+    Ray ray = Ray { Origin = origin, TMin = 0, Direction = d / Max(dist, 0.0001), TMax = dist * 0.999 };
+    if (a.Tlas.TraceAny(ray))
+        return;
+    float3 radiance = Contribution(l, x, p.Normal, p.Albedo) * r.W;
+    float4 scene = a.Scene[(int2)id.xy];
+    a.Scene[(int2)id.xy] = float4(scene.xyz + radiance, scene.w);
+}
