@@ -38,17 +38,20 @@ fn frame(r: &mut TestUi, frames: &mut FrameContext, list: &UiDrawList) -> (Vec<u
     (image, shaded)
 }
 
-/// The scene with a dot at `dot`.
-fn list(r: &TestUi, dot: Vec2) -> UiDrawList {
+/// The scene, its image from `view`, with a dot at `dot`.
+fn list(r: &TestUi, view: u32, dot: Vec2) -> UiDrawList {
     let mut list = UiDrawList::new(1.0);
     let mut p = list.painter(&r.glyph_cache().ids);
-    scene(&mut p, W as f32, H as f32, 0);
+    scene(&mut p, W as f32, H as f32, view);
     p.circle(dot, 6.0, &ShapeStyle::fill(Color::rgb(255, 0, 255)));
     list
 }
 
 #[test]
 fn only_changed_tiles_are_shaded_and_the_pixels_stay_the_same() {
+    // A texture of its own: whatever another test leaves in view 0 may change between frames.
+    let (_texture, view) = crate::shading::checker_texture();
+    let view = view.index();
     let mut on = renderer(&UiRendererDesc::default());
     let mut off = renderer(&UiRendererDesc {
         damage: false,
@@ -65,7 +68,7 @@ fn only_changed_tiles_are_shaded_and_the_pixels_stay_the_same() {
         Vec2::new(260.0, 30.0),
     ];
     for (i, &dot) in dots.iter().enumerate() {
-        let (l_on, l_off) = (list(&on, dot), list(&off, dot));
+        let (l_on, l_off) = (list(&on, view, dot), list(&off, view, dot));
         let (a, shaded) = frame(&mut on, &mut f_on, &l_on);
         let (b, all) = frame(&mut off, &mut f_off, &l_off);
         assert_eq!(a, b, "frame {i}: damage detection changes no pixel");
@@ -90,8 +93,8 @@ fn only_changed_tiles_are_shaded_and_the_pixels_stay_the_same() {
 fn unchanged_frames_need_no_redraw() {
     let mut r = renderer(&UiRendererDesc::default());
     let fonts: [FontView<'_>; 1] = [inter()];
-    let a = r.prepare(&list(&r, Vec2::new(10.0, 10.0)), &fonts, None);
-    let b_list = list(&r, Vec2::new(11.0, 10.0));
+    let a = r.prepare(&list(&r, 0, Vec2::new(10.0, 10.0)), &fonts, None);
+    let b_list = list(&r, 0, Vec2::new(11.0, 10.0));
     let b = r.prepare(&b_list, &fonts, None);
     let data = &a.0.surfaces[0];
     let s = &r.surface;
