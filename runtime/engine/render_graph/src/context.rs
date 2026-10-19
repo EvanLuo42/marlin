@@ -507,7 +507,8 @@ impl<'a> PassContext<'a, Rhi> {
     }
 
     /// `max_count` dispatches from arguments at `args` (declared [`Access::Indirect`]); with
-    /// `count`, the first as many as the `u32` there says.
+    /// `count`, the first as many as the `u32` there says. Like every indirect command here, the
+    /// records' constant is skipped: [`marlin_rhi::INDIRECT_CONSTANT_WORD`] keeps what was pushed.
     pub fn dispatch_indirect(
         &mut self,
         args: BufferHandle<'_>,
@@ -564,6 +565,8 @@ impl<'a> PassContext<'a, Rhi> {
             offset: args.offset,
             max_count,
             count,
+            // No pass reads the record constant: the native indirect commands are much cheaper.
+            constant: false,
         }
     }
 

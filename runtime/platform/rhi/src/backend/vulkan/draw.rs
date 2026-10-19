@@ -7,7 +7,9 @@
 //! first word to `INDIRECT_CONSTANT_WORD * 4`, then the action token reading the rest. Count
 //! buffers become the sequence count. There is no execution set: the bound pipeline is passed
 //! along (`VkGeneratedCommandsPipelineInfoEXT`), and the commands preprocess implicitly into
-//! preprocess memory the list sub-allocates.
+//! preprocess memory the list sub-allocates. Commands without the constant
+//! (`IndirectArgs::constant`) use the native indirect commands instead, reading each record past
+//! its constant word; a counted dispatch, which has no native form, still goes through DGC.
 
 use core::ptr;
 
@@ -764,6 +766,9 @@ fn preprocess_buffer(shared: &Arc<Shared>, size: u64, types: u32) -> Option<Buff
 /// One execution runs at most `maxIndirectSequenceCount` records: longer runs without a count
 /// split into several executions; with a count, the count is clamped to that limit.
 fn execute(list: &mut CommandList, kind: Kind, pipeline: VkPipeline, args: &IndirectArgs<'_>) {
+    if !args.constant && native(list, kind, args) {
+        return;
+    }
     let shared = list.shared.clone();
     let limit = list
         .draw
@@ -790,6 +795,60 @@ fn execute(list: &mut CommandList, kind: Kind, pipeline: VkPipeline, args: &Indi
         }
         first += records;
     }
+}
+
+/// `args` without the constant through the native indirect commands, which read each record
+/// past its constant word; false (nothing recorded) for a counted dispatch, which has none.
+fn native(list: &mut CommandList, kind: Kind, args: &IndirectArgs<'_>) -> bool {
+    let fns = list.fns();
+    let raw = list.raw();
+    let buffer = args.buffer.raw.raw();
+    let offset = args.offset + 4;
+    let stride = kind.stride();
+    let count = args.count.map(|(b, o)| (b.raw.raw(), o));
+    // SAFETY: a recording buffer with the right pipeline bound (inside a render pass for draws,
+    // outside for dispatches); the argument and count ranges were checked by `commands.rs`.
+    unsafe {
+        match (kind, count) {
+            (Kind::Dispatch, Some(_)) => return false,
+            (Kind::Dispatch, None) => {
+                for i in 0..u64::from(args.max_count) {
+                    (fns.vkCmdDispatchIndirect)(raw, buffer, offset + i * u64::from(stride));
+                }
+            }
+            (Kind::Draw, None) => {
+                (fns.vkCmdDrawIndirect)(raw, buffer, offset, args.max_count, stride)
+            }
+            (Kind::Draw, Some((c, at))) => {
+                (fns.vkCmdDrawIndirectCount)(raw, buffer, offset, c, at, args.max_count, stride)
+            }
+            (Kind::DrawIndexed, None) => {
+                (fns.vkCmdDrawIndexedIndirect)(raw, buffer, offset, args.max_count, stride)
+            }
+            (Kind::DrawIndexed, Some((c, at))) => (fns.vkCmdDrawIndexedIndirectCount)(
+                raw,
+                buffer,
+                offset,
+                c,
+                at,
+                args.max_count,
+                stride,
+            ),
+            (Kind::Mesh, None) => {
+                (fns.vkCmdDrawMeshTasksIndirectEXT)(raw, buffer, offset, args.max_count, stride)
+            }
+            (Kind::Mesh, Some((c, at))) => (fns.vkCmdDrawMeshTasksIndirectCountEXT)(
+                raw,
+                buffer,
+                offset,
+                c,
+                at,
+                args.max_count,
+                stride,
+            ),
+        }
+    }
+    true
 }
 
 /// One execution of `records` records from `address`, or of the count at `count` if fewer.

@@ -138,6 +138,7 @@ fn dispatches_mesh_indirect_with_a_count() {
                 offset: 0,
                 max_count: 3,
                 count: Some((&count, 0)),
+                constant: true,
             });
             target.finish(list);
         });

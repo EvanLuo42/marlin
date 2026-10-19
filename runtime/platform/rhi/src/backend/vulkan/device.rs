@@ -373,6 +373,13 @@ impl FeatureChain {
             (self.mesh.taskShader, "taskShader"),
             (self.mesh.meshShader, "meshShader"),
             (self.dgc.deviceGeneratedCommands, "deviceGeneratedCommands"),
+            // Indirect commands without the constant run natively (`IndirectArgs::constant`).
+            (self.core.features.multiDrawIndirect, "multiDrawIndirect"),
+            (
+                self.core.features.drawIndirectFirstInstance,
+                "drawIndirectFirstInstance",
+            ),
+            (self.v12.drawIndirectCount, "drawIndirectCount"),
             (
                 self.core.features.shaderStorageImageWriteWithoutFormat,
                 "shaderStorageImageWriteWithoutFormat",

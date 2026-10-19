@@ -100,12 +100,14 @@ fn draws_indirect_with_and_without_a_count() {
                     offset: 0,
                     max_count: records.len() as u32,
                     count: with_count.then_some((&count.buffer, 0)),
+                    constant: true,
                 });
                 list.draw_indirect(&IndirectArgs {
                     buffer: &offset_args.buffer,
                     offset: 4,
                     max_count: 1,
                     count: None,
+                    constant: true,
                 });
                 target.finish(list);
             });
@@ -174,6 +176,7 @@ fn draws_indexed_indirect() {
                 offset: 0,
                 max_count: 3,
                 count: Some((&count.buffer, 4)),
+                constant: true,
             });
             target.finish(list);
         });
@@ -248,6 +251,7 @@ fn dispatches_indirect_on_graphics_and_compute_lists() {
                     offset: 0,
                     max_count: 4,
                     count: None,
+                    constant: true,
                 });
                 list.buffer_barriers(&[BufferBarrier {
                     buffer: &counters.buffer,
@@ -260,6 +264,7 @@ fn dispatches_indirect_on_graphics_and_compute_lists() {
                     offset: 0,
                     max_count: 4,
                     count: Some((&count.buffer, 0)),
+                    constant: true,
                 });
                 list.buffer_barriers(&[BufferBarrier {
                     buffer: &counters.buffer,
@@ -296,6 +301,7 @@ fn indirect_arguments_need_indirect_usage() {
         offset: 0,
         max_count: 1,
         count: None,
+        constant: true,
     });
 }
 
@@ -313,6 +319,7 @@ fn indirect_arguments_stay_in_the_buffer() {
         offset: 4,
         max_count: 2,
         count: None,
+        constant: true,
     });
 }
 
@@ -330,5 +337,96 @@ fn indirect_counts_do_not_wrap() {
         offset: 0,
         max_count: 1,
         count: Some((&args, u64::MAX - 3)),
+        constant: true,
     });
+}
+
+#[test]
+fn indirect_commands_without_the_constant_run_natively() {
+    for device in devices() {
+        // Draws: every record draws the column pushed in the constant word.
+        let pipeline = columns_pipeline(device, None);
+        let target = ColumnTarget::new(device);
+        let records: Vec<DrawIndirectArgs> = [1, 3, 5]
+            .map(|c| DrawIndirectArgs {
+                constant: c,
+                vertex_count: 6,
+                instance_count: 1,
+                first_vertex: 0,
+                first_instance: 0,
+            })
+            .to_vec();
+        let args = GpuBuffer::new(device, &bytes_of(&records), BufferUsage::INDIRECT);
+        let count = GpuBuffer::new(device, &words_to_bytes(&[0]), BufferUsage::INDIRECT);
+        for with_count in [false, true] {
+            run(device, |list| {
+                args.copy(list, BufferState::INDIRECT);
+                count.copy(list, BufferState::INDIRECT);
+                target.begin(list);
+                list.set_graphics_pipeline(&pipeline);
+                list.push_constants(0, &[COLUMNS, 1, 0]);
+                list.push_constants(INDIRECT_CONSTANT_WORD, &[6]);
+                list.draw_indirect(&IndirectArgs {
+                    buffer: &args.buffer,
+                    offset: 0,
+                    max_count: records.len() as u32,
+                    count: with_count.then_some((&count.buffer, 0)),
+                    constant: false,
+                });
+                target.finish(list);
+            });
+            // A count of 0 draws nothing.
+            expect_columns(&target, if with_count { &[] } else { &[6] });
+        }
+
+        // Dispatches: each record runs, counting into the word pushed in the constant word.
+        let pipeline = device
+            .create_compute_pipeline(&ComputePipelineDesc {
+                shader: shader("Count"),
+                cache: None,
+            })
+            .unwrap();
+        let records =
+            [(1, 1, 1), (2, 3, 1), (0, 1, 1), (1, 2, 2)].map(|(x, y, z)| DispatchIndirectArgs {
+                constant: 3,
+                x,
+                y,
+                z,
+            });
+        let args = GpuBuffer::new(device, &bytes_of(&records), BufferUsage::INDIRECT);
+        let counters = GpuBuffer::new(
+            device,
+            &[0; 16],
+            BufferUsage::SHADER_WRITE | BufferUsage::COPY_SRC,
+        );
+        let view = device
+            .create_buffer_view(
+                &counters.buffer,
+                &BufferViewDesc::whole(BufferViewKind::Raw, true),
+            )
+            .unwrap();
+        let out = readback(device, 16);
+        run(device, |list| {
+            args.copy(list, BufferState::INDIRECT);
+            counters.copy(list, BufferState::COMPUTE_WRITE);
+            list.set_compute_pipeline(&pipeline);
+            list.push_constants(0, &[view.index()]);
+            list.push_constants(INDIRECT_CONSTANT_WORD, &[1]);
+            list.dispatch_indirect(&IndirectArgs {
+                buffer: &args.buffer,
+                offset: 0,
+                max_count: 4,
+                count: None,
+                constant: false,
+            });
+            list.buffer_barriers(&[BufferBarrier {
+                buffer: &counters.buffer,
+                before: BufferState::COMPUTE_WRITE,
+                after: BufferState::COPY_SRC,
+            }]);
+            list.copy_buffer(&counters.buffer, 0, &out, 0, 16);
+        });
+        assert_eq!(read_words(&out, 0, 4), [0, 64 * (1 + 6 + 4), 0, 0]);
+        assert_eq!(device.validation_errors(), 0);
+    }
 }

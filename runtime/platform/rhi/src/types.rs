@@ -2070,6 +2070,11 @@ pub struct IndirectArgs<'a> {
     pub offset: u64,
     pub max_count: u32,
     pub count: Option<(&'a crate::Buffer, u64)>,
+    /// Whether each record's `constant` lands in [`INDIRECT_CONSTANT_WORD`]. Without it the
+    /// shaders must not read that word (it holds the pushed value or the record's), and the
+    /// backend uses its native indirect command where it has one, which on Vulkan is far cheaper
+    /// than device-generated commands.
+    pub constant: bool,
 }
 
 // --- Mesh pipelines ---

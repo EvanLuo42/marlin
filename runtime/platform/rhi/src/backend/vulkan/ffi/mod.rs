@@ -230,6 +230,13 @@ fn_table! {
         vkDestroyIndirectCommandsLayoutEXT: PFN_vkDestroyIndirectCommandsLayoutEXT,
         vkGetGeneratedCommandsMemoryRequirementsEXT: PFN_vkGetGeneratedCommandsMemoryRequirementsEXT,
         vkCmdExecuteGeneratedCommandsEXT: PFN_vkCmdExecuteGeneratedCommandsEXT,
+        vkCmdDispatchIndirect: PFN_vkCmdDispatchIndirect,
+        vkCmdDrawIndirect: PFN_vkCmdDrawIndirect,
+        vkCmdDrawIndirectCount: PFN_vkCmdDrawIndirectCount,
+        vkCmdDrawIndexedIndirect: PFN_vkCmdDrawIndexedIndirect,
+        vkCmdDrawIndexedIndirectCount: PFN_vkCmdDrawIndexedIndirectCount,
+        vkCmdDrawMeshTasksIndirectEXT: PFN_vkCmdDrawMeshTasksIndirectEXT,
+        vkCmdDrawMeshTasksIndirectCountEXT: PFN_vkCmdDrawMeshTasksIndirectCountEXT,
         // --- query, ray tracing, diagnostics ---
         vkCreateQueryPool: PFN_vkCreateQueryPool,
         vkDestroyQueryPool: PFN_vkDestroyQueryPool,

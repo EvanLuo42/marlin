@@ -36,7 +36,7 @@
 //!   GPU.
 //! - **Indirect commands set one push constant** ([`INDIRECT_CONSTANT_WORD`]) per record, so one
 //!   multi-draw runs many differently parameterized draws (Vulkan device-generated commands,
-//!   D3D12 command signatures).
+//!   D3D12 command signatures); commands that do not need it say so and run natively.
 //! - **Memory** is committed per resource, placed in [`Heap`]s where resources may alias, or
 //!   bound tile by tile to sparse resources. Sub-allocation policy lives above the RHI; the RHI
 //!   reports the OS memory budget and pages heaps in and out on request.

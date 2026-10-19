@@ -138,6 +138,7 @@ buffer 成员的 offset 由 shader 自己声明（SPIR-V 的 `Offset` 装饰）�
 - render pass → dynamic rendering（`vkCmdBeginRendering`），load/store op 直接映射；viewport 用负高度翻转（0002 §4）。
 - 管线状态大部分静态，viewport/scissor/stencil ref/blend constants/depth bounds/shading rate 为动态状态。
 - `draw*_indirect` / `dispatch*_indirect`：indirect 参数结构的第一个字是 `constant`。用 DGC（`VK_EXT_device_generated_commands`）：indirect commands layout = push data token（写 `INDIRECT_CONSTANT_WORD`）+ draw/dispatch token；有 count buffer 的用 `maxSequenceCount` + count。preprocess buffer 由 backend 按需分配并缓存。
+  - `IndirectArgs::constant` 为 false 时（render graph 的 indirect 命令都是）不送 constant，改用原生命令：`vkCmdDispatchIndirect`（每条记录一次）、`vkCmdDraw[Indexed]Indirect[Count]`、`vkCmdDrawMeshTasksIndirect[Count]EXT`，从记录的第二个字读、步长不变；只有带 count 的 dispatch 没有原生命令，仍走 DGC。DGC 每条命令在 GPU 上要 10–20 µs（preprocess 加执行），CPU 上每次还要查一遍 preprocess 内存需求；`samples/basic` 每帧约 180 条 indirect 命令，换成原生以后 GPU 一帧从 2.0 ms 降到 1.0 ms（2026-10-18）。为此 baseline 加上 `multiDrawIndirect`、`drawIndirectFirstInstance`、`drawIndirectCount`。
 - 查询：timestamp / occlusion / pipeline statistics 映射到 `VkQueryPool`；pipeline statistics 结果按 `PipelineStatistics` 字段顺序写出（Vulkan 位序与它几乎一致，mesh 图元数要额外的 `MESH_PRIMITIVES_GENERATED` 查询）。
 - predication → `VK_EXT_conditional_rendering`（可选）。
 - 调试事件/标记 → `VK_EXT_debug_utils` 的 label；`write_marker` → `vkCmdWriteBufferMarker2AMD`，没有就 fill。
