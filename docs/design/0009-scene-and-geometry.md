@@ -440,3 +440,5 @@ R2g（2026-10-18）定下的细节：VSM 的页跨帧缓存（0010 §5.3 的"缓
 - **容量**：每级的绘制表 `4 × (cluster 数 + 物理页数)`，上限 `Visibility::max_shadow_draws`（2^20）；超出的绘制丢掉（计数仍然计）。
 - **结果**：`ShadowRaster` 13.7 ms → 0.18 ms，开 vsync 跑满 165 fps，关掉约 370 fps。剩下的 GPU 时间是约 180 个依次执行的小 pass（14 级每级约 10 个），每个 10–20 µs，主要是 barrier 和间接参数的等待，不是计算量。
 - **`r.stats`**：每秒在日志里打印帧率、GPU 一帧的跨度和各队列的忙碌时间、CPU 区段和 GPU pass 的平均耗时。
+- **各级一起剔除**（`Visibility::add_shadow_views`）：14 级不再各自声明一串 pass，而是每个阶段一个 pass、里面每级一次 dispatch（`cull_passes`）：各级的表各自独立，共用的只有读的东西和只置 1 的"用过"标记，所以一个 pass 里的 dispatch 之间不需要 barrier，可以并行跑。shader 不变。阴影的 pass 从约 126 个降到约 9 个。
+- **原生 indirect**（0016 §6）：剩下每个小 pass 10–20 µs 的大头其实是 Vulkan 的 device-generated commands。graph 的 indirect 命令不送记录里的 constant，改用原生命令以后 GPU 一帧 2.0 ms → 1.0 ms，关 vsync 约 750 fps，开始受 CPU 限制（录制、每帧新建的 readback 缓冲、流送反馈、present）。

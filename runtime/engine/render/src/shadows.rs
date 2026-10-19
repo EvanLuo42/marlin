@@ -2,7 +2,7 @@
 //! [`VsmSettings::virtual_resolution`]² texels in pages of [`VsmSettings::page_size`]², level k
 //! twice the extent of level k − 1. Only the pages the frame's surfaces sample get a physical
 //! page of the pool; each level's pages are drawn by the visibility passes in orthographic mode
-//! ([`Visibility::add_shadow_view`]); the result is a screen-space sun shadow mask the lighting
+//! ([`Visibility::add_shadow_views`]); the result is a screen-space sun shadow mask the lighting
 //! multiplies the sun by. The passes are `Marlin.Engine.Shadows`'s; its file comment describes
 //! them.
 //!
@@ -673,10 +673,12 @@ impl Vsm {
             })
         });
 
-        // Each level's pages drawn this frame.
-        let mut used = used;
-        for (k, (level, record)) in levels.iter().zip(&level_records).enumerate() {
-            let view = ShadowView {
+        // Each level's pages drawn this frame, all levels together.
+        let views: Vec<ShadowView> = levels
+            .iter()
+            .zip(&level_records)
+            .enumerate()
+            .map(|(k, (level, record))| ShadowView {
                 view_projection: level.view_projection,
                 texels_per_unit: 1.0 / level.texel,
                 resolution: s.virtual_resolution,
@@ -687,11 +689,11 @@ impl Vsm {
                 pool_pages,
                 drawn_base: k as u32 * (pool_pages + 1),
                 page_offset: record.offset,
-            };
-            (used, pool) = vis.add_shadow_view(
-                g, meshes, scene, gpu, pages, used, page_table, drawn, pool, &view,
-            );
-        }
+            })
+            .collect();
+        let (used, pool) = vis.add_shadow_views(
+            g, meshes, scene, gpu, pages, used, page_table, drawn, pool, &views,
+        );
 
         let mask = g.add_compute("VsmMask", |b| {
             let depth = b.read_texture(depth, Access::ComputeRead);

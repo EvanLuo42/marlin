@@ -23,6 +23,8 @@
 //! feeding on one queue: Vulkan does not promise forward progress between workgroups, and a
 //! persistent loop that waits on another workgroup can hang the GPU.
 
+use alloc::vec::Vec;
+
 use marlin_math::{Mat4, Transform};
 use marlin_render_graph::{
     Access, BufferDesc, BufferHandle, PassContext, RenderGraph, TextureDesc, TextureHandle,
@@ -704,15 +706,16 @@ impl Visibility {
         }
     }
 
-    /// Declares a shadow view (`Vsm`'s levels, 0010 §5.3): the passes cull the drawable
-    /// instances of `scene` against `view`'s orthographic box, pick their LOD cut at its texel
-    /// size and draw the clusters over the pages it draws this frame (`page_table` entries with
-    /// the render bit, `crate::shadows`) into the physical pool `shadow_pool` (depth nearest
-    /// the light, by atomic max), on the hardware. No occlusion
-    /// test and no page requests; the slots read are marked in `used`. Returns `used` and
-    /// `shadow_pool` after the passes.
-    #[allow(clippy::too_many_arguments, reason = "one shadow view's inputs")]
-    pub fn add_shadow_view<'g>(
+    /// Declares shadow views (`Vsm`'s levels, 0010 §5.3): for each of `views`, the passes cull
+    /// the drawable instances of `scene` against its orthographic box, pick their LOD cut at its
+    /// texel size and draw the clusters over the pages it draws this frame (`page_table` entries
+    /// with the render bit, listed in `drawn`, `crate::shadows`) into the physical pool
+    /// `shadow_pool` (depth nearest the light, by atomic max), on the hardware, a cluster over
+    /// each page on its own. No occlusion test and no page requests; the slots read are marked
+    /// in `used`. The views run together: each pass dispatches once per view, so there are as
+    /// many passes as for one view. Returns `used` and `shadow_pool` after the passes.
+    #[allow(clippy::too_many_arguments, reason = "the shadow views' inputs")]
+    pub fn add_shadow_views<'g>(
         &'g self,
         g: &mut RenderGraph<'g>,
         meshes: &Meshes,
@@ -723,8 +726,11 @@ impl Visibility {
         page_table: BufferHandle<'g>,
         drawn: BufferHandle<'g>,
         shadow_pool: TextureHandle<'g>,
-        desc: &ShadowView,
+        views: &[ShadowView],
     ) -> (BufferHandle<'g>, TextureHandle<'g>) {
+        let Some(first) = views.first() else {
+            return (used, shadow_pool);
+        };
         let (mut nodes, mut parts, mut clusters, mut levels) = (0u64, 0u64, 0u64, 0u32);
         for (_, mesh, _) in scene.drawable() {
             let c = meshes.dag_counts(mesh);
@@ -738,122 +744,156 @@ impl Visibility {
         let part_capacity = capacity(parts, self.max_parts);
         let cluster_capacity = capacity(clusters, self.max_clusters.min(MAX_CLUSTERS / 2));
         let rows = scene.instance_rows();
-        let vp = desc.view_projection;
         // A draw per cluster and page it covers: a few each, and the pages the view draws
         // (at most the pool) under a few clusters each.
         let draw_capacity = capacity(
-            4 * (clusters + u64::from(desc.pool_pages)),
+            4 * (clusters + u64::from(first.pool_pages)),
             self.max_shadow_draws,
         );
-        let r = desc.resolution;
-        let view = View {
-            view_projection: vp.to_cols_array(),
-            previous_view_projection: vp.to_cols_array(),
-            planes: planes(&vp),
-            eye: [0.0, 0.0, 0.0, desc.texels_per_unit],
-            lod_error_pixels: self.lod_error_pixels,
-            instance_rows: rows,
-            node_capacity,
-            part_capacity,
-            cluster_capacity,
-            request_capacity: 0,
-            occluded_capacity: 1,
-            hzb_mips: 0,
-            hzb_size: [0; 2],
-            sw_edge_pixels: 0.0,
-            width: r,
-            height: r,
-            mode: ORTHOGRAPHIC,
-            shadow_pages: 0,
-            shadow_pool: 0,
-            shadow_page_base: desc.page_base,
-            shadow_pages_per_side: desc.pages_per_side,
-            shadow_page_size: desc.page_size,
-            shadow_pool_pages_per_row: desc.pool_pages_per_row,
-            shadow_page_offset: desc.page_offset,
-            shadow_drawn_pages: 0,
-            shadow_drawn_base: desc.drawn_base,
-            shadow_draw_capacity: draw_capacity,
-        };
         let structured = |n: u32| BufferDesc::structured::<[u32; 2]>(u64::from(n));
-        let mut lists = Lists {
-            nodes: g.create_buffer("ShadowNodes", structured(node_capacity)),
-            parts: g.create_buffer("ShadowParts", structured(part_capacity)),
-            counters: g.create_buffer(
-                "ShadowCounters",
-                BufferDesc::structured::<u32>(counters::WORDS as u64),
-            ),
-            args: g.create_buffer("ShadowArgs", BufferDesc::structured::<u32>(24)),
-            // Hardware raster only.
-            clusters: g.create_buffer("ShadowClusters", structured(cluster_capacity)),
-            requests: g.create_buffer("ShadowRequests", structured(1)),
-            used,
-            occluded_instances: g
-                .create_buffer("ShadowOccludedInstances", BufferDesc::structured::<u32>(1)),
-            occluded_clusters: g.create_buffer("ShadowOccludedClusters", structured(1)),
-            shadow_draws: Some(g.create_buffer("ShadowDraws", structured(draw_capacity))),
-        };
-        lists.counters = g.add_compute("ShadowReset", |b| {
-            let counters = b.write_buffer(lists.counters, Access::ComputeWrite);
-            (counters, move |ctx: &mut PassContext<'_>| {
+        let mut lists: Vec<Lists<'g>> = Vec::with_capacity(views.len());
+        let mut inputs: Vec<PassInputs<'g>> = Vec::with_capacity(views.len());
+        for desc in views {
+            let vp = desc.view_projection;
+            let r = desc.resolution;
+            let view = View {
+                view_projection: vp.to_cols_array(),
+                previous_view_projection: vp.to_cols_array(),
+                planes: planes(&vp),
+                eye: [0.0, 0.0, 0.0, desc.texels_per_unit],
+                lod_error_pixels: self.lod_error_pixels,
+                instance_rows: rows,
+                node_capacity,
+                part_capacity,
+                cluster_capacity,
+                request_capacity: 0,
+                occluded_capacity: 1,
+                hzb_mips: 0,
+                hzb_size: [0; 2],
+                sw_edge_pixels: 0.0,
+                width: r,
+                height: r,
+                mode: ORTHOGRAPHIC,
+                shadow_pages: 0,
+                shadow_pool: 0,
+                shadow_page_base: desc.page_base,
+                shadow_pages_per_side: desc.pages_per_side,
+                shadow_page_size: desc.page_size,
+                shadow_pool_pages_per_row: desc.pool_pages_per_row,
+                shadow_page_offset: desc.page_offset,
+                shadow_drawn_pages: 0,
+                shadow_drawn_base: desc.drawn_base,
+                shadow_draw_capacity: draw_capacity,
+            };
+            lists.push(Lists {
+                nodes: g.create_buffer("ShadowNodes", structured(node_capacity)),
+                parts: g.create_buffer("ShadowParts", structured(part_capacity)),
+                counters: g.create_buffer(
+                    "ShadowCounters",
+                    BufferDesc::structured::<u32>(counters::WORDS as u64),
+                ),
+                args: g.create_buffer("ShadowArgs", BufferDesc::structured::<u32>(24)),
+                // Hardware raster only.
+                clusters: g.create_buffer("ShadowClusters", structured(cluster_capacity)),
+                requests: g.create_buffer("ShadowRequests", structured(1)),
+                used,
+                occluded_instances: g
+                    .create_buffer("ShadowOccludedInstances", BufferDesc::structured::<u32>(1)),
+                occluded_clusters: g.create_buffer("ShadowOccludedClusters", structured(1)),
+                shadow_draws: Some(g.create_buffer("ShadowDraws", structured(draw_capacity))),
+            });
+            inputs.push(PassInputs {
+                gpu,
+                pages,
+                view,
+                hzb: None,
+                pass: 0,
+                shadow_pages: Some(page_table),
+                shadow_drawn: Some(drawn),
+            });
+        }
+        let reset: Vec<BufferHandle<'g>> = g.add_compute("ShadowReset", |b| {
+            let counters: Vec<_> = lists
+                .iter()
+                .map(|l| b.write_buffer(l.counters, Access::ComputeWrite))
+                .collect();
+            (counters.clone(), move |ctx: &mut PassContext<'_>| {
                 ctx.set_pipeline(&self.reset);
-                ctx.push(&CullArgs {
-                    counters: ctx.uav(counters),
-                    ..CullArgs::default()
-                });
-                ctx.dispatch(1, 1, 1);
+                for &c in &counters {
+                    ctx.push(&CullArgs {
+                        counters: ctx.uav(c),
+                        ..CullArgs::default()
+                    });
+                    ctx.dispatch(1, 1, 1);
+                }
             })
         });
-        let p = PassInputs {
-            gpu,
-            pages,
-            view,
-            hzb: None,
-            pass: 0,
-            shadow_pages: Some(page_table),
-            shadow_drawn: Some(drawn),
-        };
-        lists = self.instance_cull(g, lists, p, rows);
-        lists = self.traverse(g, lists, p, levels);
-        lists = self.cluster_cull(g, lists, p);
-        lists = self.cull_pass(g, "ShadowMeshArgs", &self.finish_args, lists, p, None, 1);
+        for (l, c) in lists.iter_mut().zip(reset) {
+            l.counters = c;
+        }
+        let instance_groups = rows.div_ceil(64);
+        let l = &mut lists;
+        let p = &inputs;
+        self.cull_passes(
+            g,
+            "ShadowInstanceCull",
+            &self.instance_cull,
+            l,
+            p,
+            None,
+            instance_groups,
+        );
+        for _ in 0..levels {
+            self.cull_passes(g, "ShadowNodeArgs", &self.node_args, l, p, None, 1);
+            self.cull_passes(g, "ShadowNodeCull", &self.node_cull, l, p, Some(0), 0);
+        }
+        self.cull_passes(g, "ShadowPartArgs", &self.part_args, l, p, None, 1);
+        self.cull_passes(g, "ShadowClusterCull", &self.cluster_cull, l, p, Some(4), 0);
+        self.cull_passes(g, "ShadowMeshArgs", &self.finish_args, l, p, None, 1);
         // Each draw is one page, which fills the raster area.
-        let page = desc.page_size;
+        let page = first.page_size;
         let shadow_pool = g.add_raster("ShadowRaster", |b| {
             b.area(page, page);
-            let dispatch = b.read_buffer(lists.args.range(32, 16), Access::Indirect);
             let instances = b.read_buffer(gpu.instance_data, Access::MeshRead);
             let transforms = b.read_buffer(gpu.instance_transforms, Access::MeshRead);
             let meshes = b.read_buffer(gpu.meshes, Access::MeshRead);
-            let clusters = b.read_buffer(lists.clusters, Access::MeshRead);
-            let counters = b.read_buffer(lists.counters, Access::MeshRead);
             // The clusters are read from the pool through the mesh table's view.
             b.read_buffer(pages, Access::MeshRead);
-            let draws = lists
-                .shadow_draws
-                .map(|d| b.read_buffer(d, Access::MeshRead));
             let table = b.read_buffer(page_table, Access::MeshRead);
             let pool = b.write_texture(shadow_pool, Access::PixelWrite);
+            let draws: Vec<_> = lists
+                .iter()
+                .zip(&inputs)
+                .map(|(l, p)| {
+                    let dispatch = b.read_buffer(l.args.range(32, 16), Access::Indirect);
+                    let clusters = b.read_buffer(l.clusters, Access::MeshRead);
+                    let counters = b.read_buffer(l.counters, Access::MeshRead);
+                    let draws = l.shadow_draws.map(|d| b.read_buffer(d, Access::MeshRead));
+                    (p.view, dispatch, clusters, counters, draws)
+                })
+                .collect();
             (pool, move |ctx: &mut PassContext<'_>| {
-                let mut v = view;
-                v.shadow_pages = ctx.srv(table);
-                v.shadow_pool = ctx.uav(pool);
-                let view = ctx.upload(&v);
                 ctx.set_pipeline(&self.shadow_raster);
-                ctx.push(&RasterArgs {
-                    view,
-                    instances: ctx.srv(instances),
-                    transforms: ctx.srv(transforms),
-                    meshes: ctx.srv(meshes),
-                    clusters: ctx.srv(clusters),
-                    counters: ctx.srv(counters),
-                    vis: 0,
-                    shadow_draws: draws.map_or(0, |d| ctx.srv(d)),
-                });
-                ctx.dispatch_mesh_indirect(dispatch, 1, None);
+                for &(view, dispatch, clusters, counters, draws) in &draws {
+                    let mut v = view;
+                    v.shadow_pages = ctx.srv(table);
+                    v.shadow_pool = ctx.uav(pool);
+                    let view = ctx.upload(&v);
+                    ctx.push(&RasterArgs {
+                        view,
+                        instances: ctx.srv(instances),
+                        transforms: ctx.srv(transforms),
+                        meshes: ctx.srv(meshes),
+                        clusters: ctx.srv(clusters),
+                        counters: ctx.srv(counters),
+                        vis: 0,
+                        shadow_draws: draws.map_or(0, |d| ctx.srv(d)),
+                    });
+                    ctx.dispatch_mesh_indirect(dispatch, 1, None);
+                }
             })
         });
-        (lists.used, shadow_pool)
+        (lists[0].used, shadow_pool)
     }
 
     /// The `CullArgs` of a pass, from the views the pass context made of the declared handles.
@@ -900,9 +940,29 @@ impl Visibility {
         indirect: Option<u64>,
         groups: u32,
     ) -> Lists<'g> {
-        g.add_compute(name, |b| {
-            let dispatch =
-                indirect.map(|at| b.read_buffer(lists.args.range(at * 4, 16), Access::Indirect));
+        let mut lists = [lists];
+        self.cull_passes(g, name, pipeline, &mut lists, &[p], indirect, groups);
+        lists[0]
+    }
+
+    /// [`cull_pass`](Self::cull_pass) for several views at once, each with its own lists and
+    /// inputs: one pass dispatching once per view, so the views' dispatches run together. The
+    /// views share what they read (the GPU Scene, the pool, the HZB and a shadow view's tables,
+    /// taken from the first) and the used-slot marks, which they only set.
+    #[allow(clippy::too_many_arguments, reason = "one pass's shape")]
+    fn cull_passes<'g>(
+        &'g self,
+        g: &mut RenderGraph<'g>,
+        name: &str,
+        pipeline: &'g ComputePipeline,
+        lists: &mut [Lists<'g>],
+        inputs: &[PassInputs<'g>],
+        indirect: Option<u64>,
+        groups: u32,
+    ) {
+        debug_assert_eq!(lists.len(), inputs.len());
+        let out = g.add_compute(name, |b| {
+            let p = inputs[0];
             let gpu = GpuScene {
                 instance_data: b.read_buffer(p.gpu.instance_data, Access::ComputeRead),
                 instance_transforms: b.read_buffer(p.gpu.instance_transforms, Access::ComputeRead),
@@ -919,50 +979,66 @@ impl Visibility {
             let shadow_drawn = p
                 .shadow_drawn
                 .map(|t| b.read_buffer(t, Access::ComputeRead));
-            let l = Lists {
-                nodes: b.write_buffer(lists.nodes, Access::ComputeWrite),
-                parts: b.write_buffer(lists.parts, Access::ComputeWrite),
-                counters: b.write_buffer(lists.counters, Access::ComputeWrite),
-                // An indirect pass reads its record: the args are written by the args passes.
-                args: if indirect.is_some() {
-                    lists.args
-                } else {
-                    b.write_buffer(lists.args, Access::ComputeWrite)
-                },
-                clusters: b.write_buffer(lists.clusters, Access::ComputeWrite),
-                requests: b.write_buffer(lists.requests, Access::ComputeWrite),
-                used: b.write_buffer(lists.used, Access::ComputeWrite),
-                occluded_instances: b.write_buffer(lists.occluded_instances, Access::ComputeWrite),
-                occluded_clusters: b.write_buffer(lists.occluded_clusters, Access::ComputeWrite),
-                shadow_draws: lists
-                    .shadow_draws
-                    .map(|d| b.write_buffer(d, Access::ComputeWrite)),
-            };
-            let inputs = PassInputs {
-                gpu,
-                hzb,
-                shadow_pages,
-                shadow_drawn,
-                ..p
-            };
-            (l, move |ctx: &mut PassContext<'_>| {
-                let mut view = inputs.view;
-                if let Some(t) = inputs.shadow_pages {
-                    view.shadow_pages = ctx.srv(t);
-                }
-                if let Some(t) = inputs.shadow_drawn {
-                    view.shadow_drawn_pages = ctx.srv(t);
-                }
-                let view = ctx.upload(&view);
+            let used = b.write_buffer(lists[0].used, Access::ComputeWrite);
+            let views: Vec<_> = lists
+                .iter()
+                .zip(inputs)
+                .map(|(lists, p)| {
+                    let dispatch = indirect
+                        .map(|at| b.read_buffer(lists.args.range(at * 4, 16), Access::Indirect));
+                    let l = Lists {
+                        nodes: b.write_buffer(lists.nodes, Access::ComputeWrite),
+                        parts: b.write_buffer(lists.parts, Access::ComputeWrite),
+                        counters: b.write_buffer(lists.counters, Access::ComputeWrite),
+                        // An indirect pass reads its record: the args passes write the args.
+                        args: if indirect.is_some() {
+                            lists.args
+                        } else {
+                            b.write_buffer(lists.args, Access::ComputeWrite)
+                        },
+                        clusters: b.write_buffer(lists.clusters, Access::ComputeWrite),
+                        requests: b.write_buffer(lists.requests, Access::ComputeWrite),
+                        used,
+                        occluded_instances: b
+                            .write_buffer(lists.occluded_instances, Access::ComputeWrite),
+                        occluded_clusters: b
+                            .write_buffer(lists.occluded_clusters, Access::ComputeWrite),
+                        shadow_draws: lists
+                            .shadow_draws
+                            .map(|d| b.write_buffer(d, Access::ComputeWrite)),
+                    };
+                    let inputs = PassInputs {
+                        gpu,
+                        hzb,
+                        shadow_pages,
+                        shadow_drawn,
+                        ..*p
+                    };
+                    (l, inputs, dispatch)
+                })
+                .collect();
+            let out: Vec<Lists<'g>> = views.iter().map(|v| v.0).collect();
+            (out, move |ctx: &mut PassContext<'_>| {
                 ctx.set_pipeline(pipeline);
-                let args = Self::args(ctx, view, &l, &inputs, dispatch.is_some());
-                ctx.push(&args);
-                match dispatch {
-                    Some(d) => ctx.dispatch_indirect(d, 1, None),
-                    None => ctx.dispatch(groups, 1, 1),
+                for (l, inputs, dispatch) in &views {
+                    let mut view = inputs.view;
+                    if let Some(t) = inputs.shadow_pages {
+                        view.shadow_pages = ctx.srv(t);
+                    }
+                    if let Some(t) = inputs.shadow_drawn {
+                        view.shadow_drawn_pages = ctx.srv(t);
+                    }
+                    let view = ctx.upload(&view);
+                    let args = Self::args(ctx, view, l, inputs, dispatch.is_some());
+                    ctx.push(&args);
+                    match *dispatch {
+                        Some(d) => ctx.dispatch_indirect(d, 1, None),
+                        None => ctx.dispatch(groups, 1, 1),
+                    }
                 }
             })
-        })
+        });
+        lists.copy_from_slice(&out);
     }
 
     fn instance_cull<'g>(
@@ -1197,7 +1273,7 @@ impl Visibility {
     }
 }
 
-/// One shadow view (a level of `Vsm`'s clipmap) for [`Visibility::add_shadow_view`].
+/// One shadow view (a level of `Vsm`'s clipmap) for [`Visibility::add_shadow_views`].
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct ShadowView {
     /// World to the view's clip space: orthographic, reverse-Z (nearer the light is larger).
