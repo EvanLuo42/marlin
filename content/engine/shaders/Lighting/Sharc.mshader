@@ -23,9 +23,11 @@ namespace Marlin.Engine.Lighting;
 // buckets of 16: an entry holds a 32-bit checksum of the key (0: free), found by a scan of the
 // key's bucket.
 //
-// The radiance is what a surface reflects, Lambert: the light it emits is not in it (the hit's
-// own simplified material has that), nor its specular reflection (0010 §2.9: `I` reads
-// reflected light only).
+// An entry holds the irradiance over π that reaches the voxel's surfaces: what a white Lambert
+// surface there reflects (R4e; it was the reflected radiance). A reader multiplies by its own
+// albedo, so surfaces of different albedos share a voxel, and a translucent surface, which is
+// not in the cache, can read it. The light a surface emits is not in it (its simplified material
+// has that), nor specular reflection (0010 §2.9: `I` reads reflected light only).
 
 using Marlin.Substrate;
 using Marlin.Engine.Scene;
@@ -183,8 +185,8 @@ uint SharcFind(Buffer<uint> keys, uint capacity, uint2 key)
     return SharcNone;
 }
 
-/// The radiance the surface at `p` facing `n` reflects, from the cache: rgb, and its samples
-/// in w (0: none there).
+/// The irradiance over π reaching a surface at `p` facing `n` (what a white Lambert surface there
+/// reflects), from the cache: rgb, and its samples in w (0: none there).
 public float4 SharcQuery(in SharcSources s, float3 p, float3 n)
 {
     uint e = SharcFind(s.Keys, s.Capacity, SharcKey(p, n, s.Eye.xyz, s.VoxelAngle));
@@ -251,7 +253,8 @@ public void SharcUpdate([DispatchThreadId] uint3 id, [Push] in SharcArgs a)
     {
         float3 origin = Lift(x, n, eye);
         entries[k] = SharcInsert(a.Keys, c.Capacity, SharcKey(x, n, eye, c.VoxelAngle));
-        direct[k] = NextEvent(nee, x, origin, n, rho, ref state);
+        // Its irradiance over π: the next event of a white surface.
+        direct[k] = NextEvent(nee, x, origin, n, float3(1, 1, 1), ref state);
         albedo[k] = rho;
         emitted[k] = glow;
         count = k + 1;
@@ -277,7 +280,7 @@ public void SharcUpdate([DispatchThreadId] uint3 id, [Push] in SharcArgs a)
             float4 cached = e == SharcNone ? float4(0, 0, 0, 0) : a.Radiance[e];
             if (last || cached.w >= c.TerminateSamples)
             {
-                tail = m.Emission + cached.xyz;
+                tail = m.Emission + m.Albedo * cached.xyz;
                 break;
             }
         }
@@ -286,16 +289,16 @@ public void SharcUpdate([DispatchThreadId] uint3 id, [Push] in SharcArgs a)
         rho = m.Albedo;
         glow = m.Emission;
     }
-    // Back along the path: each vertex reflects its direct light and, cosine-sampled, its
-    // albedo times what reaches it from the next.
+    // Back along the path: each vertex's irradiance over π is its next event and, cosine-sampled,
+    // what reaches it from the next vertex, which reflects its albedo times its own.
     float3 incoming = tail;
     for (uint i = count; i > 0; i--)
     {
         uint j = i - 1;
-        float3 reflected = direct[j] + albedo[j] * incoming;
+        float3 irradiance = direct[j] + incoming;
         if (entries[j] != SharcNone)
-            SharcAdd(a.Accumulation, entries[j], reflected);
-        incoming = emitted[j] + reflected;
+            SharcAdd(a.Accumulation, entries[j], irradiance);
+        incoming = emitted[j] + albedo[j] * irradiance;
     }
 }
 
@@ -351,5 +354,5 @@ public void SharcView([DispatchThreadId] uint3 id, [Push] in SharcArgs a)
     }
     float2 ndc = float2(((float)px.x + 0.5) / (float)c.Width * 2 - 1, 1 - ((float)px.y + 0.5) / (float)c.Height * 2);
     float4 h = c.InverseViewProjection * float4(ndc, depth, 1);
-    a.Output[px] = float4(SharcQuery(a.Cache, h.xyz / h.w, p.Normal).xyz, 1);
+    a.Output[px] = float4(p.Albedo * SharcQuery(a.Cache, h.xyz / h.w, p.Normal).xyz, 1);
 }

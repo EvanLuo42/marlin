@@ -1,5 +1,6 @@
 //! The world radiance cache (0010 §4.1, after NVIDIA's SHaRC; R4b): a hash grid of world-space
-//! voxels holding the radiance their surfaces reflect, shared by every view. Each frame
+//! voxels holding the irradiance over π reaching their surfaces (what a white Lambert surface
+//! there reflects; readers multiply by their albedo), shared by every view. Each frame
 //! [`Sharc::add_passes`] traces paths from a few screen pixels (`SharcUpdate`), adds each
 //! vertex's reflected radiance to its voxel, then folds the frame's sums into the voxels'
 //! averages and frees voxels nothing updated for a while (`SharcResolve`). `Lighting/Sharc.mshader`

@@ -1,8 +1,9 @@
 //! The world radiance cache (0010 §4.1): after frames of updates from a still camera, what the
-//! cache holds where rays hit, against what the surfaces there reflect. A closed box lined with
-//! a glowing material, where every surface reflects ρE / (1 − ρ) (light bounces on through the
-//! cache); a floor under the sun and the sky, ρ (E/π · cos θ + L); and the lit wall prefab
-//! against the CPU reference of its direct light, averaged over each voxel.
+//! cache holds where rays hit (the irradiance over π: what a white surface there reflects),
+//! against what reaches the surfaces there. A closed box lined with a glowing material, where the
+//! light reaching every surface is E / (1 − ρ) (it bounces on through the cache); a floor under
+//! the sun and the sky, E/π · cos θ + L; and the lit wall prefab against the CPU reference of its
+//! direct light, averaged over each voxel.
 
 use marlin_material::DefaultMaterial;
 use marlin_math::{Quat, Transform, Vec3};
@@ -93,10 +94,10 @@ fn a_glowing_closed_box_reflects_its_geometric_series() {
     );
     let (rays, _) = probe_rays(&h, 4);
     let read = h.sharc_frames(200, rays);
-    // Every surface reflects ρ times what reaches it: ρ (E + ρ (E + ...)) = ρE / (1 − ρ).
+    // Every surface reflects ρ times what reaches it, so what reaches it is E + ρ (E + ...).
     // The albedo as the material buffer and the atlas hold it: 8-bit square root.
     let rho = ((albedo.sqrt() * 255.0).round() / 255.0).powi(2);
-    let expected = rho * emission / (1.0 - rho);
+    let expected = emission / (1.0 - rho);
     let mut worst = 0.0f32;
     for r in &read {
         let r = r.expect("every ray hits the box");
@@ -152,7 +153,7 @@ fn a_floor_reflects_the_sun_and_the_sky() {
     let read = h.sharc_frames(16, rays);
     let cos = (-sun.normalize()).y;
     let expected: [f32; 3] =
-        core::array::from_fn(|i| base[i] * (env.light_color[i] * cos + env.ambient[i]));
+        core::array::from_fn(|i| env.light_color[i] * cos + env.ambient[i]);
     let mut hits = 0;
     for r in read.iter().flatten() {
         hits += 1;
@@ -185,7 +186,6 @@ fn the_lit_wall_matches_the_reference_over_each_voxel() {
     let (rays, _) = probe_rays(&h, 6);
     let read = h.sharc_frames(160, rays.clone());
     let tracer = Tracer::new(&scene);
-    let albedo = scene.instances[0].albedo;
     let eye = h.camera.0.translation;
     let (mut sum, mut reference_sum) = (0.0f32, 0.0f32);
     let mut checked = 0;
@@ -207,7 +207,7 @@ fn the_lit_wall_matches_the_reference_over_each_voxel() {
                     hit.point.z,
                 );
                 for light in &scene.lights {
-                    let c = light_contribution(light, p, hit.normal, albedo);
+                    let c = light_contribution(light, p, hit.normal, [1.0; 3]);
                     for k in 0..3 {
                         reference[k] += c[k] / 64.0;
                     }

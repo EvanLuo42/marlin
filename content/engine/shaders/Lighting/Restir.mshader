@@ -475,7 +475,7 @@ float3 RadianceAt(in RestirConstants c, in RestirArgs a, in GiSources gi, in Hit
     if (c.GiBounce == 0)
     {
         float4 cached = SharcQuery(gi.Cache, s.Position, s.Normal);
-        return m.Emission + (cached.w > 0 ? cached.xyz : m.Albedo * c.Sky.xyz);
+        return m.Emission + (cached.w > 0 ? m.Albedo * cached.xyz : m.Albedo * c.Sky.xyz);
     }
     float3 origin = Lift(s.Position, s.Normal, eye);
     NextEventSources nee = NextEventSources
@@ -504,7 +504,7 @@ float3 RadianceAt(in RestirConstants c, in RestirArgs a, in GiSources gi, in Hit
             HitSurface t = SurfaceOfHit(hit, ray, gi.Hits);
             SimpleMaterial mt = SimpleOfHit(t, gi.Hits, gi.Simple);
             float4 cached = SharcQuery(gi.Cache, t.Position, t.Normal);
-            beyond = mt.Emission + (cached.w > 0 ? cached.xyz : mt.Albedo * c.Sky.xyz);
+            beyond = mt.Emission + (cached.w > 0 ? mt.Albedo * cached.xyz : mt.Albedo * c.Sky.xyz);
         }
     }
     return m.Emission + direct + m.Albedo * beyond;
