@@ -158,9 +158,18 @@ fn draws_indexed_indirect() {
                 vertex_offset: 0,
                 first_instance: 0,
             },
+            // Past the count: not run.
+            DrawIndexedIndirectArgs {
+                constant: 5,
+                index_count: 6,
+                instance_count: 1,
+                first_index: 2,
+                vertex_offset: 0,
+                first_instance: 0,
+            },
         ];
         let args = GpuBuffer::new(device, &bytes_of(&records), BufferUsage::INDIRECT);
-        let count = GpuBuffer::new(device, &words_to_bytes(&[0, 100]), BufferUsage::INDIRECT);
+        let count = GpuBuffer::new(device, &words_to_bytes(&[0, 3]), BufferUsage::INDIRECT);
 
         run(device, |list| {
             indices.copy(list, BufferState::INDEX);
@@ -170,11 +179,12 @@ fn draws_indexed_indirect() {
             list.set_graphics_pipeline(&pipeline);
             list.push_constants(0, &[COLUMNS, 1, 0]);
             list.set_index_buffer(&indices.buffer, 0, IndexFormat::U32);
-            // A count past `max_count` is clamped to it.
+            // The count (3, at a 4-aligned offset) runs fewer records than `max_count`. A count
+            // above `max_count` would be undefined (`IndirectArgs`).
             list.draw_indexed_indirect(&IndirectArgs {
                 buffer: &args.buffer,
                 offset: 0,
-                max_count: 3,
+                max_count: 4,
                 count: Some((&count.buffer, 4)),
                 constant: true,
             });

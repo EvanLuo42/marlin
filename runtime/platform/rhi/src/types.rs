@@ -2060,8 +2060,12 @@ pub struct DispatchIndirectArgs {
 
 /// Where an indirect command finds its arguments: `max_count` records of the command's argument
 /// type ([`DrawIndirectArgs`], [`DrawIndexedIndirectArgs`] or [`DispatchIndirectArgs`]), packed
-/// from `offset`. With a count buffer, the first `count` of them run (the `u32` there, clamped
-/// to `max_count`), else all of them.
+/// from `offset`. With a count buffer, the first `count` of them run (the `u32` there), else all
+/// of them.
+///
+/// The count must not exceed `max_count`. A larger one is undefined: Vulkan says it is clamped,
+/// but NVIDIA's device-generated commands run that many records, reading past the `max_count`
+/// given (0016 §6).
 #[derive(Clone, Copy, Debug)]
 pub struct IndirectArgs<'a> {
     /// [`BufferUsage::INDIRECT`].

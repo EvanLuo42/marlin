@@ -264,13 +264,8 @@ pub(crate) fn create_buffer_with(
         destroy_buffer(s, raw);
         return Err(unsupported());
     };
-    // Exported and imported memory is the buffer's own. So, for now, is that of index and indirect
-    // argument buffers: in memory a freed buffer used before, indexed indirect draws (device-
-    // generated commands) hung the GPU on NVIDIA (0017 §14).
-    let own_memory = external.is_some()
-        || desc
-            .usage
-            .intersects(BufferUsage::INDEX | BufferUsage::INDIRECT);
+    // Exported and imported memory is the buffer's own.
+    let own_memory = external.is_some();
     let bound = match Bound::allocate(
         s,
         &r.memory,

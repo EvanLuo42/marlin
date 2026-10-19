@@ -15,7 +15,7 @@
 | 共享与 backend 的分界 | 算法、块的簿记、专用/池化策略、统计在 `src/memory/`（与 backend 无关）；backend 实现 `MemoryBackend`（分配/释放一个原始块、映射），并负责选 memory type、创建资源、绑定、专用分配 | 2 |
 | 块内算法 | **TLSF**（两级分离适配）：O(1) 分配释放、簿记在块外、立即合并；`Tlsf` 公开，上层的 mega-buffer 等也用它 | 5 |
 | 块大小 | device-local 长到 256 MiB，host 内存（上传/回读）长到 64 MiB；≤ 1 GiB 的堆用堆大小的 1/8；新块从 1/8 起翻倍 | 3 |
-| 专用分配 | 驱动 requires/prefers（`VkMemoryDedicatedRequirements`）、导出/导入的内存、超过半个块的资源；index 与 indirect 参数 buffer 暂时也专用（§14） | 4 |
+| 专用分配 | 驱动 requires/prefers（`VkMemoryDedicatedRequirements`）、导出/导入的内存、超过半个块的资源；其余（含 index 与 indirect 参数 buffer）都池化 | 4 |
 | `bufferImageGranularity` | 不在块内处理：granularity > 1 时 buffer 与 image 分池（D3D12 resource heap tier 1 同理分三组） | 3.2 |
 | 每帧上传/回读 | RHI 里不做环形分配器（RHI 没有帧的概念）；回读 buffer 走池化（不再有驱动分配），上传沿用 render graph 的线性块 | 6 |
 | 映射 | host-visible 块创建时整体持久映射；只用 coherent 类型，不需要 flush | 7 |
@@ -99,9 +99,8 @@ buffer 的起始地址至少按 256 字节对齐（`UNIFORM_ALIGNMENT`、`STORAG
 1. 驱动 **requires 或 prefers**（`VkMemoryDedicatedRequirements`）：一些厂商对 render target 这样报告，专用分配能启用压缩或更好的放置。VMA 默认也照办。
 2. **导出或导入**的内存（`BufferUsage::SHARED`、`TextureUsage::SHARED`、`import_*`）：OS 句柄对应整个分配，不能和别人共享。
 3. **大于半个块**：放进块里会浪费或逼出新块。
-4. **index 与 indirect 参数 buffer**：暂时如此，见 §14。
 
-其余都池化。`Heap`（placed / sparse 用）本来就是一整块驱动内存，统计里也算作专用分配。
+其余都池化，index 与 indirect 参数 buffer 也一样。它们曾暂时专用分配：池化后 `indirect::draws_indexed_indirect` 在 NVIDIA（RTX 5060）上让 GPU 超时（TDR），而且只在之前的测试用过同一段内存时出现。根因不在分配器。那个测试给的 count 是 100、`max_count` 是 3，而 NVIDIA 的 DGC 不按 `maxSequenceCount` 截断，执行了 100 条记录，读到参数 buffer 之后的内存（0016 §6）。专用或全新的内存，那里是零，多出来的记录 instance 数为 0，什么也不画；复用的内存里是别的测试留下的数据，就成了巨大的 draw。排查时还试过以下几项，都不影响挂起，因此排除：屏障加 `COMMAND_PREPROCESS_READ` 乃至 `ALL_COMMANDS`/`MEMORY_READ`、preprocess 内存清零、每个 list 用不同的 preprocess 地址、关闭 validation layer、indirect commands layout 改为设备级。现在 `IndirectArgs` 规定 count 不得超过 `max_count`。`Heap`（placed / sparse 用）本来就是一整块驱动内存，统计里也算作专用分配。
 
 ## 5. TLSF
 
@@ -173,7 +172,6 @@ RHI 没有帧的概念，环形/线性分配器放在知道帧的地方：
 
 ## 14. 待定
 
-- **index 与 indirect 参数 buffer 暂时专用分配**（§4 第 4 条）。现象：池化后，放在别的 buffer 用过又释放的内存里时，`indirect::draws_indexed_indirect`（DGC 的 indexed indirect draw）在 NVIDIA（RTX 5060）上让 GPU 挂起（device lost，TDR）；只在之前的测试先用过同一段内存时出现，内存不复用（全新、驱动清零的内存）时不出现；把这两类 buffer 改为专用后 RHI 全部 GPU 测试反复通过。根因未查明（候选：某处依赖内存初始为零，或 DGC 的 index buffer 处理）。查明之前保持专用；查的时候每次复现都会让整台机器卡顿数秒，需与用户约好时间。
 - D3D12 接入（§12），有 Xbox 时做。
 - 在 `FrameContext` 里按帧槽回收回读 buffer（§6），视剖析结果。
 - 内存优先级随块设置（`VkMemoryPriorityAllocateInfoEXT`）：比如 render target 的池给高优先级。
