@@ -8,12 +8,14 @@
 //! | `content.package` | package(s) to mount in order, `;`-separated, relative to the boot  |
 //! |                   | file (the build, then patches); `{platform}` stands for            |
 //! |                   | `game.platform`                                                  |
-//! | `content.cookd`   | cook service address; mounted above the packages (dev streaming)  |
+//! | `content.cookd`   | cook service address; mounted above the packages (dev streaming)* |
 //! | `game.level`      | UUID of the entry level                                          |
-//! | `game.platform`   | the platform cookd cooks for; defaults to the build's platform   |
+//! | `game.platform`   | the platform cookd cooks for; defaults to the build's platform*  |
 //! | `r.vsync`, `window.width`, `window.height` | presentation                            |
-//! | `r.stats`         | the stats overlay (F3 toggles it)                                |
-//! | `r.statsLog`      | log the frame rate, CPU zones and GPU passes once a second       |
+//! | `r.stats`         | the stats overlay (F3 toggles it)*                               |
+//!
+//! Those marked * are development tools: not in shipping builds (`marlin_build = "shipping"`),
+//! where these cvars do not exist and the cook service cannot be mounted (0001 §8).
 //!
 //! There is no load-by-path: the entry level is named by UUID, and everything else is reached
 //! through its links, except the few objects code asks for by name (the engine's shader package,
@@ -24,10 +26,9 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::net::SocketAddr;
-use core::time::Duration;
 
 use marlin_asset::cooked::platform_id;
-use marlin_asset::{DevSource, Package, Uuid, Vfs};
+use marlin_asset::{Package, Uuid, Vfs};
 use marlin_config::{CvarBool, CvarI64, CvarString, Source};
 use marlin_sync::Once;
 
@@ -36,27 +37,25 @@ pub static CONTENT_PACKAGE: CvarString = CvarString::new(
     "",
     "Packages to mount, ';'-separated, relative to the boot file.",
 );
+#[cfg(not(marlin_build = "shipping"))]
 pub static CONTENT_COOKD: CvarString = CvarString::new(
     "content.cookd",
     "",
     "Cook service address (host:port) to stream content from, above the packages.",
 );
 pub static GAME_LEVEL: CvarString = CvarString::new("game.level", "", "UUID of the entry level.");
+#[cfg(not(marlin_build = "shipping"))]
 pub static GAME_PLATFORM: CvarString = CvarString::new(
     "game.platform",
     marlin_rt::PLATFORM,
     "Platform the cook service cooks for; defaults to the one this build targets.",
 );
 pub static R_VSYNC: CvarBool = CvarBool::new("r.vsync", true, "Wait for vertical blank.");
+#[cfg(not(marlin_build = "shipping"))]
 pub static R_STATS: CvarBool = CvarBool::new(
     "r.stats",
     false,
     "Show the stats overlay: frame rate, CPU and GPU times, the costliest passes (F3 toggles).",
-);
-pub static R_STATS_LOG: CvarBool = CvarBool::new(
-    "r.statsLog",
-    false,
-    "Log the frame rate, CPU zones and GPU passes once a second.",
 );
 pub static WINDOW_WIDTH: CvarI64 =
     CvarI64::new("window.width", 1280, "Window width.").range(64, 16384);
@@ -70,15 +69,14 @@ pub fn register_cvars() {
     REGISTER.call_once(|| {
         let _ = marlin_config::register_all(&[
             &CONTENT_PACKAGE,
-            &CONTENT_COOKD,
             &GAME_LEVEL,
-            &GAME_PLATFORM,
             &R_VSYNC,
-            &R_STATS,
-            &R_STATS_LOG,
             &WINDOW_WIDTH,
             &WINDOW_HEIGHT,
         ]);
+        // The development tools'.
+        #[cfg(not(marlin_build = "shipping"))]
+        let _ = marlin_config::register_all(&[&CONTENT_COOKD, &GAME_PLATFORM, &R_STATS]);
     });
 }
 
@@ -100,8 +98,10 @@ pub enum BootError {
         #[source]
         source: marlin_asset::SourceError,
     },
-    #[error("no content: set content.package or content.cookd")]
+    #[error("no content: set content.package")]
     NoContent,
+    #[error("the cook service is a development tool: shipping builds read packages only")]
+    NoCookd,
     #[error("game.level is not a UUID: {0:?}")]
     Level(String),
 }
@@ -155,7 +155,10 @@ impl ContentSettings {
             .trim()
             .parse()
             .map_err(|_| BootError::Level(level.clone()))?;
+        #[cfg(not(marlin_build = "shipping"))]
         let platform = GAME_PLATFORM.get();
+        #[cfg(marlin_build = "shipping")]
+        let platform = String::from(marlin_rt::PLATFORM);
         let packages = CONTENT_PACKAGE
             .get()
             .split(';')
@@ -171,7 +174,10 @@ impl ContentSettings {
                 }
             })
             .collect();
+        #[cfg(not(marlin_build = "shipping"))]
         let cookd = CONTENT_COOKD.get();
+        #[cfg(marlin_build = "shipping")]
+        let cookd = String::new();
         let cookd = match cookd.trim() {
             "" => None,
             addr => Some(addr.parse().map_err(|_| BootError::Cookd {
@@ -204,12 +210,21 @@ pub fn mount(settings: &ContentSettings) -> Result<Boot, BootError> {
         }
         vfs.mount(path.clone(), package);
     }
+    #[cfg(marlin_build = "shipping")]
+    if settings.cookd.is_some() {
+        return Err(BootError::NoCookd);
+    }
+    #[cfg(not(marlin_build = "shipping"))]
     if let Some(addr) = settings.cookd {
-        let source = DevSource::connect(addr, &settings.platform, Duration::from_secs(10))
-            .map_err(|source| BootError::Cookd {
-                addr: format!("{addr}"),
-                source,
-            })?;
+        let source = marlin_asset::DevSource::connect(
+            addr,
+            &settings.platform,
+            core::time::Duration::from_secs(10),
+        )
+        .map_err(|source| BootError::Cookd {
+            addr: format!("{addr}"),
+            source,
+        })?;
         vfs.mount("cookd", source);
     }
     if vfs.layer_names().next().is_none() {

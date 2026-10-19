@@ -210,6 +210,10 @@ struct Cached {
     frame: u64,
 }
 
+/// Whether passes are timed on the GPU ([`FrameContext::gpu_timings`]): in every build but
+/// shipping.
+const TIMESTAMPS: bool = !cfg!(marlin_build = "shipping");
+
 /// The smallest readback buffer; larger ones are powers of two, so recycled ones fit.
 const READBACK_MIN: u64 = 256;
 /// Most taken readback buffers kept for reuse.
@@ -709,7 +713,12 @@ impl FrameContext {
         }
 
         // Chunks of each segment, by estimated recording cost, each a job and its own lists.
-        let timed = [true, true, device.features().copy_queue_timestamps];
+        // Pass times are for the profiler and plan dumps: not in shipping builds.
+        let timed = [
+            TIMESTAMPS,
+            TIMESTAMPS,
+            TIMESTAMPS && device.features().copy_queue_timestamps,
+        ];
         let mut per_queue = [0u32; 3];
         let mut chunks: Vec<Chunk, &Arena> = Vec::new_in(arena);
         for (si, segment) in plan.segments.iter().enumerate() {
@@ -1791,7 +1800,7 @@ fn intern(name: &str) -> &'static str {
 
 impl FrameContext {
     /// The GPU time of each pass of the last frame whose timestamps came back (a couple of
-    /// frames ago).
+    /// frames ago); none in shipping builds, which do not time passes.
     pub fn gpu_timings(&self) -> &[PassTiming] {
         &self.gpu_times
     }

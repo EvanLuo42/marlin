@@ -31,12 +31,11 @@ use marlin_render_graph::{
     TextureDesc, TextureHandle,
 };
 use marlin_rhi::{
-    AddressMode, BlendState, Buffer, BufferUsage, ColorTargetState, ComputePipeline, ComputePipelineDesc,
-    CullMode, Device, Error, ErrorKind, Format, FormatFeatures, GraphicsPipeline,
-    GraphicsPipelineDesc, LoadOp, MemoryLocation, MultisampleState, PrimitiveTopology, RasterState,
-    Result, Sampler, SamplerDesc, ShaderModule, ShaderView, StoreOp, Texture, TextureUsage,
-    TextureViewDesc,
-    Rect,
+    AddressMode, BlendState, Buffer, BufferUsage, ColorTargetState, ComputePipeline,
+    ComputePipelineDesc, CullMode, Device, Error, ErrorKind, Format, FormatFeatures,
+    GraphicsPipeline, GraphicsPipelineDesc, LoadOp, MemoryLocation, MultisampleState,
+    PrimitiveTopology, RasterState, Rect, Result, Sampler, SamplerDesc, ShaderModule, ShaderView,
+    StoreOp, Texture, TextureUsage, TextureViewDesc,
 };
 use marlin_serial::cooked::Pod;
 use marlin_shader::asset::ShaderLibrary;
@@ -595,7 +594,10 @@ impl UiRenderer {
         let (encode, overlay) = match desc.output_format {
             None => (None, None),
             Some(format) => (
-                Some((encode_pipeline(ColorTargetState::new(format))?, format.is_srgb())),
+                Some((
+                    encode_pipeline(ColorTargetState::new(format))?,
+                    format.is_srgb(),
+                )),
                 Some(encode_pipeline(ColorTargetState {
                     blend: Some(BlendState::PREMULTIPLIED),
                     ..ColorTargetState::new(format)

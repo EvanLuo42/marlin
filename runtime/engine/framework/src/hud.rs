@@ -82,26 +82,6 @@ impl Snapshot {
             }
         })
     }
-
-    /// Writes it to the log (`r.statsLog`).
-    pub fn log(&self) {
-        let ms = |d: Duration| d.as_secs_f64() * 1e3;
-        marlin_diag::info!(
-            "{:.0} fps, {:.3} ms/frame; gpu {:.3} ms, busy {:.3} / {:.3} / {:.3} ms \
-             (graphics / compute / copy)",
-            self.fps,
-            ms(self.frame),
-            ms(self.gpu),
-            ms(self.busy[0]),
-            ms(self.busy[1]),
-            ms(self.busy[2]),
-        );
-        for (label, zones) in [("cpu", &self.cpu), ("gpu", &self.passes)] {
-            for (name, d) in zones {
-                marlin_diag::info!("  {label} {:>8.3} ms  {name}", ms(*d));
-            }
-        }
-    }
 }
 
 /// What the panel shows besides the profiler's numbers.

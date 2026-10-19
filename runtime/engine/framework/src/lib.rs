@@ -17,7 +17,9 @@ extern crate alloc;
 
 pub mod boot;
 mod delta;
+mod dev;
 mod engine;
+#[cfg(not(marlin_build = "shipping"))]
 pub mod hud;
 pub mod level;
 pub mod loaders;
