@@ -1,6 +1,6 @@
 [package]
 name = "marlin-test-scenes"
-description = "Prefab test scenes shared by the renderer's GPU tests: meshes cooked by the real mesh cooker, instances, lights, camera (the Cornell box, a lit wall, a hall of lights), and a CPU reference of their direct lighting to test algorithms against."
+description = "Prefab test scenes shared by the renderer's GPU tests: meshes cooked by the real mesh cooker, instances, lights, camera (the Cornell box, a lit wall, a hall of lights), and CPU references of their direct lighting and global illumination to test algorithms against."
 version.workspace = true
 edition.workspace = true
 publish.workspace = true

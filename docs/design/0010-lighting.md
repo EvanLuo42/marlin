@@ -217,6 +217,40 @@ DI 和 GI 怎么合在一起：
   - 蓄水池按 16×16 tile 内 Morton 序排布（`ReSTIRPathTracingParams.slang:39`）；
   - 光线 payload 只有 20 B（`TracePassMinimalPayload.rt.slang:52`）。
 
+### 2.11 R4c 的实现：统一 DI+GI 蓄水池（2026-10-19）
+
+`RestirDi::gi`（默认开）。蓄水池在 R3c 的 `Dnee` 之外还负责 `I` 和天空的 `Dhit`（§2.9 的表）。定下的细节：
+
+- **样本有三种**，放在同一个蓄水池里（`PathReservoir`，48 B，比 R3c 的 32 B 多一个点和一个辐射亮度）：
+  - 光源：行号和球面上的点，同 R3c；
+  - 表面：BSDF 弹射到达的 `x2`，存位置、法线，以及从它射向 `x1` 的辐射亮度；
+  - 天空：方向和天空的亮度。
+
+  辐射亮度用 RGB9E5 存一个字，指数偏移取 10 而不是 15（范围 2^−19 到约 2·10^6 nit，覆盖灯具表面）。
+- **表面样本按 `x2` 处的面积测度**：target = albedo/π · cosθ₁ · L · cosθ₂ / d²。这样复用时把它重连到别的像素的 `x1`（时域、配对空间、棋盘上采样），和光源样本的点一样，target 里已经含了 Jacobian，复用的代码不用分样本种类，只是 `SampleContribution`、`SampleVisible` 按种类求值。余弦采样的 BSDF 射线转成面积测度的 pdf 是 cosθ₁/π · cosθ₂/d²，所以候选的权重 target/pdf 就是 luminance(albedo · L)。天空样本按立体角（每个像素看到的方向相同）。d² 下限 10^−4，避免墙角处的奇点。
+- **初始采样分两个 pass**：`RestirInitial`（光源候选，同 R3c）→ `RestirInitialVisibility`（同 R3c）→ `RestirInitialGi`：从 `x1` 按余弦分布弹射一次，得到一个表面或天空候选，和前面留下的光源样本做 RIS 合并（M 仍为 1）。光源候选和表面/天空候选的定义域不相交，各自的 MIS 权重就是 1/C 和 1。和 `RestirInitialVisibility` 一样单独一个 pass，不把光线查询放进光源候选的循环里。
+- **`x2` 的辐射亮度**（`RadianceAt`）：
+  - `gi_bounce` 开（L2 以上，默认）：自发光 + `x2` 的 NEE（太阳一条阴影射线，局部光源从 light tile 里 RIS 选一个）+ 反照率 × 再弹射一次到 `x3` 的结果（`x3` 的自发光 + cache；打空则是天空）；
+  - `gi_bounce` 关（L0、L1）：自发光 + cache 在 `x2` 的值。
+
+  cache 里没有这一项时用反照率 × 天空近似。NEE 代码和 SHaRC 的更新共用（`Lighting/Paths.mshader` 的 `NextEvent`）。
+- **天空进蓄水池以后，光照 pass 不再加环境光**（`RenderSide` 和测试 harness 在 GI 开着时把 `ambient` 置 0）。太阳在 L0–L2 仍是 VSM 的（`Dsun`），BSDF 射线不会碰到太阳圆盘，因为天空是均匀的，本来就没有圆盘（§2.9 第 4 条）。没有局部光源时 ReSTIR 也要运行（只有 GI 候选），SHaRC 每帧更新。
+- **离开表面的射线剔除背面**（GI 弹射、阴影和可见性射线，`RayFlags.CullBackFace`）：RT LOD 比光栅化的网格粗，在凹处它高出画出来的表面，从那里出发的射线会先打到它的背面。TLAS 实例不再关掉朝向剔除，只强制不透明。闭合物体照样挡光：射进去先碰正面。单面的几何从背后看会漏光，这是常见的取舍。
+- **推送常量的上限**：`RestirArgs` 加上命中点的来源、简化材质和 cache 以后超过 128 B，所以这三样放进一个 uniform（`GiSources`），推送常量里只留一个索引。uniform 里的 `float4` 不能跨 16 字节的行，所以 `SharcSources` 的 `Eye` 放到最前面。
+- **为什么还不用 wavefront**（0011 §9.3，用户问过）：L0–L2 的 GI 是漫反射，命中点只要反照率和自发光，简化材质图集一次读取就够，各材质之间没有分歧。按材质分箱、跑完整的 `Surface` 留给 R4d 的镜面（L3 粗糙度 < 0.05）和 L4 的路径追踪。如果 profiler 显示 `RestirInitialGi` 的光线查询拖低了占用率，先像 `RestirInitialVisibility` 那样拆 pass。
+- **测试**（marlin-material 的 `gi.rs`，Cornell box，CPU 参考是新的 `reference::global_illumination`：Lambert 路径追踪，每个顶点对每个光源做 NEE，三次弹射后 Russian roulette，每隔 4 个像素算一个，每个 256 条路径）：
+  - 先跑 128 帧让 cache 收敛，再平均 128 帧。不预热时间接光的蓝色通道低 15%：早期帧的 cache 还是空的；
+  - 结果：各通道的总量差 3–4%；间接光（总量减去直接光）是参考的 90–95%，界限 85%–110%；剩下的偏暗来自 cache 的体素平均和更深的弹射；
+  - 逐像素的平均误差 < 15%，因为 GPU 和参考都有噪声。
+
+  marlin-material 的其他 ReSTIR 测试关掉 GI（它们对照的是直接光的参考）；改成 48 B 蓄水池以后都不变，golden 也不变。framework 的端到端测试也关掉 GI：它们要求 cookd 和包的第一帧逐像素相同，而两边加载的帧数不同，GI 的随机数和历史也就不同，和关掉 TSR 是同一个原因。resize 测试保留 GI。
+- **开销**（1080p，`light_hall(1000)`，RTX 5060）：ReSTIR 从 3.0 ms 到 4.3 ms：
+  - `RestirInitialGi` 0.80 ms；
+  - `SharcUpdate` 0.29 ms，`SharcResolve` 0.04 ms；
+  - `RestirSpatialShift` 多 0.35 ms，因为表面样本的可见性射线更长。
+
+  PC 代理预算的测试在 R4f。
+
 ## 3. 档位
 
 | | L0 | L1 | L2 | L3 | L4（Cinematic） |
@@ -278,7 +312,7 @@ DI 和 GI 怎么合在一起：
 - **resolve**（`SharcResolve`）：平均值最多保留 `max_frames`（默认 32）帧的样本，**按帧数而不是样本数限制**：历史权重取 `min(旧样本数, 本帧样本数 × (max_frames − 1))`。按样本数限制时，很少有路径到达的体素（远处、掠射角）每帧只拿到 1/65 的新值，收敛慢很多（测试里看到 96 帧后还低 10%）；SHaRC 也是按帧数。
 - **只存反射光，按 Lambert 算**：不含自发光（命中点的简化材质有）和镜面反射，符合 §2.9 第 3 条，`I` 只读反射光。
 - **查询**：`SharcQuery(sources, p, n)` 返回 rgb 和样本数（w 为 0 表示没有这一项）。查不到时怎么办由读的人决定（R4c）。
-- **R4c 之前只为调试视图运行**：没有 pass 读 cache，所以 `RenderSide` 只在 `sharc_view` 打开时更新它。`r.sharc.view`（开发用 cvar）把每个像素换成它所在体素的辐射亮度，看起来就像 cache 照亮了场景。
+- **什么时候运行**：R4b 时没有 pass 读 cache，只在 `sharc_view` 打开时更新；R4c 起 GI 读它，`RenderSide` 在 `restir.gi` 开着时每帧更新。`r.sharc.view`（开发用 cvar）把每个像素换成它所在体素的辐射亮度，看起来就像 cache 照亮了场景。
 - **测试**（`marlin-material/tests/gpu/sharc.rs`，测试里每个像素一条路径，体素更大）：
   - 内壁全是自发光材质（反照率 ρ、亮度 E）的封闭盒子：每个面反射 ρE/(1−ρ)，ρ 按 8 位平方根编码取值，200 帧后误差在 3% 内。它检查多次弹射、自发光、经过 cache 的反馈和 resolve。
   - 太阳和天空下的地面：ρ(E/π·cosθ + L)，误差在 2% 内。
@@ -850,6 +884,7 @@ PS5 一栏略微超出预算：画质模式默认用 30fps 的预设；性能模
 - ReGIR（世界网格的光源蓄水池）作为 light tile 的补充，在光源极多的场景里是否需要。
 - 降噪器的优化（§6.3、§11.2）：半分辨率的方差和预模糊；用 groupshared 读邻域；去遮挡时用低 mip 的历史。
 - 降噪器在蓝色通道上偏暗 2–4%（彩色光源的大厅，§6.3 的逐通道测试），原因待查。
+- GI 在大部分被遮挡的凹处成块（`samples/basic` 圆环内侧、球的底部）：那里大多数样本是 0，复用把少数亮的样本扩散成岛，降噪器抹不掉。只看初始样本时是细碎的噪点，方向（R4c 之后）：每像素多几个 GI 候选、GI 样本的历史上限降低、或让 `CorrelationRadius` 反映这种扩散。cache 视图在那里同样暗，所以是噪声，不是偏差。
 - RestirInitial 每个蓄水池约 1.1 ms 的固定开销（2K），比按带宽估算的高，要用 GPU profiler 看（§11.2）。
 - 配对图案的半径随分辨率变不变（§5.8）：现在固定 30 像素（PTE、Falcor 的默认）；动态分辨率或很低的内部分辨率下，邻居在场景里离得更远。可以在图案资产里多存几档半径，按内部分辨率挑一档。
 - NRC 在 PS5 Pro 和 NS2 上的可用性，取决于平台 API。

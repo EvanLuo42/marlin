@@ -148,12 +148,15 @@ impl Harness {
             .unwrap()
             .into_boxed_slice(),
         );
-        let restir = RestirDi::new(
+        let mut restir = RestirDi::new(
             device,
             &RestirShaders::from_modules(engine_shaders(&RestirShaders::ENTRIES)),
             PairingPatternView::new(pairing).unwrap(),
         )
         .unwrap();
+        // Local lights only (R3's DI, against the CPU reference of direct light); the GI tests
+        // turn it on.
+        restir.gi = false;
         let sharc_probe = Box::leak(Box::new(
             device
                 .create_compute_pipeline(&ComputePipelineDesc {
@@ -520,7 +523,8 @@ impl Harness {
             &self.materials,
             &self.lighting,
         );
-        let (tlas, tiles, restir) = (&self.tlas, &self.light_tiles, &self.restir);
+        let (tlas, tiles, restir, sharc) =
+            (&self.tlas, &self.light_tiles, &self.restir, &self.sharc);
         let (denoiser, denoise) = (&self.denoiser, self.denoise);
         let (camera, previous) = (self.camera, self.previous);
         let ticket = self
@@ -528,6 +532,7 @@ impl Harness {
             .execute(self.device, |g, _| {
                 let pool = meshes.add_passes(g, uploads);
                 let gpu = scene.add_passes(g, scatter);
+                let simple = materials.add_simple_passes(g, scene, gpu);
                 let rt = tlas.add_passes(g, gpu, &pool, rows);
                 let drawn = tiles.add_passes(g, scene, seed);
                 let view = marlin_render::visibility::ViewDesc {
@@ -540,8 +545,25 @@ impl Harness {
                 let v = vis.add_passes(g, meshes, scene, gpu, pool, &view);
                 let out = materials.add_passes(g, gpu, &v, camera, previous, width, height);
                 let env = *scene.environment();
-                let mut lit = lighting.add_passes(g, Some(out.material), None, &env, width, height);
-                if let Some(tiles) = drawn {
+                // With GI, the world cache, and the sky through the reservoirs (no ambient term).
+                let cache = restir.gi.then(|| {
+                    let inputs = SharcInputs {
+                        material: out.material,
+                        depth: v.depth,
+                        rt,
+                        simple,
+                        lights: gpu.lights,
+                        tiles: drawn,
+                    };
+                    sharc.add_passes(g, inputs, &env, camera, width, height, seed)
+                });
+                let lit_env = Environment {
+                    ambient: if restir.gi { [0.0; 3] } else { env.ambient },
+                    ..env
+                };
+                let mut lit =
+                    lighting.add_passes(g, Some(out.material), None, &lit_env, width, height);
+                if drawn.is_some() || restir.gi {
                     let inputs = RestirInputs {
                         view: 0,
                         changed_lights: scene.light_changes(),
@@ -550,7 +572,10 @@ impl Harness {
                         depth: v.depth,
                         lights: gpu.lights,
                         rt,
-                        tiles,
+                        tiles: drawn,
+                        simple,
+                        cache,
+                        environment: env,
                     };
                     let signal = restir.add_passes(g, inputs, camera, width, height, seed);
                     let light = if denoise {

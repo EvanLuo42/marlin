@@ -20,8 +20,10 @@ public struct TlasInstance
 
 /// `InstanceData.Flags`: drawn nowhere.
 const uint InstanceHidden = 1;
-/// Instance flags: triangles of either facing, opaque (no any-hit processing).
-const uint CullDisableAndForceOpaque = 0x5;
+/// Instance flags: opaque (no any-hit processing). Facing culling stays the ray's: rays leaving a
+/// surface cull back faces (`RayFlags.CullBackFace`), as the RT LOD is coarser than what was
+/// drawn and lies above it where the surface is concave, so such rays start behind it there.
+const uint ForceOpaque = 0x4;
 
 public struct TlasArgs
 {
@@ -67,7 +69,7 @@ public void WriteTlasInstances([DispatchThreadId] uint3 id, [Push] in TlasArgs a
     {
         Transform = a.Transforms[i].Current,
         IdAndMask = (i & (uint)0xFFFFFF) | ((uint)0xFF << 24),
-        ContributionAndFlags = CullDisableAndForceOpaque << 24,
+        ContributionAndFlags = ForceOpaque << 24,
         Blas = blas,
     };
 }

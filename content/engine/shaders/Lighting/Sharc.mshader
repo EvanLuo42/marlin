@@ -74,6 +74,8 @@ public struct SharcConstants
 /// The cache, for a pass that reads it (marlin-render's `SharcSources`).
 public struct SharcSources
 {
+    /// xyz: the eye the voxel sizes follow. First: a uniform block keeps it in a 16-byte row.
+    public float4 Eye;
     /// A checksum an entry (0: free).
     public ReadOnlyBuffer<uint> Keys;
     /// An entry's reflected radiance (rgb) and its samples (w).
@@ -82,8 +84,6 @@ public struct SharcSources
     public float VoxelAngle;
     public uint Spare0;
     public uint Spare1;
-    /// xyz: the eye the voxel sizes follow.
-    public float4 Eye;
 }
 
 public struct SharcArgs
@@ -191,92 +191,6 @@ public float4 SharcQuery(in SharcSources s, float3 p, float3 n)
     return e == SharcNone ? float4(0, 0, 0, 0) : s.Radiance[e];
 }
 
-/// `x` as a float in [0, 1), from a hash.
-float SharcRandom(ref uint state)
-{
-    state = Hash(state + 0x9E3779B9);
-    return Unit(state);
-}
-
-/// A direction about `n`, cosine-distributed.
-float3 CosineDirection(float3 n, float u, float v)
-{
-    float r = Sqrt(u);
-    float phi = v * 6.2831853;
-    float3 t = Normalize(Cross(Abs(n.y) < 0.99 ? float3(0, 1, 0) : float3(1, 0, 0), n));
-    float3 b = Cross(n, t);
-    return Normalize(t * (r * Cos(phi)) + b * (r * Sin(phi)) + n * Sqrt(Max(1 - u, 0)));
-}
-
-/// Whether nothing is between `origin` and `target`.
-bool Unoccluded(AccelerationStructure tlas, float3 origin, float3 target)
-{
-    float3 d = target - origin;
-    float dist = Length(d);
-    Ray ray = Ray { Origin = origin, TMin = 0, Direction = d / Max(dist, 0.0001), TMax = dist * 0.999 };
-    return !tlas.TraceAny(ray);
-}
-
-/// The light the Lambert surface at `x` (facing `n`, lifted to `origin` for shadow rays,
-/// albedo `albedo`) reflects from the sun and from one local light resampled from a tile: an
-/// unbiased estimate, shadowed.
-float3 SharcDirect(in SharcConstants c, in SharcArgs a, float3 x, float3 origin, float3 n, float3 albedo, ref uint state)
-{
-    float3 sum = float3(0, 0, 0);
-    if (c.SunDirection.w > 0)
-    {
-        float3 toward = -c.SunDirection.xyz;
-        float cosine = Dot(n, toward);
-        if (cosine > 0 && Unoccluded(a.Tlas, origin, origin + toward * 100000))
-            sum += albedo * c.Sun.xyz * cosine;
-    }
-    if (c.HasLights != 0)
-    {
-        // `Candidates` lights from one tile, one kept by RIS on its unshadowed contribution here
-        // (as `RestirInitial` draws): with many lights, one drawn by power alone is mostly out
-        // of reach, and a voxel's few samples would be a few lights' colors.
-        uint tile = Min((uint)(SharcRandom(ref state) * (float)c.TileCount), c.TileCount - 1);
-        uint kept = NoLight;
-        float keptTarget = 0;
-        float total = 0;
-        for (uint i = 0; i < c.Candidates; i++)
-        {
-            uint pick = Min((uint)(SharcRandom(ref state) * (float)c.TileSize), c.TileSize - 1);
-            uint2 entry = a.Tiles[tile * c.TileSize + pick];
-            float source = AsFloat(entry.y);
-            if (source <= 0)
-                continue;
-            float target = Luminance(Contribution(a.Lights[entry.x], x, n, albedo));
-            float weight = target / source;
-            total += weight;
-            if (weight > 0 && SharcRandom(ref state) * total < weight)
-            {
-                kept = entry.x;
-                keptTarget = target;
-            }
-        }
-        if (kept != NoLight)
-        {
-            LightRow l = a.Lights[kept];
-            float3 f = Contribution(l, x, n, albedo) * (total / ((float)c.Candidates * keptTarget));
-            {
-                // A point of the light's sphere, on the half facing `x`.
-                float u = SharcRandom(ref state);
-                float v = SharcRandom(ref state);
-                float3 away = Normalize(x - l.Position);
-                float ring = Sqrt(Max(1 - u * u, 0));
-                float phi = v * 6.2831853;
-                float3 t = Normalize(Cross(Abs(away.y) < 0.99 ? float3(0, 1, 0) : float3(1, 0, 0), away));
-                float3 b = Cross(away, t);
-                float3 point = l.Position + l.Radius * (away * u + t * (ring * Cos(phi)) + b * (ring * Sin(phi)));
-                if (Unoccluded(a.Tlas, origin, point))
-                    sum += f;
-            }
-        }
-    }
-    return sum;
-}
-
 /// Adds `radiance` to entry `e`'s sums, as one sample.
 void SharcAdd(Buffer<ulong> sums, uint e, float3 radiance)
 {
@@ -287,9 +201,6 @@ void SharcAdd(Buffer<ulong> sums, uint e, float3 radiance)
     sums.AtomicAdd(e * 4 + 3, 1);
 }
 
-/// A shadow ray's origin off the surface at `x` (facing `n`), scaled with its distance to the
-/// eye.
-float3 Lift(float3 x, float3 n, float3 eye) => x + n * (0.001 + 0.0005 * Length(x - eye));
 
 [Compute(8, 8, 1)]
 public void SharcUpdate([DispatchThreadId] uint3 id, [Push] in SharcArgs a)
@@ -310,6 +221,17 @@ public void SharcUpdate([DispatchThreadId] uint3 id, [Push] in SharcArgs a)
     float2 ndc = float2(((float)px.x + 0.5) / (float)c.Width * 2 - 1, 1 - ((float)px.y + 0.5) / (float)c.Height * 2);
     float4 h = c.InverseViewProjection * float4(ndc, depth, 1);
     float3 eye = c.Eye.xyz;
+    NextEventSources nee = NextEventSources
+    {
+        Tlas = a.Tlas,
+        Lights = a.Lights,
+        Tiles = a.Tiles,
+        SunDirection = c.SunDirection,
+        Sun = c.Sun,
+        TileCount = c.TileCount,
+        TileSize = c.TileSize,
+        Candidates = c.HasLights != 0 ? c.Candidates : 0,
+    };
 
     // The path: per vertex its entry, the light it reflects straight from the lights, its
     // albedo and the light it emits.
@@ -329,14 +251,14 @@ public void SharcUpdate([DispatchThreadId] uint3 id, [Push] in SharcArgs a)
     {
         float3 origin = Lift(x, n, eye);
         entries[k] = SharcInsert(a.Keys, c.Capacity, SharcKey(x, n, eye, c.VoxelAngle));
-        direct[k] = SharcDirect(c, a, x, origin, n, rho, ref state);
+        direct[k] = NextEvent(nee, x, origin, n, rho, ref state);
         albedo[k] = rho;
         emitted[k] = glow;
         count = k + 1;
-        float u = SharcRandom(ref state);
-        float v = SharcRandom(ref state);
+        float u = PathRandom(ref state);
+        float v = PathRandom(ref state);
         Ray ray = Ray { Origin = origin, TMin = 0, Direction = CosineDirection(n, u, v), TMax = 100000 };
-        RayHit hit = a.Tlas.TraceClosest(ray);
+        RayHit hit = a.Tlas.TraceClosest(ray, RayFlags.CullBackFace);
         if (hit.Kind == HitKind.None)
         {
             tail = c.Sky.xyz;

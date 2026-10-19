@@ -111,6 +111,9 @@ impl Viewer {
         // frames; TSR's history and jitter phase depend on them, so it is off here (it has tests
         // of its own, marlin-material's tsr.rs). The resize test keeps it.
         render.upscale = None;
+        // So do GI's samples and history (marlin-material's gi.rs tests it); the resize test keeps
+        // it too.
+        render.restir.gi = false;
         let offscreen = Offscreen::new(device, WIDTH, HEIGHT).unwrap();
         Self {
             render,

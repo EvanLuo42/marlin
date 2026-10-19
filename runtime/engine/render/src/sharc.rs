@@ -104,13 +104,13 @@ struct SharcArgs {
 #[repr(C)]
 #[derive(Pod, Clone, Copy, Default, PartialEq, Debug)]
 pub struct SharcSources {
+    /// xyz: the eye the voxel sizes follow.
+    pub eye: [f32; 4],
     pub keys: u32,
     pub radiance: u32,
     pub capacity: u32,
     pub voxel_angle: f32,
     pub spare: [u32; 2],
-    /// xyz: the eye the voxel sizes follow.
-    pub eye: [f32; 4],
 }
 
 /// The cache after a frame's update, for passes that read it.

@@ -15,6 +15,7 @@ use alloc::vec::Vec;
 use marlin_containers::{HashMap, HashMapExt};
 use marlin_material::{BAKE, DEFAULT_PERMUTATION, MaterialShaders, Materials, RESOLVE};
 use marlin_math::{Transform, UVec2, Vec2};
+use marlin_render::Environment;
 use marlin_render::asset::PairingPatternView;
 use marlin_render::denoise::{DenoiseInputs, DenoiseShaders, Denoiser};
 use marlin_render::lights::LightTiles;
@@ -78,7 +79,7 @@ pub struct RenderSide {
     pub tlas: Tlas,
     /// The frame's presampled light tiles (0010 §2.8).
     pub light_tiles: LightTiles,
-    /// Local lights: ReSTIR DI (0010 §2).
+    /// ReSTIR (0010 §2): local lights and GI.
     pub restir: RestirDi,
     /// Denoises ReSTIR's light (0010 §6); `denoise` off composes it as it is.
     pub denoiser: Denoiser,
@@ -88,9 +89,9 @@ pub struct RenderSide {
     /// draws at the target's size without jitter or resolve.
     pub tsr: Tsr,
     pub upscale: Option<UpscaleMode>,
-    /// The world radiance cache (0010 §4.1), where the GPU has 64-bit atomics. Until the
-    /// reservoirs read it (R4c), it runs only for its view: `sharc_view` (`r.sharc.view`) draws
-    /// the radiance it holds in place of the lit scene.
+    /// The world radiance cache (0010 §4.1), where the GPU has 64-bit atomics: what GI reads.
+    /// Without it (or with `restir.gi` off) there is no GI, the ambient light standing in.
+    /// `sharc_view` (`r.sharc.view`) draws the radiance it holds in place of the lit scene.
     pub sharc: Option<Sharc>,
     pub sharc_view: bool,
     /// Tonemaps the [`HDR_FORMAT`](marlin_render::HDR_FORMAT) scene into the output.
@@ -335,10 +336,41 @@ impl RenderSide {
             ));
             (material, shadow.mask, vis.depth, out.velocity, camera)
         });
-        let mut scene =
-            lighting.add_passes(g, lit.map(|l| l.0), lit.map(|l| l.1), &env, width, height);
-        // The local lights, if there are any to draw.
-        if let (Some((material, _, depth, velocity, camera)), Some(tiles)) = (lit, tiles) {
+        // The world cache, when the reservoirs read it (GI) or its view is on.
+        let sharc: &'g Option<Sharc> = sharc;
+        let cache = match (sharc.as_ref(), lit) {
+            (Some(sharc), Some((material, _, depth, _, camera))) if restir.gi || *sharc_view => {
+                let inputs = SharcInputs {
+                    material,
+                    depth,
+                    rt,
+                    simple,
+                    lights: gpu.lights,
+                    tiles,
+                };
+                Some(sharc.add_passes(g, inputs, &env, camera, width, height, seed))
+            }
+            _ => None,
+        };
+        // With GI the reservoirs own the sky's light (0010 §2.9): the lighting pass has no
+        // ambient term.
+        let gi = restir.gi && cache.is_some();
+        let lit_env = Environment {
+            ambient: if gi { [0.0; 3] } else { env.ambient },
+            ..env
+        };
+        let mut scene = lighting.add_passes(
+            g,
+            lit.map(|l| l.0),
+            lit.map(|l| l.1),
+            &lit_env,
+            width,
+            height,
+        );
+        // The reservoirs: local lights if there are any, and GI.
+        if let Some((material, _, depth, velocity, camera)) = lit
+            && (tiles.is_some() || gi)
+        {
             let inputs = RestirInputs {
                 view: MAIN_VIEW,
                 changed_lights,
@@ -348,6 +380,9 @@ impl RenderSide {
                 lights: gpu.lights,
                 rt,
                 tiles,
+                simple,
+                cache,
+                environment: env,
             };
             let signal = restir.add_passes(g, inputs, camera, width, height, seed);
             let light = if *denoise {
@@ -364,19 +399,9 @@ impl RenderSide {
             scene = denoiser.add_compose(g, scene, light, material, depth, width, height);
         }
         // The radiance cache's view, in place of the lit scene.
-        let sharc: &'g Option<Sharc> = sharc;
-        if let (Some(sharc), true, Some((material, _, depth, _, camera))) =
-            (sharc.as_ref(), *sharc_view, lit)
+        if let (Some(sharc), Some(cache), true, Some((material, _, depth, _, _))) =
+            (sharc.as_ref(), cache, *sharc_view, lit)
         {
-            let inputs = SharcInputs {
-                material,
-                depth,
-                rt,
-                simple,
-                lights: gpu.lights,
-                tiles,
-            };
-            let cache = sharc.add_passes(g, inputs, &env, camera, width, height, seed);
             scene = sharc.add_view(g, &cache, material, depth);
         }
         let exposure = PostProcess::exposure(g, MAIN_VIEW);

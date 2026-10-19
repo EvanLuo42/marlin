@@ -1,9 +1,10 @@
-//! A CPU reference of a scene's direct lighting: rays traced against every triangle of the
-//! scene (brute force: the scenes are small), each pixel's surface lit by every light with the
-//! renderer's formula (`Lighting/Restir.mshader`: albedo / π · I · cos θ / d², UE's range
-//! window, a spot's cone) and its visibility over the half of the light's sphere facing it.
+//! CPU references of a scene's lighting, direct and ([`global_illumination`]) with every bounce:
+//! rays traced against every triangle of the scene (brute force: the scenes are small), each
+//! surface lit by every light with the renderer's formula (`Lighting/Restir.mshader`: albedo / π ·
+//! I · cos θ / d², UE's range window, a spot's cone) and its visibility over the half of the
+//! light's sphere facing it.
 
-use marlin_math::{Mat4, Vec3, Vec4};
+use marlin_math::{Mat4, Rng, Vec3, Vec4};
 use marlin_render::Camera;
 use marlin_render::scene::{LightDesc, LightKind};
 
@@ -197,6 +198,115 @@ pub fn direct_lighting(
                 }
             }
             Some(sum)
+        })
+        .collect()
+}
+
+/// A direction about `n`, cosine-distributed, from two uniform numbers.
+fn cosine_direction(n: Vec3, u: f32, v: f32) -> Vec3 {
+    let r = u.sqrt();
+    let phi = v * core::f32::consts::TAU;
+    let t = if n.y.abs() < 0.99 { Vec3::Y } else { Vec3::X }
+        .cross(n)
+        .normalize();
+    let b = n.cross(t);
+    (t * (r * phi.cos()) + b * (r * phi.sin()) + n * (1.0 - u).max(0.0).sqrt()).normalize()
+}
+
+/// The light a Lambert surface of `albedo` at `x` facing `n` reflects from the scene's lights,
+/// each seen from one random point of its sphere's half facing `x`.
+fn direct_sample(
+    tracer: &Tracer,
+    scene: &Scene,
+    x: Vec3,
+    n: Vec3,
+    albedo: [f32; 3],
+    rng: &mut Rng,
+) -> [f32; 3] {
+    let mut sum = [0.0f32; 3];
+    for light in &scene.lights {
+        let c = light_contribution(light, x, n, albedo);
+        if c == [0.0; 3] {
+            continue;
+        }
+        let center = Vec3::from(light.position);
+        let toward = (x - center).normalize();
+        let t = if toward.y.abs() < 0.99 {
+            Vec3::Y
+        } else {
+            Vec3::X
+        }
+        .cross(toward)
+        .normalize();
+        let b = toward.cross(t);
+        let (z, phi) = (rng.f32(), rng.f32() * core::f32::consts::TAU);
+        let ring = (1.0 - z * z).max(0.0).sqrt();
+        let p =
+            center + (toward * z + t * (ring * phi.cos()) + b * (ring * phi.sin())) * light.radius;
+        if !tracer.occluded(x + n * 1e-3, p) {
+            for i in 0..3 {
+                sum[i] += c[i];
+            }
+        }
+    }
+    sum
+}
+
+/// The scene's global illumination, Lambert surfaces only, at every `step`-th pixel (from
+/// `step / 2`) of a `width` × `height` view: `paths` paths a pixel, each bounce cosine-sampled
+/// with next-event estimation to every light, Russian roulette after three bounces, the sky
+/// (the environment's ambient luminance) where a bounce leaves; `None` at the other pixels and
+/// where nothing is. Unbiased, so noisy: compare averages, not pixels.
+pub fn global_illumination(
+    scene: &Scene,
+    width: u32,
+    height: u32,
+    step: u32,
+    paths: u32,
+) -> Vec<Option<[f32; 3]>> {
+    let tracer = Tracer::new(scene);
+    let sky = scene.environment.ambient;
+    let mut rng = Rng::new(0x5EED);
+    (0..width * height)
+        .map(|p| {
+            let (x, y) = (p % width, p / width);
+            if x % step != step / 2 || y % step != step / 2 {
+                return None;
+            }
+            let (origin, dir) = pixel_ray(scene.camera, width, height, x, y);
+            let first = tracer.trace(origin, dir, f32::INFINITY)?;
+            let mut sum = [0.0f32; 3];
+            for _ in 0..paths {
+                let mut hit = first;
+                let mut throughput = [1.0f32; 3];
+                for bounce in 0.. {
+                    let albedo = scene.instances[hit.instance].albedo;
+                    let direct =
+                        direct_sample(&tracer, scene, hit.point, hit.normal, albedo, &mut rng);
+                    for i in 0..3 {
+                        sum[i] += throughput[i] * direct[i];
+                        throughput[i] *= albedo[i];
+                    }
+                    if bounce >= 3 {
+                        let keep = throughput.iter().fold(0.0f32, |a, &t| a.max(t)).min(0.95);
+                        if rng.f32() >= keep {
+                            break;
+                        }
+                        throughput = throughput.map(|t| t / keep);
+                    }
+                    let d = cosine_direction(hit.normal, rng.f32(), rng.f32());
+                    match tracer.trace(hit.point + hit.normal * 1e-3, d, f32::INFINITY) {
+                        Some(next) => hit = next,
+                        None => {
+                            for i in 0..3 {
+                                sum[i] += throughput[i] * sky[i];
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+            Some(sum.map(|s| s / paths as f32))
         })
         .collect()
 }

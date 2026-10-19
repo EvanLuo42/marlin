@@ -6,6 +6,7 @@
 #![cfg(marlin_platform = "windows")]
 
 mod denoise;
+mod gi;
 mod materials;
 mod restir;
 mod scenes;

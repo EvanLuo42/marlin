@@ -12,6 +12,7 @@ ShaderPackage
         `source:shaders/Lighting/Denoise.mshader`,
         `source:shaders/Lighting/LightTiles.mshader`,
         `source:shaders/Lighting/Lighting.mshader`,
+        `source:shaders/Lighting/Paths.mshader`,
         `source:shaders/Lighting/Restir.mshader`,
         `source:shaders/Lighting/Sharc.mshader`,
         `source:shaders/Material/Material.mshader`,

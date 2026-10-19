@@ -1,0 +1,137 @@
+namespace Marlin.Engine.Lighting;
+
+// What the passes that trace paths share (the world cache's updates, `Sharc.mshader`, and the
+// reservoirs' GI samples, `Restir.mshader`): random numbers, cosine-distributed bounces, shadow
+// rays, next-event estimation at a path's vertices, and the RGB9E5 radiance reservoirs keep.
+
+/// The lights a path vertex's next-event estimation draws from.
+public struct NextEventSources
+{
+    public AccelerationStructure Tlas;
+    public ReadOnlyBuffer<LightRow> Lights;
+    /// Presampled light tiles: per entry the light's row and its probability (float bits).
+    public ReadOnlyBuffer<uint2> Tiles;
+    /// xyz: the direction the sun's light travels; w: 1 with a sun.
+    public float4 SunDirection;
+    /// rgb: the sun's illuminance over π.
+    public float4 Sun;
+    public uint TileCount;
+    public uint TileSize;
+    /// Lights drawn from a tile, one kept by RIS; 0: no local lights.
+    public uint Candidates;
+}
+
+/// The next random number in [0, 1) of `state`'s sequence.
+float PathRandom(ref uint state)
+{
+    state = Hash(state + 0x9E3779B9);
+    return Unit(state);
+}
+
+/// A direction about `n`, cosine-distributed.
+float3 CosineDirection(float3 n, float u, float v)
+{
+    float r = Sqrt(u);
+    float phi = v * 6.2831853;
+    float3 t = Normalize(Cross(Abs(n.y) < 0.99 ? float3(0, 1, 0) : float3(1, 0, 0), n));
+    float3 b = Cross(n, t);
+    return Normalize(t * (r * Cos(phi)) + b * (r * Sin(phi)) + n * Sqrt(Max(1 - u, 0)));
+}
+
+/// Whether nothing is between `origin` and `target`.
+bool Unoccluded(AccelerationStructure tlas, float3 origin, float3 target)
+{
+    float3 d = target - origin;
+    float dist = Length(d);
+    Ray ray = Ray { Origin = origin, TMin = 0, Direction = d / Max(dist, 0.0001), TMax = dist * 0.999 };
+    return !tlas.TraceAny(ray, RayFlags.CullBackFace);
+}
+
+/// A shadow ray's origin off the surface at `x` (facing `n`), scaled with its distance to the
+/// eye.
+float3 Lift(float3 x, float3 n, float3 eye) => x + n * (0.001 + 0.0005 * Length(x - eye));
+
+/// The point of light `l`'s sphere on the half facing `x` that `u`, `v` name.
+float3 LightPoint(in LightRow l, float3 x, float u, float v)
+{
+    float3 away = Normalize(x - l.Position);
+    float ring = Sqrt(Max(1 - u * u, 0));
+    float phi = v * 6.2831853;
+    float3 t = Normalize(Cross(Abs(away.y) < 0.99 ? float3(0, 1, 0) : float3(1, 0, 0), away));
+    float3 b = Cross(away, t);
+    return l.Position + l.Radius * (away * u + t * (ring * Cos(phi)) + b * (ring * Sin(phi)));
+}
+
+/// The light the Lambert surface at `x` (facing `n`, lifted to `origin` for shadow rays,
+/// albedo `albedo`) reflects from the sun and from one local light resampled from a tile: an
+/// unbiased estimate, shadowed. The tile's `Candidates` lights are weighed by their unshadowed
+/// contribution here (RIS, as `RestirInitial` draws): with many lights, one drawn by power alone
+/// is mostly out of reach.
+float3 NextEvent(in NextEventSources s, float3 x, float3 origin, float3 n, float3 albedo, ref uint state)
+{
+    float3 sum = float3(0, 0, 0);
+    if (s.SunDirection.w > 0)
+    {
+        float3 toward = -s.SunDirection.xyz;
+        float cosine = Dot(n, toward);
+        if (cosine > 0 && Unoccluded(s.Tlas, origin, origin + toward * 100000))
+            sum += albedo * s.Sun.xyz * cosine;
+    }
+    if (s.Candidates == 0)
+        return sum;
+    uint tile = Min((uint)(PathRandom(ref state) * (float)s.TileCount), s.TileCount - 1);
+    uint kept = NoLight;
+    float keptTarget = 0;
+    float total = 0;
+    for (uint i = 0; i < s.Candidates; i++)
+    {
+        uint pick = Min((uint)(PathRandom(ref state) * (float)s.TileSize), s.TileSize - 1);
+        uint2 entry = s.Tiles[tile * s.TileSize + pick];
+        float source = AsFloat(entry.y);
+        if (source <= 0)
+            continue;
+        float target = Luminance(Contribution(s.Lights[entry.x], x, n, albedo));
+        float weight = target / source;
+        total += weight;
+        if (weight > 0 && PathRandom(ref state) * total < weight)
+        {
+            kept = entry.x;
+            keptTarget = target;
+        }
+    }
+    if (kept == NoLight)
+        return sum;
+    LightRow l = s.Lights[kept];
+    float u = PathRandom(ref state);
+    float v = PathRandom(ref state);
+    if (Unoccluded(s.Tlas, origin, LightPoint(l, x, u, v)))
+        sum += Contribution(l, x, n, albedo) * (total / ((float)s.Candidates * keptTarget));
+    return sum;
+}
+
+/// RGB9E5 with its exponent biased by 10 (not 15): 2⁻¹⁹ to about 2·10⁶, nits to a bright lamp's
+/// surface.
+const int Rgb9e5Bias = 10;
+
+/// `c` (non-negative, clamped to the range) in 32 bits: 9-bit mantissas, a shared exponent.
+uint PackRgb9e5(float3 c)
+{
+    float most = Exp2((float)(31 - Rgb9e5Bias)) * (511.0 / 512.0);
+    float3 v = Clamp(c, float3(0, 0, 0), float3(most, most, most));
+    float m = Max(v.x, Max(v.y, v.z));
+    int e = Max(-Rgb9e5Bias - 1, (int)Floor(Log2(Max(m, 1e-30)))) + 1 + Rgb9e5Bias;
+    float scale = Exp2((float)(e - Rgb9e5Bias - 9));
+    if ((int)Floor(m / scale + 0.5) == 512)
+    {
+        scale *= 2;
+        e += 1;
+    }
+    uint3 q = (uint3)Floor(v / scale + 0.5);
+    return Min(q.x, 511u) | (Min(q.y, 511u) << 9) | (Min(q.z, 511u) << 18) | ((uint)Clamp(e, 0, 31) << 27);
+}
+
+float3 UnpackRgb9e5(uint w)
+{
+    float scale = Exp2((float)((int)(w >> 27) - Rgb9e5Bias - 9));
+    return float3((float)(w & 511), (float)((w >> 9) & 511), (float)((w >> 18) & 511)) * scale;
+}

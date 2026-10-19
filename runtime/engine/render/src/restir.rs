@@ -1,6 +1,10 @@
-//! ReSTIR DI (0010 §2, R3c): local lights over the material buffer's proxy lobe, the reservoir
-//! owning `Dnee` (0010 §2.9). The passes are `Marlin.Engine.Lighting`'s (`Lighting/Restir.mshader`,
-//! whose file comment describes them): initial sampling from the presampled light tiles
+//! ReSTIR (0010 §2): local lights (R3c's DI) and, with [`RestirDi::gi`], indirect light (R4c) over
+//! the material buffer's proxy lobe, one reservoir owning `Dnee`, `I` and the sky (0010 §2.9): a
+//! bounce from each pixel's surface is a candidate beside the lights, its radiance at the surface
+//! it reaches from the simplified materials and the world cache ([`crate::sharc`]).
+//!
+//! The passes are `Marlin.Engine.Lighting`'s (`Lighting/Restir.mshader`, whose file comment
+//! describes them): initial sampling from the presampled light tiles
 //! ([`crate::lights`]) with a visibility test of the sample kept, temporal reuse of last frame's
 //! reservoirs (a history resource per view, the confidence capped by a duplication map), paired
 //! spatial reuse between pixels two by two (pairing patterns from the cooker,
@@ -29,17 +33,20 @@ use marlin_serial::cooked::Pod;
 use marlin_shader::asset::ShaderLibrary;
 use marlin_shader::bind::{BindError, EntryDesc, bind};
 
+use crate::Environment;
 use crate::asset::PairingPatternView;
 use crate::denoise::{HINTS_FORMAT, NoisySignal, SIGNAL_FORMAT};
 use crate::lights::{LIGHT_TILE_SIZE, LIGHT_TILES, LightTileOutput};
 use crate::meshes::{Camera, copy_to_new_buffer};
-use crate::raytracing::RtScene;
+use crate::raytracing::{HitSources, RtScene, SimpleOutput, SimpleSources};
+use crate::sharc::{SharcOutput, SharcSources};
 
 /// ReSTIR DI's shaders (`Marlin.Engine.Lighting`).
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct RestirShaders<'a> {
     pub initial: ShaderModule<'a>,
     pub initial_visibility: ShaderModule<'a>,
+    pub initial_gi: ShaderModule<'a>,
     pub temporal: ShaderModule<'a>,
     pub spatial_shift: ShaderModule<'a>,
     pub spatial: ShaderModule<'a>,
@@ -50,9 +57,10 @@ pub struct RestirShaders<'a> {
 
 impl<'a> RestirShaders<'a> {
     /// The entries, in field order.
-    pub const ENTRIES: [EntryDesc; 8] = [
+    pub const ENTRIES: [EntryDesc; 9] = [
         EntryDesc::compute("Marlin.Engine.Lighting.RestirInitial").push::<RestirArgs>(),
         EntryDesc::compute("Marlin.Engine.Lighting.RestirInitialVisibility").push::<RestirArgs>(),
+        EntryDesc::compute("Marlin.Engine.Lighting.RestirInitialGi").push::<RestirArgs>(),
         EntryDesc::compute("Marlin.Engine.Lighting.RestirTemporal").push::<RestirArgs>(),
         EntryDesc::compute("Marlin.Engine.Lighting.RestirSpatialShift").push::<RestirArgs>(),
         EntryDesc::compute("Marlin.Engine.Lighting.RestirSpatial").push::<RestirArgs>(),
@@ -66,17 +74,19 @@ impl<'a> RestirShaders<'a> {
         [
             initial,
             initial_visibility,
+            initial_gi,
             temporal,
             spatial_shift,
             spatial,
             spatial_biased,
             shade,
             duplication,
-        ]: [ShaderModule<'a>; 8],
+        ]: [ShaderModule<'a>; 9],
     ) -> Self {
         Self {
             initial,
             initial_visibility,
+            initial_gi,
             temporal,
             spatial_shift,
             spatial,
@@ -97,6 +107,9 @@ impl<'a> RestirShaders<'a> {
 struct Constants {
     inverse_view_projection: [f32; 16],
     eye: [f32; 4],
+    sun_direction: [f32; 4],
+    sun: [f32; 4],
+    sky: [f32; 4],
     width: u32,
     height: u32,
     candidates: u32,
@@ -118,7 +131,8 @@ struct Constants {
     parity: u32,
     previous_parity: u32,
     grid_width: u32,
-    spare: [u32; 2],
+    gi: u32,
+    gi_bounce: u32,
 }
 
 /// `Marlin.Engine.Lighting.RestirArgs`.
@@ -142,6 +156,16 @@ struct RestirArgs {
     shifts: u32,
     signal: u32,
     hints: u32,
+    gi: u32,
+}
+
+/// `Marlin.Engine.Lighting.GiSources`.
+#[repr(C)]
+#[derive(Pod, Clone, Copy)]
+struct GiSources {
+    cache: SharcSources,
+    hits: HitSources,
+    simple: SimpleSources,
 }
 
 /// The pairing patterns as `RestirArgs::Pairing` reads them: the sides (4 words, 0 past the
@@ -174,7 +198,7 @@ fn pairing_placement(seed: u32) -> ([u32; 2], u32) {
 }
 
 /// Bytes of a pixel's reservoir (`DiReservoir`).
-pub const RESERVOIR_BYTES: u64 = 32;
+pub const RESERVOIR_BYTES: u64 = 48;
 
 /// What [`RestirDi::add_passes`] reads of the frame.
 #[derive(Clone, Copy)]
@@ -190,7 +214,14 @@ pub struct RestirInputs<'g> {
     /// The GPU Scene's light table.
     pub lights: BufferHandle<'g>,
     pub rt: RtScene<'g>,
-    pub tiles: LightTileOutput<'g>,
+    /// The frame's light tiles; `None` without local lights.
+    pub tiles: Option<LightTileOutput<'g>>,
+    /// What GI bounces hit is made of (marlin-material's bakes), and the world cache they end
+    /// at; without the cache, no GI.
+    pub simple: SimpleOutput<'g>,
+    pub cache: Option<SharcOutput<'g>>,
+    /// The sun (for `x2`'s next event) and the sky (what a bounce that misses sees).
+    pub environment: Environment,
     /// The light rows added, changed or removed this frame (`RenderScene::light_changes`).
     pub changed_lights: &'g [u32],
 }
@@ -199,6 +230,7 @@ pub struct RestirInputs<'g> {
 pub struct RestirDi {
     initial_pass: ComputePipeline,
     initial_visibility_pass: ComputePipeline,
+    initial_gi_pass: ComputePipeline,
     temporal_pass: ComputePipeline,
     shade_pass: ComputePipeline,
     duplication_pass: ComputePipeline,
@@ -234,6 +266,13 @@ pub struct RestirDi {
     /// L2); the shading resamples the others from their neighbors (§2.6). Off: a reservoir a
     /// pixel (L3).
     pub checkerboard: bool,
+    /// The reservoirs own indirect light `I` too (0010 §2.9, R4c): a bounce from each pixel's
+    /// surface is a candidate beside the lights, its sample the surface (or sky) it reached.
+    /// Off: local lights only (R3's DI), the ambient light standing in for `I`.
+    pub gi: bool,
+    /// The radiance at a bounce's surface `x2`: its next event and one more bounce ending at
+    /// the world cache (0010 §3, L2 and up); off, the cache's at `x2` (L0, L1).
+    pub gi_bounce: bool,
     /// Last frame's checkerboard parity (2 before the first frame), for the temporal pass.
     last_parity: AtomicU32,
 }
@@ -257,6 +296,7 @@ impl RestirDi {
         Ok(Self {
             initial_pass: compute(shaders.initial)?,
             initial_visibility_pass: compute(shaders.initial_visibility)?,
+            initial_gi_pass: compute(shaders.initial_gi)?,
             temporal_pass: compute(shaders.temporal)?,
             shade_pass: compute(shaders.shade)?,
             duplication_pass: compute(shaders.duplication)?,
@@ -275,6 +315,8 @@ impl RestirDi {
             spatial_visibility: true,
             biased_spatial: false,
             checkerboard: true,
+            gi: true,
+            gi_bounce: true,
             last_parity: AtomicU32::new(2),
         })
     }
@@ -302,8 +344,23 @@ impl RestirDi {
             lights,
             rt,
             tiles,
+            simple,
+            cache,
+            environment: env,
             changed_lights,
         } = inputs;
+        let gi = cache.filter(|_| self.gi);
+        let sun = env.sun_illuminance / core::f32::consts::PI;
+        let d = env.light_direction.normalize_or_zero();
+        let has_sun = sun > 0.0 && d != marlin_math::Vec3::ZERO;
+        let [sr, sg, sb] = env.light_color;
+        let [ar, ag, ab] = env.ambient;
+        // Without local lights the light passes draw none.
+        let candidates = if tiles.is_some() {
+            self.candidates.max(1)
+        } else {
+            0
+        };
         // The changed rows as a bitset.
         let mut changed: Vec<u32> = Vec::new();
         for &row in changed_lights {
@@ -341,9 +398,12 @@ impl RestirDi {
         let constants = Constants {
             inverse_view_projection: view_projection.inverse().to_cols_array(),
             eye: [p.x, p.y, p.z, 0.0],
+            sun_direction: [d.x, d.y, d.z, f32::from(u8::from(has_sun))],
+            sun: [sr * sun, sg * sun, sb * sun, 0.0],
+            sky: [ar, ag, ab, 0.0],
             width,
             height,
-            candidates: self.candidates.max(1),
+            candidates,
             seed,
             tile_count: LIGHT_TILES,
             tile_size: LIGHT_TILE_SIZE,
@@ -362,7 +422,8 @@ impl RestirDi {
             parity,
             previous_parity,
             grid_width,
-            spare: [0; 2],
+            gi: u32::from(gi.is_some()),
+            gi_bounce: u32::from(self.gi_bounce),
         };
         // The reservoir passes run on the cells; the shading on the pixels.
         let groups = (grid_width.div_ceil(8), height.div_ceil(8));
@@ -373,7 +434,7 @@ impl RestirDi {
             let material = b.read_texture(material, Access::ComputeRead);
             let depth = b.read_texture(depth, Access::ComputeRead);
             let lights = b.read_buffer(lights, Access::ComputeRead);
-            let tiles = b.read_buffer(tiles.tiles, Access::ComputeRead);
+            let tiles = tiles.map(|t| b.read_buffer(t.tiles, Access::ComputeRead));
             let output = b.write_buffer(initial, Access::ComputeWrite);
             (output, move |ctx: &mut PassContext<'_>| {
                 ctx.set_pipeline(&self.initial_pass);
@@ -382,7 +443,8 @@ impl RestirDi {
                     material: ctx.srv(material),
                     depth: ctx.srv(depth),
                     lights: ctx.srv(lights),
-                    tiles: ctx.srv(tiles),
+                    // Not read without lights (`Candidates` 0): any buffer will do.
+                    tiles: ctx.srv(tiles.unwrap_or(lights)),
                     output: ctx.uav(output),
                     ..RestirArgs::default()
                 };
@@ -391,7 +453,7 @@ impl RestirDi {
             })
         });
         // The kept sample's shadow ray, a pass of its own (see `RestirInitialVisibility`).
-        let initial = if self.initial_visibility {
+        let initial = if self.initial_visibility && tiles.is_some() {
             g.add_compute("RestirInitialVisibility", |b| {
                 let material = b.read_texture(material, Access::ComputeRead);
                 let depth = b.read_texture(depth, Access::ComputeRead);
@@ -415,6 +477,42 @@ impl RestirDi {
             })
         } else {
             initial
+        };
+
+        // The GI candidate: a bounce from each cell's surface (`RestirInitialGi`).
+        let initial = match gi {
+            Some(cache) => g.add_compute("RestirInitialGi", |b| {
+                let material = b.read_texture(material, Access::ComputeRead);
+                let depth = b.read_texture(depth, Access::ComputeRead);
+                let lights = b.read_buffer(lights, Access::ComputeRead);
+                let tiles = tiles.map(|t| b.read_buffer(t.tiles, Access::ComputeRead));
+                rt.read(b);
+                let hits = rt.read_hits(b);
+                let simple = simple.read(b);
+                let cache = cache.read(b);
+                let output = b.write_buffer(initial, Access::ComputeWrite);
+                (output, move |ctx: &mut PassContext<'_>| {
+                    ctx.set_pipeline(&self.initial_gi_pass);
+                    let args = RestirArgs {
+                        constants: ctx.upload(&constants),
+                        material: ctx.srv(material),
+                        depth: ctx.srv(depth),
+                        lights: ctx.srv(lights),
+                        tiles: ctx.srv(tiles.unwrap_or(lights)),
+                        output: ctx.uav(output),
+                        tlas: rt.index,
+                        gi: ctx.upload(&GiSources {
+                            cache: cache.bind(ctx),
+                            hits: hits.bind(ctx),
+                            simple: simple.bind(ctx),
+                        }),
+                        ..RestirArgs::default()
+                    };
+                    ctx.push(&args);
+                    ctx.dispatch(groups.0, groups.1, 1);
+                })
+            }),
+            None => initial,
         };
 
         // Last frame's duplication map, this frame's written at the end.
