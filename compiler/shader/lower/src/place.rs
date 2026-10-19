@@ -277,9 +277,11 @@ impl FnCx<'_, '_, '_> {
                     Receiver::Value(v) => v,
                 };
                 if !matches!(self.l.module.data(self.f.ty(b)), TypeData::Res(_)) {
-                    return Err(LowerError::unsupported(
-                        "an atomic operation on this",
-                        self.owner(),
+                    // An array that is not `[GroupShared]` (a local one): no other lane sees it,
+                    // so an atomic on it means nothing (0004 §12.2).
+                    return Err(self.error(
+                        "E1309",
+                        "atomics on an array need a `[GroupShared]` array",
                         loc,
                     ));
                 }

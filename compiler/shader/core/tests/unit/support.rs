@@ -79,6 +79,20 @@ impl World {
         render_all(&all, self)
     }
 
+    /// Lowers entry `path`, which must fail; returns the error as shown.
+    pub fn lowering_error(&self, path: &str) -> String {
+        let snapshot = self.db.snapshot();
+        let mut l = Lowering::new(&snapshot, self.game).unwrap();
+        let err = l
+            .entry(self.item(path), &[])
+            .and_then(|_| l.finish().map(|_| ()))
+            .expect_err("lowering fails");
+        match err.to_diagnostic(&snapshot) {
+            Ok(Some(d)) => render_all(&[d], self),
+            _ => err.to_string(),
+        }
+    }
+
     fn item(&self, path: &str) -> ItemId {
         let snapshot = self.db.snapshot();
         for i in 0..self.files.len() {

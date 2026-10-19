@@ -31,6 +31,22 @@ public readonly struct Buffer<T>
     [Intrinsic("atomic.cmpxchg")] public T AtomicCompareExchange(uint i, T compare, T v);
 }
 
+/// Atomics on element `i` of a `[GroupShared]` array, giving the value before (0004 §12.2):
+/// group scope, the same methods as `Buffer`'s. On any other array they are an error.
+public extension<T, const int N>(T[N] a)
+{
+    [Intrinsic("atomic.add")] public T AtomicAdd(uint i, T v);
+    [Intrinsic("atomic.sub")] public T AtomicSub(uint i, T v);
+    [Intrinsic("atomic.and")] public T AtomicAnd(uint i, T v);
+    [Intrinsic("atomic.or")] public T AtomicOr(uint i, T v);
+    [Intrinsic("atomic.xor")] public T AtomicXor(uint i, T v);
+    [Intrinsic("atomic.min")] public T AtomicMin(uint i, T v);
+    [Intrinsic("atomic.max")] public T AtomicMax(uint i, T v);
+    [Intrinsic("atomic.xchg")] public T AtomicExchange(uint i, T v);
+    /// Writes `v` if the element is `compare`.
+    [Intrinsic("atomic.cmpxchg")] public T AtomicCompareExchange(uint i, T compare, T v);
+}
+
 /// A structured buffer of `T`, read only.
 [Builtin("readonly_buffer")]
 public readonly struct ReadOnlyBuffer<T>

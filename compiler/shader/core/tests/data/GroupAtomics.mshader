@@ -1,0 +1,31 @@
+namespace Game;
+
+public struct HistogramArgs
+{
+    public ReadOnlyBuffer<uint> Values;
+    public Buffer<uint> Bins;
+    public Buffer<uint> Before;
+}
+
+[GroupShared] uint[8] GroupBins;
+[GroupShared] int[1] Lowest;
+
+// A histogram counted in groupshared memory, then added to the buffer once a bin: atomics on
+// `[GroupShared]` arrays (0004 §12.2).
+[Compute(64, 1, 1)]
+public void Histogram([DispatchThreadId] uint3 id, [GroupIndex] uint gi, [Push] in HistogramArgs a)
+{
+    if (gi < 8)
+        GroupBins[gi] = 0;
+    if (gi == 0)
+        Lowest[0] = 100;
+    Barrier.Group();
+    uint bin = a.Values[id.x] % 8;
+    a.Before[id.x] = GroupBins.AtomicAdd(bin, 1);
+    Lowest.AtomicMin(0, (int)id.x - 10);
+    Barrier.Group();
+    if (gi < 8)
+        a.Bins[gi] = GroupBins[gi];
+    if (gi == 0)
+        a.Bins[8] = (uint)(Lowest[0] + 10);
+}

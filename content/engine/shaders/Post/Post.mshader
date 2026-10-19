@@ -106,33 +106,33 @@ public struct HistogramArgs
     public float InverseLogLuminanceRange;
 }
 
-/// Counts every pixel of the scene into the bin of its log luminance. A wave adds each of its
-/// distinct bins once, with how many of its pixels fall in it: a dark scene puts most pixels in a
-/// few bins, which one global atomic a pixel would fight over.
+/// A group's histogram, counted in groupshared memory first.
+[GroupShared] uint[256] GroupBins;
+
+/// Counts every pixel of the scene into the bin of its log luminance: a 16×16 group counts its
+/// pixels in groupshared memory, then adds each of its bins once to the histogram. A dark scene
+/// puts most pixels in a few bins, which one global atomic a pixel would fight over.
 [Compute(16, 16, 1)]
-public void Histogram([DispatchThreadId] uint3 id, [Push] in HistogramArgs a)
+public void Histogram([DispatchThreadId] uint3 id, [GroupIndex] uint gi, [Push] in HistogramArgs a)
 {
+    GroupBins[gi] = 0;
+    Barrier.Group();
     uint2 size = a.Scene.Size;
-    if (id.x >= size.x || id.y >= size.y)
-        return;
-    float luminance = Luminance(a.Scene[(int2)id.xy].xyz);
-    uint bin = 0;
-    if (luminance > 0.00001)
+    if (id.x < size.x && id.y < size.y)
     {
-        float t = Saturate((Log2(luminance) - a.MinLogLuminance) * a.InverseLogLuminanceRange);
-        bin = (uint)(t * 254) + 1;
+        float luminance = Luminance(a.Scene[(int2)id.xy].xyz);
+        uint bin = 0;
+        if (luminance > 0.00001)
+        {
+            float t = Saturate((Log2(luminance) - a.MinLogLuminance) * a.InverseLogLuminanceRange);
+            bin = (uint)(t * 254) + 1;
+        }
+        GroupBins.AtomicAdd(bin, 1);
     }
-    bool pending = true;
-    while (Wave.AnyTrue(pending))
-    {
-        uint first = Wave.Min(pending ? bin : (uint)0xFFFFFFFF);
-        bool mine = pending && bin == first;
-        uint count = Wave.Sum(mine ? (uint)1 : (uint)0);
-        uint leader = Wave.Min(mine ? Wave.LaneIndex : (uint)0xFFFFFFFF);
-        if (Wave.LaneIndex == leader)
-            a.Histogram.AtomicAdd(first, count);
-        pending = pending && !mine;
-    }
+    Barrier.Group();
+    uint count = GroupBins[gi];
+    if (count > 0)
+        a.Histogram.AtomicAdd(gi, count);
 }
 
 public struct ExposureArgs

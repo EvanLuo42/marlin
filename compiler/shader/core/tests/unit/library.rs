@@ -291,3 +291,61 @@ fn resources_barriers_atomics_and_waves_run() {
         ["length = 64", "assertion failed: id.x < 63: lane 63, -1"]
     );
 }
+
+#[test]
+fn groupshared_arrays_take_atomics() {
+    let text = std::fs::read_to_string(data_path(
+        env!("CARGO_MANIFEST_DIR"),
+        "GroupAtomics.mshader",
+    ))
+    .unwrap()
+    .replace("\r\n", "\n");
+    let w = world(&text);
+    assert_eq!(w.diagnostics(), "");
+    // Values 0..64 * 3: bins of `3i % 8` take 8 each.
+    let values: Vec<u32> = (0..64).map(|i| i * 3).collect();
+    let mut res = marlin_shaderc_ir::Resources {
+        buffers: vec![bytes(&values), vec![0; 9 * 4], vec![0; 64 * 4]],
+        // HistogramArgs { Values = 0, Bins = 1, Before = 2 }.
+        push: Some(Val::Agg((0..3).map(Val::u32).collect())),
+    };
+    w.dispatch("Game.Histogram", [1, 1, 1], &mut res);
+    let mut expected = [0u32; 9];
+    for v in &values {
+        expected[(v % 8) as usize] += 1;
+    }
+    // AtomicMin on an `int` array: the smallest `id - 10` is -10.
+    expected[8] = 0;
+    assert_eq!(words(&res.buffers[1]), expected);
+    // Every lane got the bin's count before its own add: each bin's 8 lanes saw 0..8 once.
+    let before = words(&res.buffers[2]);
+    for bin in 0..8u32 {
+        let mut seen: Vec<u32> = (0..64)
+            .filter(|&i| values[i] % 8 == bin)
+            .map(|i| before[i])
+            .collect();
+        seen.sort();
+        assert_eq!(seen, (0..8).collect::<Vec<u32>>(), "bin {bin}");
+    }
+}
+
+#[test]
+fn atomics_on_a_local_array_are_an_error() {
+    // No other lane sees a local array: its atomics mean nothing.
+    let text = "namespace Game;\n\
+                public struct A { public Buffer<uint> B; }\n\
+                [Compute(1, 1, 1)]\n\
+                public void K([Push] in A a)\n\
+                {\n    \
+                    uint[4] local;\n    \
+                    local[1] = 0;\n    \
+                    a.B[0] = local.AtomicAdd(1, 1);\n\
+                }\n";
+    let w = world(text);
+    let shown = w.lowering_error("Game.K");
+    assert!(
+        shown.contains("E1309")
+            && shown.contains("atomics on an array need a `[GroupShared]` array"),
+        "{shown}"
+    );
+}

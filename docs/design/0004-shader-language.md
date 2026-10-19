@@ -764,6 +764,7 @@ Tile.AtomicMax(i, v);
 - `Wave.*`：`Sum`、`Ballot`、`ReadLane`、`IsFirstLane`……
 - `Barrier.*`：`Group`、`Device`……
 - 原子操作是资源和 groupshared 数组上的方法。它们都按下标访问，所以不需要对 buffer 元素取真正的 `ref`（§6）。
+  - groupshared 数组上的原子方法（2026-10-19 实现）：core 库里的 `extension<T, const int N>(T[N] a)` 块声明了和 `Buffer` 同一套方法，作用域是 group。在不是 `[GroupShared]` 的数组（局部数组）上调用报 E1309：别的线程看不到它，原子操作没有意义。
 - 存储纹理（`StorageTexture2D`、`StorageTexture2DArray`、`StorageTexture3D`）有和 `Buffer` 同一套原子方法，第一个参数是纹素坐标，数组纹理再跟一个 `layer`，返回原来的值（2026-10-18 定）：
 
 ```csharp
