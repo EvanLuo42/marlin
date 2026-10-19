@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Condvar, Mutex, PoisonError, RwLock};
 
 use crate::cx::Cx;
-use crate::db::{DepKey, TableId, lock};
+use crate::db::{Db, DepKey, RunnerId, TableId, lock};
 use crate::{Cancelled, Durability, Input, Query, Revision, short_name};
 
 /// What the engine needs from a table without knowing its types.
@@ -188,6 +188,8 @@ pub(crate) enum Fetch<V> {
 /// Resets a claimed slot if the query fails or panics before storing a result.
 struct Claim<'t, Q: Query> {
     table: &'t QueryTable<Q>,
+    db: &'t Db,
+    owner: RunnerId,
     index: u32,
     armed: bool,
 }
@@ -197,7 +199,7 @@ impl<Q: Query> Drop for Claim<'_, Q> {
         if self.armed {
             let mut state = lock(&self.table.state);
             state.slots[self.index as usize].running = None;
-            self.table.finished.notify_all();
+            self.table.released(self.db, self.owner, self.index);
         }
     }
 }
@@ -233,6 +235,13 @@ impl<Q: Query> QueryTable<Q> {
         }
     }
 
+    /// `owner` stopped running the slot at `index`. Called with the state locked: the waiters'
+    /// edges go before they can run again.
+    fn released(&self, db: &Db, owner: RunnerId, index: u32) {
+        db.release_waiters(owner, self.dep(index));
+        self.finished.notify_all();
+    }
+
     /// The current value of the key at `index`: a memo still valid in this revision, a memo
     /// whose dependencies turned out unchanged, or a fresh result.
     pub(crate) fn fetch(&self, cx: &Cx<'_>, index: u32) -> Result<Fetch<Q::Value>, Cancelled> {
@@ -247,7 +256,7 @@ impl<Q: Query> QueryTable<Q> {
             }
             let slot = &mut state.slots[index as usize];
             if let Some(owner) = slot.running {
-                if owner == me || !db.begin_wait(me, owner) {
+                if owner == me || !db.begin_wait(me, owner, self.dep(index)) {
                     return Ok(Fetch::Cycle);
                 }
                 state = self
@@ -270,6 +279,8 @@ impl<Q: Query> QueryTable<Q> {
         drop(state);
         let mut claim = Claim {
             table: self,
+            db,
+            owner: me,
             index,
             armed: true,
         };
@@ -286,7 +297,7 @@ impl<Q: Query> QueryTable<Q> {
             memo.durability = durability;
             let result = fetched(memo);
             claim.armed = false;
-            self.finished.notify_all();
+            self.released(db, me, index);
             return Ok(Fetch::Value(result));
         }
 
@@ -310,7 +321,7 @@ impl<Q: Query> QueryTable<Q> {
         let result = fetched(memo);
         slot.running = None;
         claim.armed = false;
-        self.finished.notify_all();
+        self.released(db, me, index);
         Ok(Fetch::Value(result))
     }
 }

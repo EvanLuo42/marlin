@@ -54,8 +54,9 @@ pub struct Db {
     gate_changed: Condvar,
     cancel: AtomicBool,
     next_runner: AtomicU64,
-    /// Which runner each blocked runner waits for.
-    waits: Mutex<HashMap<RunnerId, RunnerId>>,
+    /// Which runner each blocked runner waits for, and on which slot. An edge exists only while
+    /// that slot is running: releasing the slot removes it ([`Db::release_waiters`]).
+    waits: Mutex<HashMap<RunnerId, (RunnerId, DepKey)>>,
     executions: AtomicU64,
     deep_verifications: AtomicU64,
 }
@@ -251,9 +252,10 @@ impl Db {
         self.table(InputTable::<I>::new)
     }
 
-    /// Records that `waiter` is about to block on `owner`, unless that closes a cycle of
-    /// waiting runners; then returns `false` and records nothing.
-    pub(crate) fn begin_wait(&self, waiter: RunnerId, owner: RunnerId) -> bool {
+    /// Records that `waiter` is about to block on `owner`, which runs `slot`, unless that closes
+    /// a cycle of waiting runners; then returns `false` and records nothing. Called with the
+    /// slot's table locked, so the slot cannot be released in between.
+    pub(crate) fn begin_wait(&self, waiter: RunnerId, owner: RunnerId, slot: DepKey) -> bool {
         let mut waits = lock(&self.waits);
         let mut at = owner;
         loop {
@@ -261,16 +263,24 @@ impl Db {
                 return false;
             }
             match waits.get(&at) {
-                Some(&next) => at = next,
+                Some(&(next, _)) => at = next,
                 None => break,
             }
         }
-        waits.insert(waiter, owner);
+        waits.insert(waiter, (owner, slot));
         true
     }
 
     pub(crate) fn end_wait(&self, waiter: RunnerId) {
         lock(&self.waits).remove(&waiter);
+    }
+
+    /// `owner` stopped running `slot`: the runners blocked on it no longer wait for `owner`.
+    /// Called with the slot's table locked, before waking them. A woken waiter only removes its
+    /// own edge once it has that lock back; if `owner` asked for one of the waiter's slots in
+    /// between, the stale edge would close a cycle that does not exist.
+    pub(crate) fn release_waiters(&self, owner: RunnerId, slot: DepKey) {
+        lock(&self.waits).retain(|_, edge| *edge != (owner, slot));
     }
 }
 

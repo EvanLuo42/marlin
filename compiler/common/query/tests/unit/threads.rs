@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use marlin_lang_query::{Cancelled, Cx, Db, Durability, Input, Query};
 use marlin_math::Rng;
-use marlin_test_support::{seed, with_timeout};
+use marlin_test_support::{scale, seed, with_timeout};
 
 use crate::model::{INPUTS, NODES, Node, random_db, reference};
 
@@ -61,34 +61,43 @@ fn concurrent_readers_agree_with_direct_evaluation() {
         "concurrent model readers",
         move || {
             let mut rng = Rng::new(seed);
-            let (db, inputs) = random_db(&mut rng);
-            let db = Arc::new(db);
-            let expected: Vec<u64> = (0..NODES).map(|i| reference(&inputs, i)).collect();
-            let threads: Vec<_> = (0..6)
-                .map(|t| {
-                    let db = db.clone();
-                    std::thread::spawn(move || {
-                        let snapshot = db.snapshot();
-                        // Each thread walks the nodes in a different order.
-                        (0..NODES)
-                            .map(|n| {
-                                let i = (n * (2 * t + 1) + t) % NODES;
-                                (i, snapshot.get::<Node>(&i).unwrap())
-                            })
-                            .collect::<Vec<_>>()
+            // Many rounds: a thread that finishes a key and moves on to one its waiter holds
+            // must not see a cycle through that waiter's stale wait.
+            for round in 0..scale(40) {
+                let (db, inputs) = random_db(&mut rng);
+                let db = Arc::new(db);
+                let expected: Vec<u64> = (0..NODES).map(|i| reference(&inputs, i)).collect();
+                let start = Arc::new(Barrier::new(8));
+                let threads: Vec<_> = (0..8)
+                    .map(|t| {
+                        let (db, start) = (db.clone(), start.clone());
+                        std::thread::spawn(move || {
+                            let snapshot = db.snapshot();
+                            start.wait();
+                            // Each thread walks the nodes in a different order.
+                            (0..NODES)
+                                .map(|n| {
+                                    let i = (n * (2 * t + 1) + t) % NODES;
+                                    (i, snapshot.get::<Node>(&i).unwrap())
+                                })
+                                .collect::<Vec<_>>()
+                        })
                     })
-                })
-                .collect();
-            for t in threads {
-                for (i, value) in t.join().unwrap() {
-                    assert_eq!(value, expected[i as usize], "seed {seed}, node {i}");
+                    .collect();
+                for t in threads {
+                    for (i, value) in t.join().unwrap() {
+                        assert_eq!(
+                            value, expected[i as usize],
+                            "seed {seed}, round {round}, node {i}"
+                        );
+                    }
                 }
+                assert!(
+                    db.stats().executions <= u64::from(NODES),
+                    "each node computed at most once: {:?} ({INPUTS} inputs)",
+                    db.stats()
+                );
             }
-            assert!(
-                db.stats().executions <= u64::from(NODES),
-                "each node computed at most once: {:?} ({INPUTS} inputs)",
-                db.stats()
-            );
         },
     );
 }
