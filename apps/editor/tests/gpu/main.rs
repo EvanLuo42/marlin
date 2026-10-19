@@ -57,8 +57,9 @@ fn the_shell_draws_like_the_reference_and_its_golden() {
     // 1.25 × DPI: a 1200 × 720 window of 960 × 576 logical pixels, the cursor over "Edit".
     let (w, h, scale) = (1200u32, 720u32, 1.25f32);
     let mut list = UiDrawList::new(scale);
+    let fonts = [font];
     shell::draw(
-        &mut list.painter(&ui.glyph_cache().ids),
+        &mut list.painter(&ui.glyph_cache().ids).with_fonts(&fonts),
         font,
         &ShellState {
             size: Vec2::new(w as f32 / scale, h as f32 / scale),

@@ -148,3 +148,55 @@ fn paths_bin_and_shade_like_the_reference() {
     assert_image!("ui_paths", &gpu);
     finish(&mut frames, &r);
 }
+
+/// Text from its outlines: a large title, turned text, and zooming text in a gradient.
+#[test]
+fn text_as_paths_shades_like_the_reference() {
+    let mut r = renderer(&UiRendererDesc::default());
+    let mut frames = FrameContext::new(hardware_device(), &FrameContextDesc::default()).unwrap();
+    let mut pages = Pages::new(r.glyph_cache().config().page_size);
+    let font = crate::support::inter();
+    let fonts = [font];
+    let mut list = UiDrawList::new(1.0);
+    {
+        let mut p = list.painter(&r.glyph_cache().ids).with_fonts(&fonts);
+        p.rect(
+            Rect::new(0.0, 0.0, 320.0, 200.0),
+            &RectStyle::fill(Color::rgb(245, 245, 240)),
+        );
+        let title = marlin_font::TextLayout::new(&font, marlin_font::FontId(0), 96.0, "Ag");
+        p.text(&title, Vec2::new(8.0, -10.0), Color::rgb(30, 30, 40));
+        let turned =
+            marlin_font::TextLayout::new(&font, marlin_font::FontId(0), 18.0, "turned text");
+        p.begin_group(&GroupDesc {
+            transform: Affine2::translate(170.0, 40.0) * Affine2::rotate(0.5),
+            ..GroupDesc::default()
+        });
+        p.text(&turned, Vec2::ZERO, Color::rgb(200, 40, 60));
+        p.end_group();
+        p.set_text_as_paths(true);
+        let zoom = marlin_font::TextLayout::new(&font, marlin_font::FontId(0), 24.0, "zooming");
+        let g = marlin_ui_render::Gradient::linear(
+            Vec2::new(150.0, 0.0),
+            Vec2::new(300.0, 0.0),
+            &[
+                (0.0, Color::rgb(40, 90, 255)),
+                (1.0, Color::rgb(255, 120, 40)),
+            ],
+        );
+        p.text_paint(&zoom, Vec2::new(150.0, 140.0), &Paint::Gradient(&g));
+    }
+    let (gpu, cpu) = draw(
+        &mut r,
+        &mut frames,
+        &mut pages,
+        &list,
+        320,
+        200,
+        Color::BLACK,
+    );
+    close(&gpu, &cpu, 3, 0.01);
+    compare(&mut r, &mut frames, &list, 320, 200);
+    assert_image!("ui_text_paths", &gpu);
+    finish(&mut frames, &r);
+}

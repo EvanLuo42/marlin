@@ -303,9 +303,10 @@ fn run(
             viewport_version += 1;
         }
 
+        let fonts = [font];
         let mut list = UiDrawList::new(scale);
         shell::draw(
-            &mut list.painter(&ui.glyph_cache().ids),
+            &mut list.painter(&ui.glyph_cache().ids).with_fonts(&fonts),
             font,
             &shell::ShellState {
                 size: logical,

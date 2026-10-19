@@ -20,7 +20,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::ops::Range;
 
-use marlin_font::{GlyphIds, GlyphKey, SUBPIXEL_POSITIONS, TextLayout};
+use marlin_font::{FontView, GlyphIds, GlyphKey, SUBPIXEL_POSITIONS, TextLayout};
 use marlin_math::Vec2;
 use marlin_math::scalar::{floor, round, sqrt};
 
@@ -99,7 +99,12 @@ impl UiDrawList {
 
     /// A painter appending to the list; `ids` gives glyphs their ids.
     pub fn painter<'a>(&'a mut self, ids: &'a GlyphIds) -> Painter<'a> {
-        Painter { list: self, ids }
+        Painter {
+            list: self,
+            ids,
+            fonts: &[],
+            text_as_paths: false,
+        }
     }
 
     /// Puts a slot's recording in the place [`Painter::chunk`] reserved for it.
@@ -416,13 +421,20 @@ impl RetainedChunk {
 pub struct Painter<'a> {
     list: &'a mut UiDrawList,
     ids: &'a GlyphIds,
+    /// For text drawn as paths: `fonts[i]` is `FontId(i)`.
+    fonts: &'a [FontView<'a>],
+    text_as_paths: bool,
 }
+
+/// Text larger than this on the screen (pixels per em) is drawn as paths, not from the glyph
+/// cache (§6.4).
+pub const PATH_TEXT_SIZE: f32 = 64.0;
 
 fn bits(v: [f32; 4]) -> [u32; 4] {
     v.map(f)
 }
 
-impl Painter<'_> {
+impl<'a> Painter<'a> {
     /// Logical units to what commands store: physical pixels outside groups, the group's own
     /// units inside one.
     fn k(&self) -> f32 {
@@ -753,6 +765,17 @@ impl Painter<'_> {
     pub fn text_paint(&mut self, layout: &TextLayout, origin: Vec2, paint: &Paint) {
         let to_screen = self.to_screen();
         let size = layout.size * sqrt(to_screen.determinant().abs());
+        // Large, turned, skewed or stretched text, or text that is being zoomed, is drawn from
+        // its outlines (§6.4).
+        let font = self.fonts.get(layout.font.0 as usize).copied();
+        if let Some(font) = font
+            && (self.text_as_paths
+                || size > PATH_TEXT_SIZE
+                || !to_screen.is_uniform_scale_translate())
+        {
+            self.text_outlines(font, layout, origin, paint);
+            return;
+        }
         let ids = self.ids;
         let scope = self.list.scope();
         let clip = self.list.clip();
@@ -790,6 +813,78 @@ impl Painter<'_> {
                 list.extend_own();
             }
         });
+    }
+
+    /// Gives the painter the fonts text is laid out in (`fonts[i]` is `FontId(i)`), so text can be
+    /// drawn from its outlines: past [`PATH_TEXT_SIZE`] on the screen, under a group that
+    /// turns, skews or stretches it, and while [`set_text_as_paths`](Self::set_text_as_paths).
+    /// Without them, text always comes from the glyph cache, upright.
+    pub fn with_fonts(mut self, fonts: &'a [FontView<'a>]) -> Self {
+        self.fonts = fonts;
+        self
+    }
+
+    /// Draws text as paths whatever its size: for text whose scale is animating (a zooming
+    /// node graph), so the glyph cache does not fill with every size it passes through (§6.4).
+    pub fn set_text_as_paths(&mut self, on: bool) {
+        self.text_as_paths = on;
+    }
+
+    /// One path command per glyph, from `font`'s outlines, on the screen.
+    fn text_outlines(
+        &mut self,
+        font: FontView<'_>,
+        layout: &TextLayout,
+        origin: Vec2,
+        paint: &Paint,
+    ) {
+        let to_screen = self.to_screen();
+        let scope = self.list.scope();
+        let clip = self.list.clip();
+        if !self.list.effects.is_empty() {
+            let b = [
+                origin.x,
+                origin.y,
+                origin.x + layout.width,
+                origin.y + layout.height,
+            ];
+            self.list.union_box(to_screen, b);
+        }
+        let paint = self.paint(paint, scope.opacity);
+        // Font units, y up, to logical pixels, y down.
+        let s = layout.size / font.units_per_em();
+        for g in &layout.glyphs {
+            let mut path = Path::new();
+            let mut at: Option<[f32; 2]> = None;
+            for seg in font.segments(g.glyph) {
+                if at != Some(seg.p0) {
+                    if at.is_some() {
+                        path.close();
+                    }
+                    path.move_to(Vec2::new(seg.p0[0], seg.p0[1]));
+                }
+                if seg.is_line() {
+                    path.line_to(Vec2::new(seg.p1[0], seg.p1[1]));
+                } else {
+                    path.quad_to(
+                        Vec2::new(seg.c[0], seg.c[1]),
+                        Vec2::new(seg.p1[0], seg.p1[1]),
+                    );
+                }
+                at = Some(seg.p1);
+            }
+            if path.is_empty() {
+                continue;
+            }
+            let place = to_screen
+                * Affine2::translate(origin.x + g.x, origin.y + g.y)
+                * Affine2::scale(s, -s);
+            let segs = path.flatten(place);
+            if let Some(payload) = crate::path::payload(&segs, FillRule::NonZero) {
+                self.list.own.push(Kind::Path, 0, 0, clip, paint, &payload);
+                self.list.extend_own();
+            }
+        }
     }
 
     /// The index of a new paint for `paint` at `opacity`: solid colors take it in their alpha,

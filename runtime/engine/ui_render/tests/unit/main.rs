@@ -14,3 +14,4 @@ mod groups;
 mod paths;
 mod recording;
 mod sdf;
+mod text_paths;
