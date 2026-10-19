@@ -32,10 +32,10 @@ pub mod scene;
 pub mod shadows;
 pub mod visibility;
 
-pub use lighting::{LIGHTING_PUSH_BYTES, Lighting};
+pub use lighting::Lighting;
 pub use meshes::{
-    CLEAR_PUSH_BYTES, Camera, Environment, Feedback, MAX_POOL_SLOTS, MeshData, MeshHandle, Meshes,
-    PagePool, PagePoolDesc, StreamingShaders, UPLOAD_PUSH_BYTES, Uploads,
+    Camera, Environment, Feedback, MAX_POOL_SLOTS, MeshData, MeshHandle, Meshes, PagePool,
+    PagePoolDesc, StreamingShaders, Uploads,
 };
 pub use post::{HDR_FORMAT, PostOutput, PostProcess, PostSettings, PostShaders};
 pub use scene::{GpuScene, RenderScene, ScatterShader, SceneIds, SceneUpdates};

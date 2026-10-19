@@ -8,12 +8,10 @@ use marlin_rhi::{
     ClearValue, ComputePipeline, ComputePipelineDesc, Device, LoadOp, Result, ShaderModule, StoreOp,
 };
 use marlin_serial::cooked::Pod;
+use marlin_shader::bind::EntryDesc;
 
 use crate::meshes::Environment;
 use crate::post::HDR_FORMAT;
-
-/// Bytes of push constants `DirectLight` takes: seven 32-bit words.
-pub const LIGHTING_PUSH_BYTES: u32 = 28;
 
 #[repr(C)]
 #[derive(Pod, Clone, Copy)]
@@ -42,6 +40,10 @@ pub struct Lighting {
 }
 
 impl Lighting {
+    /// The direct lighting entry.
+    pub const ENTRY: EntryDesc =
+        EntryDesc::compute("Marlin.Engine.Lighting.DirectLight").push::<DirectArgs>();
+
     pub fn new(device: &Device, direct: ShaderModule<'_>) -> Result<Self> {
         Ok(Self {
             direct: device.create_compute_pipeline(&ComputePipelineDesc {

@@ -1,5 +1,5 @@
 //! marlin-shader's platform-independent tests (quick tier, docs/design/0014-testing.md §5): the
-//! reflection types and the shader assets.
+//! reflection types, the shader assets and binding a subsystem's entries.
 //! Run alone with `cargo test -p marlin-shader --test unit`.
 
 use marlin_test_support::MemCap;
@@ -8,4 +8,5 @@ use marlin_test_support::MemCap;
 static HEAP: MemCap<std::alloc::System> = MemCap::new(std::alloc::System, 1 << 30);
 
 mod asset;
+mod bind;
 mod reflect;

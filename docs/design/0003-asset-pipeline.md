@@ -25,7 +25,7 @@
 | 压缩 | 每个 chunk 可选 codec；zstd、LZ4、GDeflate **全部自研**，先把 API 定死并实现功能，之后再优化；主机硬件解压走 ext |
 | 包与挂载 | 分层挂载并按优先级覆盖（base < patch < DLC < dev）；包布局对平台的二进制差分补丁友好 |
 | 主循环 | 模拟与渲染重叠：渲染数据抽取成快照，两侧都以 job 图运行 |
-| Shader | `ShaderPackage`（`!Name` 即包名）cook 成整包的库，含全部 public 入口；运行时按包名查名字表，再按入口全名取；`Marlin.*` 包名留给引擎；材质 shader 只经链接取；包依赖和 `Shader` 变体都是构建依赖，可以跨挂载（§4.1、§4.4、§4.5，2026-10-18） |
+| Shader | `ShaderPackage`（`!Name` 即包名）cook 成整包的库，含全部 public 入口；运行时按包名查名字表，再按入口全名取；入口、stage 和 push 大小由用它的子系统声明，framework 只加载；`Marlin.*` 包名留给引擎；材质 shader 只经链接取；包依赖和 `Shader` 变体都是构建依赖，可以跨挂载（§4.1、§4.4、§4.5，2026-10-18） |
 | 工程与挂载 | `<Name>.mproject` 工程文件，内容在 `content/`；引擎内容 `/Engine` 和工程内容 `/Game` 是同一构建的两个挂载，引擎随工程一起从源码 cook 进同一个包；发行版 editor 只读地带着引擎内容的源文件（§4.5，2026-10-18） |
 | 世界数据 | 用同一种文本格式：entity 是对象，component 是嵌套块，prefab、关卡、流式 cell 都通过链接组织 |
 | 第三方 | 核心算法自研：压缩、BCn 编码、网格优化、meshlet；外部格式的解析用成熟 crate（png/jpeg/exr/glTF） |
@@ -218,7 +218,16 @@ bulk        GPU 数据（顶点、纹理 mip），对齐到 4 KiB，直接上传
   - 名字表跨所有挂载（§4.5）：引擎和游戏的名字在同一张表里，所以必须全局唯一。
   - `Marlin` 和 `Marlin.…` 只给引擎挂载的包用，引擎的包也只能叫这些；违反时 cook 报错。这样游戏的名字永远不会和引擎（包括以后版本的引擎）撞上。0011 里 cook 生成的包（`Marlin.Generated.Closures`）不是写出来的 `ShaderPackage` 对象，不受这条约束。
   - `Vfs::named` 从上层往下查，补丁层可以替换基础包里的库；同一个构建里不能靠重名来覆盖。
-  - 引擎先按包名加载库，再用全名取入口（`Marlin.Engine.ForwardVs`）。代码里不出现 shader 的路径或 UUID。
+  - 引擎先按包名加载库，再用全名取入口（`Marlin.Engine.Post.BloomDown`）。代码里不出现 shader 的路径或 UUID。
+- **入口归用它的子系统**（2026-10-18，用户选定）：
+  - 源文件仍然集中在一个包里（`content/engine/shaders/`，`Marlin.Engine`）。哪些入口、当什么 stage 用、push 多大，写在用它的子系统里，和设置 push 的代码放在一起。这和 UE 一样：shader 文件集中，`FGlobalShader` 由用它的模块声明。
+  - `marlin_shader::bind`：
+    - `EntryDesc { name, stage, push }`。`EntryDesc::compute(name).push::<Args>()` 的 push 大小取自子系统真正 push 的 `#[repr(C)]` 结构体，不手写数字；push 范围比结构体大时用 `push_bytes`（材质 resolve 的第 31 个字）。
+    - `EntryDesc::check(&reflection)` 对比反射。`bind(library, &ENTRIES)` 按顺序取出并检查，得到模块数组，`bind_one` 取单个；错误是 `BindError`（缺入口，或 stage、push 不对，带期望值和实际值）。
+    - 模块（`ShaderModule`）在 `rhi` feature 后面，shader 编译器依赖 marlin-shader，但不依赖 RHI。
+  - 每个子系统的 shader 集合有 `ENTRIES`、`from_modules` 和 `bind`：`PostShaders`、`StreamingShaders`、`VisibilityShaders`、`VsmShaders`（marlin-render），`MaterialShaders`（marlin-material），`UiShaders`（marlin-ui-render）；单入口的是 `Lighting::ENTRY`、`ScatterShader::ENTRY`、`marlin_material::RESOLVE`。
+  - framework 只负责按名字加载（`load_engine_shaders`、`load_default_resolve`），再把库交给各子系统；它不知道任何入口名。编辑器直接调用 `UiShaders::bind`。
+  - GPU 测试用 `marlin_gpu_test_support::engine_shaders(&X::ENTRIES)`：现编每个入口，并做和引擎加载 cook 结果时一样的检查。所以每个子系统的 GPU 测试都会对比它的 push 结构体和编译出的 shader。
 - **target**：写在 `platforms/<p>/platform.toml` 的 `[cook] shader-target`，Windows 和 Linux 是 `vulkan-1.4`。macOS 写的是 `metal-3`，还没有后端，cook 时报错。
 - **cook 键**：
   - `Cooker::key(platform, profile) -> u128` 进每个对象的键。shader cooker 在里面放 target 名、profile 和 `Session::fingerprint(target)`（编译器源码哈希加 target 描述版本，0005 §8）。
@@ -553,6 +562,10 @@ bulk        GPU 数据（顶点、纹理 mip），对齐到 4 KiB，直接上传
     - CLI 构建包含引擎单元；
     - 端到端 GPU 测试改为只挂一个包，cookd 同时服务引擎 shader，golden 不变。
     - 游戏的 `Shader` 变体从引擎的包构建（跨挂载读源文件）。
+- **入口归子系统完成**（§4.4，2026-10-18）：
+  - `marlin_shader::bind`（`EntryDesc`、`check`、`bind`、`bind_one`、`BindError`；模块在 `rhi` feature 后面）。
+  - 入口表从 framework 的 `shaders.rs` 搬进 marlin-render、marlin-material、marlin-ui-render，push 大小改为取自 push 结构体（原来大多是手写的 `*_PUSH_BYTES`，都删了；只有 resolve 的 128 字节保留成 `push_bytes`）。framework 不再依赖 marlin-ui-render。
+  - 测试：marlin-shader 单元测试覆盖顺序、缺入口、stage 和 push 不对；framework 单元测试只测按名字加载，再让一个子系统绑定；各子系统和编辑器的 GPU 测试经 `engine_shaders` 对比每个入口和编译出的 shader（原来只有 UI 有这个测试）。
 - **待做**：
   - Linux 和 macOS 的变更源（fanotify、FSEvents）。
   - 共享缓存中的 extract；store 的 LRU 与容量上限；store 的鉴权与 TLS（目前只适合可信局域网）。

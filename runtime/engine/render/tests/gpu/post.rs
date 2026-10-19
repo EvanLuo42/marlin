@@ -3,7 +3,7 @@
 
 use std::sync::OnceLock;
 
-use marlin_gpu_test_support::{hardware_device, shader};
+use marlin_gpu_test_support::{engine_shaders, hardware_device};
 use marlin_render::{HDR_FORMAT, PostProcess, PostShaders};
 use marlin_render_graph::{FrameContext, FrameContextDesc, PassContext, TextureDesc};
 use marlin_rhi::{Format, HeapKind, LoadOp, QueueType, StoreOp};
@@ -16,14 +16,7 @@ fn post() -> &'static PostProcess {
     POST.get_or_init(|| {
         PostProcess::new(
             hardware_device(),
-            &PostShaders {
-                bloom_down: shader("Marlin.Engine.Post.BloomDown"),
-                bloom_up: shader("Marlin.Engine.Post.BloomUp"),
-                histogram: shader("Marlin.Engine.Post.Histogram"),
-                exposure: shader("Marlin.Engine.Post.Exposure"),
-                fullscreen: shader("Marlin.Engine.Post.FullscreenVs"),
-                tonemap: shader("Marlin.Engine.Post.TonemapPs"),
-            },
+            &PostShaders::from_modules(engine_shaders(&PostShaders::ENTRIES)),
             Format::Rgba8Unorm,
         )
         .unwrap()

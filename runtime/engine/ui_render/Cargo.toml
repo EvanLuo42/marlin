@@ -13,6 +13,7 @@ marlin-math.workspace = true
 marlin-render-graph.workspace = true
 marlin-rhi.workspace = true
 marlin-serial.workspace = true
+marlin-shader = { workspace = true, features = ["rhi"] }
 
 [dev-dependencies]
 marlin-bench.workspace = true

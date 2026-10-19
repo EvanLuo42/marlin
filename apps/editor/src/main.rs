@@ -25,7 +25,7 @@ use marlin_diag::{error, info};
 use marlin_framework::loaders::engine_loaders;
 use marlin_framework::{
     ContentSettings, Engine, RenderSide, load_default_resolve, load_engine_shaders, load_ui_font,
-    mount, ui_shaders,
+    mount,
 };
 use marlin_jobs::{Config, JobSystem};
 use marlin_math::Vec2;
@@ -35,7 +35,8 @@ use marlin_rhi::{
     SwapchainDesc,
 };
 use marlin_ui_render::{
-    Color, ExternalImageId, UiDrawList, UiRenderer, UiRendererDesc, UiSurface, UiSurfaceDesc,
+    Color, ExternalImageId, UiDrawList, UiRenderer, UiRendererDesc, UiShaders, UiSurface,
+    UiSurfaceDesc,
 };
 
 // Link the whole runtime and every editor library.
@@ -203,7 +204,7 @@ fn run(
     }
     .map_err(|e| format!("{e}"))?;
     let mut frames = FrameContext::new(&device, &Default::default()).map_err(|e| format!("{e}"))?;
-    let shaders = ui_shaders(library).map_err(|e| format!("UI shaders: {e}"))?;
+    let shaders = UiShaders::bind(library).map_err(|e| format!("UI shaders: {e}"))?;
     let mut ui = UiRenderer::new(
         &device,
         &shaders,

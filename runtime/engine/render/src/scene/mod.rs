@@ -13,7 +13,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use marlin_math::{Transform, Vec3};
 
-pub use gpu::{GpuScene, SCATTER_PUSH_BYTES, ScatterShader};
+pub use gpu::{GpuScene, ScatterShader};
 pub use id::{
     Id, IdAllocator, InstanceId, InstanceRow, LightId, LightRow, MaterialId, MaterialRow, MeshId,
     MeshRow,

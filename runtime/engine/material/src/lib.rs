@@ -12,6 +12,6 @@ pub use default::{DEFAULT_PERMUTATION, DefaultMaterial};
 mod passes;
 
 pub use passes::{
-    CLASSIFY_PUSH_BYTES, DEBUG_PUSH_BYTES, MATERIAL_FORMAT, MaterialDebug, MaterialOutput,
-    MaterialShaders, MaterialType, Materials, RESOLVE_PUSH_BYTES, VELOCITY_FORMAT,
+    MATERIAL_FORMAT, MaterialDebug, MaterialOutput, MaterialShaders, MaterialType, Materials,
+    RESOLVE, VELOCITY_FORMAT,
 };

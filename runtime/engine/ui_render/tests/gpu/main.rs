@@ -17,12 +17,12 @@ mod shading;
 mod texture;
 
 use marlin_font::{FontView, GlyphCache, GlyphRecord, GlyphUpload};
-use marlin_gpu_test_support::{hardware_device, shader};
+use marlin_gpu_test_support::{engine_shaders, hardware_device};
 use marlin_render_graph::{FrameContext, RenderGraph};
 use marlin_ui_render::command::Chunk;
 use marlin_ui_render::{
-    Color, UI_ENTRIES, UiDrawList, UiOutput, UiPrepared, UiRenderer, UiRendererDesc, UiShaders,
-    UiSurface, UiSurfaceDesc,
+    Color, UiDrawList, UiOutput, UiPrepared, UiRenderer, UiRendererDesc, UiShaders, UiSurface,
+    UiSurfaceDesc,
 };
 
 /// A renderer and one surface: what most tests draw with.
@@ -96,23 +96,9 @@ pub fn renderer_with(desc: &UiRendererDesc, surface: &UiSurfaceDesc) -> TestUi {
 }
 
 pub fn shared_renderer(desc: &UiRendererDesc) -> UiRenderer {
-    let s = |i: usize| shader(UI_ENTRIES[i]);
     UiRenderer::new(
         hardware_device(),
-        &UiShaders {
-            glyph_upload: s(0),
-            bounds: s(1),
-            bin: s(2),
-            coarse: s(3),
-            fine: s(4),
-            encode_vs: s(5),
-            encode_ps: s(6),
-            blur: s(7),
-            path_tiles: s(8),
-            coarse_merge: s(9),
-            coarse_copy: s(10),
-            coarse_plan: s(11),
-        },
+        &UiShaders::from_modules(engine_shaders(&UiShaders::ENTRIES)),
         desc,
     )
     .unwrap()
@@ -125,12 +111,9 @@ pub fn finish(frames: &mut FrameContext, renderer: &TestUi) {
     assert_eq!(hardware_device().validation_errors(), 0);
 }
 
-/// The compiled entries take the push constants the renderer sets (what the engine checks when
-/// it loads the cooked library).
+/// The compiled entries are what the renderer uses them as: their stages and the push constants
+/// it sets (what the engine checks when it binds the cooked library).
 #[test]
-fn entries_take_the_push_constants_the_renderer_sets() {
-    for (name, push) in UI_ENTRIES.iter().zip(marlin_ui_render::UI_PUSH_BYTES) {
-        let reflection = marlin_gpu_test_support::Shader::new(name).reflection();
-        assert_eq!(reflection.push.as_ref().map(|p| p.size), push, "{name}");
-    }
+fn entries_are_what_the_renderer_uses() {
+    engine_shaders(&UiShaders::ENTRIES);
 }

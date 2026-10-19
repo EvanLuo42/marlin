@@ -14,6 +14,8 @@ use marlin_render_graph::{
 };
 use marlin_rhi::{ComputePipeline, ComputePipelineDesc, Device, Format, Result, ShaderModule};
 use marlin_serial::cooked::Pod;
+use marlin_shader::asset::ShaderLibrary;
+use marlin_shader::bind::{BindError, EntryDesc, bind};
 
 /// The material passes' shaders (`Marlin.Engine.Material`), but for the resolves, which each
 /// material type brings ([`Materials::register`]).
@@ -25,11 +27,36 @@ pub struct MaterialShaders<'a> {
     pub debug: ShaderModule<'a>,
 }
 
-/// Bytes of push constants: the classify passes (11 words), a resolve (32: word 31 is the
-/// indirect record's constant) and the debug view (6).
-pub const CLASSIFY_PUSH_BYTES: u32 = 44;
-pub const RESOLVE_PUSH_BYTES: u32 = 128;
-pub const DEBUG_PUSH_BYTES: u32 = 24;
+impl<'a> MaterialShaders<'a> {
+    /// The entries, in field order.
+    pub const ENTRIES: [EntryDesc; 4] = [
+        EntryDesc::compute("Marlin.Engine.Material.Classify").push::<ClassifyArgs>(),
+        EntryDesc::compute("Marlin.Engine.Material.Bins").push::<ClassifyArgs>(),
+        EntryDesc::compute("Marlin.Engine.Material.Scatter").push::<ClassifyArgs>(),
+        EntryDesc::compute("Marlin.Engine.Material.MaterialDebug").push::<DebugArgs>(),
+    ];
+
+    /// The shaders from `modules`, in [`ENTRIES`](Self::ENTRIES) order.
+    pub fn from_modules([classify, bins, scatter, debug]: [ShaderModule<'a>; 4]) -> Self {
+        Self {
+            classify,
+            bins,
+            scatter,
+            debug,
+        }
+    }
+
+    /// The material passes' shaders from `library`, checked against what they set.
+    pub fn bind(library: &'a ShaderLibrary) -> core::result::Result<Self, BindError> {
+        bind(library, &Self::ENTRIES).map(Self::from_modules)
+    }
+}
+
+/// The resolve entry every permutation instantiates (a cooked `Shader` of it is a material's
+/// permutation library). Its push range is 32 words, more than the args it sets: word 31 is the
+/// indirect record's constant.
+pub const RESOLVE: EntryDesc =
+    EntryDesc::compute("Marlin.Engine.Material.ResolvePixel").push_bytes(128);
 
 /// The material buffer's format: the dense part, 16 bytes a pixel (0011 §4.1).
 pub const MATERIAL_FORMAT: Format = Format::Rgba32Uint;

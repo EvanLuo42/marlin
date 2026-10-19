@@ -13,27 +13,25 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use marlin_containers::{HashMap, HashMapExt};
-use marlin_material::{DEFAULT_PERMUTATION, Materials};
+use marlin_material::{DEFAULT_PERMUTATION, MaterialShaders, Materials, RESOLVE};
 use marlin_math::Transform;
 use marlin_render::scene::{MeshId, MeshUpdate};
-use marlin_render::shadows::{Vsm, VsmSettings};
+use marlin_render::shadows::{Vsm, VsmSettings, VsmShaders};
 use marlin_render::visibility::{ViewDesc, counters};
 use marlin_render::{
     Camera, Feedback, Lighting, MeshData, MeshHandle, Meshes, PagePoolDesc, PostProcess,
-    RenderScene, ScatterShader, SceneIds, SceneUpdates, Visibility,
+    PostShaders, RenderScene, ScatterShader, SceneIds, SceneUpdates, StreamingShaders, Visibility,
+    VisibilityShaders,
 };
 use marlin_render_graph::{FRAMES_IN_FLIGHT, FrameContext, Readback, RenderGraph, TextureHandle};
 use marlin_rhi::{Device, Format};
 use marlin_shader::asset::ShaderLibrary;
+use marlin_shader::bind::{BindError, bind_one};
 
 /// The view whose exposure the game's frames adapt.
 const MAIN_VIEW: u64 = 0;
 
 use crate::loaders::LoadedMesh;
-use crate::shaders::{
-    ShaderError, lighting_shader, material_shaders, post_shaders, resolve_shader, scatter_shader,
-    streaming_shaders, visibility_shaders, vsm_shaders,
-};
 
 /// A mesh the render side should have, at a version.
 #[derive(Clone, Debug)]
@@ -101,22 +99,26 @@ impl RenderSide {
         output: Format,
         ids: SceneIds,
     ) -> Result<Self, RenderSideError> {
-        let mut materials = Materials::new(device, &material_shaders(engine)?)?;
+        let mut materials = Materials::new(device, &MaterialShaders::bind(engine)?)?;
         let default = materials.register(
             device,
             "Marlin.Engine.DefaultMaterial",
-            resolve_shader(default_resolve)?,
+            bind_one(default_resolve, &RESOLVE)?,
         )?;
         debug_assert_eq!(default, DEFAULT_PERMUTATION);
         Ok(Self {
-            meshes: Meshes::new(device, &PagePoolDesc::DEFAULT, &streaming_shaders(engine)?)?,
-            visibility: Visibility::new(device, &visibility_shaders(engine)?)?,
+            meshes: Meshes::new(
+                device,
+                &PagePoolDesc::DEFAULT,
+                &StreamingShaders::bind(engine)?,
+            )?,
+            visibility: Visibility::new(device, &VisibilityShaders::bind(engine)?)?,
             materials,
-            lighting: Lighting::new(device, lighting_shader(engine)?)?,
-            vsm: Vsm::new(device, &vsm_shaders(engine)?, VsmSettings::DEFAULT)?,
-            post: PostProcess::new(device, &post_shaders(engine)?, output)?,
+            lighting: Lighting::new(device, bind_one(engine, &Lighting::ENTRY)?)?,
+            vsm: Vsm::new(device, &VsmShaders::bind(engine)?, VsmSettings::DEFAULT)?,
+            post: PostProcess::new(device, &PostShaders::bind(engine)?, output)?,
             scene: RenderScene::with_ids(ids),
-            scatter: ScatterShader::new(device, scatter_shader(engine)?)?,
+            scatter: ScatterShader::new(device, bind_one(engine, &ScatterShader::ENTRY)?)?,
             dt: 0.0,
             camera: None,
             previous: None,
@@ -302,7 +304,7 @@ impl RenderSide {
 #[derive(Debug, marlin_error::Error)]
 pub enum RenderSideError {
     #[error("engine shaders")]
-    Shaders(#[from] ShaderError),
+    Shaders(#[from] BindError),
     #[error("gpu")]
     Gpu(#[from] marlin_rhi::Error),
 }

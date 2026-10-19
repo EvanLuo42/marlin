@@ -32,6 +32,9 @@ use marlin_rhi::{
     MeshPipelineDesc, MultisampleState, RasterState, Result, ShaderModule,
 };
 use marlin_serial::cooked::Pod;
+use marlin_shader::asset::ShaderLibrary;
+use marlin_shader::bind::{BindError, EntryDesc, bind};
+use marlin_shader::reflect::Stage;
 
 use crate::Meshes;
 use crate::meshes::{Camera, PagePool};
@@ -63,32 +66,32 @@ pub struct VisibilityShaders<'a> {
 }
 
 impl<'a> VisibilityShaders<'a> {
-    /// The entries' names in `Marlin.Engine.Visibility`, in field order.
-    pub const ENTRIES: [&'static str; 19] = [
-        "Reset",
-        "InstanceCull",
-        "InstanceRetestArgs",
-        "InstanceRetest",
-        "NodeArgs",
-        "NodeCull",
-        "PartArgs",
-        "ClusterCull",
-        "ClusterRetestArgs",
-        "ClusterRetest",
-        "FinishArgs",
-        "VisMesh",
-        "VisPs",
-        "VisClear",
-        "VisDepth",
-        "HzbFirst",
-        "HzbDown",
-        "SwRaster",
-        "ShadowPs",
+    /// The entries, in field order.
+    pub const ENTRIES: [EntryDesc; 19] = [
+        cull("Marlin.Engine.Visibility.Reset"),
+        cull("Marlin.Engine.Visibility.InstanceCull"),
+        cull("Marlin.Engine.Visibility.InstanceRetestArgs"),
+        cull("Marlin.Engine.Visibility.InstanceRetest"),
+        cull("Marlin.Engine.Visibility.NodeArgs"),
+        cull("Marlin.Engine.Visibility.NodeCull"),
+        cull("Marlin.Engine.Visibility.PartArgs"),
+        cull("Marlin.Engine.Visibility.ClusterCull"),
+        cull("Marlin.Engine.Visibility.ClusterRetestArgs"),
+        cull("Marlin.Engine.Visibility.ClusterRetest"),
+        cull("Marlin.Engine.Visibility.FinishArgs"),
+        EntryDesc::new("Marlin.Engine.Visibility.VisMesh", Stage::Mesh).push::<RasterArgs>(),
+        EntryDesc::new("Marlin.Engine.Visibility.VisPs", Stage::Pixel).push::<RasterArgs>(),
+        EntryDesc::compute("Marlin.Engine.Visibility.VisClear").push::<TargetArgs>(),
+        EntryDesc::compute("Marlin.Engine.Visibility.VisDepth").push::<TargetArgs>(),
+        EntryDesc::compute("Marlin.Engine.Visibility.HzbFirst").push::<HzbArgs>(),
+        EntryDesc::compute("Marlin.Engine.Visibility.HzbDown").push::<HzbArgs>(),
+        EntryDesc::compute("Marlin.Engine.Visibility.SwRaster").push::<RasterArgs>(),
+        EntryDesc::new("Marlin.Engine.Visibility.ShadowPs", Stage::Pixel).push::<RasterArgs>(),
     ];
 
-    /// The shaders `module` gives for each of [`ENTRIES`](Self::ENTRIES).
-    pub fn from_fn(mut module: impl FnMut(&'static str) -> ShaderModule<'a>) -> Self {
-        let [
+    /// The shaders from `modules`, in [`ENTRIES`](Self::ENTRIES) order.
+    pub fn from_modules(
+        [
             reset,
             instance_cull,
             instance_retest_args,
@@ -108,7 +111,8 @@ impl<'a> VisibilityShaders<'a> {
             hzb_down,
             sw_raster,
             shadow_pixel,
-        ] = Self::ENTRIES.map(&mut module);
+        ]: [ShaderModule<'a>; 19],
+    ) -> Self {
         Self {
             reset,
             instance_cull,
@@ -131,14 +135,17 @@ impl<'a> VisibilityShaders<'a> {
             shadow_pixel,
         }
     }
+
+    /// The visibility pipeline's shaders from `library`, checked against what its passes set.
+    pub fn bind(library: &'a ShaderLibrary) -> core::result::Result<Self, BindError> {
+        bind(library, &Self::ENTRIES).map(Self::from_modules)
+    }
 }
 
-/// Bytes of push constants the cull passes set (sixteen 32-bit words), the raster pass (seven),
-/// the target passes (four) and the HZB passes (six).
-pub const CULL_PUSH_BYTES: u32 = 64;
-pub const RASTER_PUSH_BYTES: u32 = 28;
-pub const TARGET_PUSH_BYTES: u32 = 16;
-pub const HZB_PUSH_BYTES: u32 = 24;
+/// A cull pass's entry: compute, setting [`CullArgs`].
+const fn cull(name: &'static str) -> EntryDesc {
+    EntryDesc::compute(name).push::<CullArgs>()
+}
 
 /// Fewest entries the node, part, occluded and visible-cluster buffers have: capacities round
 /// up to powers of two from here, so a scene that changes a little keeps its graph plan.

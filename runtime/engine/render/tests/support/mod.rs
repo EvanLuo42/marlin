@@ -9,7 +9,7 @@ pub mod cook;
 use std::sync::Arc;
 
 use marlin_containers::HashMap;
-use marlin_gpu_test_support::{Shader, hardware_device, shader};
+use marlin_gpu_test_support::{Shader, engine_shaders, hardware_device};
 use marlin_math::{Mat4, Transform, Vec3};
 use marlin_render::asset::cluster::ClusterRecord;
 use marlin_render::scene::{
@@ -85,23 +85,20 @@ impl Harness {
     /// [`new`](Self::new) with a page pool of `slots` slots.
     pub fn with_pool(environment: Environment, slots: u32) -> Self {
         let device = hardware_device();
-        let s = |name: &str| shader(&format!("Marlin.Engine.Streaming.{name}"));
         let mut meshes = Meshes::new(
             device,
             &PagePoolDesc {
                 slots,
                 table_entries: 1 << 14,
             },
-            &StreamingShaders {
-                upload: s("PageUpload"),
-                clear: s("ClearWords"),
-            },
+            &StreamingShaders::from_modules(engine_shaders(&StreamingShaders::ENTRIES)),
         )
         .unwrap();
-        let scatter = ScatterShader::new(device, shader("Marlin.Engine.Scene.Scatter")).unwrap();
+        let scatter =
+            ScatterShader::new(device, engine_shaders(&[ScatterShader::ENTRY])[0]).unwrap();
         let mut vis = Visibility::new(
             device,
-            &VisibilityShaders::from_fn(|name| shader(&format!("Marlin.Engine.Visibility.{name}"))),
+            &VisibilityShaders::from_modules(engine_shaders(&VisibilityShaders::ENTRIES)),
         )
         .unwrap();
         vis.lod_error_pixels = 0.0;
@@ -121,13 +118,7 @@ impl Harness {
             .unwrap();
         let vsm = Vsm::new(
             device,
-            &VsmShaders {
-                mark: shader("Marlin.Engine.Shadows.VsmMark"),
-                allocate: shader("Marlin.Engine.Shadows.VsmAllocate"),
-                clear_args: shader("Marlin.Engine.Shadows.VsmClearArgs"),
-                clear: shader("Marlin.Engine.Shadows.VsmClear"),
-                mask: shader("Marlin.Engine.Shadows.VsmMask"),
-            },
+            &VsmShaders::from_modules(engine_shaders(&VsmShaders::ENTRIES)),
             SHADOW_SETTINGS,
         )
         .unwrap();

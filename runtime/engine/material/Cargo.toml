@@ -11,6 +11,7 @@ marlin-render.workspace = true
 marlin-render-graph.workspace = true
 marlin-rhi.workspace = true
 marlin-serial.workspace = true
+marlin-shader = { workspace = true, features = ["rhi"] }
 
 [lints]
 workspace = true

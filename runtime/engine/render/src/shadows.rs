@@ -21,6 +21,8 @@ use marlin_render_graph::{
 };
 use marlin_rhi::{ComputePipeline, ComputePipelineDesc, Device, Format, Result, ShaderModule};
 use marlin_serial::cooked::Pod;
+use marlin_shader::asset::ShaderLibrary;
+use marlin_shader::bind::{BindError, EntryDesc, bind};
 
 use crate::Meshes;
 use crate::meshes::{Camera, Environment};
@@ -37,19 +39,32 @@ pub struct VsmShaders<'a> {
     pub mask: ShaderModule<'a>,
 }
 
-impl VsmShaders<'_> {
-    /// The entries' names in `Marlin.Engine.Shadows`, in field order.
-    pub const ENTRIES: [&'static str; 5] = [
-        "VsmMark",
-        "VsmAllocate",
-        "VsmClearArgs",
-        "VsmClear",
-        "VsmMask",
+impl<'a> VsmShaders<'a> {
+    /// The entries, in field order: every shadow pass sets `VsmArgs`.
+    pub const ENTRIES: [EntryDesc; 5] = [
+        EntryDesc::compute("Marlin.Engine.Shadows.VsmMark").push::<VsmArgs>(),
+        EntryDesc::compute("Marlin.Engine.Shadows.VsmAllocate").push::<VsmArgs>(),
+        EntryDesc::compute("Marlin.Engine.Shadows.VsmClearArgs").push::<VsmArgs>(),
+        EntryDesc::compute("Marlin.Engine.Shadows.VsmClear").push::<VsmArgs>(),
+        EntryDesc::compute("Marlin.Engine.Shadows.VsmMask").push::<VsmArgs>(),
     ];
-}
 
-/// Bytes of push constants every shadow pass sets: eleven 32-bit words.
-pub const VSM_PUSH_BYTES: u32 = 44;
+    /// The shaders from `modules`, in [`ENTRIES`](Self::ENTRIES) order.
+    pub fn from_modules([mark, allocate, clear_args, clear, mask]: [ShaderModule<'a>; 5]) -> Self {
+        Self {
+            mark,
+            allocate,
+            clear_args,
+            clear,
+            mask,
+        }
+    }
+
+    /// The shadow passes' shaders from `library`, checked against what they set.
+    pub fn bind(library: &'a ShaderLibrary) -> core::result::Result<Self, BindError> {
+        bind(library, &Self::ENTRIES).map(Self::from_modules)
+    }
+}
 
 /// The format of the sun shadow mask: 1 lit, 0 in shadow.
 pub const SHADOW_MASK_FORMAT: Format = Format::R16Float;

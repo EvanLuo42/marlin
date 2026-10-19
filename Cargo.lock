@@ -656,7 +656,6 @@ dependencies = [
  "marlin-sync",
  "marlin-test-support",
  "marlin-time",
- "marlin-ui-render",
 ]
 
 [[package]]
@@ -708,6 +707,7 @@ version = "0.1.0"
 dependencies = [
  "marlin-gpu-test-macros",
  "marlin-rhi",
+ "marlin-shader",
  "marlin-shaderc",
  "marlin-test-support",
  "png",
@@ -810,6 +810,7 @@ dependencies = [
  "marlin-render-graph",
  "marlin-rhi",
  "marlin-serial",
+ "marlin-shader",
 ]
 
 [[package]]
@@ -909,6 +910,7 @@ dependencies = [
  "marlin-render-graph",
  "marlin-rhi",
  "marlin-serial",
+ "marlin-shader",
 ]
 
 [[package]]
@@ -983,7 +985,9 @@ version = "0.1.0"
 dependencies = [
  "marlin-asset",
  "marlin-reflect",
+ "marlin-rhi",
  "marlin-serial",
+ "marlin-shader",
  "marlin-test-support",
 ]
 
@@ -1197,6 +1201,7 @@ dependencies = [
  "marlin-render-graph",
  "marlin-rhi",
  "marlin-serial",
+ "marlin-shader",
 ]
 
 [[package]]

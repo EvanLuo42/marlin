@@ -26,8 +26,8 @@ pub use gradient::{Gradient, GradientShape, GradientSpace};
 pub use list::{ChunkSlot, Painter, RetainedChunk, UiDrawList};
 pub use path::{FillRule, Path};
 pub use renderer::{
-    UI_ENTRIES, UI_FORMAT, UI_PUSH_BYTES, UiFrameData, UiOutput, UiPages, UiPrepared, UiRenderer,
-    UiRendererDesc, UiShaders, UiSurface, UiSurfaceDesc, UiTextureDesc,
+    UI_FORMAT, UiFrameData, UiOutput, UiPages, UiPrepared, UiRenderer, UiRendererDesc, UiShaders,
+    UiSurface, UiSurfaceDesc, UiTextureDesc,
 };
 pub use style::{
     Affine2, Color, Corners, Dash, ExternalImageId, Glow, GroupDesc, ImageColor, ImageSource,

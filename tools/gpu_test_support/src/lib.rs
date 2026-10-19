@@ -4,7 +4,8 @@
 //! ([`assert_image!`], [`read_texture`]).
 //!
 //! Test shaders are Marlin shaders, compiled at run time by the Marlin shader compiler the
-//! first time a test asks for one ([`shader`], [`Shader`], [`crate_shader!`]): the shared ones
+//! first time a test asks for one ([`shader`], [`Shader`], [`crate_shader!`]; a subsystem's engine
+//! entries checked as the engine checks them, [`engine_shaders`]): the shared ones
 //! in this crate's `shaders/`, a crate's own in its `tests/data/shaders/`.
 
 pub mod image;
@@ -12,7 +13,7 @@ mod shaders;
 
 pub use image::{Image, Tolerance, read_texture};
 pub use marlin_shaderc::ConstValue;
-pub use shaders::{ENGINE, SHARED, Shader, shader};
+pub use shaders::{ENGINE, SHARED, Shader, engine_shaders, shader};
 
 use marlin_rhi::{
     AdapterPreference, Buffer, BufferDesc, BufferUsage, CommandList, Device, DeviceDesc,

@@ -27,6 +27,7 @@ use alloc::vec::Vec;
 use marlin_render_graph::{Access, BufferDesc, BufferHandle, PassContext, RenderGraph};
 use marlin_rhi::{ComputePipeline, ComputePipelineDesc, Device, Result, ShaderModule};
 use marlin_serial::cooked::Pod;
+use marlin_shader::bind::EntryDesc;
 
 use super::{RenderScene, dirty};
 
@@ -55,15 +56,16 @@ const SHIFT_WRITE: u32 = 2;
 /// A row that names no material.
 pub const NO_MATERIAL: u32 = u32::MAX;
 
-/// Bytes of push constants the scatter sets: four 32-bit words (`Marlin.Engine.Scene.ScatterArgs`).
-pub const SCATTER_PUSH_BYTES: u32 = 16;
-
 /// The scatter shader (`Marlin.Engine.Scene.Scatter`) as a pipeline.
 pub struct ScatterShader {
     pipeline: ComputePipeline,
 }
 
 impl ScatterShader {
+    /// The scatter entry.
+    pub const ENTRY: EntryDesc =
+        EntryDesc::compute("Marlin.Engine.Scene.Scatter").push::<ScatterArgs>();
+
     pub fn new(device: &Device, shader: ShaderModule<'_>) -> Result<Self> {
         Ok(Self {
             pipeline: device.create_compute_pipeline(&ComputePipelineDesc {

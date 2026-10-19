@@ -41,6 +41,8 @@ use marlin_rhi::{
     ShaderModule, ShaderView,
 };
 use marlin_serial::cooked::Pod;
+use marlin_shader::asset::ShaderLibrary;
+use marlin_shader::bind::{BindError, EntryDesc, bind};
 
 use crate::asset::cluster::PAGE_SIZE;
 use crate::asset::mesh::MeshView;
@@ -145,9 +147,23 @@ pub struct StreamingShaders<'a> {
     pub clear: ShaderModule<'a>,
 }
 
-/// Bytes of push constants the upload pass sets (four words) and the clear (two).
-pub const UPLOAD_PUSH_BYTES: u32 = 16;
-pub const CLEAR_PUSH_BYTES: u32 = 8;
+impl<'a> StreamingShaders<'a> {
+    /// The entries, in field order.
+    pub const ENTRIES: [EntryDesc; 2] = [
+        EntryDesc::compute("Marlin.Engine.Streaming.PageUpload").push::<UploadArgs>(),
+        EntryDesc::compute("Marlin.Engine.Streaming.ClearWords").push::<ClearArgs>(),
+    ];
+
+    /// The shaders from `modules`, in [`ENTRIES`](Self::ENTRIES) order.
+    pub fn from_modules([upload, clear]: [ShaderModule<'a>; 2]) -> Self {
+        Self { upload, clear }
+    }
+
+    /// The streaming passes' shaders from `library`, checked against what they set.
+    pub fn bind(library: &'a ShaderLibrary) -> core::result::Result<Self, BindError> {
+        bind(library, &Self::ENTRIES).map(Self::from_modules)
+    }
+}
 
 /// Most slots a pool may have: byte offsets into it stay 32-bit.
 pub const MAX_POOL_SLOTS: u32 = 32 << 10;

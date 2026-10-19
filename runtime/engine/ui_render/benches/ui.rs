@@ -18,13 +18,13 @@ mod windows {
 
     use marlin_bench::Bench;
     use marlin_font::{FontId, FontView, GlyphIds, TextLayout};
-    use marlin_gpu_test_support::{hardware_device, shader};
+    use marlin_gpu_test_support::{engine_shaders, hardware_device};
     use marlin_math::{Rng, Vec2};
     use marlin_render_graph::{FrameContext, FrameContextDesc};
     use marlin_ui_render::damage::command_hashes;
     use marlin_ui_render::{
         Affine2, Color, Corners, FillRule, Glow, GroupDesc, Paint, Painter, Path, Rect, RectStyle,
-        Shadow, ShapeStyle, Stroke, StrokeStyle, UI_ENTRIES, UiDrawList, UiPrepared, UiRenderer,
+        Shadow, ShapeStyle, Stroke, StrokeStyle, UiDrawList, UiPrepared, UiRenderer,
         UiRendererDesc, UiShaders, UiSurface, UiSurfaceDesc, blur,
     };
 
@@ -243,23 +243,9 @@ mod windows {
     }
 
     fn renderer(damage: bool) -> UiRenderer {
-        let s = |i: usize| shader(UI_ENTRIES[i]);
         UiRenderer::new(
             hardware_device(),
-            &UiShaders {
-                glyph_upload: s(0),
-                bounds: s(1),
-                bin: s(2),
-                coarse: s(3),
-                fine: s(4),
-                encode_vs: s(5),
-                encode_ps: s(6),
-                blur: s(7),
-                path_tiles: s(8),
-                coarse_merge: s(9),
-                coarse_copy: s(10),
-                coarse_plan: s(11),
-            },
+            &UiShaders::from_modules(engine_shaders(&UiShaders::ENTRIES)),
             &UiRendererDesc {
                 damage,
                 ..UiRendererDesc::default()

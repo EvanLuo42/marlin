@@ -15,6 +15,7 @@ marlin-math.workspace = true
 marlin-reflect.workspace = true
 marlin-rhi.workspace = true
 marlin-serial.workspace = true
+marlin-shader = { workspace = true, features = ["rhi"] }
 
 [lints]
 workspace = true

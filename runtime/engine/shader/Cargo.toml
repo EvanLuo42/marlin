@@ -8,9 +8,16 @@ publish.workspace = true
 [dependencies]
 marlin-asset.workspace = true
 marlin-reflect.workspace = true
+# For `bind`'s modules: the engine's subsystems enable it, the shader compiler does not.
+marlin-rhi = { workspace = true, optional = true }
+
+[features]
+rhi = ["dep:marlin-rhi"]
 
 [dev-dependencies]
 marlin-serial.workspace = true
+# `bind`'s modules.
+marlin-shader = { path = ".", features = ["rhi"] }
 marlin-test-support.workspace = true
 
 [lints]

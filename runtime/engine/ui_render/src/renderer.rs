@@ -38,6 +38,9 @@ use marlin_rhi::{
     TextureViewDesc,
 };
 use marlin_serial::cooked::Pod;
+use marlin_shader::asset::ShaderLibrary;
+use marlin_shader::bind::{BindError, EntryDesc, bind};
+use marlin_shader::reflect::Stage;
 
 use crate::blur::{self, BlurJob};
 use crate::command::{
@@ -81,38 +84,61 @@ pub struct UiShaders<'a> {
     pub coarse_plan: ShaderModule<'a>,
 }
 
-/// The entries, in [`UiShaders`] order.
-pub const UI_ENTRIES: [&str; 12] = [
-    "Marlin.Engine.Ui.GlyphUpload",
-    "Marlin.Engine.Ui.Bounds",
-    "Marlin.Engine.Ui.Bin",
-    "Marlin.Engine.Ui.Coarse",
-    "Marlin.Engine.Ui.Fine",
-    "Marlin.Engine.Ui.EncodeVs",
-    "Marlin.Engine.Ui.EncodePs",
-    "Marlin.Engine.Ui.Blur",
-    "Marlin.Engine.Ui.PathTiles",
-    "Marlin.Engine.Ui.CoarseMerge",
-    "Marlin.Engine.Ui.CoarseCopy",
-    "Marlin.Engine.Ui.CoarsePlan",
-];
+impl<'a> UiShaders<'a> {
+    /// The entries, in field order.
+    pub const ENTRIES: [EntryDesc; 12] = [
+        EntryDesc::compute("Marlin.Engine.Ui.GlyphUpload").push::<GlyphUploadArgs>(),
+        EntryDesc::compute("Marlin.Engine.Ui.Bounds").push::<BoundsArgs>(),
+        EntryDesc::compute("Marlin.Engine.Ui.Bin").push::<BinArgs>(),
+        EntryDesc::compute("Marlin.Engine.Ui.Coarse").push::<CoarseArgs>(),
+        EntryDesc::compute("Marlin.Engine.Ui.Fine").push::<FineArgs>(),
+        EntryDesc::new("Marlin.Engine.Ui.EncodeVs", Stage::Vertex),
+        EntryDesc::new("Marlin.Engine.Ui.EncodePs", Stage::Pixel).push::<EncodeArgs>(),
+        EntryDesc::compute("Marlin.Engine.Ui.Blur").push::<BlurArgs>(),
+        EntryDesc::compute("Marlin.Engine.Ui.PathTiles").push::<PathTilesArgs>(),
+        EntryDesc::compute("Marlin.Engine.Ui.CoarseMerge").push::<CoarseArgs>(),
+        EntryDesc::compute("Marlin.Engine.Ui.CoarseCopy").push::<CoarseArgs>(),
+        EntryDesc::compute("Marlin.Engine.Ui.CoarsePlan").push::<CoarsePlanArgs>(),
+    ];
 
-/// Push constant bytes of each entry, in [`UI_ENTRIES`] order (the encode vertex shader has
-/// none).
-pub const UI_PUSH_BYTES: [Option<u32>; 12] = [
-    Some(size_of::<GlyphUploadArgs>() as u32),
-    Some(size_of::<BoundsArgs>() as u32),
-    Some(size_of::<BinArgs>() as u32),
-    Some(size_of::<CoarseArgs>() as u32),
-    Some(size_of::<FineArgs>() as u32),
-    None,
-    Some(size_of::<EncodeArgs>() as u32),
-    Some(size_of::<BlurArgs>() as u32),
-    Some(size_of::<PathTilesArgs>() as u32),
-    Some(size_of::<CoarseArgs>() as u32),
-    Some(size_of::<CoarseArgs>() as u32),
-    Some(size_of::<CoarsePlanArgs>() as u32),
-];
+    /// The shaders from `modules`, in [`ENTRIES`](Self::ENTRIES) order.
+    pub fn from_modules(
+        [
+            glyph_upload,
+            bounds,
+            bin,
+            coarse,
+            fine,
+            encode_vs,
+            encode_ps,
+            blur,
+            path_tiles,
+            coarse_merge,
+            coarse_copy,
+            coarse_plan,
+        ]: [ShaderModule<'a>; 12],
+    ) -> Self {
+        Self {
+            glyph_upload,
+            bounds,
+            bin,
+            coarse,
+            fine,
+            encode_vs,
+            encode_ps,
+            blur,
+            path_tiles,
+            coarse_merge,
+            coarse_copy,
+            coarse_plan,
+        }
+    }
+
+    /// The UI renderer's shaders from `library`, checked against what it sets.
+    pub fn bind(library: &'a ShaderLibrary) -> core::result::Result<Self, BindError> {
+        bind(library, &Self::ENTRIES).map(Self::from_modules)
+    }
+}
 
 #[repr(C)]
 #[derive(Pod, Clone, Copy)]

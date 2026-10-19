@@ -2,8 +2,8 @@
 //! small view, read back: the material buffer, the velocity, the visibility buffer, the bins'
 //! counts and optionally a debug view.
 
-use marlin_gpu_test_support::{Image, Shader, hardware_device, shader};
-use marlin_material::{DefaultMaterial, MaterialDebug, MaterialShaders, Materials};
+use marlin_gpu_test_support::{Image, Shader, engine_shaders, hardware_device};
+use marlin_material::{DefaultMaterial, MaterialDebug, MaterialShaders, Materials, RESOLVE};
 use marlin_math::{Transform, Vec3};
 use marlin_render::scene::{
     InstanceDesc, InstanceId, InstanceUpdate, MaterialDesc, MaterialId, MaterialUpdate, MeshId,
@@ -68,26 +68,23 @@ impl Harness {
     /// The pipelines, an empty scene and a camera at (0, 0, 4) looking down -Z.
     pub fn new() -> Self {
         let device = hardware_device();
-        let scatter = ScatterShader::new(device, shader("Marlin.Engine.Scene.Scatter")).unwrap();
-        let v = |name: &str| shader(&format!("Marlin.Engine.Visibility.{name}"));
-        let mut vis = Visibility::new(device, &VisibilityShaders::from_fn(v)).unwrap();
+        let scatter =
+            ScatterShader::new(device, engine_shaders(&[ScatterShader::ENTRY])[0]).unwrap();
+        let visibility =
+            VisibilityShaders::from_modules(engine_shaders(&VisibilityShaders::ENTRIES));
+        let mut vis = Visibility::new(device, &visibility).unwrap();
         vis.lod_error_pixels = 0.0;
-        let m = |name: &str| shader(&format!("Marlin.Engine.Material.{name}"));
         let mut materials = Materials::new(
             device,
-            &MaterialShaders {
-                classify: m("Classify"),
-                bins: m("Bins"),
-                scatter: m("Scatter"),
-                debug: m("MaterialDebug"),
-            },
+            &MaterialShaders::from_modules(engine_shaders(&MaterialShaders::ENTRIES)),
         )
         .unwrap();
         let resolve = |ty: &'static str| {
-            Shader::new("Marlin.Engine.Material.ResolvePixel")
+            let shader = Shader::new(RESOLVE.name)
                 .with_type_args(&[ty])
-                .in_crate(env!("CARGO_MANIFEST_DIR"))
-                .module()
+                .in_crate(env!("CARGO_MANIFEST_DIR"));
+            RESOLVE.check(shader.reflection()).unwrap();
+            shader.module()
         };
         let default = materials
             .register(
@@ -100,7 +97,7 @@ impl Harness {
             .register(device, "Material.Stripes", resolve("Material.Stripes"))
             .unwrap();
         assert_eq!((default, stripes), (DEFAULT, STRIPES));
-        let lighting = Lighting::new(device, shader("Marlin.Engine.Lighting.DirectLight")).unwrap();
+        let lighting = Lighting::new(device, engine_shaders(&[Lighting::ENTRY])[0]).unwrap();
         let unorm = Box::leak(Box::new(
             device
                 .create_compute_pipeline(&ComputePipelineDesc {
@@ -119,10 +116,7 @@ impl Harness {
                     slots: 64,
                     table_entries: 1024,
                 },
-                &StreamingShaders {
-                    upload: shader("Marlin.Engine.Streaming.PageUpload"),
-                    clear: shader("Marlin.Engine.Streaming.ClearWords"),
-                },
+                &StreamingShaders::from_modules(engine_shaders(&StreamingShaders::ENTRIES)),
             )
             .unwrap(),
             scene: RenderScene::new(),

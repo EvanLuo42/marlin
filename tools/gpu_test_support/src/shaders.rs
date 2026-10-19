@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use marlin_rhi::{SHADER_FORMAT, ShaderFormat, ShaderModule};
+use marlin_shader::bind::EntryDesc;
 use marlin_shaderc::{
     ConstValue, EntryRequest, PackageDesc, Profile, Session, SessionDesc, ShaderReflection,
     SourceError, SourcePath, SourceProvider,
@@ -138,6 +139,18 @@ impl<'a> Shader<'a> {
 /// if it does not compile.
 pub fn shader(entry: &str) -> ShaderModule<'static> {
     Shader::new(entry).module()
+}
+
+/// The compiled engine entries `entries` names (a subsystem's `ENTRIES`), in order, each
+/// checked as the engine checks the cooked library ([`EntryDesc::check`]). Panics if one does
+/// not compile or is not what the subsystem uses it as.
+pub fn engine_shaders<const N: usize>(entries: &[EntryDesc; N]) -> [ShaderModule<'static>; N] {
+    entries.map(|desc| {
+        let shader = Shader::new(desc.name);
+        desc.check(shader.reflection())
+            .unwrap_or_else(|e| panic!("{e}"));
+        shader.module()
+    })
 }
 
 /// The compiled entry point `entry` (a full path) of the calling crate's own package

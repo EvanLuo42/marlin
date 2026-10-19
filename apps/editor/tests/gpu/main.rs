@@ -6,13 +6,12 @@
 
 use marlin_editor::shell::{self, ShellState};
 use marlin_font::FontView;
-use marlin_gpu_test_support::{Image, assert_image, hardware_device, shader};
+use marlin_gpu_test_support::{Image, assert_image, engine_shaders, hardware_device};
 use marlin_math::Vec2;
 use marlin_render_graph::{FrameContext, FrameContextDesc};
 use marlin_ui_render::shape::Textures;
 use marlin_ui_render::{
-    Color, UI_ENTRIES, UiDrawList, UiRenderer, UiRendererDesc, UiShaders, UiSurface, UiSurfaceDesc,
-    reference,
+    Color, UiDrawList, UiRenderer, UiRendererDesc, UiShaders, UiSurface, UiSurfaceDesc, reference,
 };
 
 fn inter() -> Vec<u8> {
@@ -38,23 +37,9 @@ impl Textures for Pages {
 fn the_shell_draws_like_the_reference_and_its_golden() {
     let payload = inter();
     let font = FontView::new(&payload).unwrap();
-    let s = |i: usize| shader(UI_ENTRIES[i]);
     let mut ui = UiRenderer::new(
         hardware_device(),
-        &UiShaders {
-            glyph_upload: s(0),
-            bounds: s(1),
-            bin: s(2),
-            coarse: s(3),
-            fine: s(4),
-            encode_vs: s(5),
-            encode_ps: s(6),
-            blur: s(7),
-            path_tiles: s(8),
-            coarse_merge: s(9),
-            coarse_copy: s(10),
-            coarse_plan: s(11),
-        },
+        &UiShaders::from_modules(engine_shaders(&UiShaders::ENTRIES)),
         &UiRendererDesc::default(),
     )
     .unwrap();

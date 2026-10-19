@@ -16,6 +16,9 @@ use marlin_rhi::{
     RasterState, Result, Sampler, SamplerDesc, ShaderModule, StoreOp,
 };
 use marlin_serial::cooked::Pod;
+use marlin_shader::asset::ShaderLibrary;
+use marlin_shader::bind::{BindError, EntryDesc, bind};
+use marlin_shader::reflect::Stage;
 
 /// The format of the HDR scene the post chain reads: what the lighting writes.
 pub const HDR_FORMAT: Format = Format::Rgba16Float;
@@ -29,6 +32,44 @@ pub struct PostShaders<'a> {
     pub exposure: ShaderModule<'a>,
     pub fullscreen: ShaderModule<'a>,
     pub tonemap: ShaderModule<'a>,
+}
+
+impl<'a> PostShaders<'a> {
+    /// The entries, in field order.
+    pub const ENTRIES: [EntryDesc; 6] = [
+        EntryDesc::compute("Marlin.Engine.Post.BloomDown").push::<BloomDownArgs>(),
+        EntryDesc::compute("Marlin.Engine.Post.BloomUp").push::<BloomUpArgs>(),
+        EntryDesc::compute("Marlin.Engine.Post.Histogram").push::<HistogramArgs>(),
+        EntryDesc::compute("Marlin.Engine.Post.Exposure").push::<ExposureArgs>(),
+        EntryDesc::new("Marlin.Engine.Post.FullscreenVs", Stage::Vertex),
+        EntryDesc::new("Marlin.Engine.Post.TonemapPs", Stage::Pixel).push::<TonemapArgs>(),
+    ];
+
+    /// The shaders from `modules`, in [`ENTRIES`](Self::ENTRIES) order.
+    pub fn from_modules(
+        [
+            bloom_down,
+            bloom_up,
+            histogram,
+            exposure,
+            fullscreen,
+            tonemap,
+        ]: [ShaderModule<'a>; 6],
+    ) -> Self {
+        Self {
+            bloom_down,
+            bloom_up,
+            histogram,
+            exposure,
+            fullscreen,
+            tonemap,
+        }
+    }
+
+    /// The post chain's shaders from `library`, checked against what it sets.
+    pub fn bind(library: &'a ShaderLibrary) -> core::result::Result<Self, BindError> {
+        bind(library, &Self::ENTRIES).map(Self::from_modules)
+    }
 }
 
 /// How the post chain looks.

@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 marlin-gpu-test-macros.workspace = true
 marlin-rhi.workspace = true
+marlin-shader.workspace = true
 marlin-shaderc.workspace = true
 marlin-test-support.workspace = true
 png.workspace = true
