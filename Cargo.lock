@@ -1187,6 +1187,7 @@ dependencies = [
 name = "marlin-ui-render"
 version = "0.1.0"
 dependencies = [
+ "marlin-bench",
  "marlin-cook-font",
  "marlin-font",
  "marlin-gpu-test-support",

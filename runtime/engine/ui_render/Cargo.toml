@@ -15,8 +15,13 @@ marlin-rhi.workspace = true
 marlin-serial.workspace = true
 
 [dev-dependencies]
+marlin-bench.workspace = true
 marlin-cook-font.workspace = true
 marlin-gpu-test-support.workspace = true
+
+[[bench]]
+name = "ui"
+harness = false
 
 [lints]
 workspace = true
