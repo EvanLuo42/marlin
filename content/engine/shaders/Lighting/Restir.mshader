@@ -1044,3 +1044,51 @@ public void RestirDuplication([GroupId] uint3 group, [GroupThreadId] uint3 threa
     }
     a.DuplicationMap[CellIndex(c, cell)] = (float)same / 80.0;
 }
+
+/// The specular tracing (0010 §2.7, R4d2): where the proxy lobe is smoother than `SpecularTau`,
+/// reconnection cannot reuse its reflection of surfaces and the sky, so every such pixel traces
+/// one ray from its GGX lobe (VNDF; a mirror's reflection at roughness 0) and shades what it
+/// finds as a GI bounce does (`RadianceAt`; the sky where it misses), weighted F · G2 / G1. Added
+/// to the specular signal (demodulated) after `RestirShade`, which keeps the lights' highlights;
+/// the hit distance becomes the ray's.
+[Compute(8, 8, 1)]
+public void RestirSpecular([DispatchThreadId] uint3 id, [Push] in RestirArgs a)
+{
+    RestirConstants c = a.Constants.Value;
+    if (id.x >= c.Width || id.y >= c.Height)
+        return;
+    int2 px = (int2)id.xy;
+    float depth = a.Depth.Load(px);
+    Proxy p = UnpackProxy(a.MaterialBuffer.Load(px));
+    if (depth <= 0 || p.Count == 0 || p.Roughness >= SpecularTau)
+        return;
+    GiSources gi = a.Gi.Value;
+    float3 x = WorldAt(c, id.xy, depth);
+    float3 view = ViewOf(c, x);
+    uint state = Hash(c.Seed ^ 0x6A09E667 ^ Hash(id.y * c.Width + id.x));
+    float u = PathRandom(ref state);
+    float v = PathRandom(ref state);
+    float3 direction = SampleSpecular(p.Normal, view, p.Roughness, u, v);
+    float3 weight = SpecularWeight(p.Normal, view, direction, p.Roughness, p.F0);
+    if (weight.x + weight.y + weight.z <= 0)
+        return;
+    Ray ray = Ray { Origin = Lift(x, p.Normal, c.Eye.xyz), TMin = 0, Direction = direction, TMax = 100000 };
+    RayHit hit = a.Tlas.TraceClosest(ray, RayFlags.CullBackFace);
+    float3 radiance = c.Sky.xyz;
+    float distance = SkyDistance;
+    if (hit.Kind != HitKind.None)
+    {
+        radiance = float3(0, 0, 0);
+        distance = hit.T;
+        if (hit.FrontFace)
+        {
+            HitSurface s = SurfaceOfHit(hit, ray, gi.Hits);
+            SimpleMaterial m = SimpleOfHit(s, gi.Hits, gi.Simple);
+            radiance = RadianceAt(c, a, gi, s, m, ref state);
+        }
+    }
+    float3 albedo = SpecularAlbedo(p.F0, p.Roughness, Saturate(Dot(p.Normal, view)));
+    float4 lights = a.SpecularSignal[px];
+    float3 traced = weight * radiance / Max(albedo, float3(1e-3, 1e-3, 1e-3));
+    a.SpecularSignal[px] = float4(lights.xyz + traced, distance);
+}

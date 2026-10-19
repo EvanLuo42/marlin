@@ -53,11 +53,12 @@ pub struct RestirShaders<'a> {
     pub spatial_biased: ShaderModule<'a>,
     pub shade: ShaderModule<'a>,
     pub duplication: ShaderModule<'a>,
+    pub specular: ShaderModule<'a>,
 }
 
 impl<'a> RestirShaders<'a> {
     /// The entries, in field order.
-    pub const ENTRIES: [EntryDesc; 9] = [
+    pub const ENTRIES: [EntryDesc; 10] = [
         EntryDesc::compute("Marlin.Engine.Lighting.RestirInitial").push::<RestirArgs>(),
         EntryDesc::compute("Marlin.Engine.Lighting.RestirInitialVisibility").push::<RestirArgs>(),
         EntryDesc::compute("Marlin.Engine.Lighting.RestirInitialGi").push::<RestirArgs>(),
@@ -67,6 +68,7 @@ impl<'a> RestirShaders<'a> {
         EntryDesc::compute("Marlin.Engine.Lighting.RestirSpatialBiased").push::<RestirArgs>(),
         EntryDesc::compute("Marlin.Engine.Lighting.RestirShade").push::<RestirArgs>(),
         EntryDesc::compute("Marlin.Engine.Lighting.RestirDuplication").push::<RestirArgs>(),
+        EntryDesc::compute("Marlin.Engine.Lighting.RestirSpecular").push::<RestirArgs>(),
     ];
 
     /// The shaders from `modules`, in [`ENTRIES`](Self::ENTRIES) order.
@@ -81,7 +83,8 @@ impl<'a> RestirShaders<'a> {
             spatial_biased,
             shade,
             duplication,
-        ]: [ShaderModule<'a>; 9],
+            specular,
+        ]: [ShaderModule<'a>; 10],
     ) -> Self {
         Self {
             initial,
@@ -93,6 +96,7 @@ impl<'a> RestirShaders<'a> {
             spatial_biased,
             shade,
             duplication,
+            specular,
         }
     }
 
@@ -243,6 +247,7 @@ pub struct RestirDi {
     temporal_pass: ComputePipeline,
     shade_pass: ComputePipeline,
     duplication_pass: ComputePipeline,
+    specular_pass: ComputePipeline,
     spatial_shift_pass: ComputePipeline,
     spatial_pass: ComputePipeline,
     spatial_biased_pass: ComputePipeline,
@@ -282,6 +287,8 @@ pub struct RestirDi {
     /// The radiance at a bounce's surface `x2`: its next event and one more bounce ending at
     /// the world cache (0010 §3, L2 and up); off, the cache's at `x2` (L0, L1).
     pub gi_bounce: bool,
+    /// Trace the reflection of lobes smoother than τ (0010 §2.7, R4d2; with GI): one ray a pixel.
+    pub specular_tracing: bool,
     /// Last frame's checkerboard parity (2 before the first frame), for the temporal pass.
     last_parity: AtomicU32,
 }
@@ -309,6 +316,7 @@ impl RestirDi {
             temporal_pass: compute(shaders.temporal)?,
             shade_pass: compute(shaders.shade)?,
             duplication_pass: compute(shaders.duplication)?,
+            specular_pass: compute(shaders.specular)?,
             spatial_shift_pass: compute(shaders.spatial_shift)?,
             spatial_pass: compute(shaders.spatial)?,
             spatial_biased_pass: compute(shaders.spatial_biased)?,
@@ -326,6 +334,7 @@ impl RestirDi {
             checkerboard: true,
             gi: true,
             gi_bounce: true,
+            specular_tracing: true,
             last_parity: AtomicU32::new(2),
         })
     }
@@ -695,25 +704,63 @@ impl RestirDi {
             let light = b.write_texture(light, Access::ComputeWrite);
             let specular = b.write_texture(specular, Access::ComputeWrite);
             let hints = b.write_texture(hints, Access::ComputeWrite);
-            ((light, specular, hints), move |ctx: &mut PassContext<'_>| {
-                ctx.set_pipeline(&self.shade_pass);
-                let args = RestirArgs {
-                    constants: ctx.upload(&shade),
-                    material: ctx.srv(material),
-                    depth: ctx.srv(depth),
-                    lights: ctx.srv(lights),
-                    input: ctx.srv(input),
-                    duplication_map: ctx.srv(map),
-                    tlas: rt.index,
-                    signal: ctx.uav(light),
-                    specular_signal: ctx.uav(specular),
-                    hints: ctx.uav(hints),
-                    ..RestirArgs::default()
-                };
-                ctx.push(&args);
-                ctx.dispatch(pixel_groups.0, pixel_groups.1, 1);
-            })
+            (
+                (light, specular, hints),
+                move |ctx: &mut PassContext<'_>| {
+                    ctx.set_pipeline(&self.shade_pass);
+                    let args = RestirArgs {
+                        constants: ctx.upload(&shade),
+                        material: ctx.srv(material),
+                        depth: ctx.srv(depth),
+                        lights: ctx.srv(lights),
+                        input: ctx.srv(input),
+                        duplication_map: ctx.srv(map),
+                        tlas: rt.index,
+                        signal: ctx.uav(light),
+                        specular_signal: ctx.uav(specular),
+                        hints: ctx.uav(hints),
+                        ..RestirArgs::default()
+                    };
+                    ctx.push(&args);
+                    ctx.dispatch(pixel_groups.0, pixel_groups.1, 1);
+                },
+            )
         });
+        // The reflection of lobes smoother than τ, traced (`RestirSpecular`, with GI).
+        let specular = match gi.filter(|_| self.specular_tracing) {
+            Some(cache) => g.add_compute("RestirSpecular", |b| {
+                let material = b.read_texture(material, Access::ComputeRead);
+                let depth = b.read_texture(depth, Access::ComputeRead);
+                let lights = b.read_buffer(lights, Access::ComputeRead);
+                let tiles = tiles.map(|t| b.read_buffer(t.tiles, Access::ComputeRead));
+                rt.read(b);
+                let hits = rt.read_hits(b);
+                let simple = simple.read(b);
+                let cache = cache.read(b);
+                let specular = b.write_texture(specular, Access::ComputeWrite);
+                (specular, move |ctx: &mut PassContext<'_>| {
+                    ctx.set_pipeline(&self.specular_pass);
+                    let args = RestirArgs {
+                        constants: ctx.upload(&constants),
+                        material: ctx.srv(material),
+                        depth: ctx.srv(depth),
+                        lights: ctx.srv(lights),
+                        tiles: ctx.srv(tiles.unwrap_or(lights)),
+                        tlas: rt.index,
+                        specular_signal: ctx.uav(specular),
+                        gi: ctx.upload(&GiSources {
+                            cache: cache.bind(ctx),
+                            hits: hits.bind(ctx),
+                            simple: simple.bind(ctx),
+                        }),
+                        ..RestirArgs::default()
+                    };
+                    ctx.push(&args);
+                    ctx.dispatch(pixel_groups.0, pixel_groups.1, 1);
+                })
+            }),
+            None => specular,
+        };
         RestirOutput {
             diffuse: NoisySignal { light, hints },
             specular: NoisySignal {

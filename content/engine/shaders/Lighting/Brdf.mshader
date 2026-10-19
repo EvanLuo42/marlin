@@ -119,6 +119,22 @@ public float3 SampleSpecular(float3 n, float3 v, float roughness, float u1, floa
     return Reflect(-v, h);
 }
 
+/// What a direction `l` drawn by `SampleSpecular` carries: the specular BRDF times cos θ_l over
+/// the pdf, F · G2 / G1(v).
+public float3 SpecularWeight(float3 n, float3 v, float3 l, float roughness, float3 f0)
+{
+    float nol = Dot(n, l);
+    float nov = Dot(n, v);
+    if (nol <= 0 || nov <= 0)
+        return float3(0, 0, 0);
+    float a = Max(roughness * roughness, 1e-4);
+    float a2 = a * a;
+    float3 h = Normalize(v + l);
+    float g2 = 4 * nov * nol * SmithVisibility(nov, nol, a2);
+    float g1 = 2 * nov / (nov + Sqrt(a2 + (1 - a2) * nov * nov));
+    return FresnelSchlick(f0, Dot(v, h)) * (g2 / g1);
+}
+
 /// The solid-angle pdf of `SampleSpecular` drawing `l`: G1(v) D(h) / (4 n·v).
 public float SpecularPdf(float3 n, float3 v, float3 l, float roughness)
 {

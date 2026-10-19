@@ -310,11 +310,112 @@ fn direct_sample(
     sum
 }
 
-/// The scene's global illumination, Lambert surfaces only, at every `step`-th pixel (from
-/// `step / 2`) of a `width` × `height` view: `paths` paths a pixel, each bounce cosine-sampled
-/// with next-event estimation to every light, Russian roulette after three bounces, the sky
-/// (the environment's ambient luminance) where a bounce leaves; `None` at the other pixels and
-/// where nothing is. Unbiased, so noisy: compare averages, not pixels.
+/// A reflection direction about `n` for a surface seen along `v`, from the GGX lobe of
+/// `roughness` (VNDF sampling, Heitz 2018): the renderer's `SampleSpecular`.
+pub fn sample_specular(n: Vec3, v: Vec3, roughness: f32, u1: f32, u2: f32) -> Vec3 {
+    let t = if n.y.abs() < 0.99 { Vec3::Y } else { Vec3::X }
+        .cross(n)
+        .normalize();
+    let b = n.cross(t);
+    let a = (roughness * roughness).max(1e-4);
+    let ve = Vec3::new(v.dot(t), v.dot(b), v.dot(n));
+    let vh = Vec3::new(a * ve.x, a * ve.y, ve.z).normalize();
+    let lensq = vh.x * vh.x + vh.y * vh.y;
+    let t1 = if lensq > 0.0 {
+        Vec3::new(-vh.y, vh.x, 0.0) / lensq.sqrt()
+    } else {
+        Vec3::X
+    };
+    let t2 = vh.cross(t1);
+    let r = u1.sqrt();
+    let phi = core::f32::consts::TAU * u2;
+    let p1 = r * phi.cos();
+    let s = 0.5 * (1.0 + vh.z);
+    let p2 = (1.0 - s) * (1.0 - p1 * p1).max(0.0).sqrt() + s * r * phi.sin();
+    let nh = t1 * p1 + t2 * p2 + vh * (1.0 - p1 * p1 - p2 * p2).max(0.0).sqrt();
+    let m = Vec3::new(a * nh.x, a * nh.y, nh.z.max(0.0)).normalize();
+    let h = t * m.x + b * m.y + n * m.z;
+    // Reflect -v about h.
+    -v - h * (2.0 * (-v).dot(h))
+}
+
+/// What a direction `l` drawn by [`sample_specular`] carries: F · G2 / G1(v), the renderer's
+/// `SpecularWeight`.
+pub fn specular_weight(n: Vec3, v: Vec3, l: Vec3, roughness: f32, f0: [f32; 3]) -> [f32; 3] {
+    let (nol, nov) = (n.dot(l), n.dot(v));
+    if nol <= 0.0 || nov <= 0.0 {
+        return [0.0; 3];
+    }
+    let a = (roughness * roughness).max(1e-4);
+    let a2 = a * a;
+    let vis = 0.5
+        / (nol * (nov * nov * (1.0 - a2) + a2).sqrt() + nov * (nol * nol * (1.0 - a2) + a2).sqrt())
+            .max(1e-6);
+    let g2 = 4.0 * nov * nol * vis;
+    let g1 = 2.0 * nov / (nov + (a2 + (1.0 - a2) * nov * nov).sqrt());
+    let f = (1.0 - v.dot((v + l).normalize()).clamp(0.0, 1.0)).powi(5);
+    f0.map(|c| (c + (1.0 - c) * f) * g2 / g1)
+}
+
+/// The light reaching `origin` (on a surface facing `n`) along `d`: the sky where nothing is,
+/// else what the surface hit reflects toward it, Lambert all the way ([`path_radiance`]).
+fn radiance_toward(
+    tracer: &Tracer,
+    scene: &Scene,
+    origin: Vec3,
+    n: Vec3,
+    d: Vec3,
+    rng: &mut Rng,
+) -> [f32; 3] {
+    match tracer.trace(origin + n * 1e-3, d, f32::INFINITY) {
+        Some(hit) => path_radiance(tracer, scene, hit, rng),
+        None => scene.environment.ambient,
+    }
+}
+
+/// What the surface at `hit` reflects (Lambert): next-event estimation to every light, then
+/// cosine bounces, Russian roulette after two, the sky where a bounce leaves.
+fn path_radiance(tracer: &Tracer, scene: &Scene, first: Hit, rng: &mut Rng) -> [f32; 3] {
+    let sky = scene.environment.ambient;
+    let mut sum = [0.0f32; 3];
+    let mut hit = first;
+    let mut throughput = [1.0f32; 3];
+    for bounce in 0.. {
+        let albedo = scene.instances[hit.instance].lobes().0;
+        let direct = direct_sample(tracer, scene, hit.point, hit.normal, albedo, None, rng);
+        for i in 0..3 {
+            sum[i] += throughput[i] * direct[i];
+            throughput[i] *= albedo[i];
+        }
+        if bounce >= 2 {
+            let keep = throughput.iter().fold(0.0f32, |a, &t| a.max(t)).min(0.95);
+            if rng.f32() >= keep {
+                break;
+            }
+            throughput = throughput.map(|t| t / keep);
+        }
+        let d = cosine_direction(hit.normal, rng.f32(), rng.f32());
+        match tracer.trace(hit.point + hit.normal * 1e-3, d, f32::INFINITY) {
+            Some(next) => hit = next,
+            None => {
+                for i in 0..3 {
+                    sum[i] += throughput[i] * sky[i];
+                }
+                break;
+            }
+        }
+    }
+    sum
+}
+
+/// The scene's global illumination at every `step`-th pixel (from `step / 2`) of a `width` ×
+/// `height` view: `paths` paths a pixel, the sky (the environment's ambient luminance) where a
+/// bounce leaves; `None` at the other pixels and where nothing is. At the surface the camera
+/// sees, its GGX lobe as the renderer splits it (0010 §2.7): the lights' highlights; a cosine
+/// bounce weighted by the diffuse lobe and, where the roughness is at least
+/// [`SPECULAR_TAU`], the specular one; below it a second, specular bounce (VNDF). Beyond it,
+/// Lambert (the renderer's hits shade with the simplified materials). Unbiased, so noisy:
+/// compare averages, not pixels.
 pub fn global_illumination(
     scene: &Scene,
     width: u32,
@@ -323,7 +424,6 @@ pub fn global_illumination(
     paths: u32,
 ) -> Vec<Option<[f32; 3]>> {
     let tracer = Tracer::new(scene);
-    let sky = scene.environment.ambient;
     let mut rng = Rng::new(0x5EED);
     (0..width * height)
         .map(|p| {
@@ -332,51 +432,35 @@ pub fn global_illumination(
                 return None;
             }
             let (origin, dir) = pixel_ray(scene.camera, width, height, x, y);
-            let first = tracer.trace(origin, dir, f32::INFINITY)?;
+            let hit = tracer.trace(origin, dir, f32::INFINITY)?;
+            let instance = &scene.instances[hit.instance];
+            let (albedo, f0) = instance.lobes();
+            let (n, v, roughness) = (hit.normal, -dir, instance.roughness);
             let mut sum = [0.0f32; 3];
             for _ in 0..paths {
-                let mut hit = first;
-                let mut throughput = [1.0f32; 3];
-                for bounce in 0.. {
-                    let instance = &scene.instances[hit.instance];
-                    let (albedo, f0) = instance.lobes();
-                    // GGX at `x1` only: the renderer's hits shade with the simplified materials'
-                    // Lambert.
-                    let specular = (bounce == 0).then_some((-dir, instance.roughness, f0));
-                    let direct = direct_sample(
-                        &tracer, scene, hit.point, hit.normal, albedo, specular, &mut rng,
-                    );
-                    for i in 0..3 {
-                        sum[i] += throughput[i] * direct[i];
+                let specular = Some((v, roughness, f0));
+                let direct =
+                    direct_sample(&tracer, scene, hit.point, n, albedo, specular, &mut rng);
+                // Cosine-sampled: the weight is the BRDF times cos over the pdf (cos / π).
+                let d = cosine_direction(n, rng.f32(), rng.f32());
+                let mut weight = albedo;
+                if roughness >= SPECULAR_TAU {
+                    let s = specular_cos(n, v, d, roughness, f0);
+                    let cos = n.dot(d).max(1e-6);
+                    weight = [0, 1, 2].map(|i| weight[i] + core::f32::consts::PI * s[i] / cos);
+                }
+                let incoming = radiance_toward(&tracer, scene, hit.point, n, d, &mut rng);
+                let mut reflected = [0.0f32; 3];
+                if roughness < SPECULAR_TAU {
+                    let d = sample_specular(n, v, roughness, rng.f32(), rng.f32());
+                    let w = specular_weight(n, v, d, roughness, f0);
+                    if w != [0.0; 3] {
+                        let l = radiance_toward(&tracer, scene, hit.point, n, d, &mut rng);
+                        reflected = [0, 1, 2].map(|i| w[i] * l[i]);
                     }
-                    if bounce >= 3 {
-                        let keep = throughput.iter().fold(0.0f32, |a, &t| a.max(t)).min(0.95);
-                        if rng.f32() >= keep {
-                            break;
-                        }
-                        throughput = throughput.map(|t| t / keep);
-                    }
-                    let d = cosine_direction(hit.normal, rng.f32(), rng.f32());
-                    // Cosine-sampled: the weight is the BRDF times cos over the pdf (cos / π). The
-                    // specular lobe from `x1`, where it is resampled (roughness from τ).
-                    let mut weight = albedo;
-                    if bounce == 0 && instance.roughness >= SPECULAR_TAU {
-                        let cos = hit.normal.dot(d).max(1e-6);
-                        let s = specular_cos(hit.normal, -dir, d, instance.roughness, f0);
-                        weight = [0, 1, 2].map(|i| weight[i] + core::f32::consts::PI * s[i] / cos);
-                    }
-                    for i in 0..3 {
-                        throughput[i] *= weight[i];
-                    }
-                    match tracer.trace(hit.point + hit.normal * 1e-3, d, f32::INFINITY) {
-                        Some(next) => hit = next,
-                        None => {
-                            for i in 0..3 {
-                                sum[i] += throughput[i] * sky[i];
-                            }
-                            break;
-                        }
-                    }
+                }
+                for i in 0..3 {
+                    sum[i] += direct[i] + weight[i] * incoming[i] + reflected[i];
                 }
             }
             Some(sum.map(|s| s / paths as f32))
