@@ -188,6 +188,18 @@ shader 编译器另有一个只给测试用的 crate `marlin-shaderc-testgen`（
 
 几个 crate 共用、又依赖 workspace crate 的测试 helper，留在"拥有者" crate 的 `tests/support/` 里，别的 crate 用 `#[path]` 相对路径引入，不新建 crate、不进任何库：`Project`（临时目录 + 写文件 + 建 AssetDb）在 `tools/asset_db/tests/support/project.rs`，cook 相关的在 `tools/cook_core/tests/support/cook.rs`，cook_* 都引这两个文件。
 
+### 6.4 预制测试场景：`marlin-test-scenes`（`tools/test_scenes`，2026-10-19）
+
+渲染算法的测试共用的场景。它是一个独立 crate，只作 dev-dependency，不进任何库，也不用来生成示例关卡（示例关卡是单独编写的资产）。
+
+- **场景**（`Scene`）：用程序声明网格（源三角形，用真实的网格 cooker 烘焙）、实例和它们的反照率、光源、环境和相机。
+  - `cornell_box`：2 m 的房间，左红右绿，一矮一高两个方块，天花板下一个半径 0.1 的球形光源；
+  - `lit_wall`：充满视野的墙，前面 4 盏没有尺寸的点光源；
+  - `light_hall(n)`：40 m 的地面、9×9 的柱子和 n 盏光源。
+- **cook**：原来 render 测试里的 `tests/support/cook.rs` 搬进这里，render 和 material 的测试都从这里取。
+- **CPU 参考**（`reference`）：逐像素对场景的所有三角形求交；直接光照用和渲染器相同的公式；可见性在光源朝向表面的半球上做分层采样。算法测试对照它检查正确性，golden image 检查回归。
+- 每个测试 harness 用自己的方式载入场景（material 的 `Harness::load`）。以后的算法（时域/空间复用、降噪、GI）都在同一批场景上测。
+
 ## 7. 新的测试设施
 
 ### 7.1 渲染 golden image

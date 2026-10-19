@@ -812,6 +812,7 @@ dependencies = [
  "marlin-rhi",
  "marlin-serial",
  "marlin-shader",
+ "marlin-test-scenes",
 ]
 
 [[package]]
@@ -912,6 +913,7 @@ dependencies = [
  "marlin-rhi",
  "marlin-serial",
  "marlin-shader",
+ "marlin-test-scenes",
 ]
 
 [[package]]
@@ -1156,6 +1158,15 @@ version = "0.1.0"
 dependencies = [
  "marlin-pal",
  "marlin-test-support",
+]
+
+[[package]]
+name = "marlin-test-scenes"
+version = "0.1.0"
+dependencies = [
+ "marlin-cook-mesh",
+ "marlin-math",
+ "marlin-render",
 ]
 
 [[package]]

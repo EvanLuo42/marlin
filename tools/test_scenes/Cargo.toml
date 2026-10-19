@@ -1,0 +1,15 @@
+[package]
+name = "marlin-test-scenes"
+description = "Prefab test scenes shared by the renderer's GPU tests: meshes cooked by the real mesh cooker, instances, lights, camera (the Cornell box, a lit wall, a hall of lights), and a CPU reference of their direct lighting to test algorithms against."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+# A dev-dependency of the crates that render in their tests.
+[dependencies]
+marlin-cook-mesh.workspace = true
+marlin-math.workspace = true
+marlin-render.workspace = true
+
+[lints]
+workspace = true
