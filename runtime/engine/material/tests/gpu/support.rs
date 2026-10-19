@@ -132,7 +132,7 @@ impl Harness {
             lighting,
             unorm,
             updates: SceneUpdates {
-                environment: Some(Environment::default()),
+                environment: Some(relative_environment()),
                 ..SceneUpdates::default()
             },
             camera: (
@@ -354,5 +354,17 @@ impl Harness {
         assert_eq!(self.device.validation_errors(), 0);
         self.previous = Some(self.camera);
         Image::new(width, height, pixels)
+    }
+}
+
+/// The environment these tests light with: their pictures are the lit scene read without
+/// exposure, so R1's relative values (a sun whose illuminance over π is 1, its ambient and
+/// background) rather than physical ones.
+fn relative_environment() -> Environment {
+    Environment {
+        sun_illuminance: core::f32::consts::PI,
+        ambient: [0.08, 0.09, 0.12],
+        clear_color: [0.02, 0.02, 0.03, 1.0],
+        ..Environment::default()
     }
 }

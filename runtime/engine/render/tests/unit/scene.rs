@@ -162,6 +162,7 @@ fn meshes_and_lights_follow_their_updates() {
     let point = LightDesc {
         kind: LightKind::Point,
         radiance: [1.0; 3],
+        radius: 0.0,
         position: [0.0; 3],
         direction: [0.0, -1.0, 0.0],
         range: 10.0,

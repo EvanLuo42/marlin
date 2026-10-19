@@ -2,9 +2,11 @@
 //! that.
 
 use marlin_asset::{Uuid, Vfs};
-use marlin_framework::{Engine, RenderDelta, StaticMesh};
-use marlin_math::{Transform, Vec3};
-use marlin_render::scene::{InstanceUpdate, MeshUpdate};
+use marlin_framework::{
+    Component, DEFAULT_LIGHT_RANGE, DEFAULT_SPOT_ANGLE, Engine, Light, RenderDelta, StaticMesh,
+};
+use marlin_math::{Quat, Transform, Vec3};
+use marlin_render::scene::{InstanceUpdate, LightKind, LightUpdate, MeshUpdate};
 
 const MESH: Uuid = Uuid::from_u128(0x1234);
 const OTHER: Uuid = Uuid::from_u128(0x5678);
@@ -74,4 +76,84 @@ fn deltas_carry_only_changes() {
     assert_eq!(engine.instance_count(), 0);
     // Removals are reported once.
     assert!(engine.frame(0.0, None, None).updates.is_empty());
+}
+
+#[test]
+fn lights_follow_their_entities() {
+    let vfs = Vfs::new();
+    let mut engine = Engine::new(&vfs).unwrap();
+    let spot = Light::from_component(&Component::SpotLight {
+        color: [1.0, 0.5, 0.25],
+        intensity: 4.0 * core::f32::consts::PI * 100.0,
+        radius: 0.1,
+        range: 0.0,
+        inner_angle: 30.0,
+        outer_angle: 0.0,
+    })
+    .unwrap();
+    // Lumens to candela (Φ / 4π), zeros to their defaults, the color kept.
+    assert_eq!(spot.kind, LightKind::Spot);
+    for (c, want) in spot.intensity.iter().zip([100.0, 50.0, 25.0]) {
+        assert!((c - want).abs() < 1e-3, "{:?}", spot.intensity);
+    }
+    assert_eq!(spot.range, DEFAULT_LIGHT_RANGE);
+    assert!((spot.cone[0] - 30f32.to_radians().cos()).abs() < 1e-6);
+    assert!((spot.cone[1] - DEFAULT_SPOT_ANGLE.to_radians().cos()).abs() < 1e-6);
+    let white = Light::from_component(&Component::PointLight {
+        color: [0.0; 3],
+        intensity: 800.0,
+        radius: 0.0,
+        range: 5.0,
+    })
+    .unwrap();
+    assert_eq!(
+        white.intensity[0], white.intensity[2],
+        "a black color is white"
+    );
+    assert!(Light::from_component(&Component::FlyCamera { speed: 1.0 }).is_none());
+
+    // Spawned: added, at the entity, shining down its -Z.
+    let at = Transform {
+        translation: Vec3::new(1.0, 2.0, 3.0),
+        rotation: Quat::from_rotation_x(-core::f32::consts::FRAC_PI_2),
+        scale: Vec3::ONE,
+    };
+    let e = engine.world.spawn((at, spot));
+    let delta = engine.frame(0.0, None, None);
+    let &[(id, LightUpdate::Add(desc))] =
+        &delta.updates.lights.iter().copied().collect::<Vec<_>>()[..]
+    else {
+        panic!("{:?}", delta.updates.lights);
+    };
+    assert_eq!(desc.position, [1.0, 2.0, 3.0]);
+    assert!((Vec3::from(desc.direction) - Vec3::new(0.0, -1.0, 0.0)).length() < 1e-5);
+    assert_eq!(desc.radius, 0.1);
+    assert!(engine.frame(0.0, None, None).updates.lights.is_empty());
+
+    // Moved, then brighter: the whole light again, same row.
+    engine.world.get_mut::<Transform>(e).unwrap().translation = Vec3::ZERO;
+    let delta = engine.frame(0.0, None, None);
+    let lights: Vec<_> = delta.updates.lights.iter().copied().collect();
+    assert!(matches!(lights[..], [(i, LightUpdate::Set(d))] if i == id && d.position == [0.0; 3]));
+    engine.world.get_mut::<Light>(e).unwrap().intensity = [1.0; 3];
+    let lights: Vec<_> = engine
+        .frame(0.0, None, None)
+        .updates
+        .lights
+        .iter()
+        .copied()
+        .collect();
+    assert!(matches!(lights[..], [(i, LightUpdate::Set(d))] if i == id && d.radiance == [1.0; 3]));
+
+    // Gone: removed once.
+    engine.world.despawn(e);
+    let lights: Vec<_> = engine
+        .frame(0.0, None, None)
+        .updates
+        .lights
+        .iter()
+        .copied()
+        .collect();
+    assert_eq!(lights, [(id, LightUpdate::Remove)]);
+    assert!(engine.frame(0.0, None, None).updates.lights.is_empty());
 }

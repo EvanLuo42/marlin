@@ -15,6 +15,7 @@ use alloc::vec::Vec;
 use marlin_containers::{HashMap, HashMapExt};
 use marlin_material::{DEFAULT_PERMUTATION, MaterialShaders, Materials, RESOLVE};
 use marlin_math::Transform;
+use marlin_render::lights::LightTiles;
 use marlin_render::raytracing::{RtShaders, Tlas};
 use marlin_render::scene::{MeshId, MeshUpdate};
 use marlin_render::shadows::{Vsm, VsmSettings, VsmShaders};
@@ -70,6 +71,8 @@ pub struct RenderSide {
     pub vsm: Vsm,
     /// The ray tracing scene's TLAS (0007 §9).
     pub tlas: Tlas,
+    /// The frame's presampled light tiles (0010 §2.8).
+    pub light_tiles: LightTiles,
     /// Tonemaps the [`HDR_FORMAT`](marlin_render::HDR_FORMAT) scene into the output.
     pub post: PostProcess,
     pub scene: RenderScene,
@@ -120,6 +123,7 @@ impl RenderSide {
             lighting: Lighting::new(device, bind_one(engine, &Lighting::ENTRY)?)?,
             vsm: Vsm::new(device, &VsmShaders::bind(engine)?, VsmSettings::DEFAULT)?,
             tlas: Tlas::new(device, &RtShaders::bind(engine)?)?,
+            light_tiles: LightTiles::new(device, bind_one(engine, &LightTiles::ENTRY)?)?,
             post: PostProcess::new(device, &PostShaders::bind(engine)?, output)?,
             scene: RenderScene::with_ids(ids),
             scatter: ScatterShader::new(device, bind_one(engine, &ScatterShader::ENTRY)?)?,
@@ -219,6 +223,8 @@ impl RenderSide {
             vsm,
             post,
             tlas,
+            light_tiles,
+            frame,
             scene,
             scatter,
             camera,
@@ -232,6 +238,8 @@ impl RenderSide {
         let rows = scene.instance_rows();
         // Built every frame; ray query passes read it (R3c on).
         let _rt = tlas.add_passes(g, gpu, &pool, rows);
+        // Drawn every frame; ReSTIR reads them (R3c on).
+        let _tiles = light_tiles.add_passes(g, scene, *frame as u32);
         let scene: &'g RenderScene = scene;
         let visibility: &'g Visibility = visibility;
         let env = *scene.environment();

@@ -4,7 +4,7 @@ Level
 {
     !Uuid = "01992d00-0000-7000-8000-000000000001"
     !Name = "Main"
-    Environment = { ClearColor = (0.02, 0.03, 0.05, 1.0) }
+    Environment = { ClearColor = (636.6, 954.9, 1591.5, 1.0) }
     Entities = [
         {
             Name = "Camera"

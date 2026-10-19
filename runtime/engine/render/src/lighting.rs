@@ -1,4 +1,4 @@
-//! Direct lighting, R1's minimal set (0010): the environment's directional light and ambient
+//! Direct lighting, R1's minimal set (0010): the environment's sun (lux) and ambient sky (nits)
 //! over the material buffer's proxy lobe (`Marlin.Engine.Lighting.DirectLight`), Lambert
 //! diffuse, into an [`HDR_FORMAT`] scene for the post chain. Specular and every other light come
 //! with 0010's final shading.
@@ -78,7 +78,9 @@ impl Lighting {
         };
         let scene = g.create_texture("Scene", desc);
         let d = env.light_direction.normalize_or_zero();
-        let [r, gr, b] = env.light_color;
+        // A Lambert surface facing the sun reflects albedo · E / π: the color the pass adds.
+        let sun = env.sun_illuminance / core::f32::consts::PI;
+        let [r, gr, b] = env.light_color.map(|c| c * sun);
         let [ar, ag, ab] = env.ambient;
         let light = LightConstants {
             direction: [d.x, d.y, d.z, 0.0],

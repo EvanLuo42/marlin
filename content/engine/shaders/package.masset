@@ -9,6 +9,7 @@ ShaderPackage
     !Name = "Marlin.Engine"
     Sources = [
         `source:shaders/DefaultMaterial.mshader`,
+        `source:shaders/Lighting/LightTiles.mshader`,
         `source:shaders/Lighting/Lighting.mshader`,
         `source:shaders/Material/Material.mshader`,
         `source:shaders/Post/Post.mshader`,

@@ -12,6 +12,7 @@ use marlin_containers::HashMap;
 use marlin_gpu_test_support::{Shader, engine_shaders, hardware_device};
 use marlin_math::{Mat4, Transform, Vec3};
 use marlin_render::asset::cluster::ClusterRecord;
+use marlin_render::lights::LightTiles;
 use marlin_render::raytracing::{Ray, RayHit, RtShaders, Tlas};
 use marlin_render::scene::{
     InstanceDesc, InstanceId, InstanceUpdate, MaterialDesc, MaterialId, MaterialUpdate, MeshId,
@@ -68,6 +69,8 @@ pub struct Harness {
     pub vsm: Vsm,
     /// The ray tracing scene's TLAS.
     pub tlas: Tlas,
+    /// The presampled light tiles.
+    pub light_tiles: LightTiles,
     /// The unit cube, in the scene and on the GPU.
     pub cube: MeshId,
     /// What instances draw with: a material row of permutation 0 (nothing here reads it).
@@ -138,6 +141,7 @@ impl Harness {
             &RtShaders::from_modules(engine_shaders(&RtShaders::ENTRIES)),
         )
         .unwrap();
+        let light_tiles = LightTiles::new(device, engine_shaders(&[LightTiles::ENTRY])[0]).unwrap();
         let frame = FrameContext::new(device, &FrameContextDesc::default()).unwrap();
         let scene = RenderScene::new();
         let mut updates = SceneUpdates {
@@ -168,6 +172,7 @@ impl Harness {
             reference,
             vsm,
             tlas,
+            light_tiles,
             cube,
             material,
             updates,
@@ -520,6 +525,32 @@ impl Harness {
         let hits = self.frame.wait_readback(ticket).unwrap();
         assert_eq!(self.device.validation_errors(), 0);
         RayHit::read(&hits)
+    }
+
+    /// Applies the pending updates and draws the light tiles with `seed`: (light row,
+    /// probability) per entry, `None` without lights to draw.
+    pub fn light_tiles_frame(&mut self, seed: u32) -> Option<Vec<(u32, f32)>> {
+        let updates = core::mem::take(&mut self.updates);
+        self.scene.apply(&updates);
+        let (scene, tiles) = (&self.scene, &self.light_tiles);
+        let ticket = self
+            .frame
+            .execute(self.device, |g, _| {
+                tiles
+                    .add_passes(g, scene, seed)
+                    .map(|t| g.readback(t.tiles))
+            })
+            .unwrap()?;
+        let bytes = self.frame.wait_readback(ticket).unwrap();
+        assert_eq!(self.device.validation_errors(), 0);
+        Some(
+            words(&bytes)
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|&[row, pdf]| (row, f32::from_bits(pdf)))
+                .collect(),
+        )
     }
 
     /// Waits for the readback `ticket` of the last frame.

@@ -10,6 +10,7 @@ mod support;
 
 mod geometry;
 mod gpu_scene;
+mod lights;
 mod occlusion;
 mod post;
 mod raytracing;

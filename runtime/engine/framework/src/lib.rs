@@ -29,8 +29,11 @@ pub mod shaders;
 
 pub use boot::{Boot, BootError, ContentSettings, boot, mount, register_cvars};
 pub use delta::{MeshUpload, RenderDelta, RenderSide, RenderSideError};
-pub use engine::{Engine, EngineError, FlyCamera, FromLevel, Spin, StaticMesh};
-pub use level::{Component, Level, LevelEntity, LevelEnvironment, TransformDesc};
+pub use engine::{Engine, EngineError, FlyCamera, FromLevel, Light, Spin, StaticMesh};
+pub use level::{
+    Component, DEFAULT_LIGHT_RANGE, DEFAULT_SPOT_ANGLE, Level, LevelEntity, LevelEnvironment,
+    TransformDesc,
+};
 pub use offscreen::{OFFSCREEN_FORMAT, Offscreen};
 pub use run::{RunError, run};
 pub use shaders::{

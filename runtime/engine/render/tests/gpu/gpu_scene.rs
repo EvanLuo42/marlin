@@ -140,6 +140,7 @@ fn tables_match_the_scene_and_transforms_shift_on_the_gpu() {
     let desc = LightDesc {
         kind: LightKind::Spot,
         radiance: [10.0, 20.0, 30.0],
+        radius: 0.25,
         position: [1.0, 2.0, 3.0],
         direction: [0.0, -1.0, 0.0],
         range: 15.0,
@@ -153,6 +154,7 @@ fn tables_match_the_scene_and_transforms_shift_on_the_gpu() {
     assert_eq!(l[0], 2, "spot");
     assert_eq!(floats(&l[1..4]), [15.0, 0.9, 0.8]);
     assert_eq!(floats(&l[4..7]), desc.radiance);
+    assert_eq!(f32::from_bits(l[7]), desc.radius);
     assert_eq!(floats(&l[8..11]), desc.position);
     assert_eq!(floats(&l[12..15]), desc.direction);
 }

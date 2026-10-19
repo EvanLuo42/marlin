@@ -13,12 +13,13 @@ use marlin_jobs::JobSystem;
 use marlin_material::DefaultMaterial;
 use marlin_math::{Quat, Transform, Vec3};
 use marlin_render::scene::{
-    InstanceDesc, InstanceId, InstanceUpdate, MaterialId, MaterialUpdate, MeshId, MeshUpdate,
+    InstanceDesc, InstanceId, InstanceUpdate, LightDesc, LightId, LightKind, LightUpdate,
+    MaterialId, MaterialUpdate, MeshId, MeshUpdate,
 };
 use marlin_render::{Camera, SceneIds, SceneUpdates};
 
 use crate::delta::{MeshUpload, RenderDelta};
-use crate::level::{Component, Level};
+use crate::level::{Component, DEFAULT_LIGHT_RANGE, DEFAULT_SPOT_ANGLE, Level};
 use crate::loaders::{LoadedMesh, engine_loaders};
 
 /// Draws a mesh asset at the entity's transform (the simulation side of a static mesh).
@@ -44,6 +45,89 @@ pub struct FlyCamera {
     pub pitch: f32,
 }
 
+/// A point or spot light at the entity's transform (the simulation side of a light), in the
+/// renderer's units.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Light {
+    pub kind: LightKind,
+    /// Luminous intensity in candela times the linear color.
+    pub intensity: [f32; 3],
+    /// The emitting sphere's radius, in meters.
+    pub radius: f32,
+    /// Where its light fades out, in meters.
+    pub range: f32,
+    /// A spot light's cone: cosines of the inner and outer half angles.
+    pub cone: [f32; 2],
+}
+
+impl Light {
+    /// A level's point or spot light component: lumens to candela (Φ / 4π, a spot's as a point
+    /// light's), angles to cosines, zeros to their defaults.
+    pub fn from_component(component: &Component) -> Option<Self> {
+        let (kind, color, lumens, radius, range, angles) = match *component {
+            Component::PointLight {
+                color,
+                intensity,
+                radius,
+                range,
+            } => (LightKind::Point, color, intensity, radius, range, [0.0; 2]),
+            Component::SpotLight {
+                color,
+                intensity,
+                radius,
+                range,
+                inner_angle,
+                outer_angle,
+            } => (
+                LightKind::Spot,
+                color,
+                intensity,
+                radius,
+                range,
+                [inner_angle, outer_angle],
+            ),
+            _ => return None,
+        };
+        let color = if color == [0.0; 3] { [1.0; 3] } else { color };
+        let candela = lumens.max(0.0) / (4.0 * core::f32::consts::PI);
+        let outer = if angles[1] > 0.0 {
+            angles[1]
+        } else {
+            DEFAULT_SPOT_ANGLE
+        };
+        let inner = angles[0].clamp(0.0, outer);
+        Some(Self {
+            kind,
+            intensity: color.map(|c| c * candela),
+            radius: radius.max(0.0),
+            range: if range > 0.0 {
+                range
+            } else {
+                DEFAULT_LIGHT_RANGE
+            },
+            cone: [
+                marlin_math::scalar::cos(inner.to_radians()),
+                marlin_math::scalar::cos(outer.to_radians()),
+            ],
+        })
+    }
+
+    /// The render scene's description of it at `transform`: a spot light shines down -Z.
+    pub fn desc(&self, transform: &Transform) -> LightDesc {
+        let p = transform.translation;
+        let d = transform.rotation.mul_vec3(-Vec3::Z).normalize_or_zero();
+        LightDesc {
+            kind: self.kind,
+            radiance: self.intensity,
+            radius: self.radius,
+            position: [p.x, p.y, p.z],
+            direction: [d.x, d.y, d.z],
+            range: self.range,
+            cone: self.cone,
+        }
+    }
+}
+
 /// Marks entities a level spawned, so a reload of the level replaces them.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct FromLevel;
@@ -65,6 +149,8 @@ pub struct Engine<'v> {
     meshes: HashMap<Uuid, MeshEntry>,
     /// Entities drawn, with what the render scene has of them.
     instances: HashMap<Entity, InstanceEntry>,
+    /// Entities lit, with their row in the render scene's light table.
+    lights: HashMap<Entity, LightId>,
     /// What static meshes draw with until they name materials.
     default_material: MaterialId,
     /// Changes made outside extract (spawning a level), sent with the next delta.
@@ -101,6 +187,7 @@ impl<'v> Engine<'v> {
             default_material,
             meshes: HashMap::new(),
             instances: HashMap::new(),
+            lights: HashMap::new(),
             updates,
             frame: 0,
             time: 0.0,
@@ -231,6 +318,11 @@ impl<'v> Engine<'v> {
                             },
                         );
                     }
+                    Component::PointLight { .. } | Component::SpotLight { .. } => {
+                        if let Some(light) = Light::from_component(c) {
+                            self.world.insert(entity, light);
+                        }
+                    }
                 }
             }
         }
@@ -293,6 +385,48 @@ impl<'v> Engine<'v> {
             let movement = rotation.mul_vec3(Vec3::new(right, 0.0, -forward)) + Vec3::Y * up;
             transform.rotation = rotation;
             transform.translation += movement * (fly.speed * boost * dt);
+        }
+    }
+
+    /// The lights' changes since the last delta, into `updates`: entities that lost their
+    /// [`Light`] (or are gone) leave the light table; new ones, and those whose light or
+    /// transform changed, are sent whole.
+    fn extract_lights(&mut self, updates: &mut SceneUpdates) {
+        let world = &self.world;
+        let gone: Vec<Entity> = world
+            .removed::<Light>()
+            .filter(|&e| !world.has::<Light>(e))
+            .collect();
+        for e in gone {
+            if let Some(id) = self.lights.remove(&e) {
+                updates.lights.push(id, LightUpdate::Remove);
+            }
+        }
+        let mut changed: Vec<Entity> = world
+            .query_ref_filtered::<(Entity, &Light), Changed<Light>>()
+            .map(|(e, _)| e)
+            .chain(
+                world
+                    .query_ref_filtered::<(Entity, &Transform), (Changed<Transform>, With<Light>)>()
+                    .map(|(e, _)| e),
+            )
+            .collect();
+        changed.sort_unstable();
+        changed.dedup();
+        for e in changed {
+            let (Some(light), Some(transform)) = (world.get::<Light>(e), world.get::<Transform>(e))
+            else {
+                continue;
+            };
+            let desc = light.desc(transform);
+            match self.lights.get(&e) {
+                Some(&id) => updates.lights.push(id, LightUpdate::Set(desc)),
+                None => {
+                    let id = self.ids.lights.reserve();
+                    updates.lights.push(id, LightUpdate::Add(desc));
+                    self.lights.insert(e, id);
+                }
+            }
         }
     }
 
@@ -402,6 +536,7 @@ impl<'v> Engine<'v> {
                     .push(entry.id, InstanceUpdate::Transform(*transform));
             }
         }
+        self.extract_lights(&mut updates);
         RenderDelta {
             frame: self.frame,
             dt: 0.0,

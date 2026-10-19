@@ -503,6 +503,13 @@ impl RenderScene {
             .then(|| self.light_desc[id.index as usize])
     }
 
+    /// Live lights, as (row in the light table, description).
+    pub fn lights(&self) -> impl Iterator<Item = (u32, LightDesc)> + '_ {
+        (0..self.light_rows.len())
+            .filter(move |&row| self.light_rows.alive[row])
+            .map(move |row| (row as u32, self.light_desc[row]))
+    }
+
     /// Live instances whose mesh is resident and that are not hidden, as (row, renderer mesh,
     /// transform).
     pub fn drawable(&self) -> impl Iterator<Item = (u32, MeshHandle, Transform)> + '_ {

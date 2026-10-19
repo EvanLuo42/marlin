@@ -74,15 +74,18 @@ impl Default for Camera {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct MeshHandle(Handle<Mesh>);
 
-/// Lighting shared by the whole scene.
+/// Lighting shared by the whole scene, in physical units (0010 §5.1, §9).
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Environment {
-    /// Direction the light travels (normalized when used).
+    /// Direction the sun's light travels (normalized when used).
     pub light_direction: Vec3,
-    /// Linear radiance.
+    /// The sun's linear color: [`sun_illuminance`](Self::sun_illuminance) scales it.
     pub light_color: [f32; 3],
+    /// The sun's illuminance on a surface facing it, in lux.
+    pub sun_illuminance: f32,
+    /// Uniform sky light, as the luminance (nits) of a sky that lights every direction alike.
     pub ambient: [f32; 3],
-    /// Linear RGBA.
+    /// What is seen where nothing is: linear RGB luminance in nits, and alpha.
     pub clear_color: [f32; 4],
     /// The light's angular diameter, in radians: the sun's penumbra (0010 §5.3).
     pub sun_angular_diameter: f32,
@@ -91,13 +94,19 @@ pub struct Environment {
 /// The sun's angular diameter seen from the earth, in degrees.
 pub const SUN_ANGULAR_DIAMETER_DEGREES: f32 = 0.53;
 
+/// Direct sunlight at noon, in lux.
+pub const SUN_ILLUMINANCE: f32 = 100_000.0;
+
 impl Default for Environment {
+    /// Noon sun; the sky and the ambient light are R1's relative values scaled with it
+    /// (×100 000/π), so the picture after auto-exposure is R1's.
     fn default() -> Self {
         Self {
             light_direction: Vec3::new(-0.4, -1.0, -0.6),
             light_color: [1.0, 0.96, 0.9],
-            ambient: [0.08, 0.09, 0.12],
-            clear_color: [0.02, 0.02, 0.03, 1.0],
+            sun_illuminance: SUN_ILLUMINANCE,
+            ambient: [2546.5, 2864.8, 3819.7],
+            clear_color: [636.6, 636.6, 954.9, 1.0],
             sun_angular_diameter: SUN_ANGULAR_DIAMETER_DEGREES.to_radians(),
         }
     }

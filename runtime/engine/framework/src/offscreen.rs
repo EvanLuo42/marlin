@@ -46,9 +46,9 @@ impl Offscreen {
         render.apply(device, delta)?;
         let (width, height) = (self.width, self.height);
         let ticket = self.frame.execute(device, |g, _| {
-            // The clear value the target is made for (D3D12 clears fastest, and validates
-            // quietly, when the clear matches the resource's).
-            let clear = render.scene.environment().clear_color;
+            // The tonemap overwrites the target: it is made for a black clear (D3D12 validates
+            // quietly when a clear matches the resource's).
+            let clear = [0.0, 0.0, 0.0, 1.0];
             let target = g.create_texture(
                 "Offscreen",
                 TextureDesc::new_2d(width, height, OFFSCREEN_FORMAT)

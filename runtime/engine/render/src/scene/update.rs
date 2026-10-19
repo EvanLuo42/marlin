@@ -191,8 +191,11 @@ pub enum LightKind {
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct LightDesc {
     pub kind: LightKind,
-    /// Linear color times intensity.
+    /// Luminous intensity in candela times the linear color (point and spot lights: lumens /
+    /// 4π, 0010 §5.1); a directional light's illuminance in lux times its color.
     pub radiance: [f32; 3],
+    /// The emitting sphere's radius, in meters (0: a point).
+    pub radius: f32,
     pub position: [f32; 3],
     /// Where it shines, normalized.
     pub direction: [f32; 3],

@@ -1,0 +1,51 @@
+namespace Marlin.Engine.Lighting;
+
+// Presampled light tiles (0010 §2.8, Wyman & Panteleev 2021): every frame, `Tiles` × `TileSize`
+// lights drawn by power from the scene's local lights, each with its probability. Shading picks
+// one tile per 8×8 screen tile and draws its candidates from it, so neighboring pixels read the
+// same few lights. marlin-render's `LightTiles` builds the alias table on the CPU.
+
+/// One candidate of the alias table (Vose): with probability `Threshold` this one, else `Alias`.
+public struct AliasEntry
+{
+    public float Threshold;
+    public uint Alias;
+    /// The light's row in the light table, and its probability of being drawn.
+    public uint Row;
+    public float Pdf;
+}
+
+public struct PresampleArgs
+{
+    public ReadOnlyBuffer<AliasEntry> Table;
+    /// Per entry: the light's row, its probability (float bits).
+    public Buffer<uint2> Tiles;
+    public uint Candidates;
+    public uint Entries;
+    /// Changes every frame: new draws.
+    public uint Seed;
+}
+
+/// A 32-bit hash (PCG).
+uint Hash(uint x)
+{
+    uint state = x * 747796405 + 2891336453;
+    uint word = ((state >> ((state >> 28) + 4)) ^ state) * 277803737;
+    return (word >> 22) ^ word;
+}
+
+/// `x` as a float in [0, 1).
+float Unit(uint x) => (float)(x >> 8) * (1.0 / 16777216.0);
+
+[Compute(64, 1, 1)]
+public void PresampleLights([DispatchThreadId] uint3 id, [Push] in PresampleArgs a)
+{
+    if (id.x >= a.Entries)
+        return;
+    uint h = Hash(id.x ^ Hash(a.Seed));
+    uint pick = Min((uint)(Unit(h) * (float)a.Candidates), a.Candidates - 1);
+    AliasEntry e = a.Table[pick];
+    if (Unit(Hash(h)) >= e.Threshold)
+        e = a.Table[e.Alias];
+    a.Tiles[id.x] = uint2(e.Row, AsUInt(e.Pdf));
+}

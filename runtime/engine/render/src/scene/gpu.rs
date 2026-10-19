@@ -9,7 +9,7 @@
 //! | instance transforms | 24 | current, then previous: 3 rows of a 3×4 matrix each |
 //! | instance bounds | 4 | world bounding sphere: center, radius |
 //! | meshes | 20 | page pool view, DAG buffer view, flags, strides; position offset (3), resident (0/1); position scale (3), UV sets; local bounding sphere; the mesh's slot (its BLAS table row), 3 spare (`Marlin.Engine.Scene.MeshEntry`) |
-//! | lights | 16 | kind, range, cone (2); radiance + spare; position + spare; direction + spare |
+//! | lights | 16 | kind, range, cone (2); intensity (candela · color) + source radius; position + spare; direction + spare |
 //! | materials | 4 | permutation (`u32::MAX`: removed), row in its parameter table, 2 spare |
 //! | parameters, one table per permutation | the permutation's block | the material struct (0011 §7.5) |
 //!
@@ -383,6 +383,7 @@ impl RenderScene {
                     words[4 + 4 * k + j] = f.to_bits();
                 }
             }
+            words[7] = l.radius.to_bits();
             ops.push(WRITE, row, &words);
         }
     }

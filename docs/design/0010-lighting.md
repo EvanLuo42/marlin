@@ -309,6 +309,50 @@ DI 和 GI 怎么合在一起：
   - 毛发（0013 §7）。
 - 这些路径的阴影：太阳用 VSM 或 RT；局部光源 L2 以下不投影，L3 以上每像素打一条阴影射线，按重要性随机选一盏光。
 
+### 5.5 R3b 的实现（2026-10-18）
+
+物理单位、关卡里的光源组件和预采样 light tile。局部光源在 R3c 的 ReSTIR DI 之前还不参与着色。
+
+- **环境**（`marlin_render::Environment`）：
+  - 太阳的照度用 lux（`sun_illuminance`，默认 100 000，正午的直射阳光），颜色另外给（`light_color`）；
+  - 环境光 `ambient` 是"四面八方亮度相同的天空"的亮度，单位 nit；背景 `clear_color` 也是 nit。
+  - 着色时朝向太阳的 Lambert 表面反射 `albedo · E / π`，环境光贡献 `albedo · ambient`。
+  - 默认的环境光和背景，是 R1 的相对值乘以 100 000/π。这样阳光、环境光、背景同比例放大，自动曝光之后画面不变（`sample_first_frame` 和材质的 golden 都没有变）。示例关卡的 `ClearColor` 按同样的比例换算。
+  - 关卡的 `Environment` 多了 `SunIlluminance`。
+- **曝光**：直方图的 log2 亮度范围从 −12..10 改成 −10..20（nit），覆盖到阳光照亮的雪地。原来的上限 1024 nit 在白天的场景里会饱和。
+- **HDR 目标的范围**：`Rgba16Float` 最大 65 504。现在只有 Lambert 漫反射，最亮的是反照率 1 的表面在正午阳光下，约 31 831 nit。等有了镜面高光和太阳圆盘，就要做 pre-exposure（按上一帧的曝光缩放后再写 HDR，§8.1）。
+- **材质测试**直接读光照结果、不经过曝光，所以用 R1 的相对值做环境（太阳 π lux，`E/π = 1`），参考图不变。
+- **光源组件**（关卡格式）：
+  - `PointLight { Color, Intensity, Radius, Range }`；
+  - `SpotLight { Color, Intensity, Radius, Range, InnerAngle, OuterAngle }`，沿实体的 −Z 方向照射。
+  - `Intensity` 是光通量（lm，60 W 灯泡约 800），换算成发光强度 `Φ/4π` cd。聚光灯也按点光源换算（UE 的做法），收窄锥角不会让它变亮。
+  - `Radius` 是发光球体的半径（米），`Range` 是光衰减到 0 的距离（米）。
+  - 字段缺省时是 0。0 没有意义的字段按约定取默认值，和 `Camera` 一样：黑色的 `Color` 当作白色，0 的 `Range` 当作 10 m，0 的 `OuterAngle` 当作 44°（UE 的默认值）。
+  - 衰减曲线（加窗的平方反比）在 R3c 的着色里实现。
+- **组件放在哪里**：
+  - 光源组件和 `StaticMesh`、`Camera` 一样，是引擎组件，由渲染器消费，以后也不会变成脚本。
+  - 现在它和其他引擎组件一起，临时放在 framework 的 `Component` 枚举里，生成和提取的代码在 `Engine` 里（`Light::from_component`、`Engine::extract_lights`）。等 VM 和 world/gameplay 框架定下对象模型（0018），引擎组件改成各自 crate 里通过反射注册的类型，这些代码搬出 framework。
+  - 关卡的文本格式（`PointLight { … }` 块）不用变。会变成脚本的是 `Spin`、`FlyCamera` 这类组件。
+- **提取**：ECS 里的 `Light` 组件；新增、`Light` 或 `Transform` 改变的实体整条发送（`LightUpdate::Add`/`Set`），组件被移除或实体被销毁时发送 `Remove`。`LightDesc` 多了 `radius`，放在 GPU 光源行的空位里（第 7 个字）。
+- **light tile**（`marlin_render::lights`，0010 §2.8）：
+  - 每帧 128 个 tile × 1024 个光源，从场景里的点光源和聚光灯中按功率（光通量 × 颜色的亮度）抽取，每条记录光源行号和它被抽中的概率。太阳不在里面（VSM）。
+  - 抽样用别名表（Vose 方法），CPU 每帧从场景的光源重建，复杂度 O(光源数)，几千盏光源是微秒级。光源到几十万盏时，再换成 GPU 上建的功率金字塔。
+  - GPU pass `PresampleLights` 用每帧不同的种子做哈希，抽取所有记录。
+  - 现在每帧声明，但还没有 pass 读它，所以被 graph 剔除；R3c 开始读。
+  - 记录里只有行号和概率，着色时再去光源表里读光源。RTXDI 把压缩后的光源数据直接放进 tile，缓存一致性更好；等 R3c 实测之后再决定要不要这样做。
+- **测试**：
+  - CPU：
+    - 别名表给每盏光源的概率恰好等于它的功率占比（257 盏随机权重，误差小于 1e-6）；
+    - 功率为 0、负数和 NaN 的光源从不被抽中；
+    - 100 cd 的白光是 400π lm，方向光的功率为 0；
+    - 提取：光源组件的换算（lm → cd、缺省值），生成、移动、调亮、销毁各发送一次，行号不变。
+  - GPU：
+    - 5 盏光源的抽中次数都在期望值的 5σ 以内，记录的概率正确，方向光和暗的光源从不出现；
+    - 每个 tile 都抽到最亮的那盏；
+    - 同一个种子结果相同，换种子结果不同；
+    - 删除的光源下一帧离开 tile，没有光源时没有 tile。
+  - 开窗口跑 `samples/basic` 12 秒，没有报错。
+
 ## 6. 降噪
 
 自研，ReBLUR/ReLAX 那一类，漫反射和镜面两路分开：

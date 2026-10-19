@@ -5,7 +5,7 @@
 //! {
 //!     !Uuid = "…"
 //!     !Name = "Main"
-//!     Environment = { ClearColor = (0.02, 0.02, 0.03, 1.0) }
+//!     Environment = { ClearColor = (636.6, 636.6, 954.9, 1.0) SunIlluminance = 100000.0 }
 //!     Entities = [
 //!         { Name = "Camera" Transform = { Translation = (0.0, 2.0, 8.0) } Components = [Camera { FovY = 60.0 }, FlyCamera { Speed = 10.0 }] },
 //!         { Name = "Rock" Components = [StaticMesh { Mesh = <meshes/rock:Rock #…> Color = (0.5, 0.5, 0.5, 1.0) }] },
@@ -37,12 +37,15 @@ pub struct Level {
 #[derive(Clone, Copy, PartialEq, Debug, Reflect)]
 #[reflect(default)]
 pub struct LevelEnvironment {
-    /// The direction light travels.
+    /// The direction the sun's light travels.
     pub light_direction: [f32; 3],
-    /// Linear radiance.
+    /// The sun's linear color.
     pub light_color: [f32; 3],
+    /// The sun's illuminance, in lux (noon: 100 000).
+    pub sun_illuminance: f32,
+    /// Uniform sky light: the luminance of the sky, in nits.
     pub ambient: [f32; 3],
-    /// Linear RGBA.
+    /// The background: linear RGB luminance in nits, and alpha.
     pub clear_color: [f32; 4],
     /// The light's angular diameter, in degrees: how soft its shadows are.
     pub sun_angular_diameter: f32,
@@ -58,6 +61,7 @@ impl Default for LevelEnvironment {
                 e.light_direction.z,
             ],
             light_color: e.light_color,
+            sun_illuminance: e.sun_illuminance,
             ambient: e.ambient,
             clear_color: e.clear_color,
             sun_angular_diameter: marlin_render::SUN_ANGULAR_DIAMETER_DEGREES,
@@ -71,6 +75,7 @@ impl LevelEnvironment {
         marlin_render::Environment {
             light_direction: Vec3::new(x, y, z),
             light_color: self.light_color,
+            sun_illuminance: self.sun_illuminance,
             ambient: self.ambient,
             clear_color: self.clear_color,
             sun_angular_diameter: self.sun_angular_diameter.to_radians(),
@@ -129,4 +134,31 @@ pub enum Component {
     Spin { axis: [f32; 3], speed: f32 },
     /// Mouse and keyboard (or gamepad) control: right button to look, WASD to move.
     FlyCamera { speed: f32 },
+    /// Light in every direction from the entity's position (0010 §5.1). `intensity` is the
+    /// luminous flux in lumens (a 60 W bulb: 800); `radius` the emitting sphere's, in meters;
+    /// `range` where its light fades out, in meters. A black `color` is white, a zero `range`
+    /// 10 m.
+    PointLight {
+        color: [f32; 3],
+        intensity: f32,
+        radius: f32,
+        range: f32,
+    },
+    /// A point light shining down the entity's -Z, full inside `inner_angle` and fading to none
+    /// at `outer_angle` (half angles, in degrees; a zero `outer_angle` is 44°). Its lumens are a
+    /// point light's: narrowing the cone does not brighten it.
+    SpotLight {
+        color: [f32; 3],
+        intensity: f32,
+        radius: f32,
+        range: f32,
+        inner_angle: f32,
+        outer_angle: f32,
+    },
 }
+
+/// What a light component's zero `range` stands for, in meters.
+pub const DEFAULT_LIGHT_RANGE: f32 = 10.0;
+
+/// What a spot light's zero `outer_angle` stands for, in degrees.
+pub const DEFAULT_SPOT_ANGLE: f32 = 44.0;

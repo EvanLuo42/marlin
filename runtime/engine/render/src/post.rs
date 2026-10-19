@@ -85,7 +85,8 @@ pub struct PostSettings {
     pub exposure_compensation: f32,
     /// How fast the exposure follows the scene: the rate of an exponential, per second.
     pub adaptation_speed: f32,
-    /// The log2 luminance range the histogram covers.
+    /// The log2 luminance range the histogram covers, in nits: from starlight (2^-10) past
+    /// sunlit snow (2^20 ≈ a million).
     pub min_log_luminance: f32,
     pub max_log_luminance: f32,
     /// The average log luminance takes the pixels from `low_fraction` of them, darkest first,
@@ -102,8 +103,8 @@ impl Default for PostSettings {
             bloom_radius: 1.0,
             exposure_compensation: 0.0,
             adaptation_speed: 1.5,
-            min_log_luminance: -12.0,
-            max_log_luminance: 10.0,
+            min_log_luminance: -10.0,
+            max_log_luminance: 20.0,
             low_fraction: 0.1,
             high_fraction: 0.9,
         }
