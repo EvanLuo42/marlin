@@ -10,7 +10,7 @@ use marlin_test_scenes::scenes::{cornell_box, light_hall, lit_wall};
 use crate::support::{HEIGHT, Harness, WIDTH};
 
 /// The mean over `frames` frames of ReSTIR's picture.
-fn average(h: &mut Harness, frames: u32) -> Vec<[f32; 3]> {
+pub(crate) fn average(h: &mut Harness, frames: u32) -> Vec<[f32; 3]> {
     let mut sum = vec![[0.0f32; 3]; (WIDTH * HEIGHT) as usize];
     for seed in 1..=frames {
         for (s, p) in sum.iter_mut().zip(h.restir_frame(seed)) {
@@ -25,7 +25,11 @@ fn average(h: &mut Harness, frames: u32) -> Vec<[f32; 3]> {
 /// The mean relative error of `picture` against `reference` (green, where the reference sees a
 /// surface), and the 90th percentile of the per-pixel relative error over pixels lit above
 /// `floor` of the brightest.
-fn errors(picture: &[[f32; 3]], reference: &[Option<[f32; 3]>], floor: f32) -> (f32, f32) {
+pub(crate) fn errors(
+    picture: &[[f32; 3]],
+    reference: &[Option<[f32; 3]>],
+    floor: f32,
+) -> (f32, f32) {
     let brightest = reference
         .iter()
         .flatten()
@@ -126,7 +130,7 @@ fn the_cost_does_not_grow_with_the_lights() {
 }
 
 /// The root mean square of `frame` against `mean`, over the pixels `mean` lights.
-fn rms(frame: &[[f32; 3]], mean: &[[f32; 3]]) -> f32 {
+pub(crate) fn rms(frame: &[[f32; 3]], mean: &[[f32; 3]]) -> f32 {
     let (mut sum, mut n) = (0.0f32, 0usize);
     for (f, m) in frame.iter().zip(mean) {
         if m[1] > 0.0 {

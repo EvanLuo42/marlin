@@ -5,7 +5,8 @@
 //! reservoirs (a history resource per view, the confidence capped by a duplication map), paired
 //! spatial reuse between pixels two by two (pairing patterns from the cooker,
 //! [`crate::asset::pairing`]), then shading with one shadow ray against the TLAS
-//! ([`crate::raytracing`]), added to the HDR scene.
+//! ([`crate::raytracing`]), into a noisy signal for the denoiser ([`crate::denoise`]) with its
+//! hints: the reservoirs' fresh share and a correlation radius from the duplication map.
 //!
 //! Not yet: reduced-resolution reservoirs (0010 §3), specular (the final shading, 0010 §2.6).
 
@@ -13,7 +14,8 @@ use alloc::vec::Vec;
 
 use marlin_math::{Mat4, Transform};
 use marlin_render_graph::{
-    Access, BufferDesc, BufferHandle, PassContext, RenderGraph, TextureHandle,
+    Access, BufferDesc, BufferHandle, PassContext, RenderGraph, TextureDesc as GraphTextureDesc,
+    TextureHandle,
 };
 use marlin_rhi::{
     Buffer, ComputePipeline, ComputePipelineDesc, Device, Result, ShaderModule, ShaderView,
@@ -23,6 +25,7 @@ use marlin_shader::asset::ShaderLibrary;
 use marlin_shader::bind::{BindError, EntryDesc, bind};
 
 use crate::asset::PairingPatternView;
+use crate::denoise::{HINTS_FORMAT, NoisySignal, SIGNAL_FORMAT};
 use crate::lights::{LIGHT_TILE_SIZE, LIGHT_TILES, LightTileOutput};
 use crate::meshes::{Camera, copy_to_new_buffer};
 use crate::raytracing::RtScene;
@@ -97,7 +100,8 @@ struct Constants {
     spatial_visibility: u32,
     pairing_offset: [u32; 2],
     pairing_flags: u32,
-    spare: [u32; 3],
+    duplication_ready: u32,
+    spare: [u32; 2],
 }
 
 /// `Marlin.Engine.Lighting.RestirArgs`.
@@ -119,7 +123,8 @@ struct RestirArgs {
     pairing: u32,
     shifts_out: u32,
     shifts: u32,
-    scene: u32,
+    signal: u32,
+    hints: u32,
 }
 
 /// The pairing patterns as `RestirArgs::Pairing` reads them: the sides (4 words, 0 past the
@@ -240,20 +245,19 @@ impl RestirDi {
         })
     }
 
-    /// Declares the local lights of the view `camera` (`width` × `height`) into `scene` (the HDR
-    /// scene the direct lighting wrote), drawn with `seed` (a new one each frame); returns
-    /// `scene` after.
+    /// Declares the local lights of the view `camera` (`width` × `height`), drawn with `seed` (a
+    /// new one each frame); returns their light as a noisy signal for the denoiser
+    /// ([`crate::denoise`]), its hints from the reservoirs, or to compose as it is.
     #[allow(clippy::too_many_arguments, reason = "one view's inputs")]
     pub fn add_passes<'g>(
         &'g self,
         g: &mut RenderGraph<'g>,
-        scene: TextureHandle<'g>,
         inputs: RestirInputs<'g>,
         (eye, camera): (Transform, Camera),
         width: u32,
         height: u32,
         seed: u32,
-    ) -> TextureHandle<'g> {
+    ) -> NoisySignal<'g> {
         let aspect = width as f32 / height.max(1) as f32;
         let view_projection = Mat4::perspective_infinite_rh(camera.fov_y, aspect, camera.near)
             * eye.to_matrix().inverse_affine();
@@ -310,7 +314,8 @@ impl RestirDi {
             spatial_visibility: u32::from(self.spatial_visibility),
             pairing_offset,
             pairing_flags,
-            spare: [0; 3],
+            duplication_ready: 0,
+            spare: [0; 2],
         };
         let groups = (width.div_ceil(8), height.div_ceil(8));
 
@@ -437,31 +442,9 @@ impl RestirDi {
             reservoirs
         };
 
-        let scene = g.add_compute("RestirShade", |b| {
-            let material = b.read_texture(material, Access::ComputeRead);
-            let depth = b.read_texture(depth, Access::ComputeRead);
-            let lights = b.read_buffer(lights, Access::ComputeRead);
-            let input = b.read_buffer(reservoirs, Access::ComputeRead);
-            rt.read(b);
-            let scene = b.write_texture(scene, Access::ComputeWrite);
-            (scene, move |ctx: &mut PassContext<'_>| {
-                ctx.set_pipeline(&self.shade_pass);
-                let args = RestirArgs {
-                    constants: ctx.upload(&constants),
-                    material: ctx.srv(material),
-                    depth: ctx.srv(depth),
-                    lights: ctx.srv(lights),
-                    input: ctx.srv(input),
-                    tlas: rt.index,
-                    scene: ctx.uav(scene),
-                    ..RestirArgs::default()
-                };
-                ctx.push(&args);
-                ctx.dispatch(groups.0, groups.1, 1);
-            })
-        });
-
-        if duplication.is_some() {
+        // This frame's duplication map, before the shading reads it for the hints.
+        let map_ready = self.temporal || neighbors > 0;
+        let map_handle = if map_ready {
             g.add_compute("RestirDuplication", |b| {
                 let input = b.read_buffer(reservoirs, Access::ComputeRead);
                 let map = b.write_buffer(map_handle, Access::ComputeWrite);
@@ -476,8 +459,50 @@ impl RestirDi {
                     ctx.push(&args);
                     ctx.dispatch(width.div_ceil(16), height.div_ceil(16), 1);
                 })
-            });
-        }
-        scene
+            })
+        } else {
+            map_handle
+        };
+        let shade = Constants {
+            duplication_ready: u32::from(map_ready),
+            ..constants
+        };
+
+        let light = g.create_texture(
+            "DiSignal",
+            GraphTextureDesc::new_2d(width, height, SIGNAL_FORMAT),
+        );
+        let hints = g.create_texture(
+            "DiHints",
+            GraphTextureDesc::new_2d(width, height, HINTS_FORMAT),
+        );
+        let (light, hints) = g.add_compute("RestirShade", |b| {
+            let material = b.read_texture(material, Access::ComputeRead);
+            let depth = b.read_texture(depth, Access::ComputeRead);
+            let lights = b.read_buffer(lights, Access::ComputeRead);
+            let input = b.read_buffer(reservoirs, Access::ComputeRead);
+            let map = b.read_buffer(map_handle, Access::ComputeRead);
+            rt.read(b);
+            let light = b.write_texture(light, Access::ComputeWrite);
+            let hints = b.write_texture(hints, Access::ComputeWrite);
+            ((light, hints), move |ctx: &mut PassContext<'_>| {
+                ctx.set_pipeline(&self.shade_pass);
+                let args = RestirArgs {
+                    constants: ctx.upload(&shade),
+                    material: ctx.srv(material),
+                    depth: ctx.srv(depth),
+                    lights: ctx.srv(lights),
+                    input: ctx.srv(input),
+                    duplication_map: ctx.srv(map),
+                    tlas: rt.index,
+                    signal: ctx.uav(light),
+                    hints: ctx.uav(hints),
+                    ..RestirArgs::default()
+                };
+                ctx.push(&args);
+                ctx.dispatch(groups.0, groups.1, 1);
+            })
+        });
+        NoisySignal { light, hints }
     }
 }

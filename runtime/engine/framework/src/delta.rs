@@ -16,6 +16,7 @@ use marlin_containers::{HashMap, HashMapExt};
 use marlin_material::{DEFAULT_PERMUTATION, MaterialShaders, Materials, RESOLVE};
 use marlin_math::Transform;
 use marlin_render::asset::PairingPatternView;
+use marlin_render::denoise::{DenoiseInputs, DenoiseShaders, Denoiser};
 use marlin_render::lights::LightTiles;
 use marlin_render::raytracing::{RtShaders, Tlas};
 use marlin_render::restir::{RestirDi, RestirInputs, RestirShaders};
@@ -77,6 +78,9 @@ pub struct RenderSide {
     pub light_tiles: LightTiles,
     /// Local lights: ReSTIR DI (0010 §2).
     pub restir: RestirDi,
+    /// Denoises ReSTIR's light (0010 §6); `denoise` off composes it as it is.
+    pub denoiser: Denoiser,
+    pub denoise: bool,
     /// Tonemaps the [`HDR_FORMAT`](marlin_render::HDR_FORMAT) scene into the output.
     pub post: PostProcess,
     pub scene: RenderScene,
@@ -130,6 +134,8 @@ impl RenderSide {
             tlas: Tlas::new(device, &RtShaders::bind(engine)?)?,
             light_tiles: LightTiles::new(device, bind_one(engine, &LightTiles::ENTRY)?)?,
             restir: RestirDi::new(device, &RestirShaders::bind(engine)?, pairing)?,
+            denoiser: Denoiser::new(device, &DenoiseShaders::bind(engine)?)?,
+            denoise: true,
             post: PostProcess::new(device, &PostShaders::bind(engine)?, output)?,
             scene: RenderScene::with_ids(ids),
             scatter: ScatterShader::new(device, bind_one(engine, &ScatterShader::ENTRY)?)?,
@@ -231,6 +237,8 @@ impl RenderSide {
             tlas,
             light_tiles,
             restir,
+            denoiser,
+            denoise,
             frame,
             scene,
             scatter,
@@ -301,7 +309,19 @@ impl RenderSide {
                 rt,
                 tiles,
             };
-            scene = restir.add_passes(g, scene, inputs, camera, width, height, seed);
+            let signal = restir.add_passes(g, inputs, camera, width, height, seed);
+            let light = if *denoise {
+                let inputs = DenoiseInputs {
+                    view: MAIN_VIEW,
+                    material,
+                    depth,
+                    velocity,
+                };
+                denoiser.add_passes(g, signal, inputs, camera, width, height, seed)
+            } else {
+                signal.light
+            };
+            scene = denoiser.add_compose(g, scene, light, material, depth, width, height);
         }
         post.add_passes(g, scene, target, MAIN_VIEW, dt).output
     }

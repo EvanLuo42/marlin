@@ -7,6 +7,7 @@ use marlin_gpu_test_support::{Image, Shader, engine_shaders, hardware_device};
 use marlin_material::{DefaultMaterial, MaterialDebug, MaterialShaders, Materials, RESOLVE};
 use marlin_math::{Transform, Vec3};
 use marlin_render::asset::{PairingPattern, PairingPatternView};
+use marlin_render::denoise::{DenoiseInputs, DenoiseShaders, Denoiser};
 use marlin_render::lights::LightTiles;
 use marlin_render::raytracing::{RtShaders, Tlas};
 use marlin_render::restir::{RestirDi, RestirInputs, RestirShaders};
@@ -44,10 +45,14 @@ pub struct Harness {
     pub materials: Materials,
     lighting: Lighting,
     unorm: &'static ComputePipeline,
+    signal: &'static ComputePipeline,
     /// The ray tracing scene, the light tiles and ReSTIR DI.
     pub tlas: Tlas,
     light_tiles: LightTiles,
     pub restir: RestirDi,
+    /// Denoises ReSTIR's light when `denoise` is on; off, the frames are the raw signal.
+    pub denoiser: Denoiser,
+    pub denoise: bool,
     /// The lights [`load`](Self::load) added, in the scene's order.
     loaded_lights: Vec<marlin_render::scene::LightId>,
     pub updates: SceneUpdates,
@@ -132,6 +137,16 @@ impl Harness {
             PairingPatternView::new(pairing).unwrap(),
         )
         .unwrap();
+        let signal = Box::leak(Box::new(
+            device
+                .create_compute_pipeline(&ComputePipelineDesc {
+                    shader: Shader::new("Material.WriteSignal")
+                        .in_crate(env!("CARGO_MANIFEST_DIR"))
+                        .module(),
+                    cache: None,
+                })
+                .unwrap(),
+        ));
         let unorm = Box::leak(Box::new(
             device
                 .create_compute_pipeline(&ComputePipelineDesc {
@@ -165,9 +180,16 @@ impl Harness {
             materials,
             lighting,
             unorm,
+            signal,
             tlas,
             light_tiles,
             restir,
+            denoiser: Denoiser::new(
+                device,
+                &DenoiseShaders::from_modules(engine_shaders(&DenoiseShaders::ENTRIES)),
+            )
+            .unwrap(),
+            denoise: false,
             loaded_lights: Vec::new(),
             updates: SceneUpdates {
                 environment: Some(relative_environment()),
@@ -450,6 +472,7 @@ impl Harness {
             &self.lighting,
         );
         let (tlas, tiles, restir) = (&self.tlas, &self.light_tiles, &self.restir);
+        let (denoiser, denoise) = (&self.denoiser, self.denoise);
         let (camera, previous) = (self.camera, self.previous);
         let ticket = self
             .frame
@@ -480,7 +503,19 @@ impl Harness {
                         rt,
                         tiles,
                     };
-                    lit = restir.add_passes(g, lit, inputs, camera, width, height, seed);
+                    let signal = restir.add_passes(g, inputs, camera, width, height, seed);
+                    let light = if denoise {
+                        let inputs = DenoiseInputs {
+                            view: 0,
+                            material: out.material,
+                            depth: v.depth,
+                            velocity: out.velocity,
+                        };
+                        denoiser.add_passes(g, signal, inputs, camera, width, height, seed)
+                    } else {
+                        signal.light
+                    };
+                    lit = denoiser.add_compose(g, lit, light, out.material, v.depth, width, height);
                 }
                 g.readback_texture(lit)
             })
@@ -521,6 +556,113 @@ impl Harness {
             .gpu_timings()
             .iter()
             .map(|t| (t.name, t.nanoseconds as f64 / 1e6))
+            .collect()
+    }
+}
+
+/// `Material.SignalArgs`.
+#[repr(C)]
+#[derive(Pod, Clone, Copy)]
+struct SignalArgs {
+    light: u32,
+    hints: u32,
+    light_out: u32,
+    hints_out: u32,
+    width: u32,
+    height: u32,
+}
+
+impl Harness {
+    /// Draws one `WIDTH` × `HEIGHT` frame of the scene's surfaces (the denoiser's guides) and
+    /// denoises the synthetic signal `light` (demodulated light and hit distance, row-major) with
+    /// the hints `hints` (`Novelty`, `CorrelationRadius`), drawn with `seed`; returns the
+    /// denoised light.
+    pub fn denoise_signal(
+        &mut self,
+        seed: u32,
+        light: &[[f32; 4]],
+        hints: &[[f32; 2]],
+    ) -> Vec<[f32; 3]> {
+        let (width, height) = (WIDTH, HEIGHT);
+        let updates = core::mem::take(&mut self.updates);
+        self.scene.apply(&updates);
+        let uploads = self.meshes.take_uploads();
+        let (meshes, scene, scatter, vis, materials, denoiser, pipeline) = (
+            &self.meshes,
+            &mut self.scene,
+            &self.scatter,
+            &self.vis,
+            &self.materials,
+            &self.denoiser,
+            self.signal,
+        );
+        let (camera, previous) = (self.camera, self.previous);
+        let ticket = self
+            .frame
+            .execute(self.device, |g, _| {
+                let pool = meshes.add_passes(g, uploads);
+                let gpu = scene.add_passes(g, scatter);
+                let view = marlin_render::visibility::ViewDesc {
+                    id: 0,
+                    camera,
+                    previous,
+                    width,
+                    height,
+                };
+                let v = vis.add_passes(g, meshes, scene, gpu, pool, &view);
+                let out = materials.add_passes(g, gpu, &v, camera, previous, width, height);
+                let light_tex = g.create_texture(
+                    "SyntheticLight",
+                    GraphTextureDesc::new_2d(width, height, marlin_render::denoise::SIGNAL_FORMAT),
+                );
+                let hints_tex = g.create_texture(
+                    "SyntheticHints",
+                    GraphTextureDesc::new_2d(width, height, marlin_render::denoise::HINTS_FORMAT),
+                );
+                let (light_tex, hints_tex) = g.add_compute("WriteSignal", |b| {
+                    let l = b.write_texture(light_tex, Access::ComputeWrite);
+                    let h = b.write_texture(hints_tex, Access::ComputeWrite);
+                    ((l, h), move |ctx: &mut PassContext<'_>| {
+                        ctx.set_pipeline(pipeline);
+                        let args = SignalArgs {
+                            light: ctx.upload_slice(light),
+                            hints: ctx.upload_slice(hints),
+                            light_out: ctx.uav(l),
+                            hints_out: ctx.uav(h),
+                            width,
+                            height,
+                        };
+                        ctx.push(&args);
+                        ctx.dispatch(width.div_ceil(8), height.div_ceil(8), 1);
+                    })
+                });
+                let signal = marlin_render::denoise::NoisySignal {
+                    light: light_tex,
+                    hints: hints_tex,
+                };
+                let inputs = DenoiseInputs {
+                    view: 0,
+                    material: out.material,
+                    depth: v.depth,
+                    velocity: out.velocity,
+                };
+                let denoised = denoiser.add_passes(g, signal, inputs, camera, width, height, seed);
+                g.readback_texture(denoised)
+            })
+            .unwrap();
+        let bytes = self.frame.wait_readback(ticket).unwrap();
+        assert_eq!(self.device.validation_errors(), 0);
+        self.previous = Some(self.camera);
+        bytes
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|p| {
+                let h = |i: usize| {
+                    marlin_render::asset::mesh::f16_to_f32(u16::from_le_bytes([p[i], p[i + 1]]))
+                };
+                [h(0), h(2), h(4)]
+            })
             .collect()
     }
 }

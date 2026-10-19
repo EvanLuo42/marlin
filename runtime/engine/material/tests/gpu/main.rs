@@ -5,6 +5,7 @@
 //! Run alone with `cargo test -p marlin-material --test gpu`.
 #![cfg(marlin_platform = "windows")]
 
+mod denoise;
 mod materials;
 mod restir;
 mod scenes;

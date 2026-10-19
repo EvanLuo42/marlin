@@ -1,0 +1,369 @@
+namespace Marlin.Engine.Lighting;
+
+// The denoiser (0010 §6): one for every noisy lighting signal, ReSTIR's or any other's. A signal
+// comes with two hints its producer fills in (0010 §6.1): `Novelty`, the share of this frame's
+// estimate that is new this frame (1 for plain Monte Carlo; less for a temporally reused one),
+// and `CorrelationRadius`, the size in pixels of its noise's blobs (1 for white noise; more where
+// samples are spread by spatial reuse). marlin-render's `Denoiser` declares, a frame:
+//
+// 1. `DenoiseTemporal`: the signal's fireflies clamped to its neighborhood within the
+//    correlation radius (on the same surface); last frame's accumulations found through the
+//    motion vector (bilinear, each tap on the same surface) and blended in: a slow one, its
+//    frames evenly over a window of `MaxFrames` independent samples' worth (`MaxFrames /
+//    Novelty` frames), so persistent noise is not mistaken for many independent samples, and a
+//    fast one over a few frames.
+// 2. `DenoiseClamp`: the slow accumulation held within `ClampSigma` deviations of the fast one's
+//    neighborhood around the pixel's own fast value; the fast one follows changes the novelty
+//    does not announce (anti-lag). Writes the slow accumulation (this frame's history) and its
+//    variance.
+// 3. `DenoiseBlur`, twice (the second at half the radius): a 16-tap Poisson disk, rotated per
+//    pixel and frame, with depth-plane, normal and luminance edge stops. The radius shrinks with
+//    the frames averaged, never below the correlation radius, and never past the hit distance's
+//    footprint, which keeps contact shadows.
+// 4. `DenoiseCompose`: the signal, which is demodulated (divided by the albedo), times the
+//    material's albedo, added to the HDR scene. Also composes a signal not denoised.
+//
+// Diffuse only for now (R3d); the specular signal, with its virtual-motion reprojection, joins
+// with the final shading's specular (0010 §2.6).
+
+using Marlin.Substrate;
+
+public struct DenoiseConstants
+{
+    /// The camera's clip space to world. Column-major.
+    public float4x4 InverseViewProjection;
+    /// xyz: the camera.
+    public float4 Eye;
+    public uint Width;
+    public uint Height;
+    /// 1: last frame's accumulation is there.
+    public uint HasHistory;
+    /// A new one each frame.
+    public uint Seed;
+    /// The most independent samples' worth (frames times the novelty) the slow accumulation
+    /// averages.
+    public float MaxFrames;
+    /// The blur's radius in pixels where nothing is accumulated yet; it shrinks as
+    /// `1 / sqrt(1 + frames)`.
+    public float MaxRadius;
+    public float MinRadius;
+    /// How many deviations from the neighborhood's mean the history may be.
+    public float ClampSigma;
+    /// The fireflies' bound, in deviations above the neighborhood's mean.
+    public float FireflySigma;
+    /// This blur's radius over the full one.
+    public float RadiusScale;
+    /// Radians a pixel spans at the screen's center (vertical field of view over height).
+    public float PixelAngle;
+    /// The real frames the fast accumulation averages (few: it follows changes).
+    public float FastFrames;
+}
+
+public struct DenoiseArgs
+{
+    public Uniform<DenoiseConstants> Constants;
+    public Texture2D<uint4> MaterialBuffer;
+    /// The camera's depth (`R32Float`, reverse-Z, 0 where nothing is).
+    public Texture2D<float> Depth;
+    /// Screen motion since last frame, in UV units (y down): current minus last.
+    public Texture2D<float2> Velocity;
+    /// The noisy signal: demodulated light, and the distance to what lit it (0: unknown).
+    public Texture2D<float4> Signal;
+    /// `Novelty`, `CorrelationRadius`.
+    public Texture2D<float2> Hints;
+    /// Last frame's accumulation (light, frames) and surfaces (normal, distance to the eye).
+    public Texture2D<float4> History;
+    public Texture2D<float4> PreviousSurface;
+    /// Last frame's fast accumulation (light, frames), and this frame's (for the clamp).
+    public Texture2D<float4> PreviousFast;
+    public Texture2D<float4> Fast;
+    /// The blur's input: an accumulation (light, frames); and its variance.
+    public Texture2D<float4> Input;
+    public Texture2D<float> Variance;
+    public StorageTexture2D<float4> Output;
+    public StorageTexture2D<float4> FastOut;
+    public StorageTexture2D<float4> SurfaceOut;
+    public StorageTexture2D<float> VarianceOut;
+    /// The HDR scene the composition adds to.
+    public StorageTexture2D<float4> Scene;
+}
+
+float DenoiseLuminance(float3 c) => Dot(c, float3(0.2126, 0.7152, 0.0722));
+
+/// The world position of screen pixel `px` at `depth`.
+float3 DenoiseWorldAt(in DenoiseConstants c, uint2 px, float depth)
+{
+    float2 ndc = float2(((float)px.x + 0.5) / (float)c.Width * 2 - 1, 1 - ((float)px.y + 0.5) / (float)c.Height * 2);
+    float4 p = c.InverseViewProjection * float4(ndc, depth, 1);
+    return p.xyz / p.w;
+}
+
+bool Inside(in DenoiseConstants c, int2 p) => p.x >= 0 && p.y >= 0 && p.x < (int)c.Width && p.y < (int)c.Height;
+
+/// Whether the surface at `p` lies on the plane of the one at `x` (facing `n`, `distance` from
+/// the eye) and faces about the same way.
+bool OnSurface(in DenoiseConstants c, in DenoiseArgs a, int2 p, float3 x, float3 n, float distance)
+{
+    float depth = a.Depth.Load(p);
+    Proxy q = UnpackProxy(a.MaterialBuffer.Load(p));
+    if (depth <= 0 || q.Count == 0)
+        return false;
+    float3 y = DenoiseWorldAt(c, (uint2)p, depth);
+    return Abs(Dot(n, y - x)) < 0.02 * distance && Dot(n, q.Normal) > 0.8;
+}
+
+/// The luminance mean, deviation and count of `px` and 12 taps around it within `radius` on its
+/// surface (a ring of 4 at half the radius and 8 at the radius, turned a little each frame): of
+/// the signal, or with `fast` of this frame's fast history.
+float3 Neighborhood(in DenoiseConstants c, in DenoiseArgs a, int2 px, float3 x, float3 n, float distance, float radius, bool fast)
+{
+    float l = 0;
+    if (fast)
+        l = DenoiseLuminance(a.Fast.Load(px).xyz);
+    else
+        l = DenoiseLuminance(a.Signal.Load(px).xyz);
+    float m1 = l;
+    float m2 = l * l;
+    float count = 1;
+    float turn = (float)(c.Seed % 8) * 0.0981748;
+    for (uint i = 0; i < 12; i++)
+    {
+        float ring = i < 4 ? 0.5 : 1;
+        float angle = turn + (i < 4 ? (float)i * 1.5707963 + 0.7853982 : (float)(i - 4) * 0.7853982);
+        int2 q = px + int2((int)Round(Cos(angle) * radius * ring), (int)Round(Sin(angle) * radius * ring));
+        if (!Inside(c, q) || !OnSurface(c, a, q, x, n, distance))
+            continue;
+        float lq = 0;
+        if (fast)
+            lq = DenoiseLuminance(a.Fast.Load(q).xyz);
+        else
+            lq = DenoiseLuminance(a.Signal.Load(q).xyz);
+        m1 += lq;
+        m2 += lq * lq;
+        count += 1;
+    }
+    m1 /= count;
+    return float3(m1, Sqrt(Max(m2 / count - m1 * m1, 0)), count);
+}
+
+[Compute(8, 8, 1)]
+public void DenoiseTemporal([DispatchThreadId] uint3 id, [Push] in DenoiseArgs a)
+{
+    DenoiseConstants c = a.Constants.Value;
+    if (id.x >= c.Width || id.y >= c.Height)
+        return;
+    int2 px = (int2)id.xy;
+    float depth = a.Depth.Load(px);
+    Proxy p = UnpackProxy(a.MaterialBuffer.Load(px));
+    if (depth <= 0 || p.Count == 0)
+    {
+        a.Output[px] = float4(0, 0, 0, 0);
+        a.FastOut[px] = float4(0, 0, 0, 0);
+        a.SurfaceOut[px] = float4(0, 0, 0, 0);
+        a.VarianceOut[px] = 0;
+        return;
+    }
+    float3 x = DenoiseWorldAt(c, id.xy, depth);
+    float distance = Length(x - c.Eye.xyz);
+    a.SurfaceOut[px] = float4(p.Normal, distance);
+    float2 hints = a.Hints.Load(px);
+    float novelty = Clamp(hints.x, 0.01, 1);
+    float radius = Max(hints.y, 1);
+
+    // Fireflies, blobs of them where the correlation radius is large, held to the signal's
+    // neighborhood.
+    float3 stats = Neighborhood(c, a, px, x, p.Normal, distance, radius, false);
+    float3 current = a.Signal.Load(px).xyz;
+    float l = DenoiseLuminance(current);
+    float most = stats.x + c.FireflySigma * stats.y;
+    if (l > most && l > 0)
+        current *= most / l;
+    // The signal's variance, for the clamp to divide by the frames behind the accumulation.
+    a.VarianceOut[px] = stats.y * stats.y;
+
+    // Last frame's accumulations, bilinear over the taps on this surface.
+    float2 size = float2((float)c.Width, (float)c.Height);
+    float2 at = ((float2)id.xy + 0.5) / size - a.Velocity.Load(px);
+    float2 texel = at * size - 0.5;
+    int2 corner = int2((int)Floor(texel.x), (int)Floor(texel.y));
+    float2 f = texel - float2((float)corner.x, (float)corner.y);
+    float4 slow = float4(0, 0, 0, 0);
+    float4 fast = float4(0, 0, 0, 0);
+    float total = 0;
+    if (c.HasHistory != 0)
+    {
+        for (uint k = 0; k < 4; k++)
+        {
+            int2 q = corner + int2((int)(k % 2), (int)(k / 2));
+            if (!Inside(c, q))
+                continue;
+            float4 s = a.PreviousSurface.Load(q);
+            if (s.w <= 0 || Abs(s.w - distance) > 0.1 * distance || Dot(s.xyz, p.Normal) < 0.9)
+                continue;
+            float w = (k % 2 == 0 ? 1 - f.x : f.x) * (k / 2 == 0 ? 1 - f.y : f.y);
+            slow += a.History.Load(q) * w;
+            fast += a.PreviousFast.Load(q) * w;
+            total += w;
+        }
+    }
+    float4 slowOut = float4(current, 1);
+    float4 fastOut = float4(current, 1);
+    if (total > 0.001)
+    {
+        slow /= total;
+        fast /= total;
+        // The slow accumulation averages its frames evenly, over a window of `MaxFrames`
+        // independent samples' worth: `MaxFrames / Novelty` frames of noise that persists (frames
+        // a frame apart share 1 - `Novelty` of it), so persistent noise is not mistaken for many
+        // independent samples. The fast one averages a few frames.
+        float frames = Min(slow.w + 1, c.MaxFrames / novelty);
+        slowOut = float4(Lerp(slow.xyz, current, 1 / frames), frames);
+        float fastFrames = Min(fast.w + 1, c.FastFrames);
+        fastOut = float4(Lerp(fast.xyz, current, 1 / fastFrames), fastFrames);
+    }
+    a.Output[px] = slowOut;
+    a.FastOut[px] = fastOut;
+}
+
+/// The slow accumulation held near the fast one: within `ClampSigma` deviations of the fast
+/// accumulation's neighborhood (within the correlation radius) around the pixel's own fast value.
+/// The fast accumulation follows a change in a few frames. Its neighborhood's deviation widens
+/// the band where the fast accumulation is noisy (noise that persists keeps it as noisy as the
+/// signal) and across features (a gradient's spread), so a sharp light's peak is not clipped. A
+/// clamp shortens the slow history by as much (anti-lag). Writes this frame's history and the
+/// accumulation's variance.
+[Compute(8, 8, 1)]
+public void DenoiseClamp([DispatchThreadId] uint3 id, [Push] in DenoiseArgs a)
+{
+    DenoiseConstants c = a.Constants.Value;
+    if (id.x >= c.Width || id.y >= c.Height)
+        return;
+    int2 px = (int2)id.xy;
+    float4 slow = a.Input.Load(px);
+    float depth = a.Depth.Load(px);
+    Proxy p = UnpackProxy(a.MaterialBuffer.Load(px));
+    if (depth <= 0 || p.Count == 0)
+    {
+        a.Output[px] = slow;
+        a.VarianceOut[px] = 0;
+        return;
+    }
+    float3 x = DenoiseWorldAt(c, id.xy, depth);
+    float distance = Length(x - c.Eye.xyz);
+    float2 hints = a.Hints.Load(px);
+    float radius = Max(hints.y, 1);
+    float3 stats = Neighborhood(c, a, px, x, p.Normal, distance, radius, true);
+    float band = c.ClampSigma * stats.y;
+    float center = DenoiseLuminance(a.Fast.Load(px).xyz);
+    float ls = DenoiseLuminance(slow.xyz);
+    float clamped = Clamp(ls, Max(center - band, 0), center + band);
+    float kept = ls > 0 ? Min(ls, clamped) / Max(Max(ls, clamped), 1e-12) : (clamped > 0 ? 0 : 1);
+    float3 held = ls > 0 ? slow.xyz * (clamped / ls) : float3(clamped, clamped, clamped);
+    float frames = Max(slow.w * kept, Min(slow.w, 1));
+    a.Output[px] = float4(held, frames);
+    // The accumulation's variance: the signal's over the frames behind it, counted as
+    // independent ones: frames times the novelty.
+    a.VarianceOut[px] = a.Variance.Load(px) / Max(frames * Clamp(hints.x, 0.01, 1), 1);
+}
+
+/// A Poisson disk of 16 in the unit circle.
+float2 Disk(uint i)
+{
+    float2 d = float2(0, 0);
+    if (i == 0) d = float2(-0.94201624, -0.39906216);
+    if (i == 1) d = float2(0.94558609, -0.76890725);
+    if (i == 2) d = float2(-0.09418410, -0.92938870);
+    if (i == 3) d = float2(0.34495938, 0.29387760);
+    if (i == 4) d = float2(-0.91588581, 0.45771432);
+    if (i == 5) d = float2(-0.81544232, -0.87912464);
+    if (i == 6) d = float2(-0.38277543, 0.27676845);
+    if (i == 7) d = float2(0.97484398, 0.75648379);
+    if (i == 8) d = float2(0.44323325, -0.97511554);
+    if (i == 9) d = float2(0.53742981, -0.47373420);
+    if (i == 10) d = float2(-0.26496911, -0.41893023);
+    if (i == 11) d = float2(0.79197514, 0.19090188);
+    if (i == 12) d = float2(-0.24188840, 0.99706507);
+    if (i == 13) d = float2(-0.81409955, 0.91437590);
+    if (i == 14) d = float2(0.19984126, 0.78641367);
+    if (i == 15) d = float2(0.14383161, -0.14100790);
+    return d * 0.70710678;
+}
+
+[Compute(8, 8, 1)]
+public void DenoiseBlur([DispatchThreadId] uint3 id, [Push] in DenoiseArgs a)
+{
+    DenoiseConstants c = a.Constants.Value;
+    if (id.x >= c.Width || id.y >= c.Height)
+        return;
+    int2 px = (int2)id.xy;
+    float4 center = a.Input.Load(px);
+    float depth = a.Depth.Load(px);
+    Proxy p = UnpackProxy(a.MaterialBuffer.Load(px));
+    if (depth <= 0 || p.Count == 0)
+    {
+        a.Output[px] = center;
+        return;
+    }
+    float3 x = DenoiseWorldAt(c, id.xy, depth);
+    float distance = Length(x - c.Eye.xyz);
+    // The independent frames behind it: frames times the novelty.
+    float frames = center.w * Clamp(a.Hints.Load(px).x, 0.01, 1);
+    float correlation = Max(a.Hints.Load(px).y, 1);
+    // Wide while few samples are behind it, never narrower than the noise's blobs then; both
+    // shrink as samples gather.
+    float radius = Max(c.MaxRadius, correlation) / Sqrt(1 + frames);
+    // Not past what the light's distance blurs: a light near the surface draws sharp shadows.
+    float hit = a.Signal.Load(px).w;
+    if (hit > 0)
+        radius = Min(radius, Max(hit / Max(distance * c.PixelAngle, 1e-6), c.MinRadius));
+    radius = Max(radius, c.MinRadius) * c.RadiusScale;
+    float deviation = Sqrt(Max(a.Variance.Load(px), 0));
+    float lc = DenoiseLuminance(center.xyz);
+    float3 sum = center.xyz;
+    float weights = 1;
+    // Rotated per pixel and frame, so the taps' pattern does not stay.
+    uint h = (id.y * 1973 + id.x * 9277 + c.Seed * 26699) | 1;
+    h = h ^ (h >> 16);
+    h = h * 0x7FEB352D;
+    h = h ^ (h >> 15);
+    float angle = (float)(h & 0xFFFF) / 65536.0 * 6.2831853;
+    float2 rotation = float2(Cos(angle), Sin(angle));
+    for (uint i = 0; i < 16; i++)
+    {
+        float2 d = Disk(i);
+        float2 r = float2(d.x * rotation.x - d.y * rotation.y, d.x * rotation.y + d.y * rotation.x);
+        int2 q = px + int2((int)Round(r.x * radius), (int)Round(r.y * radius));
+        if (!Inside(c, q) || (q.x == px.x && q.y == px.y))
+            continue;
+        float qDepth = a.Depth.Load(q);
+        Proxy qp = UnpackProxy(a.MaterialBuffer.Load(q));
+        if (qDepth <= 0 || qp.Count == 0)
+            continue;
+        float3 y = DenoiseWorldAt(c, (uint2)q, qDepth);
+        float plane = Abs(Dot(p.Normal, y - x)) / (0.02 * distance);
+        float geometry = Saturate(1 - plane);
+        float facing = Pow(Saturate(Dot(p.Normal, qp.Normal)), 16);
+        float4 s = a.Input.Load(q);
+        float luminance = Exp(-Abs(DenoiseLuminance(s.xyz) - lc) / (4 * deviation + 0.001 * lc + 1e-6));
+        float kernel = Exp(-2 * Dot(d, d) * 2);
+        float w = geometry * facing * luminance * kernel;
+        sum += s.xyz * w;
+        weights += w;
+    }
+    a.Output[px] = float4(sum / weights, frames);
+}
+
+[Compute(8, 8, 1)]
+public void DenoiseCompose([DispatchThreadId] uint3 id, [Push] in DenoiseArgs a)
+{
+    DenoiseConstants c = a.Constants.Value;
+    if (id.x >= c.Width || id.y >= c.Height)
+        return;
+    int2 px = (int2)id.xy;
+    Proxy p = UnpackProxy(a.MaterialBuffer.Load(px));
+    if (a.Depth.Load(px) <= 0 || p.Count == 0)
+        return;
+    float3 light = a.Input.Load(px).xyz * p.Albedo;
+    float4 scene = a.Scene[px];
+    a.Scene[px] = float4(scene.xyz + light, scene.w);
+}

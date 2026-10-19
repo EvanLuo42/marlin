@@ -24,6 +24,7 @@
 extern crate alloc;
 
 pub mod asset;
+pub mod denoise;
 pub mod geometry;
 pub mod lighting;
 pub mod lights;

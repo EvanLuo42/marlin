@@ -1,0 +1,24 @@
+namespace Material;
+
+// A synthetic noisy signal and its hints, from buffers, into the textures the denoiser reads:
+// the denoiser's tests feed it noise of known statistics.
+
+public struct SignalArgs
+{
+    public ReadOnlyBuffer<float4> Light;
+    public ReadOnlyBuffer<float2> Hints;
+    public StorageTexture2D<float4> LightOut;
+    public StorageTexture2D<float2> HintsOut;
+    public uint Width;
+    public uint Height;
+}
+
+[Compute(8, 8, 1)]
+public void WriteSignal([DispatchThreadId] uint3 id, [Push] in SignalArgs a)
+{
+    if (id.x >= a.Width || id.y >= a.Height)
+        return;
+    uint i = id.y * a.Width + id.x;
+    a.LightOut[(int2)id.xy] = a.Light[i];
+    a.HintsOut[(int2)id.xy] = a.Hints[i];
+}

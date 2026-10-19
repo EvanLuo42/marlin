@@ -16,11 +16,13 @@ namespace Marlin.Engine.Lighting;
 //    up through the cooked pairing patterns, one pattern per neighbor; the first pass shifts
 //    every pixel's sample to its partners, the second resamples the pixel's reservoir and its
 //    partners' by pairwise MIS from those shifts. Into this frame's history.
-// 4. `RestirShade`: the kept light's contribution, its visibility from one shadow ray to a point
-//    of its sphere (a ray query against the TLAS), times the reservoir's weight `W`, added to
-//    the HDR scene.
-// 5. `RestirDuplication`: the duplication map of the frame's reservoirs, which lowers the next
-//    frame's temporal cap where one sample has spread (PTE §5).
+// 4. `RestirDuplication`: the duplication map of the frame's reservoirs, which lowers the next
+//    frame's temporal cap where one sample has spread (PTE §5), and sizes the noise's blobs.
+// 5. `RestirShade`: the kept light's contribution, its visibility from one shadow ray to a point
+//    of its sphere (a ray query against the TLAS), times the reservoir's weight `W`: a noisy
+//    signal, demodulated, for the denoiser (`Denoise.mshader`), with its hints (0010 §6.1): the
+//    reservoir's fresh share as `Novelty`, the duplication map's blob size as
+//    `CorrelationRadius`.
 //
 // Lambert diffuse for now, like the sun (`Lighting.mshader`): the exact BSDF comes with the
 // final shading (0010 §2.6). Light units: candela times color (`LightDesc`); a light fades out
@@ -64,7 +66,12 @@ public struct DiReservoir
     /// (octahedral) and its distance to the eye (0: no surface).
     public uint Normal;
     public float Distance;
-    public uint Spare;
+    /// The share of the reservoir's confidence drawn this frame (0010 §6.1's `Novelty`): 1 for an
+    /// initial sample; temporal reuse counts last frame's part as 0, and both reuses average it
+    /// by confidence. Not by RIS weight, though that is the probability the sample shaded is new:
+    /// the weight follows the sample's value, and a novelty that does makes the denoiser's
+    /// novelty-weighted average biased.
+    public float Fresh;
 }
 
 public struct RestirConstants
@@ -102,7 +109,8 @@ public struct RestirConstants
     /// y, bit 2 swaps them.
     public uint2 PairingOffset;
     public uint PairingFlags;
-    public uint Spare0;
+    /// 1: `DuplicationMap` holds this frame's map when the shading reads it (for the hints).
+    public uint DuplicationReady;
     public uint Spare1;
     public uint Spare2;
 }
@@ -137,8 +145,11 @@ public struct RestirArgs
     /// slot, the target there; negative: no partner (off screen, or another surface).
     public Buffer<float> ShiftsOut;
     public ReadOnlyBuffer<float> Shifts;
-    /// The HDR scene the shading adds to.
-    public StorageTexture2D<float4> Scene;
+    /// The shading's output, a noisy signal for the denoiser (0010 §6.1, `Denoise.mshader`): the
+    /// light demodulated (divided by the albedo) and the distance to the light; and its hints,
+    /// `Novelty` and `CorrelationRadius`.
+    public StorageTexture2D<float4> Signal;
+    public StorageTexture2D<float2> Hints;
 }
 
 const uint NoLight = 4294967295;
@@ -202,7 +213,7 @@ float Random(uint x) => Unit(Hash(x));
 
 /// A reservoir without a sample, for the surface `normal` at `distance` (0: none).
 DiReservoir Empty(uint normal, float distance) =>
-    DiReservoir { Light = NoLight, Sample = 0, W = 0, M = 0, Target = 0, Normal = normal, Distance = distance, Spare = 0 };
+    DiReservoir { Light = NoLight, Sample = 0, W = 0, M = 0, Target = 0, Normal = normal, Distance = distance, Fresh = 1 };
 
 [Compute(8, 8, 1)]
 public void RestirInitial([DispatchThreadId] uint3 id, [Push] in RestirArgs a)
@@ -306,6 +317,8 @@ public void RestirTemporal([DispatchThreadId] uint3 id, [Push] in RestirArgs a)
     }
     s.M = r.M + qM;
     s.W = s.Target > 0 ? sum / (s.M * s.Target) : 0;
+    // Last frame's part is not new.
+    s.Fresh = r.M * r.Fresh / s.M;
     a.Output[pixel] = s;
 }
 
@@ -415,13 +428,18 @@ public void RestirSpatial([DispatchThreadId] uint3 id, [Push] in RestirArgs a)
         a.Output[pixel] = r;
         return;
     }
-    // The confidence of all the reservoirs resampled.
+    // The confidence of all the reservoirs resampled, and the part of it new this frame.
     float total = r.M;
+    float fresh = r.M * r.Fresh;
     for (uint k = 0; k < c.Neighbors; k++)
     {
         int2 q = Partner(c, a, k, id.xy);
         if (a.Shifts[k * pixels + pixel] >= 0 && q.x >= 0)
-            total += a.Input[(uint)q.y * c.Width + (uint)q.x].M;
+        {
+            DiReservoir n = a.Input[(uint)q.y * c.Width + (uint)q.x];
+            total += n.M;
+            fresh += n.M * n.Fresh;
+        }
     }
     float others = total - r.M;
     float canonical = r.M / total;
@@ -466,6 +484,7 @@ public void RestirSpatial([DispatchThreadId] uint3 id, [Push] in RestirArgs a)
     }
     s.M = total;
     s.W = s.Target > 0 && s.Light != NoLight ? sum / s.Target : 0;
+    s.Fresh = fresh / total;
     a.Output[pixel] = s;
 }
 
@@ -475,18 +494,28 @@ public void RestirShade([DispatchThreadId] uint3 id, [Push] in RestirArgs a)
     RestirConstants c = a.Constants.Value;
     if (id.x >= c.Width || id.y >= c.Height)
         return;
-    DiReservoir r = a.Input[id.y * c.Width + id.x];
-    if (r.Light == NoLight || r.W <= 0)
-        return;
-    float depth = a.Depth.Load((int2)id.xy);
-    Proxy p = UnpackProxy(a.MaterialBuffer.Load((int2)id.xy));
-    float3 x = WorldAt(c, id.xy, depth);
-    LightRow l = a.Lights[r.Light];
-    if (!Visible(c, a, l, x, p.Normal, r.Sample))
-        return;
-    float3 radiance = Contribution(l, x, p.Normal, p.Albedo) * r.W;
-    float4 scene = a.Scene[(int2)id.xy];
-    a.Scene[(int2)id.xy] = float4(scene.xyz + radiance, scene.w);
+    uint pixel = id.y * c.Width + id.x;
+    DiReservoir r = a.Input[pixel];
+    // The hints (0010 §6.1): how much of the sample is new, and how far it has been copied
+    // around (the duplication map's share d of 288 neighbors: blobs of about 1 + 288·d pixels).
+    float radius = 1;
+    if (c.DuplicationReady != 0)
+        radius = Max(Sqrt((1 + 288 * a.DuplicationMap[pixel]) / 3.14159265), 1);
+    a.Hints[(int2)id.xy] = float2(r.Fresh, radius);
+    float3 radiance = float3(0, 0, 0);
+    float hit = 0;
+    if (r.Light != NoLight && r.W > 0)
+    {
+        float depth = a.Depth.Load((int2)id.xy);
+        Proxy p = UnpackProxy(a.MaterialBuffer.Load((int2)id.xy));
+        float3 x = WorldAt(c, id.xy, depth);
+        LightRow l = a.Lights[r.Light];
+        hit = Length(l.Position - x);
+        // Demodulated: the albedo is the composition's.
+        if (Visible(c, a, l, x, p.Normal, r.Sample))
+            radiance = Contribution(l, x, p.Normal, float3(1, 1, 1)) * r.W;
+    }
+    a.Signal[(int2)id.xy] = float4(radiance, hit);
 }
 
 /// What tells an initial sample from every other: its light and the random numbers it was drawn
