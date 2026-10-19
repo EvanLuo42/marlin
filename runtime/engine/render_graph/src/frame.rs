@@ -354,7 +354,10 @@ impl FrameContext {
             _env: PhantomData,
         };
         let slot_index = (frame % FRAMES_IN_FLIGHT as u64) as usize;
-        self.fence.wait(self.slots[slot_index].value, None)?;
+        {
+            marlin_profile::profile_scope!("FrameWait");
+            self.fence.wait(self.slots[slot_index].value, None)?;
+        }
         self.collect();
         let mut created = 0;
 
@@ -398,8 +401,14 @@ impl FrameContext {
 
         let mut g = RenderGraph::with_states(arena, states);
         g.set_single_queue(*single_queue);
-        let out = declare(&mut g, &info);
-        let (plan_index, lookup) = cache.ensure(&g, device)?;
+        let out = {
+            marlin_profile::profile_scope!("Declare");
+            declare(&mut g, &info)
+        };
+        let (plan_index, lookup) = {
+            marlin_profile::profile_scope!("Plan");
+            cache.ensure(&g, device)?
+        };
         let plan = cache.get(plan_index);
 
         // Plans the cache let go: their resources go once their slot's GPU work is done. This
@@ -591,6 +600,14 @@ impl FrameContext {
 
         // Readback destinations.
         let first_readback = readbacks.len();
+        let readback_zone = marlin_profile::Zone::begin({
+            static SITE: marlin_profile::ZoneSite = marlin_profile::ZoneSite {
+                name: "Readbacks",
+                file: file!(),
+                line: line!(),
+            };
+            &SITE
+        });
         for pp in &plan.passes {
             let pass = &g.passes[pp.node as usize];
             let rec = &g.accesses[pass.accesses.start as usize];
@@ -627,6 +644,7 @@ impl FrameContext {
             });
         }
 
+        drop(readback_zone);
         // Record: what each retained pass needs, in a form the recording jobs can share.
         let mut execs: Vec<Option<Exec<'_, Rhi>>, &Arena> =
             Vec::with_capacity_in(g.passes.len(), arena);
@@ -744,6 +762,7 @@ impl FrameContext {
         let mut outs: Vec<Option<Result<ChunkOut>>> = Vec::with_capacity(chunks.len());
         outs.resize_with(chunks.len(), || None);
         {
+            marlin_profile::profile_scope!("Record");
             let (env, chunks, lists, slot_queries) = (&env, &chunks, &lists, &slot.queries);
             let run = move |ci: usize, execs: Vec<Option<Exec<'_, Rhi>>>| {
                 let chunk = &chunks[ci];

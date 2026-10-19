@@ -62,12 +62,13 @@ pub struct VisibilityShaders<'a> {
     pub hzb_first: ShaderModule<'a>,
     pub hzb_down: ShaderModule<'a>,
     pub sw_raster: ShaderModule<'a>,
+    pub shadow_mesh: ShaderModule<'a>,
     pub shadow_pixel: ShaderModule<'a>,
 }
 
 impl<'a> VisibilityShaders<'a> {
     /// The entries, in field order.
-    pub const ENTRIES: [EntryDesc; 19] = [
+    pub const ENTRIES: [EntryDesc; 20] = [
         cull("Marlin.Engine.Visibility.Reset"),
         cull("Marlin.Engine.Visibility.InstanceCull"),
         cull("Marlin.Engine.Visibility.InstanceRetestArgs"),
@@ -86,6 +87,7 @@ impl<'a> VisibilityShaders<'a> {
         EntryDesc::compute("Marlin.Engine.Visibility.HzbFirst").push::<HzbArgs>(),
         EntryDesc::compute("Marlin.Engine.Visibility.HzbDown").push::<HzbArgs>(),
         EntryDesc::compute("Marlin.Engine.Visibility.SwRaster").push::<RasterArgs>(),
+        EntryDesc::new("Marlin.Engine.Visibility.ShadowMesh", Stage::Mesh).push::<RasterArgs>(),
         EntryDesc::new("Marlin.Engine.Visibility.ShadowPs", Stage::Pixel).push::<RasterArgs>(),
     ];
 
@@ -110,8 +112,9 @@ impl<'a> VisibilityShaders<'a> {
             hzb_first,
             hzb_down,
             sw_raster,
+            shadow_mesh,
             shadow_pixel,
-        ]: [ShaderModule<'a>; 19],
+        ]: [ShaderModule<'a>; 20],
     ) -> Self {
         Self {
             reset,
@@ -132,6 +135,7 @@ impl<'a> VisibilityShaders<'a> {
             hzb_first,
             hzb_down,
             sw_raster,
+            shadow_mesh,
             shadow_pixel,
         }
     }
@@ -190,6 +194,9 @@ struct View {
     shadow_page_size: u32,
     shadow_pool_pages_per_row: u32,
     shadow_page_offset: [u32; 2],
+    shadow_drawn_pages: u32,
+    shadow_drawn_base: u32,
+    shadow_draw_capacity: u32,
 }
 
 #[repr(C)]
@@ -210,6 +217,7 @@ struct CullArgs {
     hzb: u32,
     occluded_instances: u32,
     occluded_clusters: u32,
+    shadow_draws: u32,
     pass: u32,
 }
 
@@ -223,6 +231,7 @@ struct RasterArgs {
     clusters: u32,
     counters: u32,
     vis: u32,
+    shadow_draws: u32,
 }
 
 #[repr(C)]
@@ -329,7 +338,7 @@ pub struct Visibility {
     cluster_retest: ComputePipeline,
     finish_args: ComputePipeline,
     raster: MeshPipeline,
-    /// `VisMesh` + `ShadowPs`, both sides of every triangle.
+    /// `ShadowMesh` + `ShadowPs`, both sides of every triangle.
     shadow_raster: MeshPipeline,
     clear: ComputePipeline,
     depth: ComputePipeline,
@@ -350,6 +359,8 @@ pub struct Visibility {
     pub max_occluded: u32,
     /// Most page requests a view makes a frame.
     pub max_requests: u32,
+    /// Most draws (a cluster over a page) a shadow view makes a frame.
+    pub max_shadow_draws: u32,
     /// Clusters whose triangles' average edge on screen is shorter than this many pixels
     /// draw in software (`r.geo.sw_raster_edge_px`, 0009 §4.1): 0 draws everything with the
     /// mesh shader.
@@ -419,6 +430,8 @@ struct Lists<'g> {
     used: BufferHandle<'g>,
     occluded_instances: BufferHandle<'g>,
     occluded_clusters: BufferHandle<'g>,
+    /// A shadow view's draws: cluster index, page.
+    shadow_draws: Option<BufferHandle<'g>>,
 }
 
 /// What every cull pass reads: the GPU Scene, the pool, the view, the pass's HZB and flags.
@@ -429,8 +442,9 @@ struct PassInputs<'g> {
     view: View,
     hzb: Option<TextureHandle<'g>>,
     pass: u32,
-    /// A shadow view's page table.
+    /// A shadow view's page table and its list of pages drawn this frame.
     shadow_pages: Option<BufferHandle<'g>>,
+    shadow_drawn: Option<BufferHandle<'g>>,
 }
 
 impl Visibility {
@@ -469,7 +483,7 @@ impl Visibility {
             })?,
             shadow_raster: device.create_mesh_pipeline(&MeshPipelineDesc {
                 amplification: None,
-                mesh: shaders.mesh,
+                mesh: shaders.shadow_mesh,
                 pixel: Some(shaders.shadow_pixel),
                 raster: RasterState {
                     cull: CullMode::None,
@@ -492,6 +506,7 @@ impl Visibility {
             max_clusters: 1 << 22,
             max_occluded: 1 << 20,
             max_requests: 4096,
+            max_shadow_draws: 1 << 20,
             sw_edge_pixels: 32.0,
         })
     }
@@ -564,6 +579,9 @@ impl Visibility {
             shadow_page_size: 0,
             shadow_pool_pages_per_row: 0,
             shadow_page_offset: [0; 2],
+            shadow_drawn_pages: 0,
+            shadow_drawn_base: 0,
+            shadow_draw_capacity: 0,
         };
 
         let structured = |n: u32| BufferDesc::structured::<[u32; 2]>(u64::from(n));
@@ -585,6 +603,7 @@ impl Visibility {
             ),
             occluded_clusters: g
                 .create_buffer("VisOccludedClusters", structured(occluded_capacity)),
+            shadow_draws: None,
         };
         let vis = g.create_texture(
             "VisBuffer",
@@ -639,6 +658,7 @@ impl Visibility {
             hzb: previous_hzb,
             pass: if two_pass { TEST_HZB } else { 0 },
             shadow_pages: None,
+            shadow_drawn: None,
         };
         lists = self.instance_cull(g, lists, first, rows);
         lists = self.traverse(g, lists, first, levels);
@@ -701,6 +721,7 @@ impl Visibility {
         pages: BufferHandle<'g>,
         used: BufferHandle<'g>,
         page_table: BufferHandle<'g>,
+        drawn: BufferHandle<'g>,
         shadow_pool: TextureHandle<'g>,
         desc: &ShadowView,
     ) -> (BufferHandle<'g>, TextureHandle<'g>) {
@@ -718,6 +739,12 @@ impl Visibility {
         let cluster_capacity = capacity(clusters, self.max_clusters.min(MAX_CLUSTERS / 2));
         let rows = scene.instance_rows();
         let vp = desc.view_projection;
+        // A draw per cluster and page it covers: a few each, and the pages the view draws
+        // (at most the pool) under a few clusters each.
+        let draw_capacity = capacity(
+            4 * (clusters + u64::from(desc.pool_pages)),
+            self.max_shadow_draws,
+        );
         let r = desc.resolution;
         let view = View {
             view_projection: vp.to_cols_array(),
@@ -744,6 +771,9 @@ impl Visibility {
             shadow_page_size: desc.page_size,
             shadow_pool_pages_per_row: desc.pool_pages_per_row,
             shadow_page_offset: desc.page_offset,
+            shadow_drawn_pages: 0,
+            shadow_drawn_base: desc.drawn_base,
+            shadow_draw_capacity: draw_capacity,
         };
         let structured = |n: u32| BufferDesc::structured::<[u32; 2]>(u64::from(n));
         let mut lists = Lists {
@@ -754,12 +784,14 @@ impl Visibility {
                 BufferDesc::structured::<u32>(counters::WORDS as u64),
             ),
             args: g.create_buffer("ShadowArgs", BufferDesc::structured::<u32>(24)),
-            clusters: g.create_buffer("ShadowClusters", structured(2 * cluster_capacity)),
+            // Hardware raster only.
+            clusters: g.create_buffer("ShadowClusters", structured(cluster_capacity)),
             requests: g.create_buffer("ShadowRequests", structured(1)),
             used,
             occluded_instances: g
                 .create_buffer("ShadowOccludedInstances", BufferDesc::structured::<u32>(1)),
             occluded_clusters: g.create_buffer("ShadowOccludedClusters", structured(1)),
+            shadow_draws: Some(g.create_buffer("ShadowDraws", structured(draw_capacity))),
         };
         lists.counters = g.add_compute("ShadowReset", |b| {
             let counters = b.write_buffer(lists.counters, Access::ComputeWrite);
@@ -779,13 +811,16 @@ impl Visibility {
             hzb: None,
             pass: 0,
             shadow_pages: Some(page_table),
+            shadow_drawn: Some(drawn),
         };
         lists = self.instance_cull(g, lists, p, rows);
         lists = self.traverse(g, lists, p, levels);
         lists = self.cluster_cull(g, lists, p);
         lists = self.cull_pass(g, "ShadowMeshArgs", &self.finish_args, lists, p, None, 1);
+        // Each draw is one page, which fills the raster area.
+        let page = desc.page_size;
         let shadow_pool = g.add_raster("ShadowRaster", |b| {
-            b.area(r, r);
+            b.area(page, page);
             let dispatch = b.read_buffer(lists.args.range(32, 16), Access::Indirect);
             let instances = b.read_buffer(gpu.instance_data, Access::MeshRead);
             let transforms = b.read_buffer(gpu.instance_transforms, Access::MeshRead);
@@ -794,7 +829,10 @@ impl Visibility {
             let counters = b.read_buffer(lists.counters, Access::MeshRead);
             // The clusters are read from the pool through the mesh table's view.
             b.read_buffer(pages, Access::MeshRead);
-            let table = b.read_buffer(page_table, Access::PixelRead);
+            let draws = lists
+                .shadow_draws
+                .map(|d| b.read_buffer(d, Access::MeshRead));
+            let table = b.read_buffer(page_table, Access::MeshRead);
             let pool = b.write_texture(shadow_pool, Access::PixelWrite);
             (pool, move |ctx: &mut PassContext<'_>| {
                 let mut v = view;
@@ -810,6 +848,7 @@ impl Visibility {
                     clusters: ctx.srv(clusters),
                     counters: ctx.srv(counters),
                     vis: 0,
+                    shadow_draws: draws.map_or(0, |d| ctx.srv(d)),
                 });
                 ctx.dispatch_mesh_indirect(dispatch, 1, None);
             })
@@ -842,6 +881,7 @@ impl Visibility {
             hzb: p.hzb.map_or(0, |h| ctx.srv(h)),
             occluded_instances: ctx.uav(l.occluded_instances),
             occluded_clusters: ctx.uav(l.occluded_clusters),
+            shadow_draws: l.shadow_draws.map_or(0, |d| ctx.uav(d)),
             pass: p.pass,
         }
     }
@@ -876,6 +916,9 @@ impl Visibility {
             let shadow_pages = p
                 .shadow_pages
                 .map(|t| b.read_buffer(t, Access::ComputeRead));
+            let shadow_drawn = p
+                .shadow_drawn
+                .map(|t| b.read_buffer(t, Access::ComputeRead));
             let l = Lists {
                 nodes: b.write_buffer(lists.nodes, Access::ComputeWrite),
                 parts: b.write_buffer(lists.parts, Access::ComputeWrite),
@@ -891,17 +934,24 @@ impl Visibility {
                 used: b.write_buffer(lists.used, Access::ComputeWrite),
                 occluded_instances: b.write_buffer(lists.occluded_instances, Access::ComputeWrite),
                 occluded_clusters: b.write_buffer(lists.occluded_clusters, Access::ComputeWrite),
+                shadow_draws: lists
+                    .shadow_draws
+                    .map(|d| b.write_buffer(d, Access::ComputeWrite)),
             };
             let inputs = PassInputs {
                 gpu,
                 hzb,
                 shadow_pages,
+                shadow_drawn,
                 ..p
             };
             (l, move |ctx: &mut PassContext<'_>| {
                 let mut view = inputs.view;
                 if let Some(t) = inputs.shadow_pages {
                     view.shadow_pages = ctx.srv(t);
+                }
+                if let Some(t) = inputs.shadow_drawn {
+                    view.shadow_drawn_pages = ctx.srv(t);
                 }
                 let view = ctx.upload(&view);
                 ctx.set_pipeline(pipeline);
@@ -1043,6 +1093,7 @@ impl Visibility {
                     clusters: ctx.srv(clusters),
                     counters: ctx.srv(counters),
                     vis: ctx.uav(vis),
+                    shadow_draws: 0,
                 });
                 ctx.dispatch_mesh_indirect(dispatch, 1, None);
             })
@@ -1068,6 +1119,7 @@ impl Visibility {
                     clusters: ctx.srv(clusters),
                     counters: ctx.srv(counters),
                     vis: ctx.uav(vis),
+                    shadow_draws: 0,
                 });
                 ctx.dispatch_indirect(dispatch, 1, None);
             })
@@ -1159,8 +1211,12 @@ pub struct ShadowView {
     pub page_size: u32,
     pub pages_per_side: u32,
     pub page_base: u32,
-    /// Physical pages per row of the pool.
+    /// Physical pages per row of the pool, and pages in it.
     pub pool_pages_per_row: u32,
+    pub pool_pages: u32,
+    /// The view's list of pages drawn this frame in `drawn` (`Vsm`'s): its count, then each
+    /// page (`x | y << 16`, from the view's first).
+    pub drawn_base: u32,
     /// Where the view's first page sits in its table (pages wrap around, so a page keeps its
     /// slot while the view moves): page p is in slot `(p + page_offset) mod pages_per_side`.
     pub page_offset: [u32; 2],

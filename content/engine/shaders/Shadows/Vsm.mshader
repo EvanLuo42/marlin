@@ -15,12 +15,13 @@ namespace Marlin.Engine.Shadows;
 // 4. `VsmFreeList`: the pages not kept, those without a valid tag first, then the cached ones
 //    nothing marked (evicted only when the first run out).
 // 5. `VsmAllocate`: every marked page: its kept page, or the next free one, tagged and marked
-//    `Render` in the frame's page table; `0xFFFFFFFF` when not marked or the pool ran out.
+//    `Render` in the frame's page table; `0xFFFFFFFF` when not marked or the pool ran out;
+//    the pages drawn are listed per level (`Drawn`).
 // 6. `VsmClearArgs` + `VsmClear`: the pages taken are cleared to depth 0 (farthest from the
 //    light).
 // 7. Each level, the visibility passes in orthographic mode draw the clusters over its
-//    `Render` pages; `Marlin.Engine.Visibility.ShadowPs` keeps the depth nearest the light per
-//    texel.
+//    `Render` pages, a cluster over each page on its own;
+//    `Marlin.Engine.Visibility.ShadowPs` keeps the depth nearest the light per texel.
 // 8. `VsmMask`: every pixel's sun visibility, a 3×3 percentage-closer filter of its level, into
 //    the shadow mask the lighting multiplies the sun by.
 //
@@ -112,6 +113,9 @@ public struct VsmArgs
     public Buffer<uint> Free;
     /// World spheres (center, radius) whose shadow changed.
     public ReadOnlyBuffer<float4> Invalidations;
+    /// Per level, from `level * (PoolPages + 1)`: the count of its pages drawn this frame, then
+    /// each one (`x | y << 16`, from the level's first page).
+    public Buffer<uint> Drawn;
 }
 
 const uint NotMapped = 4294967295;
@@ -303,6 +307,13 @@ public void VsmAllocate([DispatchThreadId] uint3 id, [Push] in VsmArgs a)
     }
     a.Tags[physical] = tag;
     a.PageTable[id.x] = physical | Render;
+    // Each physical page goes to one slot, so a level draws at most `PoolPages`.
+    uint n = c.PagesPerSide;
+    uint level = id.x / (n * n);
+    uint within = id.x % (n * n);
+    uint2 page = (uint2(within % n, within / n) + uint2(n, n) - a.Levels[level].Offset) % n;
+    uint list = level * (c.PoolPages + 1);
+    a.Drawn[list + 1 + a.Drawn.AtomicAdd(list, 1)] = page.x | (page.y << 16);
 }
 
 /// Groups per row of a dispatch; more go to rows.

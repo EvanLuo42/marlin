@@ -12,6 +12,7 @@ use marlin_app::{App, Event, Surface, WindowDesc};
 use marlin_diag::{FixedBuf, info};
 use marlin_input::{GamepadButton, Input, Key};
 use marlin_jobs::{Config, JobSystem};
+use marlin_profile::{GpuZone, profile_scope};
 use marlin_render_graph::{FrameContext, FrameContextDesc, GpuTimeline};
 use marlin_rhi::{
     DeviceDesc, Instance, InstanceDesc, PresentMode, PresentStatus, SurfaceHandle, Swapchain,
@@ -19,7 +20,7 @@ use marlin_rhi::{
 };
 use marlin_time::Instant;
 
-use crate::boot::{Boot, R_VSYNC, WINDOW_HEIGHT, WINDOW_WIDTH};
+use crate::boot::{Boot, R_STATS, R_VSYNC, WINDOW_HEIGHT, WINDOW_WIDTH};
 use crate::delta::{RenderDelta, RenderSide, RenderSideError};
 use crate::engine::{Engine, EngineError};
 use crate::shaders::{ShaderError, load_default_resolve, load_engine_shaders};
@@ -166,7 +167,10 @@ pub fn run(boot: &Boot, title: &str) -> Result<(), RunError> {
         let engine_ref = &mut engine;
         let jobs_ref = &jobs;
         jobs.scope(|s| {
-            s.spawn(|| next = Some(engine_ref.frame(dt, Some(state), Some(jobs_ref))));
+            s.spawn(|| {
+                profile_scope!("Simulate");
+                next = Some(engine_ref.frame(dt, Some(state), Some(jobs_ref)));
+            });
             if let Some(delta) = pending.take()
                 && !minimized.get()
             {
@@ -194,6 +198,7 @@ pub fn run(boot: &Boot, title: &str) -> Result<(), RunError> {
         } else if reported == 0 && engine.is_ready() {
             reported = 1;
         }
+        marlin_profile::frame_mark();
         fps_window.1 += 1;
         let elapsed = now.duration_since(fps_window.0);
         if elapsed >= Duration::from_secs(1) {
@@ -201,6 +206,9 @@ pub fn run(boot: &Boot, title: &str) -> Result<(), RunError> {
             let fps = fps_window.1 as f32 / elapsed.as_secs_f32();
             let _ = write!(text, "{title}  {fps:.0} fps");
             window.set_title(text.as_str());
+            if R_STATS.get() {
+                log_stats(fps);
+            }
             fps_window = (now, 0);
         }
         Ok(if occluded {
@@ -261,15 +269,77 @@ fn render_frame(
     frames: &mut FrameContext,
     delta: &RenderDelta,
 ) -> Result<PresentStatus, RunError> {
-    render.collect_feedback(frames);
-    render.apply(device, delta)?;
-    let image = swapchain.acquire(None)?;
+    profile_scope!("Render");
+    {
+        profile_scope!("Feedback");
+        render.collect_feedback(frames);
+    }
+    {
+        profile_scope!("Apply");
+        render.apply(device, delta)?;
+    }
+    let image = {
+        profile_scope!("Acquire");
+        swapchain.acquire(None)?
+    };
     let texture = swapchain.texture(image);
     // The swapchain image is imported like any texture: the graph remembers it was presented.
-    frames.execute_on(device, Some(jobs), |g, _| {
-        let target = g.import_texture("Swapchain", texture);
-        let target = render.add_passes(g, target);
-        g.present(target);
-    })?;
+    {
+        profile_scope!("Execute");
+        frames.execute_on(device, Some(jobs), |g, _| {
+            let target = g.import_texture("Swapchain", texture);
+            let target = render.add_passes(g, target);
+            g.present(target);
+        })?;
+    }
+    profile_scope!("Present");
     Ok(swapchain.present()?)
+}
+
+/// Logs `fps` and, over the profiler's history, the mean frame, the GPU's span per frame (first
+/// pass start to last pass end) and busy time per queue, and the costliest CPU zones and GPU
+/// passes.
+fn log_stats(fps: f32) {
+    let ms = |d: Duration| d.as_secs_f64() * 1e3;
+    marlin_profile::with_history(|h| {
+        let n = h.frames().len().max(1) as u32;
+        let wall = h.frames().map(|f| f.duration()).sum::<Duration>() / n;
+        let (mut span, mut busy) = (Duration::ZERO, [Duration::ZERO; 3]);
+        for f in h.frames() {
+            let zones = f.gpu_zones();
+            if let (Some(lo), Some(hi)) = (
+                zones.iter().map(|z| z.start).min(),
+                zones.iter().map(|z| z.end).max(),
+            ) {
+                span += GpuZone {
+                    start: lo,
+                    end: hi,
+                    ..zones[0]
+                }
+                .duration();
+            }
+            for z in zones {
+                busy[(z.queue as usize).min(2)] += z.duration();
+            }
+        }
+        info!(
+            "{fps:.0} fps, {:.3} ms/frame; gpu span {:.3} ms, busy {:.3} / {:.3} / {:.3} ms \
+             (graphics / compute / copy)",
+            ms(wall),
+            ms(span / n),
+            ms(busy[0] / n),
+            ms(busy[1] / n),
+            ms(busy[2] / n),
+        );
+        for (label, stats) in [("cpu", h.zone_stats()), ("gpu", h.gpu_zone_stats())] {
+            for s in stats.iter().take(12) {
+                info!(
+                    "  {label} {:>8.3} ms  {:>3}x  {}",
+                    ms(s.per_frame.avg),
+                    s.calls / u64::from(s.frames.max(1)),
+                    s.name
+                );
+            }
+        }
+    });
 }

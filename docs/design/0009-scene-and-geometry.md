@@ -433,3 +433,10 @@ R2g（2026-10-18）定下的细节：VSM 的页跨帧缓存（0010 §5.3 的"缓
 - **还没做**：静态和动态分开缓存（现在动态物体经过的页连同静态内容一起重画）；失效球在 CPU 上算，流送变化时要遍历实例（场景大了改到 GPU 上做）；SMRT 软阴影（R2h）。
 - **测试**（`marlin-render/tests/gpu/shadows.rs`）：静止的下一帧不画任何页，遮罩和上一帧逐像素相同；相机平移以后，画的页少于标记的一半，遮罩仍和 CPU 射线一致；盒子移动只重画它下面的页（其余命中缓存），停下以后的一帧不再画页；看天空的一帧不标记任何页，转回来以后所有页仍命中缓存；太阳换方向以后没有页命中；改颜色不画页；隐藏盒子以后它的影子消失。`sample_first_frame` 不变。开窗口跑 `samples/basic` 12 秒，开着验证层，没有报错。
 - 实现里遇到的一个坑：标准库只有 `AsUInt(float)`，`AsUInt(int)` 会先把 int 隐式转成 float 再取位；int 和 uint 之间要用 `(uint)`/`(int)` 转换。
+
+性能（2026-10-18）：`samples/basic` 在 RTX 5060 上不到 60 fps，GPU 一帧 16 ms，其中 `ShadowRaster` 占 13.7 ms。原因是阴影光栅在每级 16K² 的虚拟分辨率上进行，`ShadowPs` 到了像素才丢掉不画的页：覆盖整级的地面每级都要着色 2.7 亿个像素。
+- **按页光栅**：`ClusterCull` 在阴影视图里不再只问"有没有画的页"，而是给 cluster 覆盖到的每个本帧要画的页追加一个绘制（`ShadowDraws`：cluster 在 `Clusters` 里的下标、页在本级的坐标 `x | y << 16`；计数器第 18 个字）。页少的 cluster 遍历自己的页矩形查页表；页多的（比如地面）改为遍历本级本帧画的页的列表，取两者中短的那个。这个列表由 `VsmAllocate` 给每个带 `RENDER_BIT` 的页追加（`VsmDrawn`：每级 `PoolPages + 1` 个字，先是个数，再是页）。
+- **`ShadowMesh`**：每个绘制一个 mesh group，把虚拟 texel 平移整数个 texel，让这一页正好铺满 `page_size`² 的光栅区域，硬件按视口裁剪三角形，只给这一页的 texel 着色；图元 id 带上物理页号，`ShadowPs` 直接写物理页，不再查页表。平移是整 texel 的，覆盖的 texel 和虚拟分辨率上一样，`sample_first_frame` 逐像素不变。
+- **容量**：每级的绘制表 `4 × (cluster 数 + 物理页数)`，上限 `Visibility::max_shadow_draws`（2^20）；超出的绘制丢掉（计数仍然计）。
+- **结果**：`ShadowRaster` 13.7 ms → 0.18 ms，开 vsync 跑满 165 fps，关掉约 370 fps。剩下的 GPU 时间是约 180 个依次执行的小 pass（14 级每级约 10 个），每个 10–20 µs，主要是 barrier 和间接参数的等待，不是计算量。
+- **`r.stats`**：每秒在日志里打印帧率、GPU 一帧的跨度和各队列的忙碌时间、CPU 区段和 GPU pass 的平均耗时。

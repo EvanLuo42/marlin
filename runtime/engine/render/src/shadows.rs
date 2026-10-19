@@ -221,6 +221,7 @@ struct VsmArgs {
     keep: u32,
     free: u32,
     invalidations: u32,
+    drawn: u32,
 }
 
 /// The words of [`VsmOutput::counters`].
@@ -501,6 +502,11 @@ impl Vsm {
             "VsmFree",
             BufferDesc::structured::<u32>(2 * u64::from(pool_pages)),
         );
+        // Per level: the count of its pages drawn this frame, then each one.
+        let drawn = g.create_buffer(
+            "VsmDrawn",
+            BufferDesc::structured::<u32>(u64::from(s.levels * (pool_pages + 1))),
+        );
         let counters = g.create_buffer("VsmCounters", BufferDesc::structured::<u32>(4));
         let args = g.create_buffer("VsmArgs", BufferDesc::structured::<u32>(4));
         let mask = g.create_texture(
@@ -508,16 +514,18 @@ impl Vsm {
             TextureDesc::new_2d(width, height, SHADOW_MASK_FORMAT),
         );
 
-        let (requests, keep, counters) = g.add_compute("VsmReset", |b| {
+        let (requests, keep, counters, drawn) = g.add_compute("VsmReset", |b| {
             let requests = b.write_buffer(requests, Access::Clear);
             let keep = b.write_buffer(keep, Access::Clear);
             let counters = b.write_buffer(counters, Access::Clear);
+            let drawn = b.write_buffer(drawn, Access::Clear);
             (
-                (requests, keep, counters),
+                (requests, keep, counters, drawn),
                 move |ctx: &mut PassContext<'_>| {
                     ctx.fill_buffer(requests, 0);
                     ctx.fill_buffer(keep, 0);
                     ctx.fill_buffer(counters, 0);
+                    ctx.fill_buffer(drawn, 0);
                 },
             )
         });
@@ -597,7 +605,7 @@ impl Vsm {
                 ctx.dispatch(pool_pages.div_ceil(64), 1, 1);
             })
         });
-        let (page_table, cache, tags, counters) = g.add_compute("VsmAllocate", |b| {
+        let (page_table, cache, tags, counters, drawn) = g.add_compute("VsmAllocate", |b| {
             let requests = b.read_buffer(requests, Access::ComputeRead);
             let keep = b.read_buffer(keep, Access::ComputeRead);
             let free = b.read_buffer(free, Access::ComputeRead);
@@ -605,9 +613,10 @@ impl Vsm {
             let cache = b.write_buffer(cache, Access::ComputeWrite);
             let tags = b.write_buffer(tags, Access::ComputeWrite);
             let counters = b.write_buffer(counters, Access::ComputeWrite);
+            let drawn = b.write_buffer(drawn, Access::ComputeWrite);
             let records = level_records.clone();
             (
-                (page_table, cache, tags, counters),
+                (page_table, cache, tags, counters, drawn),
                 move |ctx: &mut PassContext<'_>| {
                     let args = VsmArgs {
                         constants: ctx.upload(&constants),
@@ -619,6 +628,7 @@ impl Vsm {
                         cache: ctx.uav(cache),
                         tags: ctx.uav(tags),
                         counters: ctx.uav(counters),
+                        drawn: ctx.uav(drawn),
                         ..VsmArgs::default()
                     };
                     ctx.set_pipeline(&self.allocate);
@@ -674,10 +684,13 @@ impl Vsm {
                 pages_per_side: n,
                 page_base: k as u32 * n * n,
                 pool_pages_per_row: s.pool_pages[0],
+                pool_pages,
+                drawn_base: k as u32 * (pool_pages + 1),
                 page_offset: record.offset,
             };
-            (used, pool) =
-                vis.add_shadow_view(g, meshes, scene, gpu, pages, used, page_table, pool, &view);
+            (used, pool) = vis.add_shadow_view(
+                g, meshes, scene, gpu, pages, used, page_table, drawn, pool, &view,
+            );
         }
 
         let mask = g.add_compute("VsmMask", |b| {

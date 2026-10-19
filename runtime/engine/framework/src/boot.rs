@@ -12,6 +12,7 @@
 //! | `game.level`      | UUID of the entry level                                          |
 //! | `game.platform`   | the platform cookd cooks for; defaults to the build's platform   |
 //! | `r.vsync`, `window.width`, `window.height` | presentation                            |
+//! | `r.stats`         | log the frame rate, CPU zones and GPU passes once a second       |
 //!
 //! There is no load-by-path: the entry level is named by UUID, and everything else is reached
 //! through its links, except the few objects code asks for by name (the engine's shader package,
@@ -46,6 +47,11 @@ pub static GAME_PLATFORM: CvarString = CvarString::new(
     "Platform the cook service cooks for; defaults to the one this build targets.",
 );
 pub static R_VSYNC: CvarBool = CvarBool::new("r.vsync", true, "Wait for vertical blank.");
+pub static R_STATS: CvarBool = CvarBool::new(
+    "r.stats",
+    false,
+    "Log the frame rate, CPU zones and GPU passes once a second.",
+);
 pub static WINDOW_WIDTH: CvarI64 =
     CvarI64::new("window.width", 1280, "Window width.").range(64, 16384);
 pub static WINDOW_HEIGHT: CvarI64 =
@@ -62,6 +68,7 @@ pub fn register_cvars() {
             &GAME_LEVEL,
             &GAME_PLATFORM,
             &R_VSYNC,
+            &R_STATS,
             &WINDOW_WIDTH,
             &WINDOW_HEIGHT,
         ]);

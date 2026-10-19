@@ -45,7 +45,8 @@ namespace Marlin.Engine.Visibility;
 // 5 where the next level's nodes start, 6 and 7 the current level's range, 8 the page requests
 // (may pass their capacity), 9 the occluded instances, 10 the pass's first cluster, 11 the
 // occluded clusters, 12 where the next pass's parts start, 13 and 14 the pass's part range,
-// 15 the software-raster clusters appended, 16 those drawn, 17 the pass's first one. Software
+// 15 the software-raster clusters appended, 16 those drawn, 17 the pass's first one, 18 a shadow
+// view's draws appended (may pass their capacity). Software
 // raster clusters are kept in `Clusters` from `ClusterCapacity` on.
 // `Args` (indirect arguments, a pass never both counts into and dispatches from one buffer)
 // holds five records of the RHI's indirect dispatches: a constant (push word 31, unused here),
@@ -102,6 +103,12 @@ public struct View
     public uint ShadowPageSize;
     public uint ShadowPoolPagesPerRow;
     public uint2 ShadowPageOffset;
+    /// A shadow view's pages drawn this frame: `ShadowDrawnPages[ShadowDrawnBase]` of them from
+    /// `ShadowDrawnBase + 1`, each `x | y << 16` (from the view's first page).
+    public ReadOnlyBuffer<uint> ShadowDrawnPages;
+    public uint ShadowDrawnBase;
+    /// Entries `ShadowDraws` holds.
+    public uint ShadowDrawCapacity;
 }
 
 public struct CullArgs
@@ -130,6 +137,9 @@ public struct CullArgs
     /// What pass 1 found occluded: instance rows, and clusters (row, `slot << 12 | cluster`).
     public Buffer<uint> OccludedInstances;
     public Buffer<uint2> OccludedClusters;
+    /// A shadow view's draws: the index of a cluster in `Clusters`, and a page drawn this frame
+    /// it covers (`x | y << 16`, from the view's first page).
+    public Buffer<uint2> ShadowDraws;
     /// `TestHzb` | `SecondPass`.
     public uint Pass;
 }
@@ -440,28 +450,61 @@ uint ShadowEntry(in View v, uint2 page)
 /// Whether a page table entry is a page drawn this frame.
 bool ShadowDrawn(uint entry) => entry != NoChild && (entry & ShadowRender) != 0;
 
-/// Whether a shadow view draws any page under the world sphere (`center`, `radius`); true for
-/// spheres over more than 64 pages, which are not worth the look.
-bool ShadowPagesDrawn(in View v, float3 center, float radius)
+/// Appends the draw of the visible cluster (`row`, `address`) over the shadow page `page` (from
+/// the view's first): the cluster to `Clusters` with its first page (its index there is
+/// `cluster`, `NoChild` until then), the pair to `ShadowDraws`. Returns the cluster's index.
+uint ShadowDraw(in CullArgs a, in View v, uint row, uint address, uint cluster, uint2 page)
+{
+    if (cluster == NoChild)
+    {
+        uint at = a.Counters.AtomicAdd(3, 1);
+        if (at >= v.ClusterCapacity)
+            return NoChild;
+        a.Clusters[at] = uint2(row, address);
+        cluster = at;
+    }
+    uint i = a.Counters.AtomicAdd(18, 1);
+    if (i < v.ShadowDrawCapacity)
+        a.ShadowDraws[i] = uint2(cluster, page.x | (page.y << 16));
+    return cluster;
+}
+
+/// Appends the draws of the visible cluster (`row`, `address`) in the world sphere (`center`,
+/// `radius`) over each page under it the shadow view draws this frame: by the pages under the
+/// sphere, or the view's list of drawn pages when that is shorter.
+void ShadowDraws(in CullArgs a, in View v, uint row, uint address, float3 center, float radius)
 {
     float4 c = v.ViewProjection * float4(center, 1);
     float2 px = float2((c.x * 0.5 + 0.5) * (float)v.Width, (0.5 - c.y * 0.5) * (float)v.Height);
     float r = radius * v.Eye.w;
     float size = (float)v.ShadowPageSize;
     float last = (float)v.ShadowPagesPerSide - 1;
-    float2 lo = Clamp(Floor((px - r) / size), float2(0, 0), float2(last, last));
-    float2 hi = Clamp(Floor((px + r) / size), float2(0, 0), float2(last, last));
-    if ((hi.x - lo.x + 1) * (hi.y - lo.y + 1) > 64)
-        return true;
-    for (uint y = (uint)lo.y; y <= (uint)hi.y; y++)
+    float2 lof = Clamp(Floor((px - r) / size), float2(0, 0), float2(last, last));
+    float2 hif = Clamp(Floor((px + r) / size), float2(0, 0), float2(last, last));
+    uint2 lo = uint2((uint)lof.x, (uint)lof.y);
+    uint2 hi = uint2((uint)hif.x, (uint)hif.y);
+    uint area = (hi.x - lo.x + 1) * (hi.y - lo.y + 1);
+    uint drawn = v.ShadowDrawnPages[v.ShadowDrawnBase];
+    uint cluster = NoChild;
+    if (area <= drawn)
     {
-        for (uint x = (uint)lo.x; x <= (uint)hi.x; x++)
+        for (uint y = lo.y; y <= hi.y; y++)
         {
-            if (ShadowDrawn(ShadowEntry(v, uint2(x, y))))
-                return true;
+            for (uint x = lo.x; x <= hi.x; x++)
+            {
+                if (ShadowDrawn(ShadowEntry(v, uint2(x, y))))
+                    cluster = ShadowDraw(a, v, row, address, cluster, uint2(x, y));
+            }
         }
+        return;
     }
-    return false;
+    for (uint i = 0; i < drawn; i++)
+    {
+        uint p = v.ShadowDrawnPages[v.ShadowDrawnBase + 1 + i];
+        uint2 page = uint2(p & 65535, p >> 16);
+        if (page.x >= lo.x && page.y >= lo.y && page.x <= hi.x && page.y <= hi.y)
+            cluster = ShadowDraw(a, v, row, address, cluster, page);
+    }
 }
 
 /// Appends a visible cluster: hardware raster from the front of `Clusters`, software raster
@@ -526,10 +569,13 @@ public void ClusterCull([GroupId] uint3 group, [GroupThreadId] uint3 thread, [Pu
             if (Dot(d, axis) >= cutoff * Length(d) + radius)
                 continue;
         }
-        // A shadow view draws only into the pages it draws this frame.
-        if ((v.Mode & Orthographic) != 0 && !ShadowPagesDrawn(v, center, radius))
-            continue;
         uint address = (slot << 12) | cluster;
+        // A shadow view draws only into the pages it draws this frame, each on its own.
+        if ((v.Mode & Orthographic) != 0)
+        {
+            ShadowDraws(a, v, row, address, center, radius);
+            continue;
+        }
         bool software = Software(v, center, radius, c.TriangleCount);
         if (PassOccludes(a, v, center, radius))
         {
@@ -574,11 +620,20 @@ public void ClusterRetest([GroupId] uint3 group, [GroupThreadId] uint3 thread, [
         Draw(a, v, row, item.y, Software(v, center, radius, c.TriangleCount));
 }
 
-/// The clusters appended this pass become its mesh dispatch and its software raster dispatch.
+/// The clusters appended this pass become its mesh dispatch and its software raster dispatch;
+/// a shadow view's mesh dispatch is a group per draw (`ShadowDraws`).
 [Compute(1, 1, 1)]
 public void FinishArgs([Push] in CullArgs a)
 {
-    uint capacity = a.View.Value.ClusterCapacity;
+    View v = a.View.Value;
+    if ((v.Mode & Orthographic) != 0)
+    {
+        a.Counters[4] = Min(a.Counters[3], v.ClusterCapacity);
+        WriteDispatch(a, 8, Min(a.Counters[18], v.ShadowDrawCapacity));
+        WriteDispatch(a, 20, 0);
+        return;
+    }
+    uint capacity = v.ClusterCapacity;
     uint first = a.Counters[4];
     uint count = Min(a.Counters[3], capacity);
     a.Counters[10] = first;
@@ -600,6 +655,8 @@ public struct RasterArgs
     public ReadOnlyBuffer<uint2> Clusters;
     public ReadOnlyBuffer<uint> Counters;
     public StorageTexture2D<ulong> Vis;
+    /// A shadow view's draws (`CullArgs.ShadowDraws`).
+    public ReadOnlyBuffer<uint2> ShadowDraws;
 }
 
 public struct VisVertex
@@ -657,21 +714,64 @@ public void VisPs([Position] float4 position, [PrimitiveId] uint id, [Push] in R
     a.Vis.AtomicMax((int2)position.xy, value);
 }
 
-/// A shadow view's pixel: its virtual texel goes through the page table to the physical pool,
-/// which keeps the depth nearest the light (the largest) with an atomic max. Texels of pages
-/// not drawn this frame (nothing samples them, or they are cached) are dropped.
-[Pixel]
-public void ShadowPs([Position] float4 position, [Push] in RasterArgs a)
+/// A shadow view's draw (`ShadowDraws`): its cluster over one page drawn this frame. The page
+/// fills the `ShadowPageSize`² raster area (the virtual texels shifted by whole texels, so they
+/// cover the same texels), so the hardware clips the triangles to it and only the page's texels
+/// are shaded; each primitive carries the page's physical page.
+[Mesh(128, 1, 1, MaxVertices = 128, MaxPrimitives = 128, Topology = MeshTopology.Triangle)]
+public void ShadowMesh(
+    [GroupId] uint3 group,
+    [GroupThreadId] uint3 thread,
+    [Push] in RasterArgs a,
+    MeshOutput<VisVertex, VisPrimitive> o)
 {
     View v = a.View.Value;
-    uint2 texel = uint2((uint)position.x, (uint)position.y);
-    uint2 page = texel / v.ShadowPageSize;
-    uint entry = ShadowEntry(v, page);
-    if (!ShadowDrawn(entry))
+    uint index = GroupIndex(group);
+    if (index >= Min(a.Counters[18], v.ShadowDrawCapacity))
+    {
+        o.SetCounts(0, 0);
         return;
-    uint physical = entry - ShadowRender;
+    }
+    uint2 draw = a.ShadowDraws[index];
+    uint2 at = uint2(draw.y & 65535, draw.y >> 16);
+    uint physical = ShadowEntry(v, at) - ShadowRender;
+    uint2 entry = a.Clusters[draw.x];
+    uint row = entry.x;
+    MeshEntry mesh = a.Meshes[a.Instances[row].Mesh];
+    ReadOnlyByteBuffer pool = mesh.Pages;
+    Page page = LoadPage(pool, AddressSlot(entry.y));
+    Cluster c = LoadCluster(pool, page, AddressCluster(entry.y));
+    o.SetCounts(c.VertexCount, c.TriangleCount);
+    uint i = thread.x;
+    if (i < c.VertexCount)
+    {
+        float3 p = DecodePosition(pool, mesh, page, c.VertexOffset + i);
+        float4 world = float4(Apply(a.Transforms[row].Current, float4(p, 1)), 1);
+        float4 clip = v.ViewProjection * world;
+        // Virtual texel (x + 1) / 2 · Width less the page's first, over the page.
+        float sx = (float)v.Width / (float)v.ShadowPageSize;
+        float sy = (float)v.Height / (float)v.ShadowPageSize;
+        clip.x = (clip.x + clip.w) * sx - (float)(2 * at.x + 1) * clip.w;
+        clip.y = (float)(2 * at.y + 1) * clip.w - (clip.w - clip.y) * sy;
+        o.Vertices[i] = VisVertex { Pos = clip };
+    }
+    if (i < c.TriangleCount)
+    {
+        o.Triangles[i] = LoadTriangle(pool, page, c, i) - c.VertexOffset;
+        o.Primitives[i] = VisPrimitive { Id = physical };
+    }
+}
+
+/// A shadow view's pixel: the texel of its draw's physical page (the primitive's id) in the
+/// pool, which keeps the depth nearest the light (the largest) with an atomic max.
+[Pixel]
+public void ShadowPs([Position] float4 position, [PrimitiveId] uint physical, [Push] in RasterArgs a)
+{
+    View v = a.View.Value;
+    uint last = v.ShadowPageSize - 1;
+    uint2 texel = Min(uint2((uint)position.x, (uint)position.y), uint2(last, last));
     uint2 origin = uint2(physical % v.ShadowPoolPagesPerRow, physical / v.ShadowPoolPagesPerRow) * v.ShadowPageSize;
-    uint2 at = origin + texel % v.ShadowPageSize;
+    uint2 at = origin + texel;
     v.ShadowPool.AtomicMax(int2((int)at.x, (int)at.y), AsUInt(Saturate(position.z)));
 }
 
