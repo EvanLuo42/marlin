@@ -60,7 +60,7 @@ pub struct SceneUpdates {
 ### 1.3 和 ECS 的关系
 
 - `RenderScene` 不依赖 ECS。editor 的预览场景、资产缩略图、材质球都直接构造 `RenderScene`，不需要一个 ECS 世界。
-- ECS 那边的组件（`StaticMesh`，以后的 `Light`、`Decal`……）和 extract 系统放在 `marlin-framework` 里，`marlin-render` 只定义更新流。
+- ~~ECS 那边的组件和 extract 系统放在 `marlin-framework` 里~~ 已由 [0019](0019-engine-framework-and-world.md) §7 取代：渲染相关的组件和 extract system 归 `marlin-render`，世界坐标的 tile 格式见 0019 §6。
 
 ## 2. GPU Scene
 

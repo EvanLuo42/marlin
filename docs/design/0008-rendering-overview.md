@@ -263,6 +263,8 @@ pub struct ViewOutput<'g> {
 
 ### 5.4 Viewport
 
+> 视图的来源（`Camera` 组件的 `ViewTarget`、editor 视口相机）和视图列表见 [0019](0019-engine-framework-and-world.md) §8。
+
 - **viewport 是 editor 和 game 的概念**，渲染器不知道它。viewport 持有一个 `ViewState`、相机和视口设置，每帧把它们写进快照里的一个 `SceneView`。
 - editor 的视口：透视/正交、调试视图（缓冲可视化、光照档覆盖）、PIE，都是不同的 `SceneView` 设置。
 - game：主视图就是一个视口；分屏是多个视口。

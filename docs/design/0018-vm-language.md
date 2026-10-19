@@ -363,7 +363,7 @@ mod 是受限的扩展点，不破坏游戏本体的封闭世界优化：
 
 - 脚本里对引擎对象的引用在对象销毁后**仍然非 null**（不破坏 §3.3 的可空性规则）。访问已销毁对象的成员抛 `ObjectDestroyedException`；用 `obj.IsAlive` 检查。不重载 `==`，没有 Unity 的"假 null"。
 - 实现：引擎对象的脚本代理里存着句柄和代数；每次 `call.native` 先校验代数（一次比较）。
-- **待定**：对象模型（脚本类是否继承引擎类型、还是挂在 ECS 上）等 gameplay 框架设计时再定。VM 只提供通用的绑定机制。
+- **已定**（[0019](0019-engine-framework-and-world.md) §10）：脚本组件（`Behaviour`）加 unmanaged struct 组件和脚本 system；不继承引擎类型。
 
 ## 13. 热重载
 
@@ -411,5 +411,5 @@ runtime/
 
 ## 17. 待定
 
-- 对象模型：脚本类与引擎对象的关系，以及引擎对象销毁时怎么取消挂在它身上的 `async` 函数（§5、§12.3）。等 gameplay 框架设计时定。
+- ~~对象模型~~ 已由 [0019](0019-engine-framework-and-world.md) §10 决定，包括 `OnDestroy` 时取消挂在对象上的 `async` 函数。
 - 按游戏 profile 定制超级指令表（§9.5）：现在不做。

@@ -352,6 +352,8 @@ bulk        GPU 数据（顶点、纹理 mip），对齐到 4 KiB，直接上传
 
 ## 9. Framework（`marlin-framework`）
 
+> 已修订（2026-10-19）：framework 的职责以 [0019](0019-engine-framework-and-world.md) §12 为准：只剩 Host，组件、extract 和 loader 归各自的模块。
+
 - 负责启动：
   - 读取启动配置（marlin-config 的 cvar 加一个启动用 `.masset`）。
   - 注册各个子系统。

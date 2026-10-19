@@ -312,6 +312,8 @@ runtime/engine/
 ├── nav/           寻路
 ├── vfx/           粒子
 └── framework/     游戏框架（marlin-framework，避免与 apps/game 的 marlin-game 重名）：主循环、帧流水线、子系统注册、启动时读取 boot 配置 → 加载 VM 模块与初始关卡
+
+（2026-10-19）world 与 framework 的分工、模块机制、新增的 `input_action/` 和 `gameplay/` 以 [0019](0019-engine-framework-and-world.md) 为准。
 ```
 
 `runtime/marlin/`（package 名 `marlin`）是 umbrella：依赖并重导出 L0–L3，对外提供 `marlin::run(BootConfig)`。
