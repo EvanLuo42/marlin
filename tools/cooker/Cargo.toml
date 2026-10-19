@@ -13,6 +13,7 @@ name = "marlin-cook"
 path = "src/main.rs"
 
 [dependencies]
+marlin.workspace = true
 marlin-anim.workspace = true
 marlin-asset.workspace = true
 marlin-asset-db.workspace = true
@@ -33,6 +34,7 @@ marlin-render.workspace = true
 marlin-shader.workspace = true
 marlin-store.workspace = true
 marlin-vcs.workspace = true
+marlin-world.workspace = true
 
 [dev-dependencies]
 marlin-test-support.workspace = true

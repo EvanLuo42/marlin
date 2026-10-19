@@ -100,6 +100,28 @@ impl Levels {
             .map(|(&id, s)| LevelRequest { id, level: s.asset })
     }
 
+    /// Every sublevel, in no particular order.
+    pub fn ids(&self) -> impl Iterator<Item = SublevelId> + '_ {
+        self.sublevels.keys().copied()
+    }
+
+    /// Whether every sublevel has spawned.
+    pub fn all_loaded(&self) -> bool {
+        self.sublevels
+            .values()
+            .all(|s| s.state == SublevelState::Loaded)
+    }
+
+    /// Where a sublevel is placed.
+    pub fn placement(&self, id: SublevelId) -> Option<Transform> {
+        self.sublevels.get(&id).map(|s| s.placement)
+    }
+
+    /// The level asset a sublevel was asked for with (nil for one spawned from data).
+    pub fn asset(&self, id: SublevelId) -> Option<Uuid> {
+        self.sublevels.get(&id).map(|s| s.asset)
+    }
+
     /// The entities a sublevel has spawned so far.
     pub fn entities(&self, id: SublevelId) -> &[Entity] {
         self.sublevels.get(&id).map_or(&[], |s| &s.entities)
@@ -261,6 +283,7 @@ impl crate::World {
 
     /// Spawns a loaded level now, placed by `placement`, as a new sublevel.
     pub fn spawn_level(&mut self, level: Arc<CookedLevel>, placement: Transform) -> SublevelId {
+        warn_unknown(&level, "a level");
         let id = self.levels_mut().add(Uuid::NIL, placement, Some(level));
         let ecs = self.ecs_mut();
         let mut levels = ecs.remove_resource::<Levels>().expect("worlds have Levels");
@@ -281,6 +304,7 @@ impl crate::World {
     pub fn provide_level(&mut self, id: SublevelId, level: Arc<CookedLevel>) -> bool {
         match self.levels_mut().sublevels.get_mut(&id) {
             Some(sub) if sub.state == SublevelState::Requested => {
+                warn_unknown(&level, "a sublevel");
                 sub.data = Some(level);
                 sub.state = SublevelState::Spawning;
                 true
@@ -315,6 +339,7 @@ impl crate::World {
         transform: Transform,
         parent: Option<Entity>,
     ) -> Option<Entity> {
+        warn_unknown(prefab, "a Prefab");
         let remap = |g: EntityGuid| {
             if g == prefab.root {
                 guid
@@ -366,5 +391,16 @@ impl crate::World {
             ecs.set_parent(r, p);
         }
         root
+    }
+}
+
+/// Says so when `level` holds components of types this build does not have; they are left out.
+fn warn_unknown(level: &CookedLevel, what: &str) {
+    let unknown = level.unknown_components();
+    if unknown > 0 {
+        marlin_diag::warn!(
+            "{what}: {unknown} components of types this build does not have are left out \
+             (cooked before their types changed? cook again)"
+        );
     }
 }

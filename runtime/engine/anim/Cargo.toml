@@ -6,6 +6,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+marlin-world.workspace = true
 marlin-asset.workspace = true
 marlin-math.workspace = true
 marlin-reflect.workspace = true

@@ -4,9 +4,9 @@ use marlin_asset::cooked::write::{UnitObject, unit};
 use marlin_asset::cooked::{Encoding, platform_id, unit_id};
 use marlin_asset::{AssetError, AssetServer, MemorySource, Uuid, Vfs};
 use marlin_font::Font;
-use marlin_framework::loaders::engine_loaders;
-use marlin_framework::{UI_FONT, load_ui_font};
 use marlin_reflect::type_info;
+use marlin_ui_render::{UI_FONT, UiModule, load_ui_font};
+use marlin_world::{Modules, Resources};
 
 const FONT: Uuid = Uuid::from_u128(0x0199_0000_0000_7000_8000_0000_0000_0f0f);
 
@@ -53,7 +53,8 @@ fn the_ui_font_loads_by_name() {
     ));
 }
 
-/// The engine's loaders, with a streamer nothing drives (these assets stream nothing).
+/// The UI module's loaders.
 fn loaders() -> marlin_asset::Loaders {
-    engine_loaders(&std::sync::Arc::new(marlin_asset::BlobStreamer::new()))
+    let modules = Modules::new(vec![Box::new(UiModule)]).unwrap();
+    modules.table().loaders(&Resources::new())
 }

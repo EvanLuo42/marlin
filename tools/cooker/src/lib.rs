@@ -15,7 +15,6 @@ use marlin_cook_shader::{ShaderCooker, ShaderPackageCooker};
 use marlin_cook_text::{StringTable, StringTableCooker};
 use marlin_cook_texture::TextureCooker;
 use marlin_font::Font;
-use marlin_framework::engine_components;
 use marlin_framework::scalability::{DeviceProfile, Scalability};
 use marlin_render::asset::{Mesh, PairingPattern, Texture};
 use marlin_shader::asset::{Shader, ShaderPackage};
@@ -38,7 +37,7 @@ pub fn engine_cookers() -> Cookers {
         // Permutations are found by name too (the default material's resolve).
         .and_then(|()| cookers.register_named::<Shader>(ShaderCooker::new()))
         // Levels and Prefabs, with the components they place.
-        .and_then(|()| marlin_cook_level::register(&mut cookers, engine_components()))
+        .and_then(|()| marlin_cook_level::register(&mut cookers, game_components()))
         // The quality presets, found by name at boot (0008 §2.2).
         .and_then(|()| cookers.register_named_generic::<Scalability>())
         .and_then(|()| cookers.register_named_generic::<DeviceProfile>());
@@ -60,4 +59,12 @@ pub fn open_ddc(dir: &Path, store: Option<SocketAddr>) -> io::Result<Box<dyn Ddc
             Box::new(LayeredDdc::new(local, shared))
         }
     })
+}
+
+/// The component types of the game build: what levels and Prefabs may hold. The game and the
+/// cook read data with the same registry (0019 §3.2).
+pub fn game_components() -> std::sync::Arc<marlin_world::ComponentRegistry> {
+    let modules =
+        marlin::world::Modules::new(marlin::game_modules()).expect("the game modules register");
+    modules.table().components().clone()
 }

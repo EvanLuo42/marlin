@@ -399,3 +399,23 @@ pub fn decode_rotation(bits: [u16; 3]) -> [f32; 4] {
     q[largest] = sqrt((1.0 - rest).max(0.0));
     q
 }
+
+/// Loaded in place (`marlin_asset::InPlace<Skeleton>`), checked once.
+impl marlin_asset::CookedAsset for Skeleton {
+    type View<'a> = SkeletonView<'a>;
+    type Error = AnimAssetError;
+
+    fn view<'a>(payload: &'a [u8], _: &[u64]) -> Result<SkeletonView<'a>, AnimAssetError> {
+        SkeletonView::new(payload)
+    }
+}
+
+/// Loaded in place (`marlin_asset::InPlace<AnimationClip>`), checked once.
+impl marlin_asset::CookedAsset for AnimationClip {
+    type View<'a> = AnimationView<'a>;
+    type Error = AnimAssetError;
+
+    fn view<'a>(payload: &'a [u8], _: &[u64]) -> Result<AnimationView<'a>, AnimAssetError> {
+        AnimationView::new(payload)
+    }
+}

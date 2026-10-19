@@ -225,3 +225,13 @@ impl<'a> FontView<'a> {
             })
     }
 }
+
+/// Loaded in place (`marlin_asset::InPlace<Font>`), checked once.
+impl marlin_asset::CookedAsset for Font {
+    type View<'a> = FontView<'a>;
+    type Error = FontError;
+
+    fn view<'a>(payload: &'a [u8], _: &[u64]) -> Result<FontView<'a>, FontError> {
+        FontView::new(payload)
+    }
+}

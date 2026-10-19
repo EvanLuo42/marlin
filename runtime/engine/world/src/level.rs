@@ -443,4 +443,14 @@ impl CookedLevel {
     pub fn entity_count(&self) -> usize {
         self.archetypes.iter().map(|a| a.entities.len()).sum()
     }
+
+    /// Components that read back empty: the cook drops empty ones, so these named a type this
+    /// build does not have (cooked data older than its components, or another build's).
+    pub fn unknown_components(&self) -> usize {
+        self.archetypes
+            .iter()
+            .flat_map(|a| a.columns.iter().flatten())
+            .filter(|c| c.is_none())
+            .count()
+    }
 }

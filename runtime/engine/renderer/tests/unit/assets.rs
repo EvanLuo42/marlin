@@ -4,13 +4,12 @@
 use marlin_asset::cooked::write::{UnitObject, unit};
 use marlin_asset::cooked::{Encoding, platform_id, unit_id};
 use marlin_asset::{AssetServer, MemorySource, Uuid, Vfs};
-use marlin_framework::loaders::engine_loaders;
-use marlin_framework::{
-    DEFAULT_RESOLVE, ENGINE_SHADERS, ShaderError, load_default_resolve, load_engine_shaders,
-};
 use marlin_material::RESOLVE;
 use marlin_reflect::type_info;
 use marlin_render::{Lighting, ScatterShader};
+use marlin_renderer::{
+    DEFAULT_RESOLVE, ENGINE_SHADERS, ShaderError, load_default_resolve, load_engine_shaders,
+};
 use marlin_shader::asset::{LibraryEntry, ShaderLibrary};
 use marlin_shader::bind::bind_one;
 use marlin_shader::reflect::{EntryInfo, ShaderReflection, Stage, StructLayout};
@@ -123,7 +122,9 @@ fn the_default_resolve_loads_by_name() {
     assert!(bind_one(&short, &RESOLVE).is_err());
 }
 
-/// The engine's loaders, with a streamer nothing drives (these assets stream nothing).
+/// The render module's loaders (with a streamer nothing drives: these assets stream nothing).
 fn loaders() -> marlin_asset::Loaders {
-    engine_loaders(&std::sync::Arc::new(marlin_asset::BlobStreamer::new()))
+    crate::modules()
+        .table()
+        .loaders(&marlin_world::Resources::new())
 }

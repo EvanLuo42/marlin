@@ -174,6 +174,7 @@ GPU   :                      [ GPU N ................ ]
 |---|---|---|
 | `marlin-render-graph` | `runtime/engine/render_graph` | 0007 |
 | `marlin-render` | `runtime/engine/render` | `RenderScene`、GPU Scene、`SceneRenderer`、几何、光照、后处理、环境；按模块划分 |
+| `marlin-renderer` | `runtime/engine/renderer` | render 模块（0019 §7）：渲染组件、extract、`RenderDelta` 与视图列表、`WorldRenderer`（一个 World 的渲染侧，组合 `marlin-render` 和 `marlin-material`） |
 | `marlin-material` | `runtime/engine/material` | 材质类型、实例、参数表、closure 注册表的运行时部分（0011）；0001 的布局里已经有这个 crate，Cargo 里还没建 |
 | `marlin-ui-render` | `runtime/engine/ui_render` | UIRenderer（0012） |
 | `marlin-font` | `runtime/engine/font` | shaping、字形栅格化、字形缓存（0012 §6） |

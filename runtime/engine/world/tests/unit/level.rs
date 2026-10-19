@@ -470,3 +470,16 @@ fn prefab_instances_spawn_with_their_own_guids() {
     assert_eq!(w.ecs().get::<Parent>(lamp_b).map(Parent::get), Some(b));
     assert_eq!(w.ecs().get::<Transform>(lamp_a), Some(&at(0.5)));
 }
+
+#[test]
+fn components_of_unknown_types_are_counted_and_left_out() {
+    let mut cooked = level();
+    // As a component of a type the build no longer has reads back.
+    cooked.archetypes[1].columns[0][0] = ComponentData::default();
+    assert_eq!(cooked.unknown_components(), 1);
+    let mut w = world();
+    w.spawn_level(Arc::new(cooked), Transform::IDENTITY);
+    let root = by_guid(&w, guid(1));
+    assert!(w.ecs().get::<Transform>(root).is_none(), "left out");
+    assert!(w.ecs().get::<EntityName>(root).is_some(), "the rest spawns");
+}

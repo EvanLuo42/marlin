@@ -1,0 +1,31 @@
+[package]
+name = "marlin-renderer"
+description = "The render module: render components, extract, and the world renderer."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+marlin-asset.workspace = true
+marlin-config.workspace = true
+marlin-containers.workspace = true
+marlin-diag.workspace = true
+marlin-ecs.workspace = true
+marlin-error.workspace = true
+marlin-jobs.workspace = true
+marlin-material.workspace = true
+marlin-math.workspace = true
+marlin-reflect.workspace = true
+marlin-render.workspace = true
+marlin-render-graph.workspace = true
+marlin-rhi.workspace = true
+marlin-shader = { workspace = true, features = ["rhi"] }
+marlin-sync.workspace = true
+marlin-world.workspace = true
+
+[dev-dependencies]
+marlin-serial.workspace = true
+marlin-test-support.workspace = true
+
+[lints]
+workspace = true

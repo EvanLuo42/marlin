@@ -20,12 +20,11 @@ use marlin_rhi::{
 use marlin_time::Instant;
 
 use crate::boot::{Boot, R_VSYNC, WINDOW_HEIGHT, WINDOW_WIDTH};
-use crate::delta::{RenderDelta, RenderSide, RenderSideError};
+use marlin_renderer::{RenderAssets, RenderDelta, WorldRenderer, WorldRendererError};
+use marlin_world::{Modules, Transform, WorldKind};
+
 use crate::dev::DevTools;
 use crate::engine::{Engine, EngineError};
-use crate::shaders::{
-    ShaderError, load_default_bake, load_default_resolve, load_engine_shaders, load_pairing_pattern,
-};
 
 #[derive(Debug, marlin_error::Error)]
 pub enum RunError {
@@ -35,10 +34,10 @@ pub enum RunError {
     Gpu(#[from] marlin_rhi::Error),
     #[error("engine")]
     Engine(#[from] EngineError),
-    #[error("engine shaders")]
-    Shaders(#[from] ShaderError),
-    #[error("render passes")]
-    Render(#[from] RenderSideError),
+    #[error("the world renderer")]
+    Render(#[from] WorldRendererError),
+    #[error("no render module: this build cannot draw")]
+    NoRenderer,
 }
 
 /// What a turn of the loop asks of its caller.
@@ -49,11 +48,13 @@ enum Step {
     Occluded,
 }
 
-/// Runs the game in a window until it is closed (or Esc / gamepad Start).
+/// Runs the game of `modules` (registered before `boot` read its configuration) in a window until
+/// it is closed (or Esc / gamepad Start): a game world with the entry level, drawn by a
+/// [`WorldRenderer`].
 ///
 /// Keys: F11 or Alt+Enter, borderless fullscreen; V, vsync; F3, the stats overlay (not in
 /// shipping builds, [`dev`](crate::dev)).
-pub fn run(boot: &Boot, title: &str) -> Result<(), RunError> {
+pub fn run(boot: &Boot, title: &str, modules: Modules) -> Result<(), RunError> {
     let mut app = App::new()?;
     let window = app.create_window(&WindowDesc {
         title,
@@ -97,41 +98,29 @@ pub fn run(boot: &Boot, title: &str) -> Result<(), RunError> {
         },
     )?;
 
-    let mut engine = Engine::new(&boot.vfs)?;
-    // The renderer's shaders, cooked from content/engine like any asset.
-    let library = load_engine_shaders(&mut engine.assets, &boot.vfs, Some(&jobs))?;
-    let resolve = load_default_resolve(&mut engine.assets, &boot.vfs, Some(&jobs))?;
-    let bake = load_default_bake(&mut engine.assets, &boot.vfs, Some(&jobs))?;
-    let pairing = load_pairing_pattern(&mut engine.assets, &boot.vfs, Some(&jobs))
-        .map_err(ShaderError::Load)?;
-    let shaders = engine
-        .assets
-        .get(&library)
-        .ok_or(ShaderError::Load(marlin_asset::AssetError::NotFound))?;
-    let resolve = engine
-        .assets
-        .get(&resolve)
-        .ok_or(ShaderError::Load(marlin_asset::AssetError::NotFound))?;
-    let bake = engine
-        .assets
-        .get(&bake)
-        .ok_or(ShaderError::Load(marlin_asset::AssetError::NotFound))?;
-    let pairing = engine
-        .assets
-        .get(&pairing)
-        .ok_or(ShaderError::Load(marlin_asset::AssetError::NotFound))?;
-    let mut render = RenderSide::new(
+    let mut engine = Engine::new(&boot.vfs, modules, Some(&jobs))?;
+    let mut world = engine.create_world(WorldKind::Game, Some(&jobs));
+    world.load_sublevel(boot.level, Transform::IDENTITY);
+    // The world's renderer, made with the render module's engine assets.
+    let render_assets = engine
+        .resources()
+        .get::<RenderAssets>()
+        .ok_or(RunError::NoRenderer)?;
+    let library = render_assets.library.clone();
+    let mut render = WorldRenderer::new(
         &device,
-        shaders,
-        resolve,
-        bake,
-        pairing.view(),
+        &engine.assets,
+        render_assets,
         swapchain.format(),
-        engine.scene_ids(),
+        marlin_renderer::scene_ids(&world).ok_or(RunError::NoRenderer)?,
     )?;
-    engine.load_level(boot.level);
 
-    let mut dev = DevTools::new(&boot.vfs, &engine.streamer, device.adapter_info().name());
+    let mut dev = DevTools::new(
+        &boot.vfs,
+        engine.modules().has("DevTools"),
+        engine.loaders(),
+        device.adapter_info().name(),
+    );
 
     let mut pending: Option<RenderDelta> = None;
     let minimized = Cell::new(false);
@@ -185,12 +174,14 @@ pub fn run(boot: &Boot, title: &str) -> Result<(), RunError> {
         let mut next = None;
         let mut presented: Result<Option<PresentStatus>, RunError> = Ok(None);
         let engine_ref = &mut engine;
+        let world_ref = &mut world;
         let jobs_ref = &jobs;
         let dev_ref = &mut dev;
         jobs.scope(|s| {
             s.spawn(|| {
                 profile_scope!("Simulate");
-                next = Some(engine_ref.frame(dt, Some(state), Some(jobs_ref)));
+                engine_ref.frame(world_ref, dt, Some(state), Some(jobs_ref));
+                next = marlin_renderer::take_delta(world_ref);
             });
             if let Some(delta) = pending.take()
                 && !minimized.get()
@@ -216,10 +207,10 @@ pub fn run(boot: &Boot, title: &str) -> Result<(), RunError> {
             reported = 2;
             info!(
                 "level loaded: {} entities, {} meshes",
-                engine.world.ecs().entity_count(),
+                world.ecs().entity_count(),
                 render.mesh_count()
             );
-        } else if reported == 0 && engine.is_ready() {
+        } else if reported == 0 && engine.is_ready(&world) {
             reported = 1;
         }
         marlin_profile::frame_mark();
@@ -279,7 +270,7 @@ fn forget_images(frames: &mut FrameContext, swapchain: &Swapchain) {
 fn render_frame(
     device: &marlin_rhi::Device,
     jobs: &JobSystem,
-    render: &mut RenderSide,
+    render: &mut WorldRenderer,
     swapchain: &mut Swapchain,
     frames: &mut FrameContext,
     delta: &RenderDelta,
@@ -295,12 +286,8 @@ fn render_frame(
     {
         profile_scope!("Apply");
         render.apply(device, delta)?;
-        #[cfg(not(marlin_build = "shipping"))]
-        {
-            render.sharc_view = crate::boot::R_SHARC_VIEW.get();
-        }
         // The quality cvars (0008 §2), which the console may have changed.
-        crate::quality::RenderSettings::from_cvars().apply(render);
+        marlin_renderer::settings::RenderSettings::from_cvars().apply(render);
     }
     let image = {
         profile_scope!("Acquire");

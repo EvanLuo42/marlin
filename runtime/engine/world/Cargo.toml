@@ -16,7 +16,6 @@ marlin-jobs.workspace = true
 marlin-math.workspace = true
 marlin-profile.workspace = true
 marlin-reflect.workspace = true
-marlin-sync.workspace = true
 marlin-time.workspace = true
 
 [dev-dependencies]

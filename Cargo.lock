@@ -230,6 +230,7 @@ dependencies = [
  "marlin-ecs",
  "marlin-font",
  "marlin-framework",
+ "marlin-gameplay",
  "marlin-hash",
  "marlin-input",
  "marlin-jobs",
@@ -241,6 +242,7 @@ dependencies = [
  "marlin-reflect",
  "marlin-render",
  "marlin-render-graph",
+ "marlin-renderer",
  "marlin-rhi",
  "marlin-serial",
  "marlin-services",
@@ -260,6 +262,7 @@ dependencies = [
  "marlin-math",
  "marlin-reflect",
  "marlin-serial",
+ "marlin-world",
 ]
 
 [[package]]
@@ -502,6 +505,7 @@ name = "marlin-cooker"
 version = "0.1.0"
 dependencies = [
  "image",
+ "marlin",
  "marlin-anim",
  "marlin-asset",
  "marlin-asset-db",
@@ -523,6 +527,7 @@ dependencies = [
  "marlin-store",
  "marlin-test-support",
  "marlin-vcs",
+ "marlin-world",
 ]
 
 [[package]]
@@ -589,9 +594,11 @@ dependencies = [
  "marlin-math",
  "marlin-mem",
  "marlin-render-graph",
+ "marlin-renderer",
  "marlin-rhi",
  "marlin-rt",
  "marlin-ui-render",
+ "marlin-world",
  "png",
 ]
 
@@ -650,30 +657,28 @@ dependencies = [
 name = "marlin-framework"
 version = "0.1.0"
 dependencies = [
- "marlin-anim",
+ "marlin",
  "marlin-app",
  "marlin-asset",
  "marlin-asset-db",
  "marlin-config",
- "marlin-containers",
  "marlin-cook-core",
  "marlin-cook-font",
  "marlin-cookd",
  "marlin-cooker",
  "marlin-diag",
- "marlin-ecs",
  "marlin-error",
  "marlin-font",
  "marlin-gpu-test-support",
  "marlin-input",
  "marlin-io",
  "marlin-jobs",
- "marlin-material",
  "marlin-math",
  "marlin-profile",
  "marlin-reflect",
  "marlin-render",
  "marlin-render-graph",
+ "marlin-renderer",
  "marlin-rhi",
  "marlin-rt",
  "marlin-serial",
@@ -717,6 +722,20 @@ dependencies = [
  "marlin-framework",
  "marlin-io",
  "marlin-rt",
+]
+
+[[package]]
+name = "marlin-gameplay"
+version = "0.1.0"
+dependencies = [
+ "marlin-asset",
+ "marlin-ecs",
+ "marlin-input",
+ "marlin-jobs",
+ "marlin-math",
+ "marlin-reflect",
+ "marlin-test-support",
+ "marlin-world",
 ]
 
 [[package]]
@@ -955,6 +974,30 @@ dependencies = [
  "marlin-rhi",
  "marlin-serial",
  "marlin-std",
+]
+
+[[package]]
+name = "marlin-renderer"
+version = "0.1.0"
+dependencies = [
+ "marlin-asset",
+ "marlin-config",
+ "marlin-containers",
+ "marlin-diag",
+ "marlin-ecs",
+ "marlin-error",
+ "marlin-jobs",
+ "marlin-material",
+ "marlin-math",
+ "marlin-reflect",
+ "marlin-render",
+ "marlin-render-graph",
+ "marlin-rhi",
+ "marlin-serial",
+ "marlin-shader",
+ "marlin-sync",
+ "marlin-test-support",
+ "marlin-world",
 ]
 
 [[package]]
@@ -1230,6 +1273,7 @@ dependencies = [
 name = "marlin-ui-render"
 version = "0.1.0"
 dependencies = [
+ "marlin-asset",
  "marlin-bench",
  "marlin-cook-font",
  "marlin-font",
@@ -1241,6 +1285,7 @@ dependencies = [
  "marlin-rhi",
  "marlin-serial",
  "marlin-shader",
+ "marlin-world",
 ]
 
 [[package]]
@@ -1271,7 +1316,6 @@ dependencies = [
  "marlin-profile",
  "marlin-reflect",
  "marlin-serial",
- "marlin-sync",
  "marlin-test-support",
  "marlin-time",
 ]

@@ -2,16 +2,17 @@
 //! panel and leaves the rest of the frame alone, and the frames between drawings blend the last
 //! one unchanged.
 
-use std::sync::Arc;
 use std::time::Duration;
 
-use marlin_asset::{AssetServer, BlobStreamer};
+use marlin_asset::AssetServer;
 use marlin_framework::hud::{Hud, HudInfo, Snapshot};
-use marlin_framework::loaders::engine_loaders;
-use marlin_framework::{ContentSettings, load_engine_shaders, load_ui_font, mount};
+use marlin_framework::{ContentSettings, mount};
 use marlin_gpu_test_support::hardware_device;
 use marlin_render_graph::{FrameContext, FrameContextDesc, PassContext, TextureDesc};
+use marlin_renderer::load_engine_shaders;
 use marlin_rhi::{Format, LoadOp, StoreOp};
+use marlin_ui_render::load_ui_font;
+use marlin_world::{Modules, Resources};
 
 use crate::end_to_end::{LEVEL, package, sample};
 
@@ -31,7 +32,8 @@ fn the_stats_overlay_draws_its_panel_and_leaves_the_frame_alone() {
     })
     .unwrap();
     let device = hardware_device();
-    let mut assets = AssetServer::new(engine_loaders(&Arc::new(BlobStreamer::new())));
+    let modules = Modules::new(marlin::game_modules()).unwrap();
+    let mut assets = AssetServer::new(modules.table().loaders(&Resources::new()));
     let library = load_engine_shaders(&mut assets, &boot.vfs, None).unwrap();
     let font = load_ui_font(&mut assets, &boot.vfs, None).unwrap();
     let library = assets.get(&library).unwrap();

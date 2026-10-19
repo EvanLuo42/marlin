@@ -1,9 +1,9 @@
-//! The engine's components that levels place, in authored units (0019 §5.1, §7).
+//! The render module's components, in authored units (0019 §5.1, §7, §8).
 //!
 //! Each is one reflected type, saved in levels as written (`MeshRenderer { Mesh = <…> }`),
 //! with its defaults in `Default`. Conversions to what the renderer wants (lumens to candela,
-//! degrees to cosines) happen in extract ([`crate::engine`]). These move to the render and
-//! gameplay modules with the module system (0019 §14, W3); their text names stay.
+//! degrees to cosines, world positions to the render origin) happen in extract
+//! ([`crate::extract`]).
 //!
 //! ```text
 //! Level
@@ -25,17 +25,14 @@
 //! }
 //! ```
 
-use alloc::sync::Arc;
-
 use marlin_asset::Link;
-use marlin_math::{Quat, Vec3};
+use marlin_math::Vec3;
 use marlin_reflect::Reflect;
 use marlin_render::asset::Mesh;
-use marlin_world::{ComponentFlags, ComponentRegistry};
 
 /// Draws a mesh at the entity's transform.
 #[derive(Clone, Copy, PartialEq, Debug, Reflect)]
-#[reflect(name = "marlin_framework::MeshRenderer", default)]
+#[reflect(name = "marlin_renderer::MeshRenderer", default)]
 pub struct MeshRenderer {
     pub mesh: Link<Mesh>,
     /// Linear RGBA the default material is tinted with.
@@ -52,10 +49,28 @@ impl Default for MeshRenderer {
     }
 }
 
-/// A view into the world. The first camera found is the one rendered (until views, 0019 §8).
+/// Where a [`Camera`] draws (0019 §8).
+#[derive(Clone, Copy, PartialEq, Debug, Default, Reflect)]
+#[reflect(name = "marlin_renderer::ViewTarget", default)]
+pub enum ViewTarget {
+    /// A local player's view: the host decides which window, and which part of it (split
+    /// screen).
+    LocalPlayer(u8),
+    /// The main view of the game's window: what a single-player game shows.
+    #[default]
+    Main,
+    /// An offscreen target the host or a tool names (a minimap, a monitor, a capture).
+    Offscreen(u32),
+}
+
+/// A view into the world. Every camera is a view in the frame's list; hosts draw the
+/// highest-priority view of each target.
 #[derive(Clone, Copy, PartialEq, Debug, Reflect)]
-#[reflect(name = "marlin_framework::Camera", default)]
+#[reflect(name = "marlin_renderer::Camera", default)]
 pub struct Camera {
+    pub target: ViewTarget,
+    /// Among cameras with the same target, the highest is drawn.
+    pub priority: i32,
     /// Full vertical field of view.
     #[reflect(units = "°", range = 1.0..=179.0)]
     pub fov_y: f32,
@@ -67,6 +82,8 @@ pub struct Camera {
 impl Default for Camera {
     fn default() -> Self {
         Self {
+            target: ViewTarget::Main,
+            priority: 0,
             fov_y: 60.0,
             near: 0.1,
         }
@@ -85,7 +102,7 @@ impl Camera {
 
 /// Light in every direction from the entity's position (0010 §5.1).
 #[derive(Clone, Copy, PartialEq, Debug, Reflect)]
-#[reflect(name = "marlin_framework::PointLight", default)]
+#[reflect(name = "marlin_renderer::PointLight", default)]
 pub struct PointLight {
     #[reflect(widget = Color)]
     pub color: [f32; 3],
@@ -115,7 +132,7 @@ impl Default for PointLight {
 /// `outer_angle` (half angles). Its lumens are a point light's: narrowing the cone does not
 /// brighten it.
 #[derive(Clone, Copy, PartialEq, Debug, Reflect)]
-#[reflect(name = "marlin_framework::SpotLight", default)]
+#[reflect(name = "marlin_renderer::SpotLight", default)]
 pub struct SpotLight {
     #[reflect(widget = Color)]
     pub color: [f32; 3],
@@ -144,55 +161,10 @@ impl Default for SpotLight {
     }
 }
 
-/// Turns the entity about `axis` at `speed`, from the rotation it had when the component was
-/// added.
-#[derive(Clone, Copy, PartialEq, Debug, Reflect)]
-#[reflect(name = "marlin_framework::RotatingMovement", default)]
-pub struct RotatingMovement {
-    pub axis: Vec3,
-    #[reflect(units = "°/s")]
-    pub speed: f32,
-}
-
-impl Default for RotatingMovement {
-    fn default() -> Self {
-        Self {
-            axis: Vec3::Y,
-            speed: 45.0,
-        }
-    }
-}
-
-/// The rotation a [`RotatingMovement`] turns from (runtime).
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub struct RotatingBase(pub Quat);
-
-/// Free flight: look with the right mouse button held (or the right stick), move with WASD/QE
-/// (or the left stick and triggers), Shift to go faster.
-#[derive(Clone, Copy, PartialEq, Debug, Reflect)]
-#[reflect(name = "marlin_framework::SpectatorMovement", default)]
-pub struct SpectatorMovement {
-    #[reflect(units = "m/s", range = 0.0..)]
-    pub speed: f32,
-}
-
-impl Default for SpectatorMovement {
-    fn default() -> Self {
-        Self { speed: 10.0 }
-    }
-}
-
-/// Where a [`SpectatorMovement`] looks, in radians (runtime): yaw about +Y, then pitch.
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub struct SpectatorLook {
-    pub yaw: f32,
-    pub pitch: f32,
-}
-
 /// Lighting and background for the level: on one entity, conventionally named
 /// `LevelSettings` (see `marlin_render::Environment`).
 #[derive(Clone, Copy, PartialEq, Debug, Reflect)]
-#[reflect(name = "marlin_framework::LevelSettings", default)]
+#[reflect(name = "marlin_renderer::LevelSettings", default)]
 pub struct LevelSettings {
     /// The direction the sun's light travels.
     pub light_direction: [f32; 3],
@@ -242,20 +214,4 @@ impl LevelSettings {
             sun_angular_diameter: self.sun_angular_diameter.to_radians(),
         }
     }
-}
-
-/// The component types of an engine build: the world's and these. Cookers and worlds use the
-/// same registry, so data means the same in both.
-pub fn engine_components() -> Arc<ComponentRegistry> {
-    let mut r = ComponentRegistry::new();
-    r.add::<MeshRenderer>(ComponentFlags::SAVED)
-        .add::<Camera>(ComponentFlags::SAVED)
-        .add::<PointLight>(ComponentFlags::SAVED)
-        .add::<SpotLight>(ComponentFlags::SAVED)
-        .add::<RotatingMovement>(ComponentFlags::SAVED)
-        .add::<SpectatorMovement>(ComponentFlags::SAVED)
-        .add::<LevelSettings>(ComponentFlags::SAVED)
-        .add_runtime::<RotatingBase>(marlin_ecs::StorageType::Table)
-        .add_runtime::<SpectatorLook>(marlin_ecs::StorageType::Table);
-    Arc::new(r)
 }

@@ -17,6 +17,10 @@
 //!   the world spawns as sublevels ([`World::spawn_level`], [`World::load_sublevel`],
 //!   [`World::unload_sublevel`]) or Prefab instances ([`World::spawn_prefab`]).
 //!
+//! - Modules ([`Module`], [`Modules`]): how subsystems join a build: they register components,
+//!   systems, loaders and cvars, start with the engine and see each world's frame. [`WorldModule`]
+//!   is this crate's: it loads the level assets sublevels ask for.
+//!
 //! Subsystems (render, physics, audio, scripts) depend on this crate, never the reverse: they
 //! register their components and put their systems in tick groups.
 #![cfg_attr(not(test), no_std)]
@@ -27,11 +31,13 @@ mod component_data;
 mod guid;
 mod level;
 mod levels;
+mod module;
 mod registry;
 mod schedule;
 mod time;
 mod transform;
 mod world;
+mod world_module;
 
 pub use component_data::{ComponentData, IsComponent};
 pub use guid::{EntityGuid, EntityRef, GuidIndex};
@@ -42,21 +48,13 @@ pub use level::{
 pub use levels::{
     EntityName, InLevel, LevelRequest, Levels, SublevelId, SublevelState, W_SPAWN_BUDGET_MS,
 };
+pub use module::{
+    EngineContext, LoaderFactory, Module, ModuleError, ModuleTable, Modules, Registry, Resources,
+    SystemFactory,
+};
 pub use registry::{ComponentFlags, ComponentRegistration, ComponentRegistry};
 pub use schedule::{TickGroup, WorldSchedule};
 pub use time::{FixedTime, Interpolated, T_FIXED_HZ, T_MAX_DT, T_MAX_SUBSTEPS, Time, TimeSettings};
 pub use transform::{GlobalTransform, Transform, propagate_transforms};
 pub use world::{NetRole, World, WorldKind};
-
-/// Registers the world's cvars (`t.*`, `w.*`) with `marlin-config`; once per process.
-pub fn register_cvars() {
-    static ONCE: marlin_sync::Once = marlin_sync::Once::new();
-    ONCE.call_once(|| {
-        let _ = marlin_config::register_all(&[
-            &T_MAX_DT,
-            &T_FIXED_HZ,
-            &T_MAX_SUBSTEPS,
-            &W_SPAWN_BUDGET_MS,
-        ]);
-    });
-}
+pub use world_module::WorldModule;

@@ -6,6 +6,8 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+marlin-asset.workspace = true
+marlin-world.workspace = true
 marlin-font.workspace = true
 marlin-hash.workspace = true
 marlin-jobs.workspace = true

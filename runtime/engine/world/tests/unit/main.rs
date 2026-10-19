@@ -6,6 +6,7 @@
 mod frame;
 mod guid;
 mod level;
+mod module;
 mod registry;
 mod transform;
 

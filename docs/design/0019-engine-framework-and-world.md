@@ -76,6 +76,7 @@ marlin-asset、marlin-material …        L2：marlin-ecs、marlin-reflect、mar
   - `marlin-render`、`marlin-ui-render`、`marlin-audio`、`marlin-physics`、`marlin-anim`、`marlin-nav`、`marlin-vfx`、`marlin-script`、`marlin-input-action` → `marlin-world`（组件和 tick group）；
   - `marlin-framework` → 所有 L3 模块 crate。
   - 禁止反向依赖：`marlin-world` 不能依赖它们中的任何一个；子系统之间需要通信时，通过 world 里的组件和事件，或者 world 定义的 trait。
+  - （W3）`marlin-renderer`（render 模块：组件、extract、`WorldRenderer`）→ `marlin-world`、`marlin-render`、`marlin-material`；`marlin-gameplay` → `marlin-world`、`marlin-input`；umbrella `marlin` 列出各构建目标的模块（`game_modules()`）。
 - 新 crate `marlin-input-action`（`runtime/engine/input_action`）：action、mapping context 资产和求值（§9）。原来的 `marlin-input`（L1）只负责设备原始状态，不变。
 - 这些边在 `cargo xtask check-layers` 里用白名单检查。
 
@@ -270,7 +271,7 @@ pub struct GlobalTransform { pub translation: DVec3, pub rotation: Quat, pub sca
 | `SkyAtmosphere`、`Fog`、`PostProcessVolume` …… | `LevelEnvironment` | 0013 的环境参数 |
 
 - render 的 extract system 运行在 `Extract` group 里：用 change detection 生成 `SceneUpdates`，处理网格上传，收集视图列表，产出 `RenderDelta`。entity 和渲染行的对应表放在世界级 resource `RenderWorld` 里（原来 `Engine` 里的那几个 `HashMap`）。
-- **`RenderSide` 搬进 `marlin-render`**，成为 `WorldRenderer`：它持有 `RenderScene` 和各个渲染特性的持久状态，每帧接收 delta、建图。这就是 0008 §5.3 的 `SceneRenderer` 的落地。
+- **`RenderSide` 搬进新的 `marlin-renderer`**（render 模块的 crate），成为 `WorldRenderer`：它持有 `RenderScene` 和各个渲染特性的持久状态，每帧接收 delta、建图。这就是 0008 §5.3 的 `SceneRenderer` 的落地。没有放进 `marlin-render`，是因为 `marlin-material` 依赖 `marlin-render`，而 `WorldRenderer` 两个都要用；`marlin-render` 仍然只管场景和各个 pass（W3 的实现，见 §17）。
 - render 需要的引擎 shader 和资产（库、resolve、bake、pairing pattern）由 `RenderModule::startup` 按包名加载（0003 §4.4），主循环不再知道它们。
 - `RenderScene` 仍然不依赖 ECS（0009 §1.3 的前半句保留）：editor 的材质球和缩略图可以直接构造它，不需要 World。0009 §1.3 的后半句（"ECS 组件和 extract 放在 framework"）由本节取代。
 - 其他子系统（audio、vfx、以后的 physics 调试绘制）用同样的模式：组件和 extract 都在自己的模块里。
@@ -500,3 +501,51 @@ W6 之后再回到 render（R4f 剩下的部分、R5）。physics、audio、anim
 - **验证**：
   - 单元测试：`marlin-world`（展开、覆盖、错误、archetype、spawn、流式加载、卸载、Prefab）、`marlin-cook-level`（完整 cook 流程、嵌套覆盖、改 Prefab 后重新 cook、错误）、`marlin-masset`（动态值、元组、proxy）、`marlin-serial`、`marlin-ecs` 都通过。
   - GPU 测试：framework 的 end-to-end 测试全部通过，包括 golden image（basic 样例的画面和迁移前一致）和改文本后画面实时更新；editor 的 GPU 测试通过。
+
+### W3（2026-10-19）：模块、Host 和 render 模块
+
+- **模块系统**（`marlin-world::module`）：
+  - `Module` trait：必须实现的只有 `name`、`register`；可选的有 `dependencies`、`startup`、`init_world`、`pre_world_frame`、`post_world_frame`、`world_ready`、`shutdown`。
+  - 和 §3.1 草稿相比，多了两个"世界帧前后"的钩子：需要引擎级状态的工作（通过资产服务器加载关卡和网格）在这里做；还多了 `world_ready`，host 用它判断"关卡已加载"。
+  - `Registry`：组件（`ComponentRegistry`）、按 tick group 登记的 system 工厂（每个 World 一份 system）、loader 工厂（可以拿到引擎资源，例如 blob streamer）、cvar。
+  - `Modules::new`：按依赖排序（不受依赖约束时保持给定顺序）；重名、缺少依赖、循环依赖都会报错；所有登记冻结成 `ModuleTable`，再登记 cvar。
+  - `EngineContext`（资产服务器、vfs、job、`Resources`）和 `Resources`（按类型存放的引擎级资源）。
+  - **注册必须在 boot 之前**：boot 读 `boot.toml` 时，遇到未知的 cvar 会报错，所以 host 先调用 `Modules::new`，再 boot，最后 `Engine::new(vfs, modules)` 启动各模块。
+- **`WorldModule`**（world）：
+  - 登记 `CookedLevel` 的 loader 和 `t.*`、`w.*` cvar。
+  - 在 `pre_world_frame` 里替子关卡的请求加载资产并交给 World。
+  - 资产重新加载（文本被编辑）时，在原来的位置重新 spawn。加载失败的子关卡会被卸载。
+- **`marlin-renderer`（新 crate，`RenderModule`）**：
+  - 组件 `MeshRenderer`、`Camera`（新增 `target: ViewTarget`、`priority`）、`PointLight`、`SpotLight`、`LevelSettings`。文本名不变，反射全名改为 `marlin_renderer::*`，cooked 数据会因为 key 变化自动重新 cook。
+  - extract system 挂在 `Extract` 组。
+  - loader：网格（流式）、`Texture` / `PairingPattern`（`InPlace`）、`ShaderLibrary`。
+  - `startup` 按包名加载 `RenderAssets`（引擎 shader、默认材质的 resolve 和 bake、pairing pattern），放进引擎资源。
+  - `post_world_frame` 加载 extract 新遇到的网格，生成 `RenderDelta` 留在 World 里，由 host 用 `take_delta` 取走。
+  - 画质 cvar（`sg.*`、`r.*`、dev 的 `r.sharc.view`）由这个模块登记，`settings::RenderSettings` 每帧读入 `WorldRenderer`。
+- **`WorldRenderer`**（原来的 `RenderSide`）：
+  - `new(device, assets, &RenderAssets, format, scene_ids(world))`；`with_shaders(...)` 是原来那个显式传 shader 的版本。
+  - `apply` 记下 delta 里的视图，以及每个视图上一帧的相机。
+  - `add_view_passes(g, view, target)`：exposure、TSR、去噪和 ReSTIR 的历史都按视图 id 区分，specular 信号用 id 加上最高位。`add_passes` 只画 `ViewTarget::Main`。
+  - `Offscreen` 也移到这个 crate。
+- **视图列表**：
+  - 每个 `Camera` 都会成为 `RenderDelta::views` 里的一个视图，按 priority 降序排列（相同时按 id 排）。
+  - `ViewId` 来自相机实体的 `EntityGuid`（`Uuid::hash64`），没有 guid 时用实体本身。
+  - `delta.view(target)` 和 `WorldRenderer::view_for(target)` 选出该 target 优先级最高的视图。
+  - 现在 host 只画 `Main`；`LocalPlayer`、`Offscreen` 等 W4/W5 有了分屏和 editor 视口再接入。
+- **`marlin-gameplay`（新 crate，`GameplayModule`）**：`RotatingMovement`、`SpectatorMovement` 和它们的 system（`PrePhysics`），输入读取 World 里的 `InputState` resource（由 host 每帧设置，W4 换成 action）。
+- **`UiModule`**（ui_render：font loader、`load_ui_font`）和 **`AnimModule`**（anim：skeleton 和 clip 的 loader）。
+- **`marlin_asset::InPlace<T>` + `CookedAsset`**：各资产类型在自己的 crate 里提供视图并做校验；`Loaders::register_in_place::<T>()`。原来 framework 里那张统一的 loader 列表取消了。
+- **framework 只剩 Host**：
+  - `Engine` 持有模块、资产服务器、blob streamer 和引擎资源；World 归调用方。`create_world`、`frame(world, dt, input, jobs)`、`is_ready(world)`、`loaders()`（给另外的资产服务器用）。
+  - `run(boot, title, modules)`：建一个 Game World，加载入口关卡；世界帧在 job 上跑，`WorldRenderer` 同时画上一帧。
+  - `DevToolsModule` 登记 `r.stats`。build 里有这个模块时，host 才画 stats overlay；shipping 的模块列表里没有它。
+  - framework 不再定义任何组件。`boot` 只登记 content、game、window 相关的 cvar。
+- **umbrella `marlin::game_modules()`**：World、Anim、Ui、Render、Gameplay，以及（非 shipping 时的）DevTools。
+  - `apps/game`、editor、cooker（`game_components()`，cook 时和游戏用同一个组件表）都从这里取模块。
+  - editor 改用 `Engine` + World + `WorldRenderer`；UI 的 shader 和字体用它自己的资产服务器加载。
+- **验证**：
+  - 单元测试：world（模块排序、错误、钩子顺序、system 和组件来自 table、`WorldModule` 从资产加载子关卡、加载失败时卸载）、renderer（extract、视图列表、资产按名字加载）、gameplay、framework（boot、UI 字体、quality preset）都通过。
+  - GPU 测试：framework 的 end-to-end（golden image 与之前一致、cookd 和打包的结果逐像素相同、改文本后画面实时更新、exposure 稳定、resize 时 validation 安静）和 hud 测试通过；editor 的 GPU 测试通过。
+  - 构建：workspace check、clippy、check-layers 都干净；shipping 构建能编译。
+  - 手动冒烟测试：cook 并打包 `samples/basic` 后运行 `marlin-game` 15 秒，日志显示 "level loaded: 13 entities, 3 meshes"，运行期间没有错误。`marlin-game` 本身仍然没有自动化测试。
+  - 冒烟测试中发现的问题：只重新打包、没有重新 cook 时，包里还是旧组件类型 id 的关卡，这些组件读回来是空的，实体会悄悄缺少组件。现在 `CookedLevel::unknown_components` 会统计这类组件，spawn 关卡、子关卡或 Prefab 时记录警告，提示重新 cook。

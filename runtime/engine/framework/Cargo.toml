@@ -6,13 +6,10 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
-marlin-anim.workspace = true
 marlin-app.workspace = true
 marlin-asset.workspace = true
 marlin-config.workspace = true
-marlin-containers.workspace = true
 marlin-diag.workspace = true
-marlin-ecs.workspace = true
 marlin-font.workspace = true
 marlin-ui-render.workspace = true
 marlin-error.workspace = true
@@ -23,17 +20,19 @@ marlin-math.workspace = true
 marlin-reflect.workspace = true
 marlin-rt.workspace = true
 marlin-profile.workspace = true
-marlin-material.workspace = true
-marlin-render.workspace = true
+marlin-renderer.workspace = true
 marlin-render-graph.workspace = true
 marlin-rhi.workspace = true
-marlin-serial.workspace = true
 marlin-shader = { workspace = true, features = ["rhi"] }
 marlin-sync.workspace = true
 marlin-time.workspace = true
 marlin-world.workspace = true
 
 [dev-dependencies]
+marlin-render.workspace = true
+marlin-serial.workspace = true
+# The GPU tests run the game's modules, listed by the umbrella crate.
+marlin.workspace = true
 marlin-test-support.workspace = true
 marlin-gpu-test-support.workspace = true
 # The end-to-end test cooks, packages and serves the sample with the real tools.

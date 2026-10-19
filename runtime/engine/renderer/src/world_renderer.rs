@@ -1,12 +1,7 @@
-//! What the simulation hands the renderer each frame, and the render side that consumes it.
-//!
-//! The simulation never touches the GPU. Each frame it builds an immutable [`RenderDelta`]: the
-//! scene's changes since the last one as [`SceneUpdates`] (extract, 0009 §1.2), the meshes to
-//! upload (new, or replaced by a reload) and the camera. Rows are named by handles the
-//! simulation reserves from the render scene's allocators ([`SceneIds`]), so it never waits for
-//! the render side. The [`RenderSide`] owns the passes, the [`RenderScene`] and the GPU meshes:
-//! it uploads, applies the updates and draws. So the two run on different jobs, the simulation
-//! one frame ahead.
+//! [`WorldRenderer`]: one world's render side (0008 §5, 0019 §7). It owns the passes, the
+//! [`RenderScene`] and the GPU meshes; each frame it takes the world's [`RenderDelta`], uploads,
+//! applies the updates and draws a view. The host owns it, apart from the world: the world
+//! simulates frame N+1 on one job while its renderer draws frame N on another.
 
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
@@ -40,40 +35,15 @@ use marlin_rhi::{Device, Format};
 use marlin_shader::asset::ShaderLibrary;
 use marlin_shader::bind::{BindError, bind_one};
 
-/// The view whose exposure the game's frames adapt.
-const MAIN_VIEW: u64 = 0;
-/// The main view's specular signal's denoising history.
-const SPECULAR_VIEW: u64 = 1 << 32;
+/// A view's specular signal's denoising history is keyed by the view's id with this bit.
+const SPECULAR_BIT: u64 = 1 << 63;
 
-use crate::loaders::LoadedMesh;
-
-/// A mesh the render side should have, at a version.
-#[derive(Clone, Debug)]
-pub struct MeshUpload {
-    pub mesh: MeshId,
-    /// The asset's reload count: a higher one replaces the GPU copy.
-    pub version: u32,
-    /// The cooked mesh, uploaded as it is.
-    pub cooked: LoadedMesh,
-}
-
-/// One frame of the simulation, for the renderer.
-#[derive(Clone, Debug, Default)]
-pub struct RenderDelta {
-    /// The simulation frame it was taken at.
-    pub frame: u64,
-    /// The frame's time step, seconds: how far exposure adapts.
-    pub dt: f32,
-    /// What changed in the scene since the last delta. A mesh's `Remove` also frees its GPU
-    /// copy.
-    pub updates: SceneUpdates,
-    /// Geometry for meshes the updates added, or a newer version of it.
-    pub uploads: Vec<MeshUpload>,
-    pub camera: Option<(Transform, Camera)>,
-}
+use crate::assets::{RenderAssets, ShaderError};
+use crate::components::ViewTarget;
+use crate::delta::{RenderDelta, ViewId};
 
 /// The render scene, the GPU copies of its meshes and the passes that draw it.
-pub struct RenderSide {
+pub struct WorldRenderer {
     /// The resident meshes.
     pub meshes: Meshes,
     pub visibility: Visibility,
@@ -106,10 +76,12 @@ pub struct RenderSide {
     pub post: PostProcess,
     pub scene: RenderScene,
     scatter: ScatterShader,
-    /// The last applied delta's time step and camera, and the camera before it.
+    /// The last applied delta's time step and views; each view's camera as last drawn (with its
+    /// jitter), and the one before it.
     dt: f32,
-    camera: Option<(Transform, Camera)>,
-    previous: Option<(Transform, Camera)>,
+    views: Vec<crate::delta::RenderView>,
+    cameras: HashMap<ViewId, (Transform, Camera)>,
+    previous: HashMap<ViewId, (Transform, Camera)>,
     uploaded: HashMap<MeshId, (MeshHandle, u32)>,
     /// Meshes replaced or released, freed once the frames that drew them are done.
     retired: Vec<(u64, MeshHandle)>,
@@ -122,13 +94,35 @@ pub struct RenderSide {
     loaded: bool,
 }
 
-impl RenderSide {
+impl WorldRenderer {
+    /// A renderer for the world whose scene rows come from `ids` ([`crate::scene_ids`]), made with
+    /// the render module's engine assets (loaded in `assets`); its post chain writes `output`.
+    pub fn new(
+        device: &Device,
+        assets: &marlin_asset::AssetServer,
+        engine: &RenderAssets,
+        output: Format,
+        ids: SceneIds,
+    ) -> Result<Self, WorldRendererError> {
+        let missing =
+            || WorldRendererError::Assets(ShaderError::Load(marlin_asset::AssetError::NotFound));
+        Self::with_shaders(
+            device,
+            assets.get(&engine.library).ok_or_else(missing)?,
+            assets.get(&engine.resolve).ok_or_else(missing)?,
+            assets.get(&engine.bake).ok_or_else(missing)?,
+            assets.get(&engine.pairing).ok_or_else(missing)?.view(),
+            output,
+            ids,
+        )
+    }
+
     /// The passes made with the engine's shaders (`engine`, the `Marlin.Engine` library), the
     /// default material's resolve permutation (`default_resolve`, `DEFAULT_RESOLVE`) and its
     /// simplified-material bake (`default_bake`, `DEFAULT_BAKE`) and ReSTIR's
     /// pairing patterns (`pairing`, `PAIRING_PATTERN`); the post chain writes `output`. The
     /// scene's rows come from `ids`, the allocators the simulation reserves them from.
-    pub fn new(
+    pub fn with_shaders(
         device: &Device,
         engine: &ShaderLibrary,
         default_resolve: &ShaderLibrary,
@@ -136,7 +130,7 @@ impl RenderSide {
         pairing: PairingPatternView<'_>,
         output: Format,
         ids: SceneIds,
-    ) -> Result<Self, RenderSideError> {
+    ) -> Result<Self, WorldRendererError> {
         let mut materials = Materials::new(device, &MaterialShaders::bind(engine)?)?;
         let default = materials.register(
             device,
@@ -177,8 +171,9 @@ impl RenderSide {
             },
             scatter: ScatterShader::new(device, bind_one(engine, &ScatterShader::ENTRY)?)?,
             dt: 0.0,
-            camera: None,
-            previous: None,
+            views: Vec::new(),
+            cameras: HashMap::new(),
+            previous: HashMap::new(),
             uploaded: HashMap::new(),
             retired: Vec::new(),
             frames_in_flight: FRAMES_IN_FLIGHT as u64,
@@ -243,34 +238,71 @@ impl RenderSide {
         self.meshes.prepare_rt(device)?;
         self.tlas.prepare(device, self.scene.instance_rows())?;
         self.dt = delta.dt;
-        self.previous = self.camera;
-        self.camera = delta.camera;
+        // Each view's last camera (as drawn, jittered) becomes its previous one; views gone from
+        // the frame forget theirs.
+        let mut cameras = HashMap::new();
+        let mut previous = HashMap::new();
+        for v in &delta.views {
+            if let Some(&last) = self.cameras.get(&v.id) {
+                previous.insert(v.id, last);
+            }
+            cameras.insert(v.id, (v.transform, v.camera));
+        }
+        self.cameras = cameras;
+        self.previous = previous;
+        self.views.clone_from(&delta.views);
         Ok(())
     }
 
-    /// Declares the last applied delta's frame into `g` (0008 §3): the GPU Scene's scatter, the
-    /// visibility buffer and the material buffer of the camera's view at the upscaler's render
-    /// size, jittered; direct lighting and the denoised local lights into an
-    /// [`HDR_FORMAT`](marlin_render::HDR_FORMAT) scene; TSR to the size of `target`; then the post
-    /// chain into `target`. Without a camera the scene is the clear color. Needs a graph with a
-    /// state table.
+    /// Declares the frame of the main view ([`ViewTarget::Main`]) into `g`; see
+    /// [`add_view_passes`](Self::add_view_passes).
     pub fn add_passes<'g>(
         &'g mut self,
         g: &mut RenderGraph<'g>,
         target: TextureHandle<'g>,
     ) -> TextureHandle<'g> {
+        let view = self.view_for(ViewTarget::Main);
+        self.add_view_passes(g, view, target)
+    }
+
+    /// The view the last delta draws into `target`: its highest-priority one.
+    pub fn view_for(&self, target: ViewTarget) -> Option<ViewId> {
+        self.views.iter().find(|v| v.target == target).map(|v| v.id)
+    }
+
+    /// Declares the last applied delta's frame, as `view` sees it, into `g` (0008 §3): the GPU
+    /// Scene's scatter, the visibility buffer and the material buffer of the view at the
+    /// upscaler's render size, jittered; direct lighting and the denoised local lights into an
+    /// [`HDR_FORMAT`](marlin_render::HDR_FORMAT) scene; TSR to the size of `target`; then the post
+    /// chain into `target`. Histories (exposure, TSR, denoising, reservoirs) are the view's own,
+    /// keyed by its id. Without a view the scene is the clear color. Needs a graph with a state
+    /// table.
+    pub fn add_view_passes<'g>(
+        &'g mut self,
+        g: &mut RenderGraph<'g>,
+        view: Option<ViewId>,
+        target: TextureHandle<'g>,
+    ) -> TextureHandle<'g> {
         let size = *g.texture_desc(target);
         let display = UVec2::new(size.width, size.height);
-        // The render size and this frame's jitter, which goes into the camera (and so into last
-        // frame's camera next frame).
-        let render = match (self.upscale, self.camera) {
+        let view = view.filter(|v| self.cameras.contains_key(v));
+        // The render size and this frame's jitter, which goes into the view's camera (and so into
+        // its previous camera next frame).
+        let render = match (self.upscale, view) {
             (Some(mode), Some(_)) => self.tsr.render_size(display, mode),
             _ => display,
         };
-        if let (Some(_), Some((_, camera))) = (self.upscale, self.camera.as_mut()) {
+        if let (Some(_), Some(v)) = (self.upscale, view) {
             let jitter = self.tsr.jitter(self.frame, render, display);
-            camera.jitter = [jitter.x, jitter.y];
+            if let Some((_, camera)) = self.cameras.get_mut(&v) {
+                camera.jitter = [jitter.x, jitter.y];
+            }
         }
+        let main_view = view.map_or(0, |v| v.0);
+        let specular_view = main_view | SPECULAR_BIT;
+        let camera = view.and_then(|v| self.cameras.get(&v).copied());
+        let previous = view.and_then(|v| self.previous.get(&v).copied());
+        let previous = &previous;
         let (width, height) = (render.x, render.y);
         if !self.loaded && !self.uploaded.is_empty() && self.meshes.streaming_idle() {
             self.loaded = true;
@@ -297,8 +329,6 @@ impl RenderSide {
             frame,
             scene,
             scatter,
-            camera,
-            previous,
             feedback,
             ..
         } = self;
@@ -320,7 +350,7 @@ impl RenderSide {
         let mut opaque = None;
         let lit = camera.map(|camera| {
             let view = ViewDesc {
-                id: MAIN_VIEW,
+                id: main_view,
                 camera,
                 previous: *previous,
                 width,
@@ -332,7 +362,7 @@ impl RenderSide {
             let material = out.material;
             let shadow = vsm.add_passes(
                 g,
-                MAIN_VIEW,
+                main_view,
                 visibility,
                 meshes,
                 scene,
@@ -396,7 +426,7 @@ impl RenderSide {
             && (tiles.is_some() || gi)
         {
             let inputs = RestirInputs {
-                view: MAIN_VIEW,
+                view: main_view,
                 changed_lights,
                 velocity,
                 material,
@@ -419,13 +449,13 @@ impl RenderSide {
                     material,
                     depth,
                     velocity,
-                    specular: view == SPECULAR_VIEW,
+                    specular: view == specular_view,
                     previous: *previous,
                 };
                 denoiser.add_passes(g, signal, inputs, camera, width, height, seed)
             };
-            let diffuse = denoised(signals.diffuse, MAIN_VIEW);
-            let specular = denoised(signals.specular, SPECULAR_VIEW);
+            let diffuse = denoised(signals.diffuse, main_view);
+            let specular = denoised(signals.specular, specular_view);
             scene = denoiser.add_compose(
                 g,
                 scene,
@@ -466,7 +496,7 @@ impl RenderSide {
         {
             scene = sharc.add_view(g, &cache, material, depth);
         }
-        let exposure = PostProcess::exposure(g, MAIN_VIEW);
+        let exposure = PostProcess::exposure(g, main_view);
         if let (Some(_), Some((_, _, depth, velocity, camera))) = (*upscale, lit) {
             let inputs = UpscaleInputs {
                 color: scene,
@@ -478,7 +508,7 @@ impl RenderSide {
                 render,
                 display,
             };
-            scene = tsr.add_passes(g, MAIN_VIEW, &inputs);
+            scene = tsr.add_passes(g, main_view, &inputs);
         }
         post.add_passes(g, scene, target, exposure, dt).output
     }
@@ -487,7 +517,7 @@ impl RenderSide {
     /// must be taken, so call this once a frame with the context [`add_passes`] was declared
     /// into) and streams pages by it.
     ///
-    /// [`add_passes`]: RenderSide::add_passes
+    /// [`add_passes`]: WorldRenderer::add_passes
     pub fn collect_feedback(&mut self, frames: &mut FrameContext) {
         self.tlas.release(frames);
         while let Some(&(frame, [c, r, u])) = self.feedback.front() {
@@ -519,9 +549,11 @@ impl RenderSide {
     }
 }
 
-/// Why a [`RenderSide`] could not be made.
+/// Why a [`WorldRenderer`] could not be made.
 #[derive(Debug, marlin_error::Error)]
-pub enum RenderSideError {
+pub enum WorldRendererError {
+    #[error("the render module's assets")]
+    Assets(#[from] ShaderError),
     #[error("engine shaders")]
     Shaders(#[from] BindError),
     #[error("gpu")]

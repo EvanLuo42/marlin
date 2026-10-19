@@ -1,6 +1,6 @@
 //! The renderer's quality cvars (0008 §2.1, 0010 §3; R4f): the scalability groups and the
 //! feature cvars their levels set, read into a [`RenderSettings`] each frame and put into the
-//! [`RenderSide`]'s passes.
+//! [`WorldRenderer`]'s passes.
 //!
 //! | group           | levels                         | sets                                   |
 //! |-----------------|--------------------------------|----------------------------------------|
@@ -13,7 +13,7 @@
 //! (`content/engine/config/Scalability.masset`, [`crate::scalability`]), which a game's merges
 //! over. The cvars' defaults here are `sg.quality = medium`'s, so a build without the table
 //! draws as before. The renderer's crates keep plain settings fields (their tests set them); the
-//! framework is the one place that reads cvars into them.
+//! render module is the one place that reads cvars into them, each frame the host renders.
 //!
 //! Not every cell of 0010 §3's table has a knob yet: the reservoirs at a quarter of the pixels
 //! (L0, L1: the checkerboard's half is the least so far), specular tracing below the full
@@ -23,7 +23,7 @@
 use marlin_config::{CvarBool, CvarEnum, CvarF64, CvarI64};
 use marlin_render::upscale::UpscaleMode;
 
-use crate::RenderSide;
+use crate::WorldRenderer;
 
 pub static SG_QUALITY: CvarEnum = CvarEnum::new(
     "sg.quality",
@@ -123,9 +123,9 @@ pub static R_UPSCALE_MODE: CvarEnum = CvarEnum::new(
     "The upscaler's ratio (0010 §7); off draws at the output size without TSR.",
 );
 
-/// Registers the quality cvars (part of [`crate::register_cvars`]).
-pub fn register_cvars() {
-    let _ = marlin_config::register_all(&[
+/// The render module's cvars.
+pub(crate) fn add_cvars(r: &mut marlin_world::Registry) {
+    r.add_cvars(&[
         &SG_QUALITY,
         &SG_LIGHTING,
         &SG_GEOMETRY,
@@ -144,7 +144,17 @@ pub fn register_cvars() {
         &R_GEO_ERROR_PX,
         &R_UPSCALE_MODE,
     ]);
+    #[cfg(not(marlin_build = "shipping"))]
+    r.add_cvars(&[&R_SHARC_VIEW]);
 }
+
+/// Draws the world radiance cache in place of the lit scene (a development view).
+#[cfg(not(marlin_build = "shipping"))]
+pub static R_SHARC_VIEW: CvarBool = CvarBool::new(
+    "r.sharc.view",
+    false,
+    "Draw the world radiance cache (the radiance each surface's voxel holds) in place of the lit scene.",
+);
 
 /// The quality cvars' values, as plain data.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -186,7 +196,7 @@ impl RenderSettings {
 
     /// Puts the settings into `render`'s passes. Changes take effect from the next frame; a
     /// new cache capacity starts an empty table.
-    pub fn apply(&self, render: &mut RenderSide) {
+    pub fn apply(&self, render: &mut WorldRenderer) {
         let r = &mut render.restir;
         r.candidates = self.restir_candidates;
         r.spatial_neighbors = self.restir_neighbors;
@@ -203,6 +213,10 @@ impl RenderSettings {
         render.denoise = self.denoise;
         render.visibility.lod_error_pixels = self.lod_error_pixels;
         render.upscale = self.upscale;
+        #[cfg(not(marlin_build = "shipping"))]
+        {
+            render.sharc_view = R_SHARC_VIEW.get();
+        }
     }
 }
 

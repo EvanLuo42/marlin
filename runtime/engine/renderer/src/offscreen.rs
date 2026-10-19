@@ -6,7 +6,8 @@ use alloc::vec::Vec;
 use marlin_render_graph::{FrameContext, FrameContextDesc, PassTiming, TextureDesc};
 use marlin_rhi::{ClearValue, Device, Format};
 
-use crate::delta::{RenderDelta, RenderSide};
+use crate::delta::RenderDelta;
+use crate::world_renderer::WorldRenderer;
 
 /// Frames rendered into an RGBA8 target of a fixed size, read back.
 pub struct Offscreen {
@@ -44,7 +45,7 @@ impl Offscreen {
     pub fn render(
         &mut self,
         device: &Device,
-        render: &mut RenderSide,
+        render: &mut WorldRenderer,
         delta: &RenderDelta,
     ) -> marlin_rhi::Result<Vec<u32>> {
         render.collect_feedback(&mut self.frame);

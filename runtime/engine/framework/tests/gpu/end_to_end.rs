@@ -10,16 +10,13 @@ use marlin_asset_db::{Options, Project};
 use marlin_cook_core::{CookOptions, PackageOptions, cook_all, publish_manifest, write_package};
 use marlin_cookd::{Cookd, CookdOptions, bind};
 use marlin_cooker::{engine_cookers, open_ddc};
-use marlin_framework::{
-    Boot, ContentSettings, Engine, OFFSCREEN_FORMAT, Offscreen, RenderSide, load_default_bake,
-    load_default_resolve, load_engine_shaders, load_pairing_pattern, mount,
-};
+use marlin_framework::{Boot, ContentSettings, Engine, mount};
 use marlin_gpu_test_support::{Image, assert_image, hardware_device};
-use marlin_render::asset::PairingPatternView;
 use marlin_render_graph::{FrameContext, FrameContextDesc, TextureDesc};
+use marlin_renderer::{OFFSCREEN_FORMAT, Offscreen, RenderAssets, WorldRenderer, take_delta};
 use marlin_rhi::Device;
-use marlin_shader::asset::ShaderLibrary;
 use marlin_test_support::{BackgroundService, TempDir, wait_until};
+use marlin_world::{Modules, Transform, World, WorldKind};
 
 pub(crate) const LEVEL: &str = "01992d00-0000-7000-8000-000000000001";
 const WIDTH: u32 = 160;
@@ -82,31 +79,33 @@ pub(crate) fn package(root: &Path) -> String {
 
 struct Viewer {
     device: &'static Device,
-    render: RenderSide,
+    render: WorldRenderer,
     offscreen: Offscreen,
 }
 
+/// The game's engine: its modules started on `boot`'s content (the render module loads its
+/// engine shaders), as `run` makes it.
+fn engine(boot: &Boot) -> Engine<'_> {
+    let modules = Modules::new(marlin::game_modules()).unwrap();
+    Engine::new(&boot.vfs, modules, None).unwrap()
+}
+
+/// A world renderer for `world`, made with the render module's engine assets.
+fn world_renderer(device: &Device, engine: &Engine<'_>, world: &World) -> WorldRenderer {
+    WorldRenderer::new(
+        device,
+        &engine.assets,
+        engine.resources().get::<RenderAssets>().unwrap(),
+        OFFSCREEN_FORMAT,
+        marlin_renderer::scene_ids(world).unwrap(),
+    )
+    .unwrap()
+}
+
 impl Viewer {
-    /// The render side made with the engine's cooked shaders: its library and the default
-    /// material's resolve permutation and bake, and the pairing patterns.
-    fn new(
-        library: &ShaderLibrary,
-        resolve: &ShaderLibrary,
-        bake: &ShaderLibrary,
-        pairing: PairingPatternView<'_>,
-        ids: marlin_render::SceneIds,
-    ) -> Self {
+    fn new(engine: &Engine<'_>, world: &World) -> Self {
         let device = hardware_device();
-        let mut render = RenderSide::new(
-            device,
-            library,
-            resolve,
-            bake,
-            pairing,
-            OFFSCREEN_FORMAT,
-            ids,
-        )
-        .unwrap();
+        let mut render = world_renderer(device, engine, world);
         // These tests compare pictures across runs whose loading takes different numbers of
         // frames; TSR's history and jitter phase depend on them, so it is off here (it has tests
         // of its own, marlin-material's tsr.rs). The resize test keeps it.
@@ -122,35 +121,26 @@ impl Viewer {
         }
     }
 
-    /// One frame of `engine` (time standing still, so spinning objects hold their pose).
-    fn frame(&mut self, engine: &mut Engine<'_>) -> Vec<u32> {
-        let delta = engine.frame(0.0, None, None);
+    /// One frame of `world` (time standing still, so spinning objects hold their pose).
+    fn frame(&mut self, engine: &mut Engine<'_>, world: &mut World) -> Vec<u32> {
+        engine.frame(world, 0.0, None, None);
+        let delta = take_delta(world).unwrap();
         self.offscreen
             .render(self.device, &mut self.render, &delta)
             .unwrap()
     }
 }
 
-/// Loads the engine's shaders from `boot`'s content as `run` does, then its level, and runs
-/// frames until the level is loaded; returns the engine, a viewer drawing with those shaders, and
-/// the first complete picture.
-fn start<'a>(boot: &'a Boot) -> (Engine<'a>, Viewer, Vec<u32>) {
-    let mut engine = Engine::new(&boot.vfs).unwrap();
-    let library = load_engine_shaders(&mut engine.assets, &boot.vfs, None).unwrap();
-    let resolve = load_default_resolve(&mut engine.assets, &boot.vfs, None).unwrap();
-    let bake = load_default_bake(&mut engine.assets, &boot.vfs, None).unwrap();
-    let pairing = load_pairing_pattern(&mut engine.assets, &boot.vfs, None).unwrap();
-    let mut viewer = Viewer::new(
-        engine.assets.get(&library).unwrap(),
-        engine.assets.get(&resolve).unwrap(),
-        engine.assets.get(&bake).unwrap(),
-        engine.assets.get(&pairing).unwrap().view(),
-        engine.scene_ids(),
-    );
-    engine.load_level(boot.level);
+/// The game's engine on `boot`'s content and a game world with its level, run until the level is
+/// loaded; returns the engine, the world, a viewer drawing it, and the first complete picture.
+fn start<'a>(boot: &'a Boot) -> (Engine<'a>, World, Viewer, Vec<u32>) {
+    let mut engine = engine(boot);
+    let mut world = engine.create_world(WorldKind::Game, None);
+    let mut viewer = Viewer::new(&engine, &world);
+    world.load_sublevel(boot.level, Transform::IDENTITY);
     wait_until(Duration::from_secs(60), "the level to load", || {
-        engine.is_ready() || {
-            viewer.frame(&mut engine);
+        engine.is_ready(&world) || {
+            viewer.frame(&mut engine, &mut world);
             false
         }
     });
@@ -158,15 +148,15 @@ fn start<'a>(boot: &'a Boot) -> (Engine<'a>, Viewer, Vec<u32>) {
     // up draws every page it wants.
     let mut frames = 0;
     loop {
-        viewer.frame(&mut engine);
+        viewer.frame(&mut engine, &mut world);
         frames += 1;
         if viewer.render.streaming_idle() {
             break;
         }
         assert!(frames < 64, "streaming did not catch up");
     }
-    let pixels = viewer.frame(&mut engine);
-    (engine, viewer, pixels)
+    let pixels = viewer.frame(&mut engine, &mut world);
+    (engine, world, viewer, pixels)
 }
 
 fn rgb(p: u32) -> [u8; 3] {
@@ -255,12 +245,12 @@ fn the_sample_cooks_packages_and_renders_the_same_from_cookd() {
         level,
     })
     .unwrap();
-    let (_, viewer, packaged) = start(&boot);
+    let (_, _, viewer, packaged) = start(&boot);
     // The build has the engine's quality presets, which apply: the platform's device profile
     // picks sg.quality = medium, whose levels set the lighting tier L2's values (0010 §3).
     marlin_framework::register_cvars();
     marlin_framework::scalability::apply_presets(&boot.vfs).unwrap();
-    use marlin_framework::quality::{
+    use marlin_renderer::settings::{
         R_RESTIR_CANDIDATES, R_SHARC_CAPACITY, SG_LIGHTING, SG_QUALITY,
     };
     assert_eq!(
@@ -298,7 +288,7 @@ fn the_sample_cooks_packages_and_renders_the_same_from_cookd() {
         level,
     })
     .unwrap();
-    let (_, _, streamed) = start(&boot);
+    let (_, _, _, streamed) = start(&boot);
     assert!(
         streamed == packaged,
         "cookd and the package render the same"
@@ -318,7 +308,7 @@ fn editing_the_level_changes_the_picture_live() {
         level,
     })
     .unwrap();
-    let (mut engine, mut viewer, before) = start(&boot);
+    let (mut engine, mut world, mut viewer, before) = start(&boot);
     check_sample(&before);
 
     // The sphere turns green in the text; the running game follows.
@@ -331,7 +321,7 @@ fn editing_the_level_changes_the_picture_live() {
     assert_ne!(edited, text);
     std::fs::write(&path, edited).unwrap();
     wait_until(Duration::from_secs(30), "the sphere to turn green", || {
-        let pixels = viewer.frame(&mut engine);
+        let pixels = viewer.frame(&mut engine, &mut world);
         // Exposed and tonemapped, so all channels rise: green clearly ahead of the others.
         around_center(&pixels, |c| {
             let [r, g, b] = c.map(u32::from);
@@ -357,7 +347,7 @@ fn the_exposure_holds_steady_from_the_first_frame() {
         level,
     })
     .unwrap();
-    let (mut engine, mut viewer, _) = start(&boot);
+    let (mut engine, mut world, mut viewer, _) = start(&boot);
     let mean = |px: &[u32]| {
         px.iter()
             .map(|p| ((p & 255) + ((p >> 8) & 255) + ((p >> 16) & 255)) as f32 / 3.0)
@@ -366,7 +356,8 @@ fn the_exposure_holds_steady_from_the_first_frame() {
     };
     let mut means = Vec::new();
     for _ in 0..240 {
-        let delta = engine.frame(1.0 / 60.0, None, None);
+        engine.frame(&mut world, 1.0 / 60.0, None, None);
+        let delta = take_delta(&mut world).unwrap();
         let px = viewer
             .offscreen
             .render(viewer.device, &mut viewer.render, &delta)
@@ -408,26 +399,18 @@ fn resizing_with_frames_in_flight_keeps_validation_quiet() {
     })
     .unwrap();
     let device = hardware_device();
-    let mut engine = Engine::new(&boot.vfs).unwrap();
-    let library = load_engine_shaders(&mut engine.assets, &boot.vfs, None).unwrap();
-    let resolve = load_default_resolve(&mut engine.assets, &boot.vfs, None).unwrap();
-    let bake = load_default_bake(&mut engine.assets, &boot.vfs, None).unwrap();
-    let pairing = load_pairing_pattern(&mut engine.assets, &boot.vfs, None).unwrap();
-    let mut render = RenderSide::new(
-        device,
-        engine.assets.get(&library).unwrap(),
-        engine.assets.get(&resolve).unwrap(),
-        engine.assets.get(&bake).unwrap(),
-        engine.assets.get(&pairing).unwrap().view(),
-        OFFSCREEN_FORMAT,
-        engine.scene_ids(),
-    )
-    .unwrap();
-    engine.load_level(boot.level);
+    let mut engine = engine(&boot);
+    let mut world = engine.create_world(WorldKind::Game, None);
+    let mut render = world_renderer(device, &engine, &world);
+    world.load_sublevel(boot.level, Transform::IDENTITY);
     let mut frames = FrameContext::new(device, &FrameContextDesc::default()).unwrap();
     let before = device.validation_errors();
-    let mut frame = |size: (u32, u32), engine: &mut Engine<'_>, frames: &mut FrameContext| {
-        let delta = engine.frame(1.0 / 60.0, None, None);
+    let mut frame = |size: (u32, u32),
+                     engine: &mut Engine<'_>,
+                     world: &mut World,
+                     frames: &mut FrameContext| {
+        engine.frame(world, 1.0 / 60.0, None, None);
+        let delta = take_delta(world).unwrap();
         render.collect_feedback(frames);
         render.apply(device, &delta).unwrap();
         frames
@@ -441,19 +424,24 @@ fn resizing_with_frames_in_flight_keeps_validation_quiet() {
             .unwrap();
     };
     wait_until(Duration::from_secs(60), "the level to load", || {
-        frame((320, 180), &mut engine, &mut frames);
-        engine.is_ready()
+        frame((320, 180), &mut engine, &mut world, &mut frames);
+        engine.is_ready(&world)
     });
     for _ in 0..8 {
-        frame((320, 180), &mut engine, &mut frames);
+        frame((320, 180), &mut engine, &mut world, &mut frames);
     }
     // As the game loop's resize: wait for the GPU, then the new size.
     for i in 0..24u32 {
         frames.wait_idle().unwrap();
-        frame((320 - 6 * i, 180 + 10 * i), &mut engine, &mut frames);
+        frame(
+            (320 - 6 * i, 180 + 10 * i),
+            &mut engine,
+            &mut world,
+            &mut frames,
+        );
     }
     for _ in 0..6 {
-        frame((176, 420), &mut engine, &mut frames);
+        frame((176, 420), &mut engine, &mut world, &mut frames);
     }
     frames.wait_idle().unwrap();
     assert_eq!(device.validation_errors(), before);

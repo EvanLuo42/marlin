@@ -8,10 +8,6 @@ use marlin_asset::cooked::write::{UnitObject, unit};
 use marlin_asset::cooked::{Encoding, platform_id, unit_id};
 use marlin_asset::{MemorySource, Uuid, Vfs};
 use marlin_config::Source;
-use marlin_framework::quality::{
-    R_RESTIR_CANDIDATES, R_RESTIR_CHECKERBOARD, R_UPSCALE_MODE, RenderSettings, SG_LIGHTING,
-    SG_QUALITY,
-};
 use marlin_framework::register_cvars;
 use marlin_framework::scalability::{
     CvarValue, DEVICE_PROFILES, DeviceProfile, ENGINE_SCALABILITY, GAME_SCALABILITY, PresetError,
@@ -19,6 +15,12 @@ use marlin_framework::scalability::{
 };
 use marlin_reflect::{Reflect, type_info};
 use marlin_render::upscale::UpscaleMode;
+use marlin_renderer::RenderModule;
+use marlin_renderer::settings::{
+    R_RESTIR_CANDIDATES, R_RESTIR_CHECKERBOARD, R_UPSCALE_MODE, RenderSettings, SG_LIGHTING,
+    SG_QUALITY,
+};
+use marlin_world::{Modules, WorldModule};
 
 fn values(pairs: &[(&str, &str)]) -> Vec<CvarValue> {
     pairs
@@ -75,6 +77,8 @@ fn encode<T: Reflect>(value: &T) -> Encoded {
 #[test]
 fn presets_apply_from_content() {
     register_cvars();
+    // The render settings' cvars are the render module's.
+    Modules::new(vec![Box::new(WorldModule), Box::new(RenderModule)]).unwrap();
     let engine = Scalability {
         levels: vec![
             level(

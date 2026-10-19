@@ -16,6 +16,7 @@ pub mod command;
 pub mod damage;
 pub mod gradient;
 pub mod list;
+mod module;
 pub mod path;
 pub mod reference;
 pub mod renderer;
@@ -24,6 +25,7 @@ pub mod style;
 
 pub use gradient::{Gradient, GradientShape, GradientSpace};
 pub use list::{ChunkSlot, Painter, RetainedChunk, UiDrawList};
+pub use module::{UI_FONT, UiModule, load_ui_font};
 pub use path::{FillRule, Path};
 pub use renderer::{
     UI_FORMAT, UiFrameData, UiOutput, UiPages, UiPrepared, UiRenderer, UiRendererDesc, UiShaders,

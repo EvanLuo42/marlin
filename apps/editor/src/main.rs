@@ -22,22 +22,20 @@ use marlin_asset_db::{Options, Project};
 use marlin_cookd::{Cookd, CookdOptions, bind};
 use marlin_cooker::{engine_cookers, open_ddc};
 use marlin_diag::{error, info};
-use marlin_framework::loaders::engine_loaders;
-use marlin_framework::{
-    ContentSettings, Engine, RenderSide, load_default_bake, load_default_resolve,
-    load_engine_shaders, load_pairing_pattern, load_ui_font, mount,
-};
+use marlin_framework::{ContentSettings, Engine, mount};
 use marlin_jobs::{Config, JobSystem};
 use marlin_math::Vec2;
 use marlin_render_graph::{FrameContext, TextureDesc};
+use marlin_renderer::{RenderAssets, WorldRenderer, load_engine_shaders};
 use marlin_rhi::{
     DeviceDesc, Format, Instance, InstanceDesc, PresentStatus, SurfaceHandle, Swapchain,
     SwapchainDesc,
 };
 use marlin_ui_render::{
     Color, ExternalImageId, UiDrawList, UiRenderer, UiRendererDesc, UiShaders, UiSurface,
-    UiSurfaceDesc,
+    UiSurfaceDesc, load_ui_font,
 };
+use marlin_world::{Modules, Transform, WorldKind};
 
 // Link the whole runtime and every editor library.
 use marlin as _;
@@ -155,33 +153,21 @@ fn run(
     .map_err(|e| format!("mounting the cook service: {e}"))?;
     let jobs = JobSystem::new(Config::default()).map_err(|e| format!("jobs: {e:?}"))?;
 
-    // The engine's shaders, default material and UI font, cooked from content/engine.
+    // The engine: the game's modules (the editor's join them with the editor UI framework), their
+    // assets cooked from content/engine on demand.
     info!("cooking the engine's shaders and UI font");
-    // Nothing here streams: the streamer is never driven.
-    let streamer = std::sync::Arc::new(marlin_asset::BlobStreamer::new());
-    let mut assets = AssetServer::new(engine_loaders(&streamer));
+    let modules = Modules::new(marlin::game_modules()).map_err(|e| format!("{e}"))?;
+    let mut engine =
+        Engine::new(&boot.vfs, modules, Some(&jobs)).map_err(|e| format!("the engine: {e}"))?;
+    // The UI's shaders and font, from an asset server of the editor's own: the engine's is the
+    // world's each frame.
+    let mut assets = AssetServer::new(engine.loaders());
     let library = load_engine_shaders(&mut assets, &boot.vfs, Some(&jobs))
         .map_err(|e| format!("engine shaders: {e}"))?;
-    let resolve = load_default_resolve(&mut assets, &boot.vfs, Some(&jobs))
-        .map_err(|e| format!("the default material: {e}"))?;
-    let bake = load_default_bake(&mut assets, &boot.vfs, Some(&jobs))
-        .map_err(|e| format!("the default material's bake: {e}"))?;
-    let pairing = load_pairing_pattern(&mut assets, &boot.vfs, Some(&jobs))
-        .map_err(|e| format!("the pairing patterns: {e:?}"))?;
     let font = load_ui_font(&mut assets, &boot.vfs, Some(&jobs))
         .map_err(|e| format!("the UI font: {e:?}"))?;
     let library = assets.get(&library).ok_or("engine shaders: not loaded")?;
-    let resolve = assets
-        .get(&resolve)
-        .ok_or("the default material: not loaded")?;
-    let bake = assets
-        .get(&bake)
-        .ok_or("the default material's bake: not loaded")?;
     let font = assets.get(&font).ok_or("the UI font: not loaded")?.view();
-    let pairing = assets
-        .get(&pairing)
-        .ok_or("the pairing patterns: not loaded")?
-        .view();
 
     let mut app = App::new().map_err(|e| format!("{e}"))?;
     let window = app
@@ -228,22 +214,20 @@ fn run(
     let window_ui = UiSurface::new(&device, &UiSurfaceDesc::new(1))
         .map_err(|e| format!("the window's UI surface: {e}"))?;
 
-    // The viewport's scene: the game's renderer, into a texture the UI draws (0008 §6.1).
-    let mut engine = Engine::new(&boot.vfs).map_err(|e| format!("the engine: {e}"))?;
+    // The viewport's scene: a world drawn by the game's renderer, into a texture the UI draws
+    // (0008 §6.1).
+    let mut world = engine.create_world(WorldKind::Game, Some(&jobs));
     let mut scene = match level {
         Some(level) => {
-            engine.load_level(level);
+            world.load_sublevel(level, Transform::IDENTITY);
+            let render_assets = engine
+                .resources()
+                .get::<RenderAssets>()
+                .ok_or("the engine has no render module")?;
+            let ids = marlin_renderer::scene_ids(&world).ok_or("the world has no render scene")?;
             Some(
-                RenderSide::new(
-                    &device,
-                    library,
-                    resolve,
-                    bake,
-                    pairing,
-                    VIEWPORT_FORMAT,
-                    engine.scene_ids(),
-                )
-                .map_err(|e| format!("the scene renderer: {e}"))?,
+                WorldRenderer::new(&device, &engine.assets, render_assets, VIEWPORT_FORMAT, ids)
+                    .map_err(|e| format!("the scene renderer: {e}"))?,
             )
         }
         None => None,
@@ -311,9 +295,11 @@ fn run(
             let over = cursor.is_some_and(|c| {
                 c.x >= view.min.x && c.x < view.max.x && c.y >= view.min.y && c.y < view.max.y
             });
-            let delta = engine.frame(dt, over.then(|| input.state()), Some(&jobs));
+            engine.frame(&mut world, dt, over.then(|| input.state()), Some(&jobs));
             scene.collect_feedback(&mut frames);
-            scene.apply(&device, &delta).map_err(|e| format!("{e}"))?;
+            if let Some(delta) = marlin_renderer::take_delta(&mut world) {
+                scene.apply(&device, &delta).map_err(|e| format!("{e}"))?;
+            }
             viewport_version += 1;
         }
 

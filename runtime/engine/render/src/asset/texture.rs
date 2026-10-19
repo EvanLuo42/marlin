@@ -345,3 +345,13 @@ impl<'a> TextureView<'a> {
         self.header.mip_tail + u32::from(self.header.mip_tail < self.header.mip_levels)
     }
 }
+
+/// Loaded in place (`marlin_asset::InPlace<Texture>`), checked once with its mips' sizes.
+impl marlin_asset::CookedAsset for Texture {
+    type View<'a> = TextureView<'a>;
+    type Error = TextureError;
+
+    fn view<'a>(payload: &'a [u8], bulk_sizes: &[u64]) -> Result<TextureView<'a>, TextureError> {
+        TextureView::new(payload, bulk_sizes)
+    }
+}

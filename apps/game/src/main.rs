@@ -13,9 +13,6 @@ use alloc::vec::Vec;
 
 use marlin_diag::{chain, error, info};
 
-// Link the whole runtime.
-use marlin as _;
-
 marlin_rt::game_entry!(game_main);
 
 /// The boot file: the first argument that is neither a `+cvar` nor its value.
@@ -48,6 +45,14 @@ fn game_main() -> i32 {
             return 1;
         }
     };
+    // The modules register first: their cvars exist when the boot file sets them.
+    let modules = match marlin::world::Modules::new(marlin::game_modules()) {
+        Ok(modules) => modules,
+        Err(e) => {
+            error!("{e}");
+            return 1;
+        }
+    };
     let base = path.rsplit_once(['/', '\\']).map_or("", |(dir, _)| dir);
     let boot = match marlin_framework::boot(&text, base, args.iter().copied()) {
         Ok(boot) => boot,
@@ -57,7 +62,7 @@ fn game_main() -> i32 {
         }
     };
     info!("content: {:?}", boot.vfs.layer_names().collect::<Vec<_>>());
-    match marlin_framework::run(&boot, "Marlin") {
+    match marlin_framework::run(&boot, "Marlin", modules) {
         Ok(()) => 0,
         Err(e) => {
             error!("{}", chain(&e));

@@ -1,16 +1,15 @@
-//! The engine's shaders: the cooked `Marlin.Engine` library from the mounted content
+//! The render module's engine assets ([`RenderAssets`]), loaded at startup by name: the engine's
+//! shaders, the cooked `Marlin.Engine` library from the mounted content
 //! (`content/engine/shaders/`, `docs/design/0003-asset-pipeline.md` §4.4), found by package name.
 //! Which entries a subsystem takes from it, and what it uses them as, is the subsystem's
 //! (`PostShaders::bind`, `UiShaders::bind`..., `marlin_shader::bind`): this module only loads.
 
 use core::fmt;
 
-use marlin_asset::{AssetError, AssetServer, Handle, LoadState, Vfs};
+use marlin_asset::{AssetError, AssetServer, Handle, InPlace, LoadState, Vfs};
 use marlin_jobs::JobSystem;
 use marlin_shader::asset::ShaderLibrary;
 
-use crate::loaders::InPlace;
-use marlin_font::Font;
 use marlin_render::asset::PairingPattern;
 
 /// The engine's shader package.
@@ -93,7 +92,7 @@ fn load_named(
 pub const PAIRING_PATTERN: &str = "Marlin.Engine.Lighting.PairingPattern";
 
 /// Loads ReSTIR's pairing patterns ([`PAIRING_PATTERN`]), blocking like
-/// [`load_engine_shaders`]; the render side takes them (`RenderSide::new`).
+/// [`load_engine_shaders`]; the world renderer takes them (`WorldRenderer::new`).
 pub fn load_pairing_pattern(
     assets: &mut AssetServer,
     vfs: &Vfs,
@@ -109,21 +108,34 @@ pub fn load_pairing_pattern(
     }
 }
 
-/// The engine's UI font (`content/engine/fonts/Inter.masset`).
-pub const UI_FONT: &str = "Marlin.Engine.Fonts.Inter";
+/// What every world renderer is made with, loaded once when the render module starts (an
+/// engine resource): the engine's shader library, the default material's resolve permutation and
+/// bake, and ReSTIR's pairing patterns.
+pub struct RenderAssets {
+    pub library: Handle<ShaderLibrary>,
+    pub resolve: Handle<ShaderLibrary>,
+    pub bake: Handle<ShaderLibrary>,
+    pub pairing: Handle<InPlace<PairingPattern>>,
+}
 
-/// Loads the engine's UI font ([`UI_FONT`]), blocking like [`load_engine_shaders`].
-pub fn load_ui_font(
-    assets: &mut AssetServer,
-    vfs: &Vfs,
-    jobs: Option<&JobSystem>,
-) -> Result<Handle<InPlace<Font>>, AssetError> {
-    let uuid = vfs.named(UI_FONT).ok_or(AssetError::NotFound)?;
-    let handle = assets.load::<InPlace<Font>>(uuid);
-    assets.update_blocking(vfs, jobs);
-    match assets.state(&handle) {
-        LoadState::Loaded => Ok(handle),
-        LoadState::Failed(e) => Err(e),
-        LoadState::Loading => Err(AssetError::NotFound),
+impl RenderAssets {
+    /// Loads them from `vfs`, blocking.
+    pub fn load(
+        assets: &mut AssetServer,
+        vfs: &Vfs,
+        jobs: Option<&JobSystem>,
+    ) -> Result<Self, ShaderError> {
+        Ok(Self {
+            library: load_engine_shaders(assets, vfs, jobs)?,
+            resolve: load_default_resolve(assets, vfs, jobs)?,
+            bake: load_default_bake(assets, vfs, jobs)?,
+            pairing: load_pairing_pattern(assets, vfs, jobs).map_err(ShaderError::Load)?,
+        })
+    }
+
+    /// The engine's shader library, which other subsystems bind their entries from (UI, the
+    /// stats overlay).
+    pub fn library<'a>(&self, assets: &'a AssetServer) -> Option<&'a ShaderLibrary> {
+        assets.get(&self.library)
     }
 }

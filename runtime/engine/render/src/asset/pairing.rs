@@ -119,3 +119,13 @@ pub fn pack_offset(dx: i32, dy: i32) -> u16 {
     debug_assert!((-128..128).contains(&dx) && (-128..128).contains(&dy));
     ((dx + 128) as u16) | (((dy + 128) as u16) << 8)
 }
+
+/// Loaded in place (`marlin_asset::InPlace<PairingPattern>`), checked once.
+impl marlin_asset::CookedAsset for PairingPattern {
+    type View<'a> = PairingPatternView<'a>;
+    type Error = PairingError;
+
+    fn view<'a>(payload: &'a [u8], _: &[u64]) -> Result<PairingPatternView<'a>, PairingError> {
+        PairingPatternView::new(payload)
+    }
+}
