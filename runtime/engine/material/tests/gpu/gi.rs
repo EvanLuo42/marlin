@@ -7,7 +7,11 @@ use marlin_test_scenes::reference::{direct_lighting, global_illumination};
 use marlin_test_scenes::scenes::cornell_box;
 
 use crate::restir::{average, errors};
-use crate::support::{HEIGHT, Harness, WIDTH};
+use marlin_math::{Quat, Transform, Vec3};
+use marlin_render::scene::MaterialDesc;
+use marlin_render::{Camera, Environment};
+
+use crate::support::{GLOW, HEIGHT, Harness, WIDTH};
 
 /// A harness drawing GI, its world cache dense enough for a 96 × 64 view: a path a pixel, voxels
 /// about 6 pixels across (at 1080p a sixteenth of the pixels and the default voxels give each
@@ -142,4 +146,125 @@ fn the_split_at_tau_neither_doubles_nor_drops_light() {
             above[c]
         );
     }
+}
+
+/// A mirror floor (white metal, roughness 0) with emissive blocks of four colors standing on it,
+/// in the dark: the floor's light is their reflection alone, exact every frame (the blocks
+/// glow and reflect nothing; no light, no sky), so what a pan smears is all the error there is.
+fn mirror_and_glow(h: &mut Harness) {
+    let cube = h.upload(&crate::support::cook::cube());
+    let mirror = h.default_material(marlin_material::DefaultMaterial {
+        base_color: [0.9; 3],
+        roughness: 0.0,
+        metallic: 1.0,
+    });
+    h.add(
+        cube,
+        mirror,
+        Transform {
+            translation: Vec3::new(0.0, -0.05, 0.0),
+            rotation: Quat::IDENTITY,
+            scale: Vec3::new(8.0, 0.1, 8.0),
+        },
+        [1.0; 4],
+    );
+    for (k, color) in [
+        [4.0, 0.5, 0.5],
+        [0.5, 4.0, 0.5],
+        [0.5, 0.5, 4.0],
+        [4.0, 4.0, 0.5],
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let glow = h.material(MaterialDesc {
+            permutation: GLOW,
+            params: [0.0, 0.0, 0.0, color[0], color[1], color[2]]
+                .map(f32::to_bits)
+                .to_vec(),
+        });
+        h.add(
+            cube,
+            glow,
+            Transform {
+                translation: Vec3::new(-1.5 + k as f32, 0.4, -1.5),
+                rotation: Quat::IDENTITY,
+                scale: Vec3::new(0.5, 0.8, 0.5),
+            },
+            [1.0; 4],
+        );
+    }
+    h.updates.environment = Some(Environment {
+        sun_illuminance: 0.0,
+        ambient: [0.0; 3],
+        clear_color: [0.0, 0.0, 0.0, 1.0],
+        ..Environment::default()
+    });
+}
+
+/// The camera `x` to the side, a little above the floor looking at the blocks' reflections.
+fn mirror_camera(x: f32) -> (Transform, Camera) {
+    (
+        Transform {
+            translation: Vec3::new(x, 1.0, 2.5),
+            rotation: Quat::from_rotation_x(-0.35),
+            scale: Vec3::ONE,
+        },
+        Camera::default(),
+    )
+}
+
+/// The mean error over the floor's reflections (the bottom half of the view) of a denoised
+/// frame after a sideways pan of `pan` m in 20 frames, against a still frame from where it ends;
+/// the denoiser's virtual motion on or off.
+fn panned_mirror_error(virtual_motion: bool, pan: f32) -> f32 {
+    let mut still = gi_harness();
+    still.denoise = true;
+    mirror_and_glow(&mut still);
+    still.camera = mirror_camera(pan);
+    let mut reference = Vec::new();
+    for seed in 0..32 {
+        reference = still.restir_frame(seed);
+    }
+    let mut h = gi_harness();
+    h.denoise = true;
+    h.denoiser.virtual_motion = virtual_motion;
+    mirror_and_glow(&mut h);
+    h.camera = mirror_camera(-pan);
+    for seed in 0..32 {
+        h.restir_frame(seed);
+    }
+    let mut picture = Vec::new();
+    for k in 0..20 {
+        h.camera = mirror_camera(-pan + 2.0 * pan * (k + 1) as f32 / 20.0);
+        picture = h.restir_frame(100 + k);
+    }
+    let (mut error, mut total) = (0.0f32, 0.0f32);
+    for i in (HEIGHT / 2 * WIDTH) as usize..(HEIGHT * WIDTH) as usize {
+        for c in 0..3 {
+            error += (picture[i][c] - reference[i][c]).abs();
+            total += reference[i][c];
+        }
+    }
+    error / total
+}
+
+#[test]
+fn a_panned_mirror_keeps_its_reflection_in_place() {
+    // A reflection moves as its virtual point does (R4d3): denoised along the surface's motion,
+    // the floor's reflections smear behind a pan.
+    let still = panned_mirror_error(true, 0.0);
+    let (virtual_motion, surface_motion) = (
+        panned_mirror_error(true, 0.5),
+        panned_mirror_error(false, 0.5),
+    );
+    // The reflections are exact every frame: following them, the history is too (the hit distance
+    // test keeps a reflection's edges from taking history from what they uncover).
+    assert!(still < 0.02, "the still mirror: {still}");
+    assert!(virtual_motion < 0.02, "after the pan: {virtual_motion}");
+    // And the test sees a smear where there is one.
+    assert!(
+        surface_motion > 0.2,
+        "along the surface's motion: {surface_motion}"
+    );
 }

@@ -25,7 +25,9 @@ namespace Marlin.Engine.Lighting;
 //    (`SpecularAlbedo`), added to the HDR scene. Also composes signals not denoised.
 //
 // One signal an instance: the specular signal (R4d) goes through a second one, its history a view
-// of its own; its virtual-motion reprojection (0010 §6) is still to come.
+// of its own (`Specular`, R4d3): where the lobe is smooth its history follows the reflection's
+// virtual motion, its hit distance checked against last frame's there; its history is shorter
+// (4 frames for a mirror); its blur narrows with the roughness.
 
 using Marlin.Substrate;
 
@@ -64,7 +66,11 @@ public struct DenoiseConstants
     public float TargetError;
     /// `DenoiseCompose`: 1 with a specular signal (in `Signal`).
     public uint HasSpecular;
-    public uint Spare2;
+    /// 1: the signal is specular (R4d3): its history follows the reflection's virtual motion
+    /// where the lobe is smooth, and its blur narrows with the roughness.
+    public uint Specular;
+    /// Last frame's camera, world to clip without its jitter (for the virtual motion).
+    public float4x4 PreviousViewProjection;
 }
 
 public struct DenoiseArgs
@@ -96,6 +102,11 @@ public struct DenoiseArgs
     public Texture2D<float4> Position;
     public Texture2D<float4> CurrentSurface;
     public StorageTexture2D<float4> SurfaceOut;
+    /// The hit distance a specular signal's pixel had last frame, and this frame's (R4d3): where a
+    /// reflection's history is fetched along its virtual motion, it must be of a reflection about
+    /// as far.
+    public Texture2D<float> PreviousHit;
+    public StorageTexture2D<float> HitOut;
     public StorageTexture2D<float> VarianceOut;
     /// The HDR scene the composition adds to.
     public StorageTexture2D<float4> Scene;
@@ -180,6 +191,8 @@ public void DenoiseTemporal([DispatchThreadId] uint3 id, [Push] in DenoiseArgs a
     float3 x = DenoiseWorldAt(c, id.xy, depth);
     float distance = Length(x - c.Eye.xyz);
     a.SurfaceOut[px] = float4(p.Normal, distance);
+    if (c.Specular != 0)
+        a.HitOut[px] = a.Signal.Load(px).w;
     a.PositionOut[px] = float4(x - c.Eye.xyz, 1);
     float2 hints = a.Hints.Load(px);
     float novelty = Clamp(hints.x, 0.01, 1);
@@ -199,6 +212,23 @@ public void DenoiseTemporal([DispatchThreadId] uint3 id, [Push] in DenoiseArgs a
     // Last frame's accumulations, bilinear over the taps on this surface.
     float2 size = float2((float)c.Width, (float)c.Height);
     float2 at = ((float2)id.xy + 0.5) / size - a.Velocity.Load(px);
+    // A reflection moves as its virtual point does (the point seen in the mirror, the hit
+    // distance behind the surface along the view ray), not as the surface: toward it as the lobe
+    // gets smooth (ReBLUR's choice by roughness; rough lobes follow the surface).
+    float hitDistance = a.Signal.Load(px).w;
+    float smooth = 0;
+    if (c.Specular != 0 && hitDistance > 0)
+    {
+        float3 virtualPoint = c.Eye.xyz + (x - c.Eye.xyz) * ((distance + hitDistance) / distance);
+        float4 clip = c.PreviousViewProjection * float4(virtualPoint, 1);
+        if (clip.w > 0)
+        {
+            float2 ndc = clip.xy / clip.w;
+            float2 virtualAt = float2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+            smooth = 1 - Saturate(p.Roughness / 0.5);
+            at = Lerp(at, virtualAt, smooth);
+        }
+    }
     float2 texel = at * size - 0.5;
     int2 corner = int2((int)Floor(texel.x), (int)Floor(texel.y));
     float2 f = texel - float2((float)corner.x, (float)corner.y);
@@ -215,6 +245,14 @@ public void DenoiseTemporal([DispatchThreadId] uint3 id, [Push] in DenoiseArgs a
             float4 s = a.PreviousSurface.Load(q);
             if (s.w <= 0 || Abs(s.w - distance) > 0.1 * distance || Dot(s.xyz, p.Normal) < 0.9)
                 continue;
+            // Along the virtual motion, a reflection about as far: not one an edge in the mirror
+            // uncovers (ReBLUR's hit distance test).
+            if (smooth > 0.5)
+            {
+                float before = a.PreviousHit.Load(q);
+                if (Abs(before - hitDistance) > 0.2 * Max(before, hitDistance))
+                    continue;
+            }
             float w = (k % 2 == 0 ? 1 - f.x : f.x) * (k / 2 == 0 ? 1 - f.y : f.y);
             slow += a.History.Load(q) * w;
             fast += a.PreviousFast.Load(q) * w;
@@ -231,9 +269,16 @@ public void DenoiseTemporal([DispatchThreadId] uint3 id, [Push] in DenoiseArgs a
         // independent samples' worth: `MaxFrames / Novelty` frames of noise that persists (frames
         // a frame apart share 1 - `Novelty` of it), so persistent noise is not mistaken for many
         // independent samples. The fast one averages a few frames.
-        float frames = Min(slow.w + 1, c.MaxFrames / novelty);
+        float window = c.MaxFrames / novelty;
+        // A smooth lobe's reflection is sharp and its samples are few-noised: a short history, which
+        // also keeps the resampling's blur of every frame from piling up (ReBLUR caps it by
+        // roughness too). Four frames for a mirror, the whole window from roughness 0.5.
+        if (c.Specular != 0)
+            window = Lerp(Min(4.0, window), window, Saturate(p.Roughness / 0.5));
+        float frames = Min(slow.w + 1, window);
         slowOut = float4(Lerp(slow.xyz, current, 1 / frames), frames);
-        float fastFrames = Min(fast.w + 1, c.FastFrames);
+        // No longer than the slow one's window: the clamp holds the slow one near it.
+        float fastFrames = Min(fast.w + 1, Min(c.FastFrames, window));
         fastOut = float4(Lerp(fast.xyz, current, 1 / fastFrames), fastFrames);
     }
     a.Output[px] = slowOut;
@@ -342,6 +387,9 @@ public void DenoiseBlur([DispatchThreadId] uint3 id, [Push] in DenoiseArgs a)
     if (hit > 0)
         radius = Min(radius, Max(hit / Max(distance * c.PixelAngle, 1e-6), c.MinRadius));
     radius = Max(radius, c.MinRadius) * c.RadiusScale;
+    // A specular lobe blurs no wider than it spreads: a mirror's reflection not at all.
+    if (c.Specular != 0)
+        radius *= Saturate(2 * UnpackProxy(a.MaterialBuffer.Load(px)).Roughness);
     float3 sum = center.xyz;
     float weights = 1;
     // Rotated per pixel and frame, so the taps' pattern does not stay.

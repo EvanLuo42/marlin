@@ -402,6 +402,8 @@ impl RenderSide {
                     material,
                     depth,
                     velocity,
+                    specular: view == SPECULAR_VIEW,
+                    previous: *previous,
                 };
                 denoiser.add_passes(g, signal, inputs, camera, width, height, seed)
             };

@@ -57,6 +57,11 @@ pub struct DenoiseInputs<'g> {
     pub depth: TextureHandle<'g>,
     /// The material passes' motion vectors.
     pub velocity: TextureHandle<'g>,
+    /// The signal is specular (R4d3): where the lobe is smooth its history follows the
+    /// reflection's virtual motion (which needs last frame's camera, `previous`), and its blur
+    /// narrows with the roughness.
+    pub specular: bool,
+    pub previous: Option<(Transform, Camera)>,
 }
 
 /// The denoiser's shaders (`Marlin.Engine.Lighting`).
@@ -113,7 +118,8 @@ struct Constants {
     taps: u32,
     target_error: f32,
     has_specular: u32,
-    spare: u32,
+    specular: u32,
+    previous_view_projection: [f32; 16],
 }
 
 /// `Marlin.Engine.Lighting.DenoiseArgs`.
@@ -138,6 +144,8 @@ struct DenoiseArgs {
     position: u32,
     current_surface: u32,
     surface_out: u32,
+    previous_hit: u32,
+    hit_out: u32,
     variance_out: u32,
     scene: u32,
 }
@@ -165,6 +173,9 @@ pub struct Denoiser {
     /// The relative error (deviation over value, measured) at which a blur takes its full radius;
     /// a more precise accumulation is blurred less. 0: the radius follows the samples alone.
     pub target_error: f32,
+    /// Specular signals follow their reflections' virtual motion and blur by roughness (R4d3); off,
+    /// they are denoised as diffuse ones (for comparison).
+    pub virtual_motion: bool,
 }
 
 impl Denoiser {
@@ -190,6 +201,7 @@ impl Denoiser {
             firefly_sigma: 4.0,
             fast_frames: 4.0,
             target_error: 0.1,
+            virtual_motion: true,
         })
     }
 
@@ -213,7 +225,18 @@ impl Denoiser {
             material,
             depth,
             velocity,
+            specular,
+            previous: previous_camera,
         } = inputs;
+        // Last frame's camera without its jitter, as the motion vectors are; this frame's without a
+        // previous one (no virtual motion then).
+        let previous_view_projection = crate::view_projection(
+            previous_camera.map_or((eye, camera.unjittered()), |(t, c)| (t, c.unjittered())),
+            width,
+            height,
+        )
+        .to_cols_array();
+        let specular = specular && self.virtual_motion;
         let accumulation = g.history(
             "DnDiffuse",
             view,
@@ -252,7 +275,8 @@ impl Denoiser {
             taps: 16,
             target_error: self.target_error.max(0.0),
             has_specular: 0,
-            spare: 0,
+            specular: u32::from(specular),
+            previous_view_projection,
         };
         let groups = (width.div_ceil(8), height.div_ceil(8));
         let texture = |g: &mut RenderGraph<'g>, name, format| {
@@ -264,8 +288,23 @@ impl Denoiser {
         let position = texture(g, "DnPosition", Format::Rgba16Float);
 
         let full = constants(1.0);
+        // A specular signal's hit distances, last frame's and this frame's.
+        let hit = specular.then(|| {
+            let h = g.history(
+                "DnHit",
+                view,
+                GraphTextureDesc::new_2d(width, height, Format::R16Float),
+            );
+            (h.prev, h.cur)
+        });
         let (slow, fast_cur, signal_variance, position, surface_cur) =
             g.add_compute("DenoiseTemporal", |b| {
+                let hit = hit.map(|(prev, cur)| {
+                    (
+                        prev.map(|p| b.read_texture(p, Access::ComputeRead)),
+                        b.write_texture(cur, Access::ComputeWrite),
+                    )
+                });
                 let material = b.read_texture(material, Access::ComputeRead);
                 let depth = b.read_texture(depth, Access::ComputeRead);
                 let velocity = b.read_texture(velocity, Access::ComputeRead);
@@ -307,6 +346,9 @@ impl Denoiser {
                             surface_out: ctx.uav(surface_out),
                             position_out: ctx.uav(position_out),
                             variance_out: ctx.uav(variance),
+                            // Unread without a specular signal or its last frame.
+                            previous_hit: hit.and_then(|(p, _)| p).map_or(0, |p| ctx.srv(p)),
+                            hit_out: hit.map_or(0, |(_, c)| ctx.uav(c)),
                             ..DenoiseArgs::default()
                         };
                         ctx.push(&args);
@@ -358,12 +400,14 @@ impl Denoiser {
                 let light = b.read_texture(signal.light, Access::ComputeRead);
                 let hints = b.read_texture(signal.hints, Access::ComputeRead);
                 let input = b.read_texture(input, Access::ComputeRead);
+                let material = b.read_texture(material, Access::ComputeRead);
                 let variance = b.read_texture(variance, Access::ComputeRead);
                 let output = b.write_texture(target, Access::ComputeWrite);
                 (output, move |ctx: &mut PassContext<'_>| {
                     ctx.set_pipeline(&self.blur_pass);
                     let args = DenoiseArgs {
                         constants: ctx.upload(&c),
+                        material: ctx.srv(material),
                         position: ctx.srv(position),
                         current_surface: ctx.srv(surface),
                         signal: ctx.srv(light),
@@ -418,7 +462,8 @@ impl Denoiser {
             taps: 0,
             target_error: 0.1,
             has_specular: u32::from(specular.is_some()),
-            spare: 0,
+            specular: 0,
+            previous_view_projection: [0.0; 16],
         };
         g.add_compute("DenoiseCompose", |b| {
             let light = b.read_texture(light, Access::ComputeRead);

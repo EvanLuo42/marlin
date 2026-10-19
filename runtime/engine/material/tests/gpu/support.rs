@@ -624,6 +624,8 @@ impl Harness {
                                 material: out.material,
                                 depth: v.depth,
                                 velocity: out.velocity,
+                                specular: view != 0,
+                                previous,
                             };
                             denoiser.add_passes(g, signal, inputs, camera, width, height, seed)
                         });
@@ -767,6 +769,8 @@ impl Harness {
                     material: out.material,
                     depth: v.depth,
                     velocity: out.velocity,
+                    specular: false,
+                    previous,
                 };
                 let denoised = denoiser.add_passes(g, signal, inputs, camera, width, height, seed);
                 g.readback_texture(denoised)
