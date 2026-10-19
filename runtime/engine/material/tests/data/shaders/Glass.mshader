@@ -9,13 +9,21 @@ public struct Glass : ISurfaceMaterial<Glass>
     public float3 Tint = 1;
     public float Roughness = 0.05;
     public float Coverage = 0.3;
+    public float Thickness = 0;
+    public float3 Transmission = 1;
 
     public const BlendMode Blend = BlendMode.Translucent;
 
     public type Tree = Slab;
 
     public Slab Surface(in SurfaceContext ctx) =>
-        Slab.Default with { DiffuseAlbedo = Tint, Roughness = Roughness };
+        Slab.Default with
+        {
+            DiffuseAlbedo = Tint,
+            Roughness = Roughness,
+            Thickness = Thickness,
+            Transmission = Transmission,
+        };
 
     public float Opacity(in SurfaceContext ctx) => Coverage;
 }

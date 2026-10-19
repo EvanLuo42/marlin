@@ -214,3 +214,26 @@ fn tsr_costs_little() {
         assert!(median > 0.0 && median < 0.5, "{mode:?}: {median:.3} ms");
     }
 }
+
+#[test]
+fn a_reactive_mask_takes_the_history_away() {
+    // The whole view reactive: TSR keeps no history, so after 64 frames it is as aliased as one
+    // frame, worse for the jitter (measured: 0.0062 against 0.0048 aliased); half reactive, it
+    // still anti-aliases, less (0.0030 against 0.0023 without the mask).
+    let truth = reference(&mut harness());
+    let aliased = difference(&harness().upscaled_frame(0, None, (W, H)), &truth);
+    let after = |reactive: f32| {
+        let mut h = harness();
+        h.uniform_reactive = Some(reactive);
+        let mut frame = Vec::new();
+        for i in 0..64 {
+            frame = h.upscaled_frame(i, Some(UpscaleMode::Native), (W, H));
+        }
+        difference(&frame, &truth)
+    };
+    let (none, half, full) = (after(0.0), after(0.5), after(1.0));
+    eprintln!("reactive 0: {none:.5}, ½: {half:.5}, 1: {full:.5}; aliased {aliased:.5}");
+    assert!(none < 0.6 * aliased, "{none} against {aliased}");
+    assert!(none < half && half < full, "{none}, {half}, {full}");
+    assert!(full > 0.8 * aliased, "{full} against {aliased}");
+}

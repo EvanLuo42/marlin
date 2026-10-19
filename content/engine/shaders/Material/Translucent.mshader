@@ -22,7 +22,11 @@ namespace Marlin.Engine.Material;
 //    a fragment behind it is dropped (`Discard`).
 //
 // The local lights come from the clustered light grid (`LightGrid.mshader`, R4e2), unshadowed.
-// Not yet (R4e3): refraction.
+// A surface with thickness or a tinting transmission refracts (R4e3): `SceneCopy` makes a mip
+// chain of the lit opaque scene before the draws, and the surface samples it along its bent ray
+// and writes the whole pixel (alpha 1). Translucent surfaces behind it are not in the copy: they
+// vanish behind a refracting one (a known limit; 0009 §8.1). Each surface also writes TSR's
+// reactive mask (its opacity, blended by the maximum).
 
 using Marlin.Substrate;
 using Marlin.Engine.Scene;
@@ -94,8 +98,9 @@ public void TranslucentScatter([DispatchThreadId] uint3 id, [Push] in BinArgs a)
 /// The view the forward pass draws and lights.
 public struct ForwardView
 {
-    /// World to clip, with this frame's jitter. Column-major.
+    /// World to clip, with this frame's jitter, and back. Column-major.
     public float4x4 ViewProjection;
+    public float4x4 InverseViewProjection;
     /// xyz: the eye.
     public float4 Eye;
     /// xyz: the direction the sun's light travels; w: 1 with a sun.
@@ -132,6 +137,9 @@ public struct TranslucentMeshArgs
     public ReadOnlyBuffer<uint> Offsets;
     public uint Slot;
     public LightGridSources Lights;
+    /// The lit opaque scene, a mip chain (`SceneCopy`), what a refracting surface lets through.
+    public Texture2D<float4> Behind;
+    public Sampler Linear;
 }
 
 public struct ForwardArgs<M>
@@ -150,6 +158,9 @@ public struct ForwardArgs<M>
     public ReadOnlyBuffer<uint> Offsets;
     public uint Slot;
     public LightGridSources Lights;
+    /// The lit opaque scene, a mip chain (`SceneCopy`), what a refracting surface lets through.
+    public Texture2D<float4> Behind;
+    public Sampler Linear;
 }
 
 public struct TranslucentVertex
@@ -201,10 +212,21 @@ public void TranslucentMesh(
     }
 }
 
-/// A translucent surface of permutation `M`, lit, premultiplied: rgb the light it sends to the
-/// eye (its diffuse and emission times its opacity, its specular whole), a its opacity.
+/// What `ForwardTranslucent` writes: the light, premultiplied, and the reactive mask.
+public struct ForwardOutput
+{
+    /// rgb the light the surface sends to the eye (its diffuse and emission times its opacity,
+    /// its specular whole, and for a refracting one what it lets through), a its opacity (1 for
+    /// a refracting one: it has drawn what is behind it already).
+    [Target(0)] public float4 Color;
+    /// How little TSR is to trust its history here (blended by the maximum): the surface's
+    /// opacity, at least ½ where it refracts (the motion vectors are the opaque scene's).
+    [Target(1)] public float Reactive;
+}
+
+/// A translucent surface of permutation `M`, lit.
 [Pixel]
-public float4 ForwardTranslucent<M>(in TranslucentVertex i, [Push] in ForwardArgs<M> a)
+public ForwardOutput ForwardTranslucent<M>(in TranslucentVertex i, [Push] in ForwardArgs<M> a)
     where M : ISurfaceMaterial<M>
 {
     // Behind the opaque surface there: dropped.
@@ -259,5 +281,72 @@ public float4 ForwardTranslucent<M>(in TranslucentVertex i, [Push] in ForwardArg
     }
     float3 diffuse = sun.Diffuse + p.Albedo * around + w.Emission;
     float3 specular = sun.Specular + SpecularAlbedo(p.F0, p.Roughness, Saturate(Dot(p.Normal, wo))) * around;
-    return float4(diffuse * opacity + specular, opacity);
+    float3 lit = diffuse * opacity + specular;
+
+    // Refraction (R4e3): a surface with thickness, or one that tints what it lets through, draws
+    // what is behind it itself, from the copy of the lit opaque scene: along the ray bent by its
+    // index (the slab of `Thickness` shifts it by the bent ray's offset), blurred by its roughness
+    // (the copy's mips).
+    float thickness = w.TransmitWeight > 0 ? w.Thickness / w.TransmitWeight : 0;
+    float3 transmission = w.TransmitWeight > 0 ? w.Transmission / w.TransmitWeight : float3(1, 1, 1);
+    if (thickness <= 0 && All(transmission == float3(1, 1, 1)))
+        return ForwardOutput { Color = float4(lit, opacity), Reactive = opacity };
+    float2 size = float2((float)v.Width, (float)v.Height);
+    float2 uv = i.Pos.xy / size;
+    if (thickness > 0)
+    {
+        // The point behind, from the opaque depth (the far plane: a kilometer on).
+        float depth = a.Depth.Load((int2)i.Pos.xy);
+        float3 behind = x - wo * 1000;
+        if (depth > 0)
+        {
+            float4 h = v.InverseViewProjection * float4(uv.x * 2 - 1, 1 - uv.y * 2, depth, 1);
+            behind = h.xyz / h.w;
+        }
+        float f0 = Min(Sqrt(Max(Dot(p.F0, float3(0.2126, 0.7152, 0.0722)), 0)), 0.99);
+        float ior = (1 + f0) / (1 - f0);
+        float3 bent = Refract(-wo, p.Normal, 1 / ior);
+        float4 c = v.ViewProjection * float4(behind + (bent + wo) * thickness, 1);
+        if (c.w > 0)
+            uv = Saturate(float2(c.x / c.w * 0.5 + 0.5, 0.5 - c.y / c.w * 0.5));
+    }
+    float mip = p.Roughness * (float)(a.Behind.MipCount - 1);
+    float3 through = a.Behind.Sample(a.Linear, uv, lod: mip).xyz * transmission;
+    return ForwardOutput
+    {
+        Color = float4(lit + (1 - opacity) * through, 1),
+        Reactive = Max(opacity, 0.5),
+    };
+}
+
+public struct SceneCopyArgs
+{
+    /// The lit scene (`First` 1) or the mip above.
+    public Texture2D<float4> Source;
+    public StorageTexture2D<float4> Output;
+    /// The source's size and the output's.
+    public uint SourceWidth;
+    public uint SourceHeight;
+    public uint Width;
+    public uint Height;
+    public uint First;
+}
+
+/// The mip chain of the lit opaque scene a refracting surface samples (R4e3): mip 0 a copy, each
+/// further mip the mean of the 2×2 texels under it (at an odd edge, the last texel again).
+[Compute(8, 8, 1)]
+public void SceneCopy([DispatchThreadId] uint3 id, [Push] in SceneCopyArgs a)
+{
+    if (id.x >= a.Width || id.y >= a.Height)
+        return;
+    if (a.First != 0)
+    {
+        a.Output[(int2)id.xy] = a.Source.Load((int2)id.xy);
+        return;
+    }
+    int2 below = int2((int)a.SourceWidth - 1, (int)a.SourceHeight - 1);
+    int2 p = Min(int2((int)id.x * 2, (int)id.y * 2), below);
+    int2 q = Min(p + 1, below);
+    a.Output[(int2)id.xy] = (a.Source.Load(p) + a.Source.Load(int2(q.x, p.y))
+        + a.Source.Load(int2(p.x, q.y)) + a.Source.Load(q)) * 0.25;
 }

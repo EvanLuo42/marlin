@@ -476,9 +476,10 @@ impl Validator {
                 | op::DPdxCoarse
                 | op::DPdyCoarse
                 | op::FwidthCoarse => req(cap::DerivativeControl, "fine and coarse derivatives"),
-                op::DemoteToHelperInvocation | op::IsHelperInvocationEXT => {
-                    req(cap::DemoteToHelperInvocation, "demoting to a helper invocation")
-                }
+                op::DemoteToHelperInvocation | op::IsHelperInvocationEXT => req(
+                    cap::DemoteToHelperInvocation,
+                    "demoting to a helper invocation",
+                ),
                 op::ImageQuerySizeLod
                 | op::ImageQuerySize
                 | op::ImageQueryLevels

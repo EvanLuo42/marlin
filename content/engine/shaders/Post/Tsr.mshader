@@ -55,6 +55,10 @@ public struct TsrArgs
     public ReadOnlyByteBuffer Exposure;
     public Sampler Linear;
     public StorageTexture2D<float4> Output;
+    /// The reactive mask at the render size, when `HasReactive` is 1 (the translucent forward
+    /// pass's, 0009 §8): how little to trust the history, 0–1.
+    public Texture2D<float> Reactive;
+    public uint HasReactive;
 }
 
 float TsrLuminance(float3 c) => Dot(c, float3(0.2126, 0.7152, 0.0722));
@@ -171,6 +175,13 @@ public void TsrResolve([DispatchThreadId] uint3 id, [Push] in TsrArgs a)
             y = m1 + offset / most;
             // A clip is a sign the history is someone else's: trust it less.
             historyWeight *= Saturate(2 - most);
+        }
+        // Over a translucent surface the motion vectors are the opaque scene's behind it: its
+        // reactive mask takes that share of the history away.
+        if (a.HasReactive != 0)
+        {
+            int2 r = int2(Clamp(k0.x, 0, (int)c.RenderSize.x - 1), Clamp(k0.y, 0, (int)c.RenderSize.y - 1));
+            historyWeight *= 1 - Saturate(a.Reactive.Load(r));
         }
         history = float4(Max(FromYCoCg(y), float3(0, 0, 0)), history.w);
     }

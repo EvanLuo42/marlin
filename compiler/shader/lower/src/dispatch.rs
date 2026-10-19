@@ -91,12 +91,17 @@ impl FnCx<'_, '_, '_> {
                 .all(|(p, w)| impl_subst.ty(&p.ty) == self.concrete(w));
             candidates.push((member, exact));
         }
-        let chosen = candidates.iter().find(|c| c.1).or(candidates.first()).map(|c| c.0);
+        let chosen = candidates
+            .iter()
+            .find(|c| c.1)
+            .or(candidates.first())
+            .map(|c| c.0);
         // Not implemented: the interface's default body, if it has one.
         if chosen.is_none()
             && !builtin
             && !marlin_front_hir_def::body_owners(self.l.cx, item)?.is_empty()
-            && let Some(mut s) = self.interface_args(item_parent(&tree, item), on.unwrap_or(&Ty::Error))?
+            && let Some(mut s) =
+                self.interface_args(item_parent(&tree, item), on.unwrap_or(&Ty::Error))?
         {
             if let Some((_, own)) = subst.entries.iter().find(|(o, _)| *o == item) {
                 let own: Vec<_> = own.iter().flatten().cloned().collect();
@@ -105,18 +110,18 @@ impl FnCx<'_, '_, '_> {
                 }
             }
             // Its `this` is the type it was reached through.
-            s.assoc.push((item_parent(&tree, item), on.cloned().unwrap_or(Ty::Error)));
+            s.assoc
+                .push((item_parent(&tree, item), on.cloned().unwrap_or(Ty::Error)));
             return Ok(Resolved::Item(item, s));
         }
-        let chosen = chosen
-            .ok_or_else(|| {
-                let what = if builtin {
-                    format!("interface member `{name}` of a built-in type that declares none")
-                } else {
-                    format!("the default implementation of interface member `{name}`")
-                };
-                LowerError::unsupported(what, self.owner(), loc.clone())
-            })?;
+        let chosen = chosen.ok_or_else(|| {
+            let what = if builtin {
+                format!("interface member `{name}` of a built-in type that declares none")
+            } else {
+                format!("the default implementation of interface member `{name}`")
+            };
+            LowerError::unsupported(what, self.owner(), loc.clone())
+        })?;
         // The member's own type arguments carry over by position.
         let mut s = impl_subst;
         if let Some((_, own)) = subst.entries.iter().find(|(o, _)| *o == item) {

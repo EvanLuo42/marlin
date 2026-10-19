@@ -64,8 +64,9 @@ public struct EmitContext
     public float3 Wo;
 }
 
-/// The default BSDF (0011 §3.1): a diffuse lobe and a GGX lobe. So far without its optional
-/// features (anisotropy, haze, fuzz, SSS, thin film, glints, specular profile, transmission).
+/// The default BSDF (0011 §3.1): a diffuse lobe and a GGX lobe, and, for a translucent surface,
+/// its thickness and transmission (R4e). So far without its other optional features (anisotropy,
+/// haze, fuzz, SSS, thin film, glints, specular profile).
 public struct Slab : ISubstrateNode<Slab>
 {
     public float3 DiffuseAlbedo = 0.18;
@@ -78,6 +79,11 @@ public struct Slab : ISubstrateNode<Slab>
     public float3 Normal = 0;
     /// cd/m².
     public float3 Emissive = 0;
+    /// As a translucent surface (0009 §8): the distance light crosses it, in meters (0: a thin
+    /// sheet, which does not refract), and what it lets through of the light behind it (1: all).
+    /// Its index of refraction follows from `F0` (a dielectric's: F0 = ((n − 1) / (n + 1))²).
+    public float Thickness = 0;
+    public float3 Transmission = 1;
 
     public static Slab Default => Slab { };
 
@@ -86,6 +92,7 @@ public struct Slab : ISubstrateNode<Slab>
         float3 n = Dot(Normal, Normal) > 0 ? Normalize(Normal) : e.Normal;
         bool plain = F90.x == 1 && F90.y == 1 && F90.z == 1;
         ClosureWriter.Add(ref w, DiffuseAlbedo, F0, Roughness, n, plain, Emissive, weight);
+        ClosureWriter.Transmit(ref w, Thickness, Transmission, weight);
     }
 }
 
@@ -106,8 +113,24 @@ public struct ClosureWriter
     public float SpecularSum;
     public float3 Normal;
     public float NormalWeight;
+    /// A translucent surface's thickness and transmission, summed weighted (the weight's
+    /// luminance, `TransmitWeight`), for the forward pass (0009 §8).
+    public float Thickness;
+    public float3 Transmission;
+    public float TransmitWeight;
 
     public static ClosureWriter Open() => ClosureWriter { Fast = true };
+
+    /// Adds a closure's thickness and transmission.
+    public static void Transmit(ref ClosureWriter w, float thickness, float3 transmission, float3 weight)
+    {
+        float wl = Dot(weight, float3(0.2126, 0.7152, 0.0722));
+        if (wl <= 0)
+            return;
+        w.Thickness += thickness * wl;
+        w.Transmission += transmission * wl;
+        w.TransmitWeight += wl;
+    }
 
     /// Adds one diffuse-plus-GGX closure.
     public static void Add(

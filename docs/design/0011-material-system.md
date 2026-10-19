@@ -140,6 +140,7 @@ public struct Rock : ISurfaceMaterial<Rock>
 
 - 字段都有默认值，`Slab.Default with { ... }` 只写需要的部分。
 - 特性位是编译期的：`Flatten` 通过常量传播看出哪些字段被设成了非默认值，只为用到的特性分配 payload 和生成光照代码（§3.4）。
+- 2026-10-19（R4e3）：`Thickness` 和 `Transmission` 已加到 `Slab`，现在只用于半透明表面的折射（0009 §8.2），折射率由 `F0` 反推；作为上层时的吸收等分层（§3.3）再接。
 
 ### 3.2 专用 BSDF
 

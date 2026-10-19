@@ -73,6 +73,9 @@ pub struct UpscaleInputs<'g> {
     pub color: TextureHandle<'g>,
     pub depth: TextureHandle<'g>,
     pub velocity: TextureHandle<'g>,
+    /// The reactive mask (render size, 0–1: how little to trust the history; the translucent
+    /// forward pass writes it, 0009 §8), when there is one and [`UpscalerCaps::reactive_mask`].
+    pub reactive: Option<TextureHandle<'g>>,
     /// The post chain's exposure buffer (`PostProcess::exposure`): last frame's value.
     pub exposure: BufferHandle<'g>,
     /// This frame's jitter, in render pixels ([`Upscaler::jitter`]).
@@ -143,6 +146,8 @@ struct TsrArgs {
     exposure: u32,
     linear: u32,
     output: u32,
+    reactive: u32,
+    has_reactive: u32,
 }
 
 /// The accumulation at the display size: HDR color and the weight behind it.
@@ -210,7 +215,7 @@ impl Upscaler for Tsr {
         UpscalerCaps {
             max_ratio: 3.0,
             denoises: false,
-            reactive_mask: false,
+            reactive_mask: true,
         }
     }
 
@@ -238,6 +243,7 @@ impl Upscaler for Tsr {
             color,
             depth,
             velocity,
+            reactive,
             exposure,
             jitter,
             render,
@@ -265,6 +271,7 @@ impl Upscaler for Tsr {
             let color = b.read_texture(color, Access::ComputeRead);
             let depth = b.read_texture(depth, Access::ComputeRead);
             let velocity = b.read_texture(velocity, Access::ComputeRead);
+            let reactive = reactive.map(|r| b.read_texture(r, Access::ComputeRead));
             let exposure = b.read_buffer(exposure, Access::ComputeRead);
             let previous = history.prev.map(|h| b.read_texture(h, Access::ComputeRead));
             let output = b.write_texture(history.cur, Access::ComputeWrite);
@@ -280,6 +287,9 @@ impl Upscaler for Tsr {
                     exposure: ctx.srv(exposure),
                     linear,
                     output: ctx.uav(output),
+                    // Without a mask it goes unread: the depth stands in.
+                    reactive: reactive.map_or_else(|| ctx.srv(depth), |r| ctx.srv(r)),
+                    has_reactive: u32::from(reactive.is_some()),
                 };
                 ctx.push(&args);
                 ctx.dispatch(display.x.div_ceil(8), display.y.div_ceil(8), 1);

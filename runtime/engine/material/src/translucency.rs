@@ -16,8 +16,9 @@ use marlin_render::light_grid::{LightGridConstants, LightGridOutput, LightGridSo
 use marlin_render::raytracing::RtScene;
 use marlin_render::sharc::{SharcOutput, SharcSources};
 use marlin_render::{Camera, Environment, GpuScene, RenderScene, TranslucentClusters};
+use marlin_render_graph::TextureDesc;
 use marlin_render_graph::{Access, BufferDesc, PassContext, RenderGraph, TextureHandle};
-use marlin_rhi::{LoadOp, StoreOp};
+use marlin_rhi::{Format, LoadOp, StoreOp};
 use marlin_serial::cooked::Pod;
 
 use crate::Materials;
@@ -42,6 +43,7 @@ pub(crate) struct BinArgs {
 #[derive(Pod, Clone, Copy)]
 struct ForwardView {
     view_projection: [f32; 16],
+    inverse_view_projection: [f32; 16],
     eye: [f32; 4],
     sun_direction: [f32; 4],
     sun: [f32; 4],
@@ -71,6 +73,36 @@ pub(crate) struct ForwardArgs {
     offsets: u32,
     slot: u32,
     lights: LightGridSources,
+    behind: u32,
+    linear: u32,
+}
+
+/// `Marlin.Engine.Material.SceneCopyArgs`.
+#[repr(C)]
+#[derive(Pod, Clone, Copy, Default)]
+pub(crate) struct SceneCopyArgs {
+    source: u32,
+    output: u32,
+    source_width: u32,
+    source_height: u32,
+    width: u32,
+    height: u32,
+    first: u32,
+}
+
+/// TSR's reactive mask's format (0009 §8): how little to trust the history, 0–1.
+pub const REACTIVE_FORMAT: Format = Format::R8Unorm;
+/// The scene copy's mips at most: enough blur for a rough surface at 1080p.
+const SCENE_MIPS: u32 = 7;
+
+/// What [`Materials::add_translucent_passes`] gives back.
+#[derive(Clone, Copy)]
+pub struct TranslucentOutput<'g> {
+    /// The lit scene with the translucent surfaces over it.
+    pub color: TextureHandle<'g>,
+    /// TSR's reactive mask (render size, [`REACTIVE_FORMAT`]); `None` without translucent
+    /// surfaces.
+    pub reactive: Option<TextureHandle<'g>>,
 }
 
 /// What [`Materials::add_translucent_passes`] reads of the frame.
@@ -91,8 +123,8 @@ pub struct TranslucentInputs<'g> {
 
 impl Materials {
     /// Declares the translucent surfaces of `scene` drawn over `color` (the lit HDR scene) as
-    /// `camera` sees them (`width` × `height`); returns `color` after. Nothing is declared
-    /// without translucent instances.
+    /// `camera` sees them (`width` × `height`); returns `color` after and TSR's reactive mask.
+    /// Nothing is declared without translucent instances.
     #[allow(clippy::too_many_arguments, reason = "one view's inputs")]
     pub fn add_translucent_passes<'g>(
         &'g self,
@@ -104,7 +136,7 @@ impl Materials {
         camera: (Transform, Camera),
         width: u32,
         height: u32,
-    ) -> TextureHandle<'g> {
+    ) -> TranslucentOutput<'g> {
         // Back to front by the spheres' centers, each with its permutation.
         let eye = camera.0.translation;
         let mut order: Vec<(u32, u32, f32)> = scene
@@ -121,7 +153,10 @@ impl Materials {
             })
             .collect();
         if order.is_empty() {
-            return color;
+            return TranslucentOutput {
+                color,
+                reactive: None,
+            };
         }
         order.sort_by(|a, b| b.2.total_cmp(&a.2));
         let slots = order.len() as u32;
@@ -224,6 +259,7 @@ impl Materials {
         let view_projection = marlin_render::view_projection(camera, width, height);
         let view = ForwardView {
             view_projection: view_projection.to_cols_array(),
+            inverse_view_projection: view_projection.inverse().to_cols_array(),
             eye: [eye.x, eye.y, eye.z, 0.0],
             sun_direction: [d.x, d.y, d.z, f32::from(u8::from(has_sun))],
             sun: [sr * sun, sg * sun, sb * sun, 0.0],
@@ -248,8 +284,16 @@ impl Materials {
         let cache = inputs.cache;
         let grid = inputs.grid;
         let depth = inputs.depth;
-        g.add_raster("Translucent", |b| {
+        let behind = self.add_scene_copy(g, color, width, height);
+        let reactive = g.create_texture(
+            "TlReactive",
+            TextureDesc::new_2d(width, height, REACTIVE_FORMAT),
+        );
+        let linear = self.linear.index();
+        let (color, reactive) = g.add_raster("Translucent", |b| {
             let color = b.color(color, LoadOp::Load, StoreOp::Store);
+            let reactive = b.color(reactive, LoadOp::Clear([0.0; 4]), StoreOp::Store);
+            let behind = b.read_texture(behind, Access::PixelRead);
             let instances = b.read_buffer(gpu.instance_data, Access::MeshRead);
             let transforms = b.read_buffer(gpu.instance_transforms, Access::MeshRead);
             let meshes = b.read_buffer(gpu.meshes, Access::MeshRead);
@@ -270,7 +314,7 @@ impl Materials {
             let records: Vec<_> = (0..slots)
                 .map(|slot| b.read_buffer(args.range(u64::from(slot) * 16, 16), Access::Indirect))
                 .collect();
-            (color, move |ctx: &mut PassContext<'_>| {
+            ((color, reactive), move |ctx: &mut PassContext<'_>| {
                 let mut v = view;
                 if let Some(c) = &cache {
                     v.cache = c.bind(ctx);
@@ -289,6 +333,8 @@ impl Materials {
                     offsets: ctx.srv(offsets),
                     slot: 0,
                     lights: grid.map_or_else(LightGridSources::default, |l| l.bind(ctx)),
+                    behind: ctx.srv(behind),
+                    linear,
                 };
                 for (slot, &permutation) in draws.iter().enumerate() {
                     let p = permutation as usize;
@@ -304,6 +350,53 @@ impl Materials {
                     ctx.dispatch_mesh_indirect(records[slot], 1, None);
                 }
             })
-        })
+        });
+        TranslucentOutput {
+            color,
+            reactive: Some(reactive),
+        }
+    }
+
+    /// The mip chain of `color` (`width` × `height`) refraction samples (`SceneCopy`).
+    fn add_scene_copy<'g>(
+        &'g self,
+        g: &mut RenderGraph<'g>,
+        color: TextureHandle<'g>,
+        width: u32,
+        height: u32,
+    ) -> TextureHandle<'g> {
+        let mips = (32 - width.max(height).max(1).leading_zeros()).min(SCENE_MIPS);
+        let mut copy = g.create_texture(
+            "TlScene",
+            TextureDesc::new_2d(width, height, marlin_render::HDR_FORMAT).with_mips(mips),
+        );
+        let mut source = (width, height);
+        for mip in 0..mips {
+            let (w, h) = ((width >> mip).max(1), (height >> mip).max(1));
+            let from = source;
+            copy = g.add_compute("SceneCopy", |b| {
+                let input = if mip == 0 {
+                    b.read_texture(color, Access::ComputeRead)
+                } else {
+                    b.read_texture(copy.mip(mip - 1), Access::ComputeRead)
+                };
+                let out = b.write_texture(copy.mip(mip), Access::ComputeWrite);
+                (out, move |ctx: &mut PassContext<'_>| {
+                    ctx.set_pipeline(&self.scene_copy);
+                    ctx.push(&SceneCopyArgs {
+                        source: ctx.srv(input),
+                        output: ctx.uav(out.mip(mip)),
+                        source_width: from.0,
+                        source_height: from.1,
+                        width: w,
+                        height: h,
+                        first: u32::from(mip == 0),
+                    });
+                    ctx.dispatch(w.div_ceil(8), h.div_ceil(8), 1);
+                })
+            });
+            source = (w, h);
+        }
+        copy
     }
 }

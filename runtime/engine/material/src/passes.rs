@@ -13,9 +13,9 @@ use marlin_render_graph::{
     Access, BufferDesc, BufferHandle, PassContext, RenderGraph, TextureDesc, TextureHandle,
 };
 use marlin_rhi::{
-    BlendState, ColorTargetState, ColorWrites, ComputePipeline, ComputePipelineDesc, CullMode,
-    Device, Format, MeshPipeline, MeshPipelineDesc, MultisampleState, RasterState, Result,
-    ShaderModule,
+    AddressMode, BlendComponent, BlendFactor, BlendOp, BlendState, ColorTargetState, ColorWrites,
+    ComputePipeline, ComputePipelineDesc, CullMode, Device, Format, MeshPipeline, MeshPipelineDesc,
+    MultisampleState, RasterState, Result, Sampler, SamplerDesc, ShaderModule,
 };
 use marlin_serial::cooked::Pod;
 use marlin_shader::asset::ShaderLibrary;
@@ -35,11 +35,13 @@ pub struct MaterialShaders<'a> {
     pub translucent_offsets: ShaderModule<'a>,
     pub translucent_scatter: ShaderModule<'a>,
     pub translucent_mesh: ShaderModule<'a>,
+    /// The mip chain of the lit opaque scene refraction samples.
+    pub scene_copy: ShaderModule<'a>,
 }
 
 impl<'a> MaterialShaders<'a> {
     /// The entries, in field order.
-    pub const ENTRIES: [EntryDesc; 8] = [
+    pub const ENTRIES: [EntryDesc; 9] = [
         EntryDesc::compute("Marlin.Engine.Material.Classify").push::<ClassifyArgs>(),
         EntryDesc::compute("Marlin.Engine.Material.Bins").push::<ClassifyArgs>(),
         EntryDesc::compute("Marlin.Engine.Material.Scatter").push::<ClassifyArgs>(),
@@ -52,6 +54,8 @@ impl<'a> MaterialShaders<'a> {
             .push::<crate::translucency::BinArgs>(),
         EntryDesc::new("Marlin.Engine.Material.TranslucentMesh", Stage::Mesh)
             .push::<crate::translucency::ForwardArgs>(),
+        EntryDesc::compute("Marlin.Engine.Material.SceneCopy")
+            .push::<crate::translucency::SceneCopyArgs>(),
     ];
 
     /// The shaders from `modules`, in [`ENTRIES`](Self::ENTRIES) order.
@@ -65,7 +69,8 @@ impl<'a> MaterialShaders<'a> {
             translucent_offsets,
             translucent_scatter,
             translucent_mesh,
-        ]: [ShaderModule<'a>; 8],
+            scene_copy,
+        ]: [ShaderModule<'a>; 9],
     ) -> Self {
         Self {
             classify,
@@ -76,6 +81,7 @@ impl<'a> MaterialShaders<'a> {
             translucent_offsets,
             translucent_scatter,
             translucent_mesh,
+            scene_copy,
         }
     }
 
@@ -101,6 +107,20 @@ pub const FORWARD: EntryDesc =
 pub const MATERIAL_FORMAT: Format = Format::Rgba32Uint;
 /// The velocity's format: current minus last screen position, UV units.
 pub const VELOCITY_FORMAT: Format = Format::Rg16Float;
+
+/// The larger of what is there and what is drawn: the reactive mask's blend.
+const MAXIMUM: BlendState = BlendState {
+    color: BlendComponent {
+        src_factor: BlendFactor::One,
+        dst_factor: BlendFactor::One,
+        op: BlendOp::Max,
+    },
+    alpha: BlendComponent {
+        src_factor: BlendFactor::One,
+        dst_factor: BlendFactor::One,
+        op: BlendOp::Max,
+    },
+};
 
 /// `Marlin.Engine.Material.MaterialView`.
 #[repr(C)]
@@ -208,6 +228,9 @@ pub struct Materials {
     pub(crate) translucent_count: ComputePipeline,
     pub(crate) translucent_offsets: ComputePipeline,
     pub(crate) translucent_scatter: ComputePipeline,
+    pub(crate) scene_copy: ComputePipeline,
+    /// Bilinear, clamped: refraction's sampler of the scene copy.
+    pub(crate) linear: Sampler,
     /// The translucent mesh stage's code and entry, for each translucent type's pipeline.
     translucent_mesh: (Vec<u8>, String),
     types: Vec<MaterialType>,
@@ -229,6 +252,13 @@ impl Materials {
             translucent_count: compute(shaders.translucent_count)?,
             translucent_offsets: compute(shaders.translucent_offsets)?,
             translucent_scatter: compute(shaders.translucent_scatter)?,
+            scene_copy: compute(shaders.scene_copy)?,
+            linear: device.create_sampler(&SamplerDesc {
+                address_u: AddressMode::ClampToEdge,
+                address_v: AddressMode::ClampToEdge,
+                address_w: AddressMode::ClampToEdge,
+                ..SamplerDesc::default()
+            })?,
             translucent_mesh: (
                 shaders.translucent_mesh.code.to_vec(),
                 shaders.translucent_mesh.entry.into(),
@@ -288,11 +318,19 @@ impl Materials {
                 ..RasterState::default()
             },
             depth: None,
-            color_targets: &[ColorTargetState {
-                format: marlin_render::HDR_FORMAT,
-                blend: Some(BlendState::PREMULTIPLIED),
-                write_mask: ColorWrites::ALL,
-            }],
+            // The light, premultiplied; TSR's reactive mask, the maximum.
+            color_targets: &[
+                ColorTargetState {
+                    format: marlin_render::HDR_FORMAT,
+                    blend: Some(BlendState::PREMULTIPLIED),
+                    write_mask: ColorWrites::ALL,
+                },
+                ColorTargetState {
+                    format: crate::translucency::REACTIVE_FORMAT,
+                    blend: Some(MAXIMUM),
+                    write_mask: ColorWrites::ALL,
+                },
+            ],
             multisample: MultisampleState::NONE,
             cache: None,
         })?;

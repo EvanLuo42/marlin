@@ -19,4 +19,4 @@ pub use passes::{
     Materials, RESOLVE, VELOCITY_FORMAT,
 };
 pub use simple::{BAKE, SIMPLE_ATLAS, SIMPLE_MATERIALS, SIMPLE_TILE, SIMPLE_TILES_PER_ROW};
-pub use translucency::TranslucentInputs;
+pub use translucency::{REACTIVE_FORMAT, TranslucentInputs, TranslucentOutput};

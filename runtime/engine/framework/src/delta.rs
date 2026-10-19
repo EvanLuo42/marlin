@@ -438,6 +438,7 @@ impl RenderSide {
                 height,
             );
         }
+        let mut reactive = None;
         // The translucent surfaces over it (0009 §8), if there are any.
         if let (Some((vis, view)), Some((_, _, depth, _, camera))) = (opaque, lit)
             && !world.translucent_instances().is_empty()
@@ -454,8 +455,10 @@ impl RenderSide {
                 grid,
                 environment: env,
             };
-            scene = materials
+            let out = materials
                 .add_translucent_passes(g, world, gpu, scene, inputs, camera, width, height);
+            scene = out.color;
+            reactive = out.reactive;
         }
         // The radiance cache's view, in place of the lit scene.
         if let (Some(sharc), Some(cache), true, Some((material, _, depth, _, _))) =
@@ -469,6 +472,7 @@ impl RenderSide {
                 color: scene,
                 depth,
                 velocity,
+                reactive,
                 exposure: exposure.handle,
                 jitter: Vec2::new(camera.1.jitter[0], camera.1.jitter[1]),
                 render,

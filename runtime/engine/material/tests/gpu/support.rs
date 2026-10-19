@@ -29,7 +29,7 @@ use marlin_render_graph::{
     Access, BufferDesc, FrameContext, FrameContextDesc, PassContext,
     TextureDesc as GraphTextureDesc,
 };
-use marlin_rhi::{ComputePipeline, ComputePipelineDesc, Device, Format};
+use marlin_rhi::{ComputePipeline, ComputePipelineDesc, Device, Format, LoadOp, StoreOp};
 use marlin_serial::cooked::Pod;
 use marlin_shader::bind::EntryDesc;
 
@@ -77,6 +77,11 @@ pub struct Harness {
     pub camera: (Transform, Camera),
     /// The camera of the last frame.
     previous: Option<(Transform, Camera)>,
+    /// The last [`restir_frame`](Self::restir_frame)'s reactive mask (row-major, 0–1), when it
+    /// drew translucent surfaces.
+    pub reactive: Option<Vec<f32>>,
+    /// A uniform reactive mask [`upscaled_frame`](Self::upscaled_frame) hands TSR, when set.
+    pub uniform_reactive: Option<f32>,
     frame: FrameContext,
 }
 
@@ -277,6 +282,8 @@ impl Harness {
                 Camera::default(),
             ),
             previous: None,
+            reactive: None,
+            uniform_reactive: None,
             frame: FrameContext::new(device, &FrameContextDesc::default()).unwrap(),
         }
     }
@@ -678,11 +685,19 @@ impl Harness {
                     grid,
                     environment: env,
                 };
-                lit = materials
+                let out = materials
                     .add_translucent_passes(g, scene, gpu, lit, inputs, camera, width, height);
-                g.readback_texture(lit)
+                (
+                    g.readback_texture(out.color),
+                    out.reactive.map(|r| g.readback_texture(r)),
+                )
             })
             .unwrap();
+        let (ticket, reactive) = ticket;
+        self.reactive = reactive.map(|t| {
+            let bytes = self.frame.wait_readback(t).unwrap();
+            bytes.iter().map(|&b| f32::from(b) / 255.0).collect()
+        });
         let bytes = self.frame.wait_readback(ticket).unwrap();
         assert_eq!(self.device.validation_errors(), 0);
         self.previous = Some(self.camera);
@@ -865,6 +880,7 @@ impl Harness {
         );
         let (camera, previous) = (self.camera, self.previous);
         let (width, height) = (render.x, render.y);
+        let uniform_reactive = self.uniform_reactive;
         let ticket = self
             .frame
             .execute(self.device, |g, _| {
@@ -902,10 +918,25 @@ impl Harness {
                             (e, move |ctx: &mut PassContext<'_>| ctx.fill_buffer(e, 0))
                         });
                     }
+                    let reactive = uniform_reactive.map(|value| {
+                        let mask = g.create_texture(
+                            "UniformReactive",
+                            GraphTextureDesc::new_2d(
+                                render.x,
+                                render.y,
+                                marlin_material::REACTIVE_FORMAT,
+                            ),
+                        );
+                        g.add_raster("UniformReactive", |b| {
+                            let mask = b.color(mask, LoadOp::Clear([value; 4]), StoreOp::Store);
+                            (mask, |_: &mut PassContext<'_>| {})
+                        })
+                    });
                     let inputs = UpscaleInputs {
                         color: lit,
                         depth: v.depth,
                         velocity: out.velocity,
+                        reactive,
                         exposure: e,
                         jitter,
                         render,
