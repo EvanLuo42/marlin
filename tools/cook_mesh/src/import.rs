@@ -533,7 +533,40 @@ pub fn import_mesh(
     if section_of_material.len() > u16::MAX as usize {
         return Err("too many materials".into());
     }
+    if let Some(w) = winding_warning(&out) {
+        warnings.push(w);
+    }
     Ok((out, warnings))
+}
+
+/// A warning when most triangles wind against their vertex normals: glTF's front faces are
+/// counter-clockwise, and such a mesh draws inside out (back-face culling keeps its inside).
+fn winding_warning(g: &Geometry) -> Option<String> {
+    let mut against = 0usize;
+    let triangles = g.indices.len() / 3;
+    for t in g.indices.as_chunks::<3>().0 {
+        let p = t.map(|i| g.positions[i as usize]);
+        let (e1, e2): ([f32; 3], [f32; 3]) = (
+            core::array::from_fn(|k| p[1][k] - p[0][k]),
+            core::array::from_fn(|k| p[2][k] - p[0][k]),
+        );
+        let face = [
+            e1[1] * e2[2] - e1[2] * e2[1],
+            e1[2] * e2[0] - e1[0] * e2[2],
+            e1[0] * e2[1] - e1[1] * e2[0],
+        ];
+        let normal: [f32; 3] =
+            core::array::from_fn(|k| t.iter().map(|&i| g.normals[i as usize][k]).sum());
+        if (0..3).map(|k| face[k] * normal[k]).sum::<f32>() < 0.0 {
+            against += 1;
+        }
+    }
+    (against * 2 > triangles).then(|| {
+        format!(
+            "{against} of {triangles} triangles wind clockwise against their normals: the mesh \
+             will draw inside out (flip the winding in the source)"
+        )
+    })
 }
 
 fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {

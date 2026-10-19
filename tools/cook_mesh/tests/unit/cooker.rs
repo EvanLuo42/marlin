@@ -423,3 +423,53 @@ fn clips_and_skeletons_agree_on_non_joint_nodes_between_joints() {
         }
     }
 }
+
+/// A one-primitive sphere, its triangles wound as given or reversed.
+fn sphere_glb(reversed: bool) -> Vec<u8> {
+    let s = sphere(16, 32);
+    let mut g = Gltf::default();
+    let pos = g.vec3(&s.positions);
+    let nrm = g.vec3(&s.normals);
+    let indices: Vec<u32> = match reversed {
+        true => s
+            .indices
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .flat_map(|t| [t[0], t[2], t[1]])
+            .collect(),
+        false => s.indices.clone(),
+    };
+    let i = g.indices(&indices);
+    g.meshes.push(format!(
+        r#"{{"name":"Ball","primitives":[{{"attributes":{{"POSITION":{pos},"NORMAL":{nrm}}},"indices":{i}}}]}}"#
+    ));
+    g.nodes.push(r#"{"mesh":0}"#.into());
+    g.scene_nodes.push(0);
+    g.finish(Container::Glb).0
+}
+
+#[test]
+fn a_mesh_wound_against_its_normals_is_warned_about() {
+    use marlin_cook_mesh::import::{MeshOptions, import_mesh, open};
+    let options = MeshOptions {
+        mesh: "",
+        scale: 1.0,
+        max_uv_sets: 0,
+        colors: false,
+    };
+    let warnings = |glb: &[u8]| {
+        let doc = open(glb, "ball.glb", &mut |_| Err("no external files".into())).unwrap();
+        import_mesh(&doc, &options).unwrap().1
+    };
+    assert!(
+        !warnings(&sphere_glb(false))
+            .iter()
+            .any(|w| w.contains("inside out"))
+    );
+    let reversed = warnings(&sphere_glb(true));
+    assert!(
+        reversed.iter().any(|w| w.contains("inside out")),
+        "{reversed:?}"
+    );
+}
