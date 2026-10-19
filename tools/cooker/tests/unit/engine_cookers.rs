@@ -13,6 +13,8 @@ fn every_engine_type_has_a_cooker() {
         "StringTable",
         "Level",
         "ShaderPackage",
+        "Scalability",
+        "DeviceProfile",
     ] {
         assert!(
             cookers.schema().object_type(name).is_some(),
@@ -23,5 +25,6 @@ fn every_engine_type_has_a_cooker() {
         cookers.is_named("ShaderPackage"),
         "shader packages are found by name"
     );
+    assert!(cookers.is_named("Scalability"), "presets are found by name");
     assert!(!cookers.is_named("Texture"));
 }

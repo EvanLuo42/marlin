@@ -1,0 +1,122 @@
+!Version 1
+
+// The engine's scalability table (0008 §2, 0010 §3): what each level of a quality group sets.
+// `sg.quality` (0008 §2.3's PC presets) sets the feature groups; each feature group's level sets
+// cvars (runtime/engine/framework/src/quality.rs lists them). A game's `Game.Scalability`
+// merges over this one, level by level. The framework applies it at boot.
+//
+// sg.lighting's levels are 0010 §3's tiers L0–L4, with the knobs that exist so far: the quarter-
+// resolution reservoirs of L0 and L1 fall back to the checkerboard's half, and L3's second
+// bounce and ray-traced sun wait for their features (L4 is L3 with more cache updates).
+Scalability
+{
+    !Uuid = "019a5f20-7c41-7e02-9b6d-3a1f8c2e5d01"
+    !Name = "Marlin.Engine.Scalability"
+    Levels = [
+        { Group = "sg.quality", Level = "low", Values = [
+            { Name = "sg.lighting", Value = "1" },
+            { Name = "sg.geometry", Value = "1" },
+            { Name = "sg.resolution", Value = "2" },
+        ] },
+        { Group = "sg.quality", Level = "medium", Values = [
+            { Name = "sg.lighting", Value = "2" },
+            { Name = "sg.geometry", Value = "2" },
+            { Name = "sg.resolution", Value = "3" },
+        ] },
+        { Group = "sg.quality", Level = "high", Values = [
+            { Name = "sg.lighting", Value = "3" },
+            { Name = "sg.geometry", Value = "3" },
+            { Name = "sg.resolution", Value = "3" },
+        ] },
+        { Group = "sg.quality", Level = "ultra", Values = [
+            { Name = "sg.lighting", Value = "3" },
+            { Name = "sg.geometry", Value = "3" },
+            { Name = "sg.resolution", Value = "4" },
+        ] },
+        { Group = "sg.quality", Level = "cinematic", Values = [
+            { Name = "sg.lighting", Value = "4" },
+            { Name = "sg.geometry", Value = "4" },
+            { Name = "sg.resolution", Value = "4" },
+        ] },
+        { Group = "sg.lighting", Level = "0", Values = [
+            { Name = "r.restir.candidates", Value = "4" },
+            { Name = "r.restir.neighbors", Value = "1" },
+            { Name = "r.restir.history", Value = "10" },
+            { Name = "r.restir.checkerboard", Value = "true" },
+            { Name = "r.restir.spatial_visibility", Value = "false" },
+            { Name = "r.restir.gi_bounce", Value = "false" },
+            { Name = "r.sharc.capacity", Value = "524288" },
+            { Name = "r.sharc.stride", Value = "6" },
+        ] },
+        { Group = "sg.lighting", Level = "1", Values = [
+            { Name = "r.restir.candidates", Value = "8" },
+            { Name = "r.restir.neighbors", Value = "1" },
+            { Name = "r.restir.history", Value = "15" },
+            { Name = "r.restir.checkerboard", Value = "true" },
+            { Name = "r.restir.spatial_visibility", Value = "false" },
+            { Name = "r.restir.gi_bounce", Value = "false" },
+            { Name = "r.sharc.capacity", Value = "1048576" },
+            { Name = "r.sharc.stride", Value = "4" },
+        ] },
+        { Group = "sg.lighting", Level = "2", Values = [
+            { Name = "r.restir.candidates", Value = "16" },
+            { Name = "r.restir.neighbors", Value = "2" },
+            { Name = "r.restir.history", Value = "20" },
+            { Name = "r.restir.checkerboard", Value = "true" },
+            { Name = "r.restir.spatial_visibility", Value = "true" },
+            { Name = "r.restir.gi_bounce", Value = "true" },
+            { Name = "r.sharc.capacity", Value = "2097152" },
+            { Name = "r.sharc.stride", Value = "4" },
+        ] },
+        { Group = "sg.lighting", Level = "3", Values = [
+            { Name = "r.restir.candidates", Value = "32" },
+            { Name = "r.restir.neighbors", Value = "3" },
+            { Name = "r.restir.history", Value = "20" },
+            { Name = "r.restir.checkerboard", Value = "false" },
+            { Name = "r.restir.spatial_visibility", Value = "true" },
+            { Name = "r.restir.gi_bounce", Value = "true" },
+            { Name = "r.sharc.capacity", Value = "4194304" },
+            { Name = "r.sharc.stride", Value = "3" },
+        ] },
+        { Group = "sg.lighting", Level = "4", Values = [
+            { Name = "r.restir.candidates", Value = "32" },
+            { Name = "r.restir.neighbors", Value = "3" },
+            { Name = "r.restir.history", Value = "20" },
+            { Name = "r.restir.checkerboard", Value = "false" },
+            { Name = "r.restir.spatial_visibility", Value = "true" },
+            { Name = "r.restir.gi_bounce", Value = "true" },
+            { Name = "r.sharc.capacity", Value = "4194304" },
+            { Name = "r.sharc.stride", Value = "2" },
+        ] },
+        { Group = "sg.geometry", Level = "0", Values = [
+            { Name = "r.geo.error_px", Value = "2.0" },
+        ] },
+        { Group = "sg.geometry", Level = "1", Values = [
+            { Name = "r.geo.error_px", Value = "1.5" },
+        ] },
+        { Group = "sg.geometry", Level = "2", Values = [
+            { Name = "r.geo.error_px", Value = "1.0" },
+        ] },
+        { Group = "sg.geometry", Level = "3", Values = [
+            { Name = "r.geo.error_px", Value = "1.0" },
+        ] },
+        { Group = "sg.geometry", Level = "4", Values = [
+            { Name = "r.geo.error_px", Value = "0.5" },
+        ] },
+        { Group = "sg.resolution", Level = "0", Values = [
+            { Name = "r.upscale.mode", Value = "performance" },
+        ] },
+        { Group = "sg.resolution", Level = "1", Values = [
+            { Name = "r.upscale.mode", Value = "balanced" },
+        ] },
+        { Group = "sg.resolution", Level = "2", Values = [
+            { Name = "r.upscale.mode", Value = "quality" },
+        ] },
+        { Group = "sg.resolution", Level = "3", Values = [
+            { Name = "r.upscale.mode", Value = "native" },
+        ] },
+        { Group = "sg.resolution", Level = "4", Values = [
+            { Name = "r.upscale.mode", Value = "native" },
+        ] },
+    ]
+}

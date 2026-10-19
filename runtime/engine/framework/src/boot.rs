@@ -14,9 +14,14 @@
 //! | `r.vsync`, `window.width`, `window.height` | presentation                            |
 //! | `r.stats`         | the stats overlay (F3 toggles it)*                               |
 //! | `r.sharc.view`    | draw the world radiance cache in place of the lit scene*        |
+//! | `game.device_profile` | the device profile applied at boot (default: the platform) |
+//! | `sg.*`, `r.*`     | quality groups and the cvars they set ([`crate::quality`])       |
 //!
 //! Those marked * are development tools: not in shipping builds (`marlin_build = "shipping"`),
 //! where these cvars do not exist and the cook service cannot be mounted (0001 §8).
+//!
+//! After mounting, the boot applies the quality presets the content holds
+//! ([`crate::scalability::apply_presets`]).
 //!
 //! There is no load-by-path: the entry level is named by UUID, and everything else is reached
 //! through its links, except the few objects code asks for by name (the engine's shader package,
@@ -80,7 +85,9 @@ pub fn register_cvars() {
             &R_VSYNC,
             &WINDOW_WIDTH,
             &WINDOW_HEIGHT,
+            &crate::scalability::GAME_DEVICE_PROFILE,
         ]);
+        crate::quality::register_cvars();
         // The development tools'.
         #[cfg(not(marlin_build = "shipping"))]
         let _ =
@@ -112,6 +119,8 @@ pub enum BootError {
     NoCookd,
     #[error("game.level is not a UUID: {0:?}")]
     Level(String),
+    #[error("quality presets")]
+    Presets(#[source] crate::scalability::PresetError),
 }
 
 /// What a game starts with: mounted content and the entry level.
@@ -140,7 +149,10 @@ pub fn boot<'a>(
     if !problems.is_empty() {
         return Err(BootError::Config(problems.join("; ")));
     }
-    mount(&ContentSettings::from_cvars(base_dir)?)
+    let boot = mount(&ContentSettings::from_cvars(base_dir)?)?;
+    // The quality presets: scalability tables and the device profile (0008 §2.2).
+    crate::scalability::apply_presets(&boot.vfs).map_err(BootError::Presets)?;
+    Ok(boot)
 }
 
 /// Where content comes from: what the cvars say, as plain data.

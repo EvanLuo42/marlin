@@ -110,7 +110,7 @@ pub(crate) fn parse(text: &str) -> (toml::Spanned<DeTable<'_>>, Vec<ApplyError>)
 pub(crate) fn sort(errors: &mut [ApplyError]) {
     errors.sort_by_key(|e| match e.location {
         Location::Document => 0,
-        Location::Line(n) | Location::Arg(n) => n,
+        Location::Line(n) | Location::Arg(n) | Location::Entry(n) => n,
     });
 }
 

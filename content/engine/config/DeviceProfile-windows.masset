@@ -1,0 +1,12 @@
+!Version 1
+
+// The default device profile on windows (0008 §2.2): the preset a desktop starts with. Hardware
+// detection that picks a lower or higher one comes later; the user's settings override it.
+DeviceProfile
+{
+    !Uuid = "019a5f20-7c41-7e03-8a5c-1d9e7f3b2c04"
+    !Name = "Marlin.Engine.DeviceProfiles.windows"
+    Values = [
+        { Name = "sg.quality", Value = "medium" },
+    ]
+}

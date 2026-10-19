@@ -191,6 +191,8 @@ pub fn engine_loaders(streamer: &Arc<BlobStreamer>) -> Loaders {
     let streamer = streamer.clone();
     let mut l = Loaders::new();
     l.register_serial::<Level>();
+    l.register_serial::<crate::scalability::Scalability>();
+    l.register_serial::<crate::scalability::DeviceProfile>();
     l.register_serial::<ShaderLibrary>();
     l.register::<LoadedMesh>(type_info::<Mesh>().id.0, move |ctx| {
         load_mesh(ctx, &streamer)

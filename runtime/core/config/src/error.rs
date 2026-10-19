@@ -85,6 +85,8 @@ pub enum Location {
     Line(u32),
     /// Index of the `+name` argument on the command line.
     Arg(u32),
+    /// 0-based index of an entry in a list of values given as data (an asset's, not a file).
+    Entry(u32),
 }
 
 impl fmt::Display for Location {
@@ -93,6 +95,7 @@ impl fmt::Display for Location {
             Self::Document => f.write_str("document"),
             Self::Line(n) => write!(f, "line {n}"),
             Self::Arg(n) => write!(f, "argument {n}"),
+            Self::Entry(n) => write!(f, "entry {n}"),
         }
     }
 }

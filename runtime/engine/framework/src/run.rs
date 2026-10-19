@@ -299,6 +299,8 @@ fn render_frame(
         {
             render.sharc_view = crate::boot::R_SHARC_VIEW.get();
         }
+        // The quality cvars (0008 §2), which the console may have changed.
+        crate::quality::RenderSettings::from_cvars().apply(render);
     }
     let image = {
         profile_scope!("Acquire");

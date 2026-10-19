@@ -377,6 +377,13 @@ impl Cookers {
         self.add(type_info::<T>(), Arc::new(Generic), false)
     }
 
+    /// Source type `T`, cooked as itself, found by its `!Name` (see [`register_named`]).
+    ///
+    /// [`register_named`]: Self::register_named
+    pub fn register_named_generic<T: Reflect>(&mut self) -> Result<(), SchemaError> {
+        self.add(type_info::<T>(), Arc::new(Generic), true)
+    }
+
     fn add(
         &mut self,
         info: &'static TypeInfo,

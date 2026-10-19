@@ -105,6 +105,20 @@ PS6 和 Xbox "Magnus" 传闻在 2027 年发布，都是 RDNA5。现在先在设�
 | 超分 | DLSS | DLSS | TSR | TSR | PSSR 2 | 按厂商 | 按厂商 | 按厂商 | 按厂商（推荐 DLSS-RR） |
 | 毛发 | card | card | card | strand | strand | card | strand | strand | strand |
 
+### 2.4 R4f 的实现（2026-10-19）：档位框架
+
+用户的选择：先把档位框架接好，档位以后可以扩展；预设是 cook 出来的 `.masset` 资产；做法参考 Unreal 的 scalability group 加 device profile。
+
+- **三层**，每一层都是 cvar，所以 marlin-config 的层次照常起作用（scalability < project < device profile < user < 命令行 < 控制台）：
+  - `sg.quality`（low、medium、high、ultra、cinematic，§2.3 的 PC 预设）的每一级设下面的特性组；
+  - 特性组：`sg.lighting`（0–4，即 0010 §3 的 L0–L4）设 `r.restir.*`、`r.sharc.*`；`sg.geometry` 设 `r.geo.error_px`；`sg.resolution` 设 `r.upscale.mode`；
+  - 细 cvar（`runtime/engine/framework/src/quality.rs`）：ReSTIR 的候选数、配对邻居、时域 cap、棋盘、空间可见性、GI、`x2` 弹射、镜面追踪；SHaRC 的容量和更新步长；降噪开关；LOD 误差；超分倍率。
+- **组的级别是数据**：`content/engine/config/Scalability.masset`（`Marlin.Engine.Scalability`，类型 `Scalability`：一组 `{ Group, Level, Values = [{ Name, Value }] }`）。游戏可以有自己的 `Game.Scalability`，按级别合并在引擎的上面。marlin-config 新增 `add_scalability_level`，从 (名字, 文本) 对加一级，和 TOML 的 `load_scalability` 合并规则一样。
+- **device profile**：`Marlin.Engine.DeviceProfiles.<名字>`（类型 `DeviceProfile`），名字由 `game.device_profile` 给出，默认是平台名。现在 windows 和 linux 都只设 `sg.quality = medium`；按硬件自动选档以后再做。
+- **应用**：`boot()` 挂载内容以后调 `scalability::apply_presets`；`run` 每帧把 cvar 读进 `RenderSettings`，再写进 `RenderSide` 的各个 pass。和 §2.1"每个子系统在自己的 `add_passes` 里读 cvar"不同：渲染 crate 保持普通的设置字段（它们的测试直接设字段），framework 是读 cvar 的唯一地方。cvar 的默认值就是 medium 的值，没有表的旧 build 画面不变。
+- **测试**：marlin-config 的 `isolated_scalability`（数据形式的级别、总档设特性组）；framework 的 `isolated_presets`（引擎表 + 游戏表 + device profile，用户和控制台覆盖，错误报告）；GPU 端到端测试 cook 真实的引擎资产并应用，检查 medium → L2 的值。
+- **还没有的格子**（0010 §3）：L0、L1 的 1/4 蓄水池（现在退到棋盘的 1/2）、低于全分辨率的镜面追踪、L3 的第二次弹射和 ReSTIR + RT 太阳软阴影；这些特性做出来以后加 cvar，再把值写进表里。
+
 ## 3. 帧流水与多线程
 
 ### 3.1 三级流水

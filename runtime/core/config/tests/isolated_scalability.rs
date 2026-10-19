@@ -7,8 +7,8 @@ use std::ptr;
 
 use marlin_config::{
     ApplyError, Bounds, Cause, CvarBool, CvarEnum, CvarI64, Error, Location, Source,
-    clear_scalability, declare, load_device_profile, load_layer, load_scalability,
-    scalability_groups, scalability_overrides,
+    add_scalability_level, clear_scalability, declare, load_device_profile, load_layer,
+    load_scalability, scalability_groups, scalability_overrides,
 };
 
 declare! {
@@ -17,6 +17,7 @@ declare! {
     static SHADOW_ON: CvarBool = CvarBool::new("r.shadow.enable", true, "");
     static SHADOW_RES: CvarI64 = CvarI64::new("r.shadow.resolution", 4096, "");
     static PARTICLES: CvarI64 = CvarI64::new("fx.particles", 10000, "");
+    static QUALITY: CvarEnum = CvarEnum::new("sg.quality", 1, &["low", "medium", "high"], "");
 }
 
 const TABLES: &str = r#"
@@ -150,4 +151,85 @@ fn groups_and_profiles() {
     assert_eq!((SHADOW_RES.get(), SHADOW_RES.set_by()), (4096, None));
     SHADOWS.set(0);
     assert!(SHADOW_ON.get(), "no table, no effect");
+
+    // Levels from data (an asset's), and a group whose levels set other groups (an overall
+    // quality, as Unreal's): its values go into the scalability layer, which applies the groups.
+    SHADOWS.unset(Source::Code).unwrap();
+    SHADOWS.unset(Source::User).unwrap();
+    SHADOWS.unset(Source::DeviceProfile).unwrap();
+    EFFECTS.unset(Source::DeviceProfile).unwrap();
+    let shadow_levels: [(&str, &[(&str, &str)]); 2] = [
+        ("0", &[("r.shadow.enable", "false")]),
+        (
+            "2",
+            &[("r.shadow.enable", "true"), ("r.shadow.resolution", "2048")],
+        ),
+    ];
+    for (level, values) in shadow_levels {
+        assert_eq!(add_scalability_level("sg.shadows", level, values), []);
+    }
+    assert_eq!(
+        add_scalability_level("sg.effects", "low", &[("fx.particles", "500")]),
+        []
+    );
+    assert_eq!(
+        add_scalability_level(
+            "sg.quality",
+            "low",
+            &[("sg.shadows", "0"), ("sg.effects", "low")]
+        ),
+        []
+    );
+    assert_eq!(
+        add_scalability_level(
+            "sg.quality",
+            "high",
+            &[("sg.shadows", "2"), ("sg.effects", "high")]
+        ),
+        []
+    );
+    QUALITY.set_str("low", Source::User).unwrap();
+    assert_eq!(
+        (SHADOWS.get(), SHADOWS.set_by()),
+        (0, Some(Source::Scalability))
+    );
+    assert_eq!((SHADOW_ON.get(), PARTICLES.get()), (false, 500));
+    QUALITY.set_str("high", Source::User).unwrap();
+    assert_eq!(
+        (SHADOW_ON.get(), SHADOW_RES.get(), PARTICLES.get()),
+        (true, 2048, 10000)
+    );
+    // A group set above the scalability layer beats the overall level.
+    SHADOWS.set_str("0", Source::User).unwrap();
+    assert!(!SHADOW_ON.get());
+    // Errors by entry; a bad group or level fails the level.
+    let entry = |i, key: &str, source| ApplyError {
+        location: Location::Entry(i),
+        key: key.into(),
+        source,
+    };
+    assert_eq!(
+        add_scalability_level(
+            "sg.shadows",
+            "1",
+            &[("r.nope", "1"), ("r.shadow.resolution", "x")]
+        ),
+        [
+            entry(0, "r.nope", Cause::Set(Error::Unknown)),
+            entry(
+                1,
+                "r.shadow.resolution",
+                Cause::Set(Error::Invalid(marlin_config::Expected::Int))
+            ),
+        ]
+    );
+    assert_eq!(
+        add_scalability_level("sg.shadows", "9", &[]),
+        [ApplyError {
+            location: Location::Document,
+            key: "sg.shadows".into(),
+            source: Cause::Set(Error::OutOfRange(Bounds::Int(0, 3))),
+        }]
+    );
+    clear_scalability();
 }

@@ -256,6 +256,26 @@ fn the_sample_cooks_packages_and_renders_the_same_from_cookd() {
     })
     .unwrap();
     let (_, viewer, packaged) = start(&boot);
+    // The build has the engine's quality presets, which apply: the platform's device profile
+    // picks sg.quality = medium, whose levels set the lighting tier L2's values (0010 §3).
+    marlin_framework::register_cvars();
+    marlin_framework::scalability::apply_presets(&boot.vfs).unwrap();
+    use marlin_framework::quality::{
+        R_RESTIR_CANDIDATES, R_SHARC_CAPACITY, SG_LIGHTING, SG_QUALITY,
+    };
+    assert_eq!(
+        (SG_QUALITY.get_name(), SG_QUALITY.set_by()),
+        ("medium", Some(marlin_config::Source::DeviceProfile))
+    );
+    assert_eq!(SG_LIGHTING.get(), 2);
+    assert_eq!(
+        R_RESTIR_CANDIDATES.set_by(),
+        Some(marlin_config::Source::Scalability)
+    );
+    assert_eq!(
+        (R_RESTIR_CANDIDATES.get(), R_SHARC_CAPACITY.get()),
+        (16, 1 << 21)
+    );
     check_sample(&packaged);
     assert_eq!(
         viewer.render.mesh_count(),

@@ -105,5 +105,6 @@ pub use registry::{
     remove_callback, set, unregister, unregister_command,
 };
 pub use scalability::{
-    clear_scalability, load_scalability, scalability_groups, scalability_overrides,
+    add_scalability_level, clear_scalability, load_scalability, scalability_groups,
+    scalability_overrides,
 };

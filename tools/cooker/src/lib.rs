@@ -17,6 +17,7 @@ use marlin_cook_text::{StringTable, StringTableCooker};
 use marlin_cook_texture::TextureCooker;
 use marlin_font::Font;
 use marlin_framework::Level;
+use marlin_framework::scalability::{DeviceProfile, Scalability};
 use marlin_render::asset::{Mesh, PairingPattern, Texture};
 use marlin_shader::asset::{Shader, ShaderPackage};
 use marlin_store::RemoteDdc;
@@ -37,7 +38,10 @@ pub fn engine_cookers() -> Cookers {
         .and_then(|()| cookers.register_named::<ShaderPackage>(ShaderPackageCooker::new()))
         // Permutations are found by name too (the default material's resolve).
         .and_then(|()| cookers.register_named::<Shader>(ShaderCooker::new()))
-        .and_then(|()| cookers.register_generic::<Level>());
+        .and_then(|()| cookers.register_generic::<Level>())
+        // The quality presets, found by name at boot (0008 §2.2).
+        .and_then(|()| cookers.register_named_generic::<Scalability>())
+        .and_then(|()| cookers.register_named_generic::<DeviceProfile>());
     if let Err(e) = registered {
         // Two engine types with one text name: a programming error, caught by any run.
         panic!("engine asset types: {e}");

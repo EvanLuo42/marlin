@@ -24,7 +24,9 @@ pub mod hud;
 pub mod level;
 pub mod loaders;
 mod offscreen;
+pub mod quality;
 mod run;
+pub mod scalability;
 pub mod shaders;
 
 pub use boot::{Boot, BootError, ContentSettings, boot, mount, register_cvars};

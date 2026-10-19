@@ -630,7 +630,7 @@ impl Cvar {
         self.parse(text).map(|v| self.format(&v))
     }
 
-    fn check(&self, source: Source) -> Result<(), Error> {
+    pub(crate) fn check(&self, source: Source) -> Result<(), Error> {
         if matches!(source, Source::Code | Source::Server) {
             return Ok(());
         }
@@ -655,7 +655,7 @@ impl Cvar {
         self.validate(value)
     }
 
-    fn parse(&self, text: &str) -> Result<Value, Error> {
+    pub(crate) fn parse(&self, text: &str) -> Result<Value, Error> {
         let t = text.trim();
         let typed = match self.spec {
             Spec::Bool(_) => Typed::Bool(parse_bool(t).ok_or(Error::Invalid(Expected::Bool))?),

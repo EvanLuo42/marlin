@@ -54,7 +54,53 @@ pub fn load_scalability(text: &str) -> Vec<ApplyError> {
         &mut errors,
         &mut found,
     );
+    merge(found);
+    file::sort(&mut errors);
+    errors
+}
 
+/// Adds one level of a scalability group from data instead of a TOML table (an asset's, say):
+/// `group` (a group cvar's name), `level` (as the group parses it: a number, or an enum
+/// group's name) and the values, cvar names and their text, merged as
+/// [`load_scalability`] merges. Applies the group. Entries that fail are returned, located by
+/// their index ([`Location::Entry`]); a bad group or level fails the whole level, at
+/// [`Location::Document`].
+#[must_use = "errors should be reported"]
+pub fn add_scalability_level(group: &str, level: &str, values: &[(&str, &str)]) -> Vec<ApplyError> {
+    let fail = |key: &str, source| ApplyError {
+        location: Location::Document,
+        key: key.into(),
+        source,
+    };
+    let Some(group_cvar) = registry::find(group) else {
+        return alloc::vec![fail(group, Cause::Set(Error::Unknown))];
+    };
+    let level = match group_cvar.parse_level(level) {
+        Ok(level) => level,
+        Err(e) => return alloc::vec![fail(group, Cause::Set(e))],
+    };
+    let mut errors = Vec::new();
+    let mut found = Vec::new();
+    for (i, &(name, text)) in values.iter().enumerate() {
+        let parsed = registry::find(name).ok_or(Error::Unknown).and_then(|cvar| {
+            cvar.check(Source::Scalability)?;
+            Ok((cvar, cvar.parse(text)?))
+        });
+        match parsed {
+            Ok(p) => found.push((group_cvar, level, p)),
+            Err(e) => errors.push(ApplyError {
+                location: Location::Entry(i as u32),
+                key: name.into(),
+                source: Cause::Set(e),
+            }),
+        }
+    }
+    merge(found);
+    errors
+}
+
+/// Merges found levels' values into the groups and applies the groups they touch.
+fn merge(found: Vec<(&'static Cvar, i64, Parsed)>) {
     let mut touched: Vec<&'static Cvar> = Vec::new();
     {
         let mut groups = GROUPS.lock();
@@ -90,8 +136,6 @@ pub fn load_scalability(text: &str) -> Vec<ApplyError> {
     for group in touched {
         apply(group);
     }
-    file::sort(&mut errors);
-    errors
 }
 
 /// Finds the group tables under `prefix`.
