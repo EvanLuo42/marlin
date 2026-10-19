@@ -83,6 +83,37 @@ fn sccp_finds_constants_through_loops_and_branches() {
     );
 }
 
+#[test]
+fn the_report_times_every_pass_and_check() {
+    let pm = chain(vec![Box::new(SimplifyCfg), Box::new(Sccp), Box::new(Dce)]);
+    let mut m = fixture("sccp");
+    let report = pm.run(&mut m).unwrap();
+    // Each pass, then `verify` after each one that changed the module (`verify_each`).
+    let mut want = Vec::new();
+    for &(name, changed) in &report.ran {
+        want.push(name);
+        if changed {
+            want.push("verify");
+        }
+    }
+    let steps: Vec<&str> = report.timings.iter().map(|(name, _)| *name).collect();
+    assert_eq!(steps, want);
+    assert_eq!(&want[..1], ["simplify-cfg"]);
+
+    // Without `verify_each`, the module is checked once, at the end.
+    let options = Options {
+        profile: Profile::Shipping,
+        verify_each: false,
+    };
+    let pm = pipeline(&options);
+    let mut m = fixture("sccp");
+    let report = pm.run(&mut m).unwrap();
+    let steps: Vec<&str> = report.timings.iter().map(|(name, _)| *name).collect();
+    let mut want = pm.names();
+    want.push("verify");
+    assert_eq!(steps, want);
+}
+
 /// What `fuzz/fuzz_targets/shaderc_opt_pipeline.rs` checks.
 fn pipeline_on_text(text: &str) {
     let Ok(module) = parse_module(text) else {

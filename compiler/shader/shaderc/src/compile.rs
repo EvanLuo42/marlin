@@ -7,6 +7,7 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use marlin_front_hir_def::{
     FilePackage, ItemId, ItemKind, ItemTree, ItemTreeQuery, LocalItemId, SignatureWithSourceMap,
@@ -81,6 +82,8 @@ fn run(s: &Session<'_>, cx: &Cx<'_>, req: &EntryRequest<'_>) -> Result<Outcome, 
         .collect();
 
     // The front end's diagnostics for everything the entry sees.
+    let mut timings: Vec<(&'static str, Duration)> = Vec::new();
+    let start = Instant::now();
     let (mut errors, mut warnings) = (Vec::new(), Vec::new());
     for &f in &files {
         for d in cx.get::<FileTyDiagnostics>(&f)?.iter() {
@@ -97,13 +100,16 @@ fn run(s: &Session<'_>, cx: &Cx<'_>, req: &EntryRequest<'_>) -> Result<Outcome, 
             diagnostics: errors,
         }));
     }
+    timings.push(("front", start.elapsed()));
     let builtins = cx.get::<BuiltinsQuery>(&package)?;
 
     // Lowering, with the request's static parameters and type arguments.
+    let start = Instant::now();
     let lowered = match lower(s, cx, &builtins, req, entry, package)? {
         Ok(l) => l,
         Err(e) => return Ok(Err(e)),
     };
+    timings.push(("lower", start.elapsed()));
     let module = lowered.module;
     let func = lowered.func;
 
@@ -159,14 +165,20 @@ fn run(s: &Session<'_>, cx: &Cx<'_>, req: &EntryRequest<'_>) -> Result<Outcome, 
         d
     };
     match pipeline(&options).run(&mut optimized) {
-        Ok(report) => warnings.extend(report.warnings.iter().map(diagnostic)),
+        Ok(report) => {
+            warnings.extend(report.warnings.iter().map(diagnostic));
+            timings.extend(report.timings);
+        }
         Err(PassError::Rejected { problems, .. }) => {
             let diagnostics = problems.iter().map(diagnostic).collect();
             return Ok(Err(CompileError { diagnostics }));
         }
         Err(e) => return Ok(Err(fail("E1506", format!("compiler bug: {e}")))),
     }
-    let code = match backend.write(&optimized, func, target) {
+    let start = Instant::now();
+    let written = backend.write(&optimized, func, target);
+    timings.push(("write", start.elapsed()));
+    let code = match written {
         Ok(b) => b,
         Err(e) => {
             return Ok(Err(fail(
@@ -178,7 +190,9 @@ fn run(s: &Session<'_>, cx: &Cx<'_>, req: &EntryRequest<'_>) -> Result<Outcome, 
             )));
         }
     };
+    let start = Instant::now();
     let problems = backend.validate(&code, target);
+    timings.push(("validate", start.elapsed()));
     if !problems.is_empty() {
         let shown: Vec<&str> = problems.iter().take(5).map(String::as_str).collect();
         return Ok(Err(fail(
@@ -193,6 +207,7 @@ fn run(s: &Session<'_>, cx: &Cx<'_>, req: &EntryRequest<'_>) -> Result<Outcome, 
     }
 
     // The reflection.
+    let start = Instant::now();
     let mut sources = Vec::new();
     let mut used_sources = Vec::new();
     for &f in &files {
@@ -218,11 +233,13 @@ fn run(s: &Session<'_>, cx: &Cx<'_>, req: &EntryRequest<'_>) -> Result<Outcome, 
             Ok(r) => r,
             Err(e) => return Ok(Err(fail("E1506", format!("compiler bug: {e}")))),
         };
+    timings.push(("reflect", start.elapsed()));
     Ok(Ok(CompileOutput {
         code,
         reflection,
         diagnostics: warnings,
         used_sources,
+        timings,
     }))
 }
 

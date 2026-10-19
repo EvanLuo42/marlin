@@ -40,6 +40,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use marlin_shaderc_ir::cfg::{Cfg, Structure};
 use marlin_shaderc_ir::{FuncId, Function, Module, VerifyError, verify_module};
@@ -233,6 +234,9 @@ pub struct Report {
     pub ran: Vec<(&'static str, bool)>,
     /// The warnings the passes found.
     pub warnings: Vec<Problem>,
+    /// How long each step took, in order: every pass by its name (with its check, if it has
+    /// one), and `verify` for each verification of the module (0005 §4.1).
+    pub timings: Vec<(&'static str, Duration)>,
 }
 
 pub struct PassManager {
@@ -268,10 +272,12 @@ impl PassManager {
         let mut analyses = Analyses::default();
         let mut report = Report::default();
         for pass in &self.passes {
+            let start = Instant::now();
             let changed = pass.run(m, &mut analyses);
             report.ran.push((pass.name(), changed));
             let (warnings, problems): (Vec<Problem>, Vec<Problem>) =
                 pass.problems(m).into_iter().partition(|p| p.warning);
+            report.timings.push((pass.name(), start.elapsed()));
             report.warnings.extend(warnings);
             if !problems.is_empty() {
                 return Err(PassError::Rejected {
@@ -280,11 +286,15 @@ impl PassManager {
                 });
             }
             if changed && self.verify_each {
+                let start = Instant::now();
                 check(m, pass.name())?;
+                report.timings.push(("verify", start.elapsed()));
             }
         }
         if !self.verify_each {
+            let start = Instant::now();
             check(m, "the pipeline")?;
+            report.timings.push(("verify", start.elapsed()));
         }
         Ok(report)
     }

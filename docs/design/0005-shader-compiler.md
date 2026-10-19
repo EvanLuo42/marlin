@@ -111,6 +111,10 @@ platforms/<p>/shader/  主机平台的后端（在 cook 平台 cfg 下通过 #[p
   - 保持 debug location；
   - 不对带 `[Precise]` 的计算做重结合、fma 收缩和近似倒数（0004 §9.7）。
 - 共享的 pass 只读 target 描述，里面不写 `match target`。
+- 计时是编译器输出的一部分，不靠临时打印：
+  - pass manager 的 `Report::timings` 按顺序记下每个 pass 的耗时（含它的检查），每次验证模块记成一条 `verify`；
+  - `CompileOutput::timings` 按顺序是 `front`（入口看到的文件的前端诊断）、`lower`、优化器的各条、后端的 `write` 和 `validate`、`reflect`；
+  - 工具（cooker、测试辅助、以后类似 `-Ztime-passes` 的开关）拿它打印或汇总。
 
 ### 4.2 参照：DXC 的流水线
 

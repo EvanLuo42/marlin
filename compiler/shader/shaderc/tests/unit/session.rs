@@ -6,6 +6,7 @@ use marlin_shaderc::{
     CompileError, ConstValue, EntryRequest, FieldValue, PackageDesc, Profile, Session, SessionDesc,
     SourceError, SourcePath, SourceProvider, default_targets,
 };
+use marlin_shaderc_opt::{Options, pipeline};
 use marlin_test_support::{data_path, golden};
 
 /// Packages held in memory, read from `tests/data/<package>/`; tests change them in place.
@@ -115,6 +116,17 @@ fn an_entry_compiles_to_spirv_with_its_reflection() {
     assert_eq!(r.stats.groupshared_bytes, 256);
     assert_eq!(r.stats.code_bytes as usize, out.code.bytes.len());
     assert!(r.stats.instructions > 0);
+    // Every step's time, in order: the front end, lowering, the optimizer's passes and its
+    // check, the backend.
+    let steps: Vec<&str> = out.timings.iter().map(|(name, _)| *name).collect();
+    let options = Options {
+        profile: Profile::Development,
+        verify_each: false,
+    };
+    let mut want = vec!["front", "lower"];
+    want.extend(pipeline(&options).names());
+    want.extend(["verify", "write", "validate", "reflect"]);
+    assert_eq!(steps, want);
     // The core library's files, then the package's.
     let core: Vec<SourcePath> = marlin_shaderc_core::FILES
         .iter()

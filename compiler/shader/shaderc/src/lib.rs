@@ -18,6 +18,7 @@ mod values;
 
 use std::fmt;
 use std::sync::Arc;
+use std::time::Duration;
 
 use marlin_front_hir_def::{
     FilePackage, FileText, LanguageInput, PackageData, PackageId, PackageInput,
@@ -99,6 +100,10 @@ pub struct CompileOutput {
     pub diagnostics: Vec<Diagnostic>,
     /// The files the result depends on (0005 §8), for the cook's manifest.
     pub used_sources: Vec<SourcePath>,
+    /// How long each step of the compile took, in order (0005 §4.1): `front` (the front end's
+    /// diagnostics for what the entry sees), `lower`, the optimizer's passes by name and its
+    /// `verify`, then the backend's `write` and `validate`, and `reflect`.
+    pub timings: Vec<(&'static str, Duration)>,
 }
 
 /// An entry point a package declares (see [`Session::entries`]).
