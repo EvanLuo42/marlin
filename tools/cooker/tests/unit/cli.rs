@@ -53,24 +53,25 @@ fn cooks_then_hits_the_cache_then_reports_failures() {
     let (ok, text) = run(&["cook", r]);
     assert!(ok, "{text}");
     assert!(
-        text.contains("10 units (10 cooked, 0 cached), 0 failed"),
+        text.contains("13 units (13 cooked, 0 cached), 0 failed"),
         "{text}"
     );
     assert!(manifest_path.is_file());
 
     let (ok, text) = run(&["cook", r, "--threads", "2"]);
     assert!(ok, "{text}");
-    assert!(text.contains("(0 cooked, 10 cached)"), "{text}");
+    assert!(text.contains("(0 cooked, 13 cached)"), "{text}");
 
     let (ok, text) = run(&["package", r, "--bulk-codec", "gdeflate"]);
     assert!(ok, "{text}");
-    assert!(text.contains("10 units"), "{text}");
+    assert!(text.contains("13 units"), "{text}");
     let package_path = build.join(format!("{}.mpak", Platform::host().name));
     let package = marlin_asset::Package::open(package_path.to_str().unwrap()).unwrap();
     // The engine's content (its shader package, the Substrate library, the default material's
     // resolve and bake permutations, the UI font, the pairing patterns, the scalability table and
-    // the two device profiles) is in the build with the project's.
-    assert_eq!(package.index().units.len(), 10);
+    // the two device profiles, and the input bindings: the spectator's, the host's and the
+    // editor's) is in the build with the project's.
+    assert_eq!(package.index().units.len(), 13);
     let (ok, text) = run(&["package", r, "--bulk-codec", "brotli"]);
     assert!(!ok && text.contains("usage"), "{text}");
 
@@ -125,15 +126,15 @@ fn shader_packages_cook_for_both_profiles_and_names_are_validated() {
 
     let (ok, text) = run(&["cook", r]);
     assert!(ok, "{text}");
-    assert!(text.contains("(10 cooked, 0 cached)"), "{text}");
-    // A shipping build is another key for shaders; the font, the pairing patterns and the presets
-    // cook the same for every profile.
+    assert!(text.contains("(13 cooked, 0 cached)"), "{text}");
+    // A shipping build is another key for shaders; the font, the pairing patterns, the presets and
+    // the input bindings cook the same for every profile.
     let (ok, text) = run(&["cook", r, "--shipping"]);
     assert!(ok, "{text}");
-    assert!(text.contains("(5 cooked, 5 cached)"), "{text}");
+    assert!(text.contains("(5 cooked, 8 cached)"), "{text}");
     let (ok, text) = run(&["cook", r, "--shipping", "--threads", "1"]);
     assert!(ok, "{text}");
-    assert!(text.contains("(0 cooked, 10 cached)"), "{text}");
+    assert!(text.contains("(0 cooked, 13 cached)"), "{text}");
 
     let (ok, text) = run(&["validate", r]);
     assert!(ok, "{text}");

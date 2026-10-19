@@ -164,7 +164,7 @@ fn compile(
                 }
                 LoadState::Loaded => {
                     if let Some(action) = assets.get(&h) {
-                        actions.insert(a, action.value);
+                        actions.insert(a, *action);
                     }
                 }
             }

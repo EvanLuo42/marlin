@@ -7,7 +7,6 @@ publish.workspace = true
 
 [dependencies]
 marlin-asset.workspace = true
-marlin-containers.workspace = true
 marlin-cook-core.workspace = true
 marlin-masset.workspace = true
 marlin-reflect.workspace = true

@@ -38,7 +38,7 @@ use marlin_shader::bind::{BindError, bind_one};
 /// A view's specular signal's denoising history is keyed by the view's id with this bit.
 const SPECULAR_BIT: u64 = 1 << 63;
 
-use crate::assets::{RenderAssets, ShaderError};
+use crate::assets::RenderShaders;
 use crate::components::ViewTarget;
 use crate::delta::{RenderDelta, ViewId};
 
@@ -96,22 +96,19 @@ pub struct WorldRenderer {
 
 impl WorldRenderer {
     /// A renderer for the world whose scene rows come from `ids` ([`crate::scene_ids`]), made with
-    /// the render module's engine assets (loaded in `assets`); its post chain writes `output`.
+    /// the render module's [`RenderShaders`] (an engine resource); its post chain writes `output`.
     pub fn new(
         device: &Device,
-        assets: &marlin_asset::AssetServer,
-        engine: &RenderAssets,
+        shaders: &RenderShaders,
         output: Format,
         ids: SceneIds,
     ) -> Result<Self, WorldRendererError> {
-        let missing =
-            || WorldRendererError::Assets(ShaderError::Load(marlin_asset::AssetError::NotFound));
         Self::with_shaders(
             device,
-            assets.get(&engine.library).ok_or_else(missing)?,
-            assets.get(&engine.resolve).ok_or_else(missing)?,
-            assets.get(&engine.bake).ok_or_else(missing)?,
-            assets.get(&engine.pairing).ok_or_else(missing)?.view(),
+            &shaders.library,
+            &shaders.resolve,
+            &shaders.bake,
+            shaders.pairing.view(),
             output,
             ids,
         )
@@ -552,8 +549,6 @@ impl WorldRenderer {
 /// Why a [`WorldRenderer`] could not be made.
 #[derive(Debug, marlin_error::Error)]
 pub enum WorldRendererError {
-    #[error("the render module's assets")]
-    Assets(#[from] ShaderError),
     #[error("engine shaders")]
     Shaders(#[from] BindError),
     #[error("gpu")]

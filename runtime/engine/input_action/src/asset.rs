@@ -39,10 +39,23 @@ pub enum ActionValueType {
 }
 
 /// Something the player can do: jump, move, look. Gameplay reads actions, never keys.
-#[derive(Clone, Copy, PartialEq, Debug, Default, Reflect)]
+#[derive(Clone, Copy, PartialEq, Debug, Reflect)]
 #[reflect(name = "marlin_input_action::InputAction", default)]
 pub struct InputAction {
     pub value: ActionValueType,
+    /// Whether a firing mapping takes its source from lower contexts and later routing layers.
+    /// Off for helper actions that only serve as chords (a modifier key: Alt, Shift), so the
+    /// key still reaches whoever binds it with something else.
+    pub consume_input: bool,
+}
+
+impl Default for InputAction {
+    fn default() -> Self {
+        Self {
+            value: ActionValueType::Bool,
+            consume_input: true,
+        }
+    }
 }
 
 /// Component orders for [`Modifier::Swizzle`]: `Yxz` puts the source's x into y (a key on the

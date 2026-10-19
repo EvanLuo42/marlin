@@ -13,7 +13,7 @@ use marlin_cooker::{engine_cookers, open_ddc};
 use marlin_framework::{Boot, ContentSettings, Engine, mount};
 use marlin_gpu_test_support::{Image, assert_image, hardware_device};
 use marlin_render_graph::{FrameContext, FrameContextDesc, TextureDesc};
-use marlin_renderer::{OFFSCREEN_FORMAT, Offscreen, RenderAssets, WorldRenderer, take_delta};
+use marlin_renderer::{OFFSCREEN_FORMAT, Offscreen, RenderShaders, WorldRenderer, take_delta};
 use marlin_rhi::Device;
 use marlin_test_support::{BackgroundService, TempDir, wait_until};
 use marlin_world::{Modules, Transform, World, WorldKind};
@@ -90,12 +90,11 @@ fn engine(boot: &Boot) -> Engine<'_> {
     Engine::new(&boot.vfs, modules, None).unwrap()
 }
 
-/// A world renderer for `world`, made with the render module's engine assets.
+/// A world renderer for `world`, made with the render module's engine shaders.
 fn world_renderer(device: &Device, engine: &Engine<'_>, world: &World) -> WorldRenderer {
     WorldRenderer::new(
         device,
-        &engine.assets,
-        engine.resources().get::<RenderAssets>().unwrap(),
+        engine.resources().get::<RenderShaders>().unwrap(),
         OFFSCREEN_FORMAT,
         marlin_renderer::scene_ids(world).unwrap(),
     )

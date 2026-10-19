@@ -37,11 +37,17 @@ pub struct ShellState<'a> {
     /// The scene view, as an external image of the frame (§7): drawn in the viewport's
     /// rectangle ([`layout`]); `None` shows where it goes.
     pub viewport: Option<ExternalImageId>,
+    /// A play-in-editor session runs: the play button shows it.
+    pub playing: bool,
 }
 
 /// Where the shell puts things, in logical pixels.
 pub struct ShellLayout {
     pub viewport: Rect,
+    /// The toolbar's play, pause and stop buttons.
+    pub play: Rect,
+    pub pause: Rect,
+    pub stop: Rect,
     outliner: Rect,
     details: Rect,
     content: Rect,
@@ -57,7 +63,12 @@ pub fn layout(size: Vec2) -> ShellLayout {
     let left = LEFT_WIDTH.min(w * 0.3);
     let right = w - RIGHT_WIDTH.min(w * 0.3);
     let split = (bottom - BOTTOM_HEIGHT).max(top + 80.0);
+    let (mid, cy) = (w * 0.5, MENU_HEIGHT + TOOLBAR_HEIGHT * 0.5);
+    let button = |x: f32| Rect::new(mid + x - 15.0, cy - 13.0, mid + x + 15.0, cy + 13.0);
     ShellLayout {
+        play: button(-37.0),
+        pause: button(0.0),
+        stop: button(37.0),
         viewport: Rect::new(left + 1.0, top, right - 1.0, split - 1.0),
         outliner: Rect::new(0.0, top, left, bottom),
         details: Rect::new(right, top, w, bottom),
@@ -66,7 +77,8 @@ pub fn layout(size: Vec2) -> ShellLayout {
     }
 }
 
-fn contains(r: Rect, p: Option<Vec2>) -> bool {
+/// Whether `p` is a point in `r`.
+pub fn contains(r: Rect, p: Option<Vec2>) -> bool {
     p.is_some_and(|p| p.x >= r.min.x && p.x < r.max.x && p.y >= r.min.y && p.y < r.max.y)
 }
 
@@ -147,7 +159,7 @@ impl Shell<'_, '_> {
         );
     }
 
-    fn toolbar(&mut self, width: f32) {
+    fn toolbar(&mut self, width: f32, layout: &ShellLayout, playing: bool) {
         let y0 = MENU_HEIGHT;
         let bar = Rect::new(0.0, y0, width, y0 + TOOLBAR_HEIGHT);
         self.p.rect(bar, &RectStyle::fill(BACKGROUND));
@@ -179,8 +191,20 @@ impl Shell<'_, '_> {
         }
         // Play, pause, stop in the middle.
         let mid = width * 0.5;
-        let play = Rect::new(mid - 52.0, cy - 13.0, mid - 22.0, cy + 13.0);
-        self.p.rect(play, &RectStyle::rounded(PANEL, 5.0));
+        let (play, pause, stop) = (layout.play, layout.pause, layout.stop);
+        let style = if playing {
+            RectStyle {
+                fill: Color::rgba(90, 200, 120, 60),
+                corners: Corners::all(5.0),
+                stroke: Some(Stroke {
+                    width: 1.0,
+                    color: Color::rgb(90, 200, 120),
+                }),
+            }
+        } else {
+            RectStyle::rounded(PANEL, 5.0)
+        };
+        self.p.rect(play, &style);
         self.hover(play, 5.0);
         self.p.triangle(
             [
@@ -190,7 +214,6 @@ impl Shell<'_, '_> {
             ],
             &ShapeStyle::fill(Color::rgb(90, 200, 120)),
         );
-        let pause = Rect::new(mid - 15.0, cy - 13.0, mid + 15.0, cy + 13.0);
         self.p.rect(pause, &RectStyle::rounded(PANEL, 5.0));
         self.hover(pause, 5.0);
         for dx in [-5.0, 2.0] {
@@ -199,7 +222,6 @@ impl Shell<'_, '_> {
                 &RectStyle::rounded(TEXT, 1.0),
             );
         }
-        let stop = Rect::new(mid + 22.0, cy - 13.0, mid + 52.0, cy + 13.0);
         self.p.rect(stop, &RectStyle::rounded(PANEL, 5.0));
         self.hover(stop, 5.0);
         self.p.rect(
@@ -548,8 +570,8 @@ pub fn draw(p: &mut Painter<'_>, font: FontView<'_>, state: &ShellState<'_>) {
         cursor: state.cursor,
     };
     s.menu(w);
-    s.toolbar(w);
     let l = layout(state.size);
+    s.toolbar(w, &l, state.playing);
     let [left, right, split, top, bottom] = l.splits;
     // Each panel draws inside its own rectangle.
     for (r, panel) in [(l.outliner, 0), (l.details, 1), (l.content, 2)] {

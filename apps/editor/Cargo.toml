@@ -7,7 +7,6 @@ publish.workspace = true
 
 [dependencies]
 marlin.workspace = true
-marlin-app.workspace = true
 marlin-asset.workspace = true
 marlin-asset-db.workspace = true
 marlin-cookd = { path = "../../tools/cookd" }
@@ -15,7 +14,9 @@ marlin-cooker.workspace = true
 marlin-diag.workspace = true
 marlin-font.workspace = true
 marlin-framework.workspace = true
+marlin-gameplay.workspace = true
 marlin-input.workspace = true
+marlin-input-action.workspace = true
 marlin-jobs.workspace = true
 marlin-math.workspace = true
 marlin-mem.workspace = true
@@ -38,7 +39,11 @@ marlin-editor-world-tools.workspace = true
 workspace = true
 
 [dev-dependencies]
+marlin-app.workspace = true
+marlin-cook-core.workspace = true
 marlin-cook-font.workspace = true
+marlin-jobs.workspace = true
+marlin-test-support.workspace = true
 marlin-gpu-test-support.workspace = true
 marlin-render-graph.workspace = true
 marlin-renderer.workspace = true

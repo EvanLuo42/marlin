@@ -6,6 +6,16 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+marlin-asset.workspace = true
+marlin-asset-db.workspace = true
+marlin-containers.workspace = true
+marlin-cook-core.workspace = true
+marlin-reflect.workspace = true
+marlin-world.workspace = true
+
+[dev-dependencies]
+marlin-cook-level.workspace = true
+marlin-test-support.workspace = true
 
 [lints]
 workspace = true

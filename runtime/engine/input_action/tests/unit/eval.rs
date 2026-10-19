@@ -16,10 +16,14 @@ const LOOK_ENABLE: Uuid = Uuid::from_u128(3);
 const JUMP: Uuid = Uuid::from_u128(4);
 const QUIT: Uuid = Uuid::from_u128(5);
 
-fn value_type(id: Uuid) -> Option<ActionValueType> {
-    Some(match id {
-        MOVE | LOOK => ActionValueType::Axis2D,
-        _ => ActionValueType::Bool,
+fn action(id: Uuid) -> Option<InputAction> {
+    Some(InputAction {
+        value: match id {
+            MOVE | LOOK => ActionValueType::Axis2D,
+            _ => ActionValueType::Bool,
+        },
+        // LookEnable is a chord helper: it leaves the right button to others.
+        consume_input: id != LOOK_ENABLE,
     })
 }
 
@@ -45,7 +49,7 @@ fn context(id: u128, mappings: Vec<Mapping>) -> Arc<CompiledContext> {
     Arc::new(CompiledContext::compile(
         Uuid::from_u128(id),
         &MappingContext { mappings },
-        value_type,
+        action,
     ))
 }
 
@@ -241,6 +245,7 @@ fn dead_zones_and_delta_time_shape_sticks() {
 fn assets_round_trip_through_serial() {
     let action = InputAction {
         value: ActionValueType::Axis2D,
+        consume_input: false,
     };
     let back: InputAction =
         marlin_serial::from_bytes(&marlin_serial::to_bytes(&action).unwrap()).unwrap();
@@ -261,4 +266,42 @@ fn assets_round_trip_through_serial() {
     let back: MappingContext =
         marlin_serial::from_bytes(&marlin_serial::to_bytes(&context).unwrap()).unwrap();
     assert_eq!(back, context);
+}
+
+#[test]
+fn chord_helpers_leave_their_keys_to_others() {
+    // A host with Alt+Enter (Alt is a helper action).
+    let fullscreen = Uuid::from_u128(21);
+    let host = context(
+        500,
+        vec![
+            map(LOOK_ENABLE, key("Left Alt"), vec![], vec![]),
+            map(
+                fullscreen,
+                key("Enter"),
+                vec![],
+                vec![Trigger::Chord(Link::new(LOOK_ENABLE))],
+            ),
+        ],
+    );
+    let mut user = InputUser::new();
+    user.add_context(host, 0);
+    let consumed = user.evaluate(&InputFrame::empty().with_key(Key::LEFT_ALT), 0.016);
+    assert!(user.action(LOOK_ENABLE).triggered);
+    assert!(
+        consumed.is_empty(),
+        "a helper does not take its key: {consumed:?}"
+    );
+    let consumed = user.evaluate(
+        &InputFrame::empty()
+            .with_key(Key::LEFT_ALT)
+            .with_key(Key::ENTER),
+        0.016,
+    );
+    assert!(user.action(fullscreen).triggered);
+    assert_eq!(
+        consumed,
+        [key("Enter")],
+        "the chorded key is taken, Alt is not"
+    );
 }

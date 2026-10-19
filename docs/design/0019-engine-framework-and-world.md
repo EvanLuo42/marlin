@@ -405,6 +405,47 @@ pub enum ViewTarget {
 - **Preview World**：资产编辑器需要完整场景时（Prefab 编辑器、动画预览）用一个小的 `Preview` World；只要画一个网格或材质时直接用 `RenderScene`（0009 §1.3）。
 - 每个 editor 视口持有：自己的 `ViewState`、编辑器相机、所属 World、§9.3 的输入状态。
 
+### 13.1 Host 的统一形态（W5 定下）
+
+game 和 editor 共用**一个** Host 循环，不各写一份。差别只在 `HostApp` 的三个部分里：
+
+```rust
+pub trait HostApp {
+    type Sim: Send;     // 游戏侧：World、editor 的文档和模型、UI 录制；每帧在 job 上运行
+    type Frame: Send;   // 一帧的快照：各 World 的 RenderDelta、视图、UiDrawList、光标请求
+    type Render;        // 主线程：各 World 的 WorldRenderer、窗口的 UiRenderer
+    fn simulate(sim: &mut Self::Sim, cx: &mut SimContext) -> Self::Frame;
+    fn prepare(render: &mut Self::Render, cx: &mut RenderContext, frame: &Self::Frame) -> Result<..>;
+    fn render<'g>(render: &'g mut Self::Render, frame: &'g Self::Frame, g: &mut RenderGraph<'g>,
+                  windows: &mut [WindowTarget<'g>]);
+    fn shutdown(render: &mut Self::Render, frames: &mut FrameContext) {}
+}
+```
+
+- Host 负责：平台、窗口和 swapchain（resize、最小化、遮挡、vsync）、device、`FrameContext`、`Engine`、host 命令（§9.2）、dev overlay、帧节奏，以及 Game N+1 ∥ Render N 的流水。
+- **Host 管理多个窗口**（0008 §6.4）：
+  - 每个窗口有自己的 swapchain；一帧里所有未最小化的窗口都在同一张 graph 里画、一起 present。`render` 拿到的是这些窗口的 `WindowTarget`（id、大小、是不是主窗口、swapchain 图像），往里面画什么由 app 决定。
+  - `SimContext.windows` 是每个窗口这一帧的状态（大小、缩放、焦点、最小化），app 在里面写回该窗口的光标模式。被用户关掉的窗口出现在 `closed` 里。
+  - app 通过 `SimContext.requests` 打开或关闭窗口（`WindowRequest`）；host 在这一帧的事件处理完之后再执行。
+  - 第一个窗口是主窗口：host 命令只看它，dev overlay 和截图只画在它上面，关掉它就退出。
+  - game 只用主窗口；editor 以后的浮动面板和多个场景窗口都走这条路径。
+- **UI 在游戏侧录制**（0008 §3.2），渲染侧只拿 `UiDrawList`。为此字形 id 表 `GlyphIds` 是共享的（`Arc`），录制和 `UiRenderer::prepare` 可以在不同线程上进行。
+- **渲染侧随时可以为新的 World 建 `WorldRenderer`**（PIE 开始时）：render 模块启动后给出 `RenderShaders`（引擎 shader、默认材质和 pairing pattern 的共享副本），创建 renderer 不需要借用正在被模拟占用的 `Engine`。UI 模块同样给出 `UiAssets`（UI 字体）。
+- game 的实现是 `GameApp`：一个 Game World、一个 `WorldRenderer`、窗口就是视口。editor 的实现是 `EditorApp`（`apps/editor`），由下面这些 editor crate 组成。
+
+### 13.2 editor crate 的分工（W5 定下）
+
+- `editor/core`：
+  - `SourceContent`：项目的源内容索引加上 cook 的文本 schema，`update()` 重新扫描改动过的文件。
+  - `LevelDocument`：从源数据读入的关卡和它用到的所有 Prefab（递归）。读源对象用的是 cook 的同一个函数（`marlin_cook_core::read_source_object`）；展开 Prefab 用的也是 cook 的同一段代码（`marlin_world::cook_level`）。以后的 undo/redo、选择集、命令系统都建立在文档上。
+- `editor/viewport`：
+  - `ViewportCamera`：编辑器相机，属于视口、不是 entity。它用引擎的 spectator 绑定（`Marlin.Engine.Input.Spectator`）求值自己的 `InputUser`，飞行的计算和 `SpectatorMovement` 共用 `marlin_gameplay::fly`。
+  - `SceneViewport`：视口的 id、`ViewportInput`（§9.3）、相机，以及编辑或运行状态。它把自己的视图加进所属 World 的视图列表，目标是 `ViewTarget::Offscreen(id)`。
+  - `PieSession`：Pie World。由 `LevelDocument::cook()` 得到的 `CookedLevel` spawn 出来，所以和正式游戏加载的数据完全相同；结束时直接丢弃。
+- editor 的命令也是 action（`content/engine/input/Editor.masset`）：Alt+P 开始或结束 PIE，Shift+F1 在 PIE 中释放鼠标（游戏继续运行）。
+- editor 的模块列表现在就是 game 的模块列表：还没有只属于 editor 的组件或 system。等有了（例如选择标记、gizmo），再以 editor 模块的形式加入，不提前建空模块。
+- Preview World：`WorldKind::Preview` 和 `Engine::create_world` 已经够用；第一个资产编辑器出现时再接入，现在不建 UI。
+
 ## 14. 落地顺序
 
 每一步结束时，`samples/basic` 和 `samples/lights` 的画面和现在一致（现有的 end-to-end 测试和截图比对作为验收）。
@@ -594,3 +635,35 @@ W6 之后再回到 render（R4f 剩下的部分、R5）。physics、audio、anim
   - GPU 测试：framework 原有的全部通过；新增一个测试用 cook 出来的真实引擎绑定验证：Esc 退出并被消耗，W 让 spectator 沿视线前进 8 m，右键加鼠标移动 100 px 转 0.3 rad，只移动鼠标不转。editor 的 GPU 测试也通过。
   - 构建：workspace check、clippy、check-layers 干净；shipping 构建能编译。
   - 冒烟测试：运行 `marlin-game` 12 秒，正常加载关卡，没有关于 context 缺失的警告。没有在窗口里手动按键试过；按键到 action 的整条链路由上面的 end-to-end 测试覆盖。
+
+### W5（2026-10-19）：editor 走 Host
+
+- **Host 统一**（§13.1）：
+  - `run.rs` 删除，game 和 editor 共用 `host.rs` 的 `run_app::<A: HostApp>`。game 是 `GameApp`，editor 是 `EditorApp`（`apps/editor/src/app.rs`）。
+  - Host 管理多个窗口：每个窗口一个 swapchain，同一张 graph 画完后一起 present；app 通过 `WindowRequest` 打开或关闭窗口，并为每个窗口设置光标模式。窗口失焦时，捕获自动退回 Focused（§9.3）。
+  - `RenderShaders`（render 模块）和 `UiAssets`（UI 模块）是 engine 资源，所以随时可以创建 `WorldRenderer`（PIE 开始时）和 UI renderer。dev overlay 也改为使用这两样，不再有自己的 asset server；shipping 构建里连查找都没有。
+  - `GlyphIds` 改为共享（`Arc`），UI 在 sim 侧录制。
+- **源数据到 cooked 只有一条路**：
+  - `marlin_cook_core::read_source_object` 和 `marlin_world::{read_prefabs, cook_level, dangling_parents}` 从 cook_level 中提出来，cooker 和 editor 都调用它们。
+  - `editor/core`：`SourceContent`（源索引 + cook 的 schema）、`LevelDocument`（关卡和它的所有 Prefab，`cook()`，`is_stale()`）。
+- **Editor World**：`WorldKind::Editor`，由 `LevelDocument::cook()` spawn 出来，不跑玩法 group。每 0.5 s 检查一次源文件，文档过期就重新读入并替换子关卡。
+- **视口**（`editor/viewport`）：
+  - `ViewportCamera` 不是 entity，用引擎的 spectator 绑定和 `marlin_gameplay::fly` 飞行，视图以最高优先级加进 Editor World 的视图列表，画到 `Offscreen(index)`。
+  - `SceneViewport` 管理编辑或运行状态和 §9.3 的输入状态。
+- **PIE**：`PieSession` 把文档 cook 出来 spawn 到 `Pie` World。渲染侧在会话开始时为它建一个 `WorldRenderer`，结束时等 GPU 空闲后丢掉。Editor World 的 delta 每帧都要取并应用，PIE 期间也一样。
+- **命令**：`content/engine/input/Editor.masset`：
+  - Alt+P 开始或结束 PIE，Shift+F1 在 PIE 中释放鼠标。
+  - 工具栏的 ▶ / ■ 按钮走同一个命令：shell 的 layout 给出按钮的矩形，editor 判断点击。等 editor UI 框架有了按钮控件，再换成控件。
+- **`InputAction.ConsumeInput`**（Enhanced Input 的做法）：chord 用的辅助 action（Host 的 Alt、spectator 的 LookEnable）不消耗按键，所以下一层仍能用 Alt 组合键。§9 和 W4 中"触发了的 mapping 会消耗输入源"的说法相应修正为"`ConsumeInput` 为真的 action 才消耗"。
+- **顺带修复**：
+  - Vulkan 的 placed buffer（render graph 的临时 buffer）的地址对齐改为与 committed buffer 相同（256）。之前 AS build 的 scratch 可能只有 16 字节对齐，editor 中出现了验证错误。
+  - cooker CLI 测试的引擎单元数改为 13（W4 加了两个输入文件，W5 加了一个）。
+- **还没做 / 已知限制**：
+  - editor 不再有"画面没变就不重画"的空闲优化，因为 Host 循环每帧都跑。等 Host 有了按需重画的节奏控制后再加回来。
+  - Preview World 只有 API，没有 UI。
+  - 视口的悬停和文本焦点仍由 editor 自己判断（shell 的固定矩形），等 editor UI 框架。
+- **验证**：
+  - 单元测试：editor-core（文档 cook 结果与 cook 相同；改 Prefab 后文档过期，重新打开后读到新值）、editor-viewport（编辑时飞相机、World 收不到输入；运行时 World 收到输入，Shift+F1 释放；视图 id 和目标）、input_action（chord 辅助键不消耗）、framework 路由（失焦释放捕获）。quick tier 全部通过。
+  - GPU 测试：editor 新增 `alt_p_plays_the_level_in_editor_and_stops_it`，用 cook 出来的真实绑定验证：Alt+P 开始 PIE，PIE 中旋转物体在转，Alt+P 结束；工具栏 ▶ 开始、■ 结束。framework、ui-render、rhi、render-graph、render、material 的 GPU 测试都通过。
+  - 构建：workspace check、clippy、check-layers 干净；shipping 构建没有警告。
+  - 冒烟测试：editor 打开 `samples/basic` 运行 400 帧并截图，没有验证错误；`marlin-game` 运行 12 秒，正常加载关卡。没有在窗口里手动按 Alt+P 或点按钮试过。

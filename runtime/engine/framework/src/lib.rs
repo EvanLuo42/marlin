@@ -6,8 +6,10 @@
 //!   level. The modules register before it reads the configuration, so their cvars exist.
 //! - [`Engine`]: the simulation side: the modules ([`marlin_world::Modules`]), the asset server
 //!   and the engine resources. Worlds are made by it and run a frame at a time through it.
-//! - [`run`]: the game's window loop: a game world with the entry level, simulated (frame N+1)
-//!   on a job while its `marlin_renderer::WorldRenderer` draws frame N.
+//! - [`host`]: the host loop every application runs in ([`run_app`]): one window and device, the
+//!   engine, the host's commands, and an application ([`HostApp`]) whose simulation side runs
+//!   on a job (frame N+1) while its render side draws frame N.
+//! - [`run`]: the game ([`GameApp`]): a game world with the entry level in the whole window.
 //! - [`DevToolsModule`] (not in shipping builds): the stats overlay ([`hud`]) and the frame rate
 //!   in the title, drawn by the host when the build has the module.
 //! - [`input`]: routing: the host's own commands first, then a viewport's state decides what
@@ -20,14 +22,19 @@ extern crate alloc;
 pub mod boot;
 mod dev;
 mod engine;
+mod game;
+pub mod host;
 #[cfg(not(marlin_build = "shipping"))]
 pub mod hud;
 pub mod input;
-mod run;
 pub mod scalability;
 
 pub use boot::{Boot, BootError, ContentSettings, boot, mount, register_cvars};
 #[cfg(not(marlin_build = "shipping"))]
 pub use dev::{DevToolsModule, R_STATS};
 pub use engine::{Engine, EngineError};
-pub use run::{RunError, run};
+pub use game::{GameApp, GameSim, run};
+pub use host::{
+    HostApp, HostExit, HostOptions, HostSetup, RenderContext, RunError, SimContext, WindowRequest,
+    WindowState, WindowTarget, run_app,
+};

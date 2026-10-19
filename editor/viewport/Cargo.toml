@@ -6,6 +6,18 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+marlin-editor-core.workspace = true
+marlin-framework.workspace = true
+marlin-gameplay.workspace = true
+marlin-input.workspace = true
+marlin-input-action.workspace = true
+marlin-jobs.workspace = true
+marlin-math.workspace = true
+marlin-renderer.workspace = true
+marlin-world.workspace = true
+
+[dev-dependencies]
+marlin-asset.workspace = true
 
 [lints]
 workspace = true

@@ -107,6 +107,19 @@ pub enum ViewportState {
     GameCapture,
 }
 
+/// Where a viewport is this frame, for [`ViewportInput::route`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct ViewportEnv {
+    /// The pointer is over the viewport.
+    pub hovered: bool,
+    /// Its window has the keyboard focus. Losing it releases every capture.
+    pub focused: bool,
+    /// A text field has the keyboard.
+    pub text_focus: bool,
+    /// The host's release command fired (play in editor: give the mouse back).
+    pub release: bool,
+}
+
 /// What a viewport does with this frame's input.
 #[derive(Clone, PartialEq, Debug)]
 pub struct ViewportRoute {
@@ -143,25 +156,30 @@ impl ViewportInput {
         self.state
     }
 
-    /// Advances the state on `state`'s buttons and routes `frame` (what the layers above left):
-    /// `hovered`, the pointer is over the viewport; `text_focus`, a text field has the keyboard;
-    /// `release`, the host's release command (play in editor: give the mouse back); `settings`,
-    /// the world's input mode and cursor.
+    /// Advances the state on `state`'s buttons and `env`, and routes `frame` (what the layers above
+    /// left) by the world's `settings` (input mode, cursor).
     pub fn route(
         &mut self,
         state: &InputState,
         frame: InputFrame,
-        hovered: bool,
-        text_focus: bool,
-        release: bool,
+        env: ViewportEnv,
         settings: InputSettings,
     ) -> ViewportRoute {
+        let ViewportEnv {
+            hovered,
+            focused,
+            text_focus,
+            release,
+        } = env;
         let mouse = state.mouse();
         let any_press = [MouseButton::Left, MouseButton::Right, MouseButton::Middle]
             .iter()
             .any(|&b| mouse.pressed(b));
         let right_down = mouse.down(MouseButton::Right) || mouse.pressed(MouseButton::Right);
         self.state = match self.state {
+            // The window lost the keyboard: captures end (a game keeps its viewport, without
+            // input until the window is back).
+            ViewportState::Captured if !focused => ViewportState::Focused,
             _ if release && self.state == ViewportState::GameCapture => ViewportState::Focused,
             ViewportState::Unfocused | ViewportState::Focused if any_press && hovered => {
                 if self.game {
@@ -177,6 +195,7 @@ impl ViewportInput {
             s => s,
         };
         let world = match self.state {
+            _ if !focused => InputFrame::empty(),
             ViewportState::Unfocused | ViewportState::Focused => InputFrame::empty(),
             ViewportState::Captured => frame,
             ViewportState::GameCapture => match settings.mode {
@@ -190,6 +209,7 @@ impl ViewportInput {
             world
         };
         let cursor = match self.state {
+            _ if !focused => CursorMode::Visible,
             ViewportState::Captured => CursorMode::Locked,
             ViewportState::GameCapture if settings.mode != InputMode::UiOnly => settings.cursor,
             _ => CursorMode::Visible,

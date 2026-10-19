@@ -32,6 +32,18 @@ pub struct InPlace<T> {
     _type: PhantomData<fn() -> T>,
 }
 
+impl<T> Clone for InPlace<T> {
+    /// Another handle on the same bytes (the unit stays loaded while any is held).
+    fn clone(&self) -> Self {
+        Self {
+            unit: self.unit.clone(),
+            payload: self.payload.clone(),
+            bulk: self.bulk.clone(),
+            _type: PhantomData,
+        }
+    }
+}
+
 impl<T> InPlace<T> {
     /// The object `ctx` is loading, kept in its unit's bytes.
     pub fn new(ctx: &LoadContext<'_>) -> Self {

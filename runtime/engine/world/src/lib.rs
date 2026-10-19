@@ -42,8 +42,9 @@ mod world_module;
 pub use component_data::{ComponentData, IsComponent};
 pub use guid::{EntityGuid, EntityRef, GuidIndex};
 pub use level::{
-    CookedArchetype, CookedEntity, CookedLevel, EntityDesc, FlatEntity, FlattenError, Level,
-    NoPrefabs, Override, Prefab, PrefabInstance, PrefabSource, flatten, flatten_prefab,
+    CookError, CookKind, CookedArchetype, CookedEntity, CookedLevel, EntityDesc, FlatEntity,
+    FlattenError, Level, NoPrefabs, Override, Prefab, PrefabInstance, PrefabSource, cook_level,
+    dangling_parents, flatten, flatten_prefab, read_prefabs,
 };
 pub use levels::{
     EntityName, InLevel, LevelRequest, Levels, SublevelId, SublevelState, W_SPAWN_BUDGET_MS,

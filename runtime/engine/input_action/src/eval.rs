@@ -8,8 +8,9 @@
 //! fire, the chords must all hold. An action fires when any of its mappings fires; its value is
 //! the sum of theirs (a button action's is 1). A mapping that fires consumes its source for
 //! the contexts below it, and for whoever reads the frame after this user (the next routing
-//! layer). Chords are checked after every context has been read, so a chorded mapping consumes
-//! its source for the next layer but not for lower contexts of the same user.
+//! layer), unless its action does not consume input (`ConsumeInput = false`: chord helpers).
+//! Chords are checked after every context has been read, so a chorded mapping consumes its
+//! source for the next layer but not for lower contexts of the same user.
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -18,7 +19,7 @@ use marlin_asset::Uuid;
 use marlin_containers::{HashMap, HashMapExt};
 use marlin_math::Vec3;
 
-use crate::asset::{ActionValueType, MappingContext, Modifier, SwizzleOrder, Trigger};
+use crate::asset::{ActionValueType, InputAction, MappingContext, Modifier, SwizzleOrder, Trigger};
 use crate::source::{InputFrame, InputSource};
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -34,6 +35,7 @@ enum CompiledTrigger {
 struct CompiledMapping {
     action: Uuid,
     value_type: ActionValueType,
+    consumes: bool,
     source: InputSource,
     modifiers: Vec<Modifier>,
     triggers: Vec<CompiledTrigger>,
@@ -48,12 +50,12 @@ pub struct CompiledContext {
 }
 
 impl CompiledContext {
-    /// `context` (the asset `id`), with each action's value type from `value_type` (`Bool` for
-    /// an action it does not know).
+    /// `context` (the asset `id`), with each action as `action` gives it (an action it does not
+    /// know is a consuming button).
     pub fn compile(
         id: Uuid,
         context: &MappingContext,
-        value_type: impl Fn(Uuid) -> Option<ActionValueType>,
+        action: impl Fn(Uuid) -> Option<InputAction>,
     ) -> Self {
         let mappings = context
             .mappings
@@ -74,9 +76,11 @@ impl CompiledContext {
                 if triggers.is_empty() {
                     triggers.push(CompiledTrigger::Down);
                 }
+                let info = action(m.action.target).unwrap_or_default();
                 CompiledMapping {
                     action: m.action.target,
-                    value_type: value_type(m.action.target).unwrap_or_default(),
+                    value_type: info.value,
+                    consumes: info.consume_input,
                     source: m.source,
                     modifiers: m.modifiers.clone(),
                     triggers,
@@ -166,6 +170,7 @@ fn apply(modifiers: &[Modifier], mut v: Vec3, dt: f32) -> Vec3 {
 struct Hit {
     action: Uuid,
     value_type: ActionValueType,
+    consumes: bool,
     value: Vec3,
     fired: bool,
     source: InputSource,
@@ -236,6 +241,7 @@ impl InputUser {
                 hits.push(Hit {
                     action: m.action,
                     value_type: m.value_type,
+                    consumes: m.consumes,
                     value: apply(&m.modifiers, raw, dt),
                     fired,
                     source: m.source,
@@ -243,7 +249,7 @@ impl InputUser {
             }
             // What fired here is gone for the contexts below.
             for hit in &hits[first..] {
-                if hit.fired {
+                if hit.fired && hit.consumes {
                     frame.consume(&hit.source);
                 }
             }
@@ -282,7 +288,7 @@ impl InputUser {
         }
         self.actions = next;
         hits.into_iter()
-            .filter(|h| h.fired)
+            .filter(|h| h.fired && h.consumes)
             .map(|h| h.source)
             .collect()
     }

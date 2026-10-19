@@ -12,17 +12,15 @@
 
 use std::sync::Arc;
 
-use marlin_asset::Uuid;
 use marlin_asset::cooked::Encoding;
-use marlin_containers::{HashMap, HashMapExt, HashSet, HashSetExt};
 use marlin_cook_core::{
     CookContext, Cooked, Cooker, Cookers, Platform, Profile, SourceObject, fingerprint,
 };
 use marlin_masset::SchemaError;
 use marlin_reflect::{Ref, type_info};
 use marlin_world::{
-    ComponentFlags, ComponentRegistry, CookedLevel, EntityGuid, FlatEntity, Level, Prefab,
-    PrefabInstance, flatten,
+    ComponentFlags, ComponentRegistry, CookKind, CookedLevel, Level, Prefab, cook_level,
+    dangling_parents, read_prefabs,
 };
 
 /// Registers the `Level` and `Prefab` cookers and the saved component types of `components`.
@@ -99,29 +97,27 @@ impl Cooker for LevelCooker {
                 (&p.entities, &p.instances)
             }
         };
-        let prefabs = read_prefabs(instances, ctx)?;
-        let flat = flatten(entities, instances, &prefabs).map_err(|e| e.to_string())?;
-        warn_dangling_parents(&flat, ctx);
-        let root = match self.kind {
-            Kind::Level => EntityGuid::NIL,
-            Kind::Prefab => {
-                let roots: Vec<EntityGuid> = flat
-                    .iter()
-                    .filter(|e| e.parent.is_nil())
-                    .map(|e| e.guid)
-                    .collect();
-                match roots[..] {
-                    [root] => root,
-                    _ => {
-                        return Err(format!(
-                            "a Prefab needs exactly one root entity; this one has {}",
-                            roots.len()
-                        ));
-                    }
-                }
-            }
+        let prefabs = read_prefabs(instances, |uuid| {
+            let dependency = ctx.dependency(uuid)?;
+            dependency
+                .value
+                .as_ref()
+                .downcast::<Prefab>()
+                .cloned()
+                .ok_or_else(|| format!("{uuid} is a `{}`, not a Prefab", dependency.type_name))
+        })?;
+        let kind = match self.kind {
+            Kind::Level => CookKind::Level,
+            Kind::Prefab => CookKind::Prefab,
         };
-        let cooked = CookedLevel::from_flat(flat, root);
+        let cooked = cook_level(entities, instances, &prefabs, kind).map_err(|e| e.to_string())?;
+        // Parents outside the level are left unparented at runtime: say so now.
+        for e in dangling_parents(&cooked) {
+            ctx.warn(format!(
+                "`{}` ({:?}) has parent {:?}, which is not in this level",
+                e.name, e.guid, e.parent
+            ));
+        }
         let mut payload = Vec::new();
         marlin_serial::write(Ref::new(&cooked), &mut payload).map_err(|e| format!("{e:?}"))?;
         Ok(Cooked {
@@ -129,43 +125,5 @@ impl Cooker for LevelCooker {
             encoding: Encoding::Serial,
             payload,
         })
-    }
-}
-
-/// Every Prefab `instances` place, nested ones included, read as build dependencies.
-fn read_prefabs(
-    instances: &[PrefabInstance],
-    ctx: &mut CookContext<'_>,
-) -> Result<HashMap<Uuid, Prefab>, String> {
-    let mut prefabs: HashMap<Uuid, Prefab> = HashMap::new();
-    let mut pending: Vec<Uuid> = instances.iter().map(|i| i.prefab.target).collect();
-    while let Some(uuid) = pending.pop() {
-        if prefabs.contains_key(&uuid) {
-            continue;
-        }
-        let dependency = ctx.dependency(uuid)?;
-        let prefab = dependency
-            .value
-            .as_ref()
-            .downcast::<Prefab>()
-            .ok_or_else(|| format!("{uuid} is a `{}`, not a Prefab", dependency.type_name))?
-            .clone();
-        pending.extend(prefab.instances.iter().map(|i| i.prefab.target));
-        prefabs.insert(uuid, prefab);
-    }
-    Ok(prefabs)
-}
-
-/// Parents outside the level are left unparented at runtime: say so now.
-fn warn_dangling_parents(flat: &[FlatEntity], ctx: &mut CookContext<'_>) {
-    let mut guids = HashSet::new();
-    guids.extend(flat.iter().map(|e| e.guid));
-    for e in flat {
-        if !e.parent.is_nil() && !guids.contains(&e.parent) {
-            ctx.warn(format!(
-                "`{}` ({:?}) has parent {:?}, which is not in this level",
-                e.name, e.guid, e.parent
-            ));
-        }
     }
 }

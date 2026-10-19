@@ -2,7 +2,8 @@
 //! script, like Unreal's rotating movement component and spectator pawn.
 //!
 //! - [`RotatingMovement`]: turns an entity at a constant rate.
-//! - [`SpectatorMovement`]: free flight driven by the frame's input.
+//! - [`SpectatorMovement`]: free flight driven by the frame's input; [`fly`] is its flight, which
+//!   the editor's viewport camera shares.
 //!
 //! Both run in `PrePhysics`. Spectators read player 0's actions (0019 §9): the engine's spectator
 //! context (`Marlin.Engine.Input.Spectator`, `content/engine/input`), which the module adds to
@@ -15,8 +16,8 @@ use alloc::vec::Vec;
 
 use marlin_asset::Uuid;
 use marlin_ecs::{Entity, IntoSystem, StorageType, With, Without};
-use marlin_input_action::{InputModule, Players};
-use marlin_math::{Quat, Vec3};
+use marlin_input_action::{ActionState, InputModule, Players};
+use marlin_math::{DVec3, Quat, Vec3};
 use marlin_reflect::Reflect;
 use marlin_world::{
     ComponentFlags, EngineContext, Module, ModuleError, Registry, TickGroup, Time, Transform, World,
@@ -86,20 +87,66 @@ pub fn rotate(world: &mut marlin_ecs::World) {
     }
 }
 
-/// `PrePhysics`: flies spectators with the frame's input.
+/// One frame of flight input, read from the spectator's actions.
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub struct FlyInput {
+    /// Turn, in radians: yaw (right is positive), pitch (up is positive).
+    pub look: [f32; 2],
+    /// Right and forward, each in [-1, 1] or so.
+    pub movement: [f32; 2],
+    pub rise: f32,
+    pub boost: bool,
+}
+
+impl FlyInput {
+    /// The actions' states this frame, through `action` (a player's or another input user's).
+    pub fn read(actions: &SpectatorActions, action: impl Fn(Uuid) -> ActionState) -> Self {
+        Self {
+            look: action(actions.look).axis2(),
+            movement: action(actions.movement).axis2(),
+            rise: action(actions.rise).axis1(),
+            boost: action(actions.boost).triggered,
+        }
+    }
+}
+
+/// Where something looking along `rotation` looks: yaw and pitch (roll is dropped).
+pub fn look_of(rotation: Quat) -> SpectatorLook {
+    let f = rotation.mul_vec3(Vec3::FORWARD);
+    SpectatorLook {
+        yaw: marlin_math::scalar::atan2(-f.x, -f.z),
+        pitch: marlin_math::scalar::asin(f.y.clamp(-1.0, 1.0)),
+    }
+}
+
+/// Free flight: turns `look` by `input` and moves `translation` along it at `speed` (three times
+/// it boosted) for `dt` seconds; returns the rotation `look` is now. What spectators and the
+/// editor's viewport camera do.
+pub fn fly(
+    look: &mut SpectatorLook,
+    translation: &mut DVec3,
+    input: &FlyInput,
+    speed: f32,
+    dt: f32,
+) -> Quat {
+    look.yaw -= input.look[0];
+    look.pitch = (look.pitch + input.look[1]).clamp(-1.5, 1.5);
+    let rotation = Quat::from_euler_yxz(look.yaw, look.pitch, 0.0);
+    let [right, forward] = input.movement;
+    let movement = rotation.mul_vec3(Vec3::new(right, 0.0, -forward)) + Vec3::Y * input.rise;
+    let boost = if input.boost { 3.0 } else { 1.0 };
+    *translation += movement * (speed * boost * dt);
+    rotation
+}
+
+/// `PrePhysics`: flies spectators with player 0's actions.
 pub fn spectate(world: &mut marlin_ecs::World) {
     let new: Vec<(Entity, Quat)> = world
         .query_ref_filtered::<(Entity, &Transform), (With<SpectatorMovement>, Without<SpectatorLook>)>()
         .map(|(e, t)| (e, t.rotation))
         .collect();
     for (e, rotation) in new {
-        // The yaw and pitch of where it looks (roll is dropped).
-        let f = rotation.mul_vec3(Vec3::FORWARD);
-        let look = SpectatorLook {
-            yaw: marlin_math::scalar::atan2(-f.x, -f.z),
-            pitch: marlin_math::scalar::asin(f.y.clamp(-1.0, 1.0)),
-        };
-        world.insert(e, look);
+        world.insert(e, look_of(rotation));
     }
     let (Some(&actions), Some(players)) = (
         world.resource::<SpectatorActions>(),
@@ -110,28 +157,22 @@ pub fn spectate(world: &mut marlin_ecs::World) {
     let Some(player) = players.player(0) else {
         return;
     };
-    let look = player.action(actions.look).axis2();
-    let [right, forward] = player.action(actions.movement).axis2();
-    let up = player.action(actions.rise).axis1();
-    let boost = if player.action(actions.boost).triggered {
-        3.0
-    } else {
-        1.0
-    };
+    let input = FlyInput::read(&actions, |a| player.action(a));
+    if input == FlyInput::default() {
+        return;
+    }
     let dt = world.resource::<Time>().map_or(0.0, Time::delta);
-    for (mut transform, mut fly, spectator) in
+    for (mut transform, mut look, spectator) in
         world.query::<(&mut Transform, &mut SpectatorLook, &SpectatorMovement)>()
     {
-        if look != [0.0; 2] {
-            fly.yaw -= look[0];
-            fly.pitch = (fly.pitch + look[1]).clamp(-1.5, 1.5);
-        }
-        let rotation = Quat::from_euler_yxz(fly.yaw, fly.pitch, 0.0);
-        let movement = rotation.mul_vec3(Vec3::new(right, 0.0, -forward)) + Vec3::Y * up;
-        if look != [0.0; 2] || movement != Vec3::ZERO {
-            transform.rotation = rotation;
-            transform.translation += movement * (spectator.speed * boost * dt);
-        }
+        let transform = &mut *transform;
+        transform.rotation = fly(
+            &mut look,
+            &mut transform.translation,
+            &input,
+            spectator.speed,
+            dt,
+        );
     }
 }
 

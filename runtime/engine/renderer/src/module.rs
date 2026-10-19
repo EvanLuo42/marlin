@@ -11,13 +11,13 @@ use marlin_world::{
     ComponentFlags, EngineContext, Module, ModuleError, Registry, TickGroup, World, WorldModule,
 };
 
-use crate::assets::RenderAssets;
+use crate::assets::RenderShaders;
 use crate::components::{Camera, LevelSettings, MeshRenderer, PointLight, SpotLight};
 use crate::extract::{RenderExtract, RenderFrame, extract, finish_frame, frame_ready};
 use crate::meshes::{LoadedMesh, load_mesh};
 
 /// The render module: its components and their extract, the loaders of what it draws, and its
-/// engine assets ([`RenderAssets`], an engine resource once started).
+/// engine assets ([`RenderShaders`], an engine resource once started).
 ///
 /// The world renderers themselves are the host's ([`crate::WorldRenderer`]): they draw on the
 /// render side while their worlds simulate the next frame.
@@ -63,9 +63,9 @@ impl Module for RenderModule {
     }
 
     fn startup(&mut self, cx: &mut EngineContext<'_, '_>) -> Result<(), ModuleError> {
-        let assets = RenderAssets::load(cx.assets, cx.vfs, Some(cx.jobs))
+        let shaders = RenderShaders::load(cx.assets, cx.vfs, Some(cx.jobs))
             .map_err(|e| ModuleError::new(Self::NAME, alloc::format!("{e}")))?;
-        cx.resources.insert(assets);
+        cx.resources.insert(shaders);
         Ok(())
     }
 

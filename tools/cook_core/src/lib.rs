@@ -23,7 +23,9 @@ pub use cook::{
     COOK_FORMAT, CookError, CookOptions, CookReport, UnitOutcome, cook, cook_all, cook_unit,
     fetch_unit, named_objects, publish_manifest, source_units, unit_key,
 };
-pub use cooker::{CookContext, Cooked, Cooker, Cookers, Dependency, SourceObject, fingerprint};
+pub use cooker::{
+    CookContext, Cooked, Cooker, Cookers, Dependency, SourceObject, fingerprint, read_source_object,
+};
 pub use ddc::{Ddc, LayeredDdc, LocalDdc};
 pub use manifest::{Manifest, ManifestError, ManifestUnit};
 pub use package::{PackageOptions, PackageReport, PackageWriteError, write_package};

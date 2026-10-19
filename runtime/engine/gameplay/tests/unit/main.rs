@@ -131,7 +131,12 @@ fn spectators_fly_by_player_zero_s_actions() {
         &MappingContext {
             mappings: vec![forward],
         },
-        |_| Some(marlin_input_action::ActionValueType::Axis2D),
+        |_| {
+            Some(marlin_input_action::InputAction {
+                value: marlin_input_action::ActionValueType::Axis2D,
+                consume_input: true,
+            })
+        },
     );
     h.world.ecs_mut().insert_resource(actions);
     let players = h.world.ecs_mut().resource_mut::<Players>().unwrap();

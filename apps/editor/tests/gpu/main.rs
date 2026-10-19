@@ -4,6 +4,8 @@
 //! Run alone with `cargo test -p marlin-editor --test gpu`.
 #![cfg(marlin_platform = "windows")]
 
+mod pie;
+
 use marlin_editor::shell::{self, ShellState};
 use marlin_font::FontView;
 use marlin_gpu_test_support::{Image, assert_image, engine_shaders, hardware_device};
@@ -56,6 +58,7 @@ fn the_shell_draws_like_the_reference_and_its_golden() {
             cursor: Some(Vec2::new(75.0, 14.0)),
             status: "Ready  ·  60 fps",
             viewport: None,
+            playing: false,
         },
     );
     let surface = UiSurface::new(hardware_device(), &UiSurfaceDesc::new(1)).unwrap();

@@ -13,6 +13,7 @@
 //!   placed again. Evicted glyphs are rasterized again the next time they are drawn. Commands and retained chunks stay valid,
 //!   since they never name a place in a page.
 
+use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -207,7 +208,9 @@ pub struct PrepareStats {
 pub type GlyphRecord = [u32; 4];
 
 pub struct GlyphCache {
-    pub ids: GlyphIds,
+    /// Shared: text is recorded (on the simulation side) while the cache prepares (on the render
+    /// side).
+    pub ids: Arc<GlyphIds>,
     config: GlyphCacheConfig,
     pages: Vec<Page>,
     slots: Vec<Slot>,
@@ -221,7 +224,7 @@ impl GlyphCache {
     pub fn new(config: GlyphCacheConfig) -> Self {
         assert!(config.page_size > 0 && config.page_size <= 1 << 15 && config.max_pages > 0);
         Self {
-            ids: GlyphIds::new(),
+            ids: Arc::new(GlyphIds::new()),
             config,
             pages: Vec::new(),
             slots: Vec::new(),

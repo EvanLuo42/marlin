@@ -316,9 +316,12 @@ pub(crate) fn buffer_requirements(device: &Device, desc: &BufferDesc) -> MemoryR
     let mut req = VkMemoryRequirements2::default();
     // SAFETY: valid structures.
     unsafe { (s.fns.vkGetDeviceBufferMemoryRequirements)(s.raw, &info, &mut req) };
+    // Placed buffers keep the address alignment committed ones have (acceleration structure
+    // scratch among them, which the driver's requirements leave out).
+    let alignment = req.memoryRequirements.alignment.max(BUFFER_ADDRESS_ALIGNMENT);
     MemoryRequirements {
-        size: req.memoryRequirements.size,
-        alignment: req.memoryRequirements.alignment,
+        size: req.memoryRequirements.size.next_multiple_of(alignment),
+        alignment,
     }
 }
 

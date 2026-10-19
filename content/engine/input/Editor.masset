@@ -1,0 +1,39 @@
+!Version 1
+
+// The editor's commands (docs/design/0019-engine-framework-and-world.md §9.2, §13.2): evaluated
+// after the host's and before a viewport, consuming what they fire with. Alt+P starts and ends
+// play in editor; Shift+F1 gives the mouse back while playing (the game keeps running).
+
+InputAction
+{
+    !Uuid = "019a5e00-1000-7000-8000-000000000201"
+    !Name = "Marlin.Editor.Input.Play"
+}
+
+InputAction
+{
+    !Uuid = "019a5e00-1000-7000-8000-000000000202"
+    !Name = "Marlin.Editor.Input.Release"
+}
+
+InputAction
+{
+    !Uuid = "019a5e00-1000-7000-8000-000000000203"
+    !Name = "Marlin.Editor.Input.Shift"
+    ConsumeInput = false
+}
+
+MappingContext
+{
+    !Uuid = "019a5e00-1000-7000-8000-000000000210"
+    !Name = "Marlin.Editor.Input.Editor"
+    Mappings = [
+        { Action = <:Marlin.Editor.Input.Play #019a5e00-1000-7000-8000-000000000201>, Source = Key("P"), Triggers = [Pressed, Chord(<input/Host:Marlin.Engine.Input.Alt #019a5e00-1000-7000-8000-000000000102>)] },
+        { Action = <:Marlin.Editor.Input.Release #019a5e00-1000-7000-8000-000000000202>, Source = Key("F1"), Triggers = [Pressed, Chord(<:Marlin.Editor.Input.Shift #019a5e00-1000-7000-8000-000000000203>)] },
+        // Chords are checked within one input user: the editor binds Alt too.
+        { Action = <input/Host:Marlin.Engine.Input.Alt #019a5e00-1000-7000-8000-000000000102>, Source = Key("Left Alt") },
+        { Action = <input/Host:Marlin.Engine.Input.Alt #019a5e00-1000-7000-8000-000000000102>, Source = Key("Right Alt") },
+        { Action = <:Marlin.Editor.Input.Shift #019a5e00-1000-7000-8000-000000000203>, Source = Key("Left Shift") },
+        { Action = <:Marlin.Editor.Input.Shift #019a5e00-1000-7000-8000-000000000203>, Source = Key("Right Shift") },
+    ]
+}

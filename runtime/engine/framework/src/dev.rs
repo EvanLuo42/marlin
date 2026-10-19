@@ -1,6 +1,6 @@
-//! The game loop's development tools, compiled out of shipping builds (`marlin_build =
-//! "shipping"`, 0001 §8): the stats overlay (`r.stats`, F3, [`hud`](crate::hud)) and the frame
-//! rate in the window's title.
+//! The host's development tools, compiled out of shipping builds (`marlin_build = "shipping"`,
+//! 0001 §8): the stats overlay (`r.stats`, the host's stats command, [`hud`](crate::hud)) and the
+//! frame rate in the window's title.
 //!
 //! [`DevToolsModule`] is the tools' module: it registers their cvars, and a host draws the overlay
 //! ([`DevTools`]) only when its build has the module. Shipping builds list no such module, and
@@ -22,19 +22,15 @@ mod tools {
     use core::time::Duration;
 
     use marlin_app::Window;
-    use marlin_asset::{AssetServer, Handle, InPlace, Loaders, Vfs};
     use marlin_config::CvarBool;
     use marlin_diag::{FixedBuf, chain, warn};
-    use marlin_font::Font;
     use marlin_jobs::JobSystem;
     use marlin_render_graph::{FrameContext, RenderGraph, TextureHandle};
     use marlin_rhi::{Device, Format};
-    use marlin_shader::asset::ShaderLibrary;
     use marlin_time::Instant;
-
-    use marlin_ui_render::load_ui_font;
     use marlin_world::{Module, Registry};
 
+    use crate::Engine;
     use crate::hud::{Hud, HudFrame, HudInfo, Snapshot};
 
     pub static R_STATS: CvarBool = CvarBool::new(
@@ -60,17 +56,39 @@ mod tools {
         }
     }
 
+    /// What the overlay draws with: the engine's shader library and UI font (the render and UI
+    /// modules' engine resources).
+    struct DevAssets {
+        library: alloc::sync::Arc<marlin_shader::asset::ShaderLibrary>,
+        font: marlin_asset::InPlace<marlin_font::Font>,
+    }
+
+    impl DevAssets {
+        fn of(engine: &Engine<'_>) -> Option<Self> {
+            Some(Self {
+                library: engine
+                    .resources()
+                    .get::<marlin_renderer::RenderShaders>()?
+                    .library
+                    .clone(),
+                font: engine
+                    .resources()
+                    .get::<marlin_ui_render::UiAssets>()?
+                    .font
+                    .clone(),
+            })
+        }
+    }
+
     /// The development tools' state.
-    pub(crate) struct DevTools<'v> {
-        vfs: &'v Vfs,
-        /// The build has the tools' module.
-        enabled: bool,
+    pub(crate) struct DevTools {
+        /// What the overlay draws with; none when the build lacks the tools' module (or the
+        /// engine's UI assets).
+        assets: Option<DevAssets>,
         adapter: String,
         show: bool,
-        /// Made the first time the overlay is shown; with the font, from an asset server of its
-        /// own (the engine's is the simulation's while a frame renders).
-        hud: Option<(Hud, Handle<InPlace<Font>>)>,
-        assets: AssetServer,
+        /// Made the first time the overlay is shown.
+        hud: Option<Hud>,
         /// Frames since `window.0`, for the frame rate.
         window: (Instant, u32),
     }
@@ -78,55 +96,51 @@ mod tools {
     /// One frame of the tools: the overlay's, when it is shown.
     pub(crate) struct DevFrame(Option<HudFrame>);
 
-    impl<'v> DevTools<'v> {
-        /// The tools of a game whose content is `vfs` (read with `loaders`, the engine's), on the
-        /// adapter `adapter`; inert unless `enabled` (the build has [`DevToolsModule`]).
-        pub(crate) fn new(vfs: &'v Vfs, enabled: bool, loaders: Loaders, adapter: &str) -> Self {
+    impl DevTools {
+        /// The tools of `engine` on the adapter `adapter`: inert when the engine lacks their module
+        /// (or the render and UI modules, whose engine shaders and UI font the overlay draws with).
+        pub(crate) fn new(engine: &Engine<'_>, adapter: &str) -> Self {
+            let assets = engine
+                .modules()
+                .has(DevToolsModule::NAME)
+                .then(|| DevAssets::of(engine))
+                .flatten();
             Self {
-                vfs,
-                enabled,
+                show: assets.is_some() && R_STATS.get(),
+                assets,
                 adapter: String::from(adapter),
-                show: enabled && R_STATS.get(),
                 hud: None,
-                assets: AssetServer::new(loaders),
                 window: (Instant::now(), 0),
             }
         }
 
         /// The start of a frame `interval` seconds after the last: `toggle` (the host's stats
-        /// command) shows or hides the overlay, made the first time it is shown from the engine's
-        /// shaders `library`, drawing over `output`.
+        /// command) shows or hides the overlay, made the first time it is shown, drawing over
+        /// `output`.
         pub(crate) fn begin_frame(
             &mut self,
             toggle: bool,
             interval: f32,
             device: &Device,
-            library: Option<&ShaderLibrary>,
             output: Format,
-            jobs: &JobSystem,
         ) {
-            if !self.enabled {
+            let Some(assets) = &self.assets else {
                 return;
-            }
+            };
             if toggle {
                 self.show = !self.show;
             }
             if self.show && self.hud.is_none() {
-                let hud = library.and_then(|library| {
-                    Hud::new(device, library, output)
-                        .map_err(|e| warn!("stats overlay: {}", chain(&e)))
-                        .ok()
-                });
-                let font = load_ui_font(&mut self.assets, self.vfs, Some(jobs))
-                    .map_err(|e| warn!("stats overlay font: {e:?}"))
-                    .ok();
-                match (hud, font) {
-                    (Some(hud), Some(font)) => self.hud = Some((hud, font)),
-                    // Not to be tried every frame.
-                    _ => self.show = false,
+                match Hud::new(device, &assets.library, output) {
+                    Ok(hud) => self.hud = Some(hud),
+                    Err(e) => {
+                        warn!("stats overlay: {}", chain(&e));
+                        // Not to be tried every frame.
+                        self.show = false;
+                    }
                 }
             }
-            if let Some((hud, _)) = self.hud.as_mut().filter(|_| self.show) {
+            if let Some(hud) = self.hud.as_mut().filter(|_| self.show) {
                 hud.push_interval(interval);
             }
         }
@@ -140,10 +154,8 @@ mod tools {
             vsync: bool,
             jobs: &JobSystem,
         ) -> marlin_rhi::Result<DevFrame> {
-            let Some((hud, font)) = self.hud.as_mut().filter(|_| self.show) else {
-                return Ok(DevFrame(None));
-            };
-            let Some(font) = self.assets.get(font).map(|f| f.view()) else {
+            let (Some(hud), Some(assets)) = (self.hud.as_mut().filter(|_| self.show), &self.assets)
+            else {
                 return Ok(DevFrame(None));
             };
             marlin_profile::profile_scope!("Overlay");
@@ -160,7 +172,7 @@ mod tools {
             let frame = hud.frame(
                 device,
                 frames,
-                font,
+                assets.font.view(),
                 window.scale_factor(),
                 &info,
                 Some(jobs),
@@ -176,7 +188,7 @@ mod tools {
             target: TextureHandle<'g>,
         ) -> TextureHandle<'g> {
             match (&self.hud, &frame.0) {
-                (Some((hud, _)), Some(frame)) => hud.add_passes(g, frame, target),
+                (Some(hud), Some(frame)) => hud.add_passes(g, frame, target),
                 _ => target,
             }
         }
@@ -184,7 +196,7 @@ mod tools {
         /// The end of a frame begun at `now`: once a second, the frame rate into `window`'s title
         /// (after `title`) and the profiler's numbers into the overlay.
         pub(crate) fn end_frame(&mut self, now: Instant, window: &Window, title: &str) {
-            if !self.enabled {
+            if self.assets.is_none() {
                 return;
             }
             self.window.1 += 1;
@@ -196,7 +208,7 @@ mod tools {
             let mut text = FixedBuf::<96>::new();
             let _ = write!(text, "{title}  {fps:.0} fps");
             window.set_title(text.as_str());
-            if let Some((hud, _)) = self.hud.as_mut().filter(|_| self.show) {
+            if let Some(hud) = self.hud.as_mut().filter(|_| self.show) {
                 hud.set_snapshot(Snapshot::take(fps));
             }
             self.window = (now, 0);
@@ -204,7 +216,7 @@ mod tools {
 
         /// Makes `frames` forget the tools' resources; call before dropping them.
         pub(crate) fn forget(&self, frames: &mut FrameContext) {
-            if let Some((hud, _)) = &self.hud {
+            if let Some(hud) = &self.hud {
                 hud.forget(frames);
             }
         }
@@ -213,38 +225,27 @@ mod tools {
 
 #[cfg(marlin_build = "shipping")]
 mod stub {
-    use core::marker::PhantomData;
-
     use marlin_app::Window;
-    use marlin_asset::{Loaders, Vfs};
     use marlin_jobs::JobSystem;
     use marlin_render_graph::{FrameContext, RenderGraph, TextureHandle};
     use marlin_rhi::{Device, Format};
-    use marlin_shader::asset::ShaderLibrary;
     use marlin_time::Instant;
 
+    use crate::Engine;
+
     /// No tools in shipping builds.
-    pub(crate) struct DevTools<'v>(PhantomData<&'v Vfs>);
+    pub(crate) struct DevTools;
 
     pub(crate) struct DevFrame;
 
-    impl<'v> DevTools<'v> {
+    impl DevTools {
         #[inline]
-        pub(crate) fn new(_: &'v Vfs, _: bool, _: Loaders, _: &str) -> Self {
-            Self(PhantomData)
+        pub(crate) fn new(_: &Engine<'_>, _: &str) -> Self {
+            Self
         }
 
         #[inline]
-        pub(crate) fn begin_frame(
-            &mut self,
-            _: bool,
-            _: f32,
-            _: &Device,
-            _: Option<&ShaderLibrary>,
-            _: Format,
-            _: &JobSystem,
-        ) {
-        }
+        pub(crate) fn begin_frame(&mut self, _: bool, _: f32, _: &Device, _: Format) {}
 
         #[inline]
         pub(crate) fn prepare(

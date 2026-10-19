@@ -14,6 +14,8 @@ InputAction
 {
     !Uuid = "019a5e00-1000-7000-8000-000000000102"
     !Name = "Marlin.Engine.Input.Alt"
+    // A chord helper: Alt still reaches whoever binds it.
+    ConsumeInput = false
 }
 
 InputAction

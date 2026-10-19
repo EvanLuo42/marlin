@@ -25,7 +25,7 @@ pub mod style;
 
 pub use gradient::{Gradient, GradientShape, GradientSpace};
 pub use list::{ChunkSlot, Painter, RetainedChunk, UiDrawList};
-pub use module::{UI_FONT, UiModule, load_ui_font};
+pub use module::{UI_FONT, UiAssets, UiModule, load_ui_font};
 pub use path::{FillRule, Path};
 pub use renderer::{
     UI_FORMAT, UiFrameData, UiOutput, UiPages, UiPrepared, UiRenderer, UiRendererDesc, UiShaders,

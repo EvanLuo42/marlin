@@ -400,7 +400,6 @@ version = "0.1.0"
 dependencies = [
  "marlin-asset",
  "marlin-asset-db",
- "marlin-containers",
  "marlin-cook-core",
  "marlin-masset",
  "marlin-math",
@@ -577,6 +576,7 @@ dependencies = [
  "marlin-app",
  "marlin-asset",
  "marlin-asset-db",
+ "marlin-cook-core",
  "marlin-cook-font",
  "marlin-cookd",
  "marlin-cooker",
@@ -590,8 +590,10 @@ dependencies = [
  "marlin-editor-world-tools",
  "marlin-font",
  "marlin-framework",
+ "marlin-gameplay",
  "marlin-gpu-test-support",
  "marlin-input",
+ "marlin-input-action",
  "marlin-jobs",
  "marlin-math",
  "marlin-mem",
@@ -599,6 +601,7 @@ dependencies = [
  "marlin-renderer",
  "marlin-rhi",
  "marlin-rt",
+ "marlin-test-support",
  "marlin-ui-render",
  "marlin-world",
  "png",
@@ -611,6 +614,16 @@ version = "0.1.0"
 [[package]]
 name = "marlin-editor-core"
 version = "0.1.0"
+dependencies = [
+ "marlin-asset",
+ "marlin-asset-db",
+ "marlin-containers",
+ "marlin-cook-core",
+ "marlin-cook-level",
+ "marlin-reflect",
+ "marlin-test-support",
+ "marlin-world",
+]
 
 [[package]]
 name = "marlin-editor-ui-core"
@@ -627,6 +640,18 @@ version = "0.1.0"
 [[package]]
 name = "marlin-editor-viewport"
 version = "0.1.0"
+dependencies = [
+ "marlin-asset",
+ "marlin-editor-core",
+ "marlin-framework",
+ "marlin-gameplay",
+ "marlin-input",
+ "marlin-input-action",
+ "marlin-jobs",
+ "marlin-math",
+ "marlin-renderer",
+ "marlin-world",
+]
 
 [[package]]
 name = "marlin-editor-world-tools"

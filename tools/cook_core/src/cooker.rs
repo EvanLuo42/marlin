@@ -89,56 +89,85 @@ impl BuildInputs<'_> {
                 ),
             });
         };
-        let db = content.db(object.mount);
-        let file = db.object_info(object.object).file;
-        let mut info = db.file_info(file);
-        let full = db.root().join(&info.path);
-        // Messages name it by qualified path.
-        info.path = content.file_path(content.object_file(object));
-        let text =
-            std::fs::read_to_string(full).map_err(|e| format!("reading `{}`: {e}", info.path))?;
-        // As for the unit's own text: the bytes must be the ones its key hashed.
-        if xxh3_128(text.as_bytes()) != info.hash {
-            return Err(format!(
-                "`{}` changed since it was indexed; update the index first",
-                info.path
-            ));
-        }
-        let doc = parse(&text).map_err(|e| format!("{}: {e}", info.path))?;
-        let source = doc
-            .objects
-            .iter()
-            .find(|o| o.uuid == uuid)
-            .ok_or_else(|| format!("`{}` no longer defines {uuid}", info.path))?;
-        let fail = |message: String| format!("{}: {}: {message}", info.path, source.name);
-        let asset_path = db.asset_path(file);
-        let links = DocumentLinks {
-            document: &doc,
-            path: &asset_path,
-            fallback: &content.links(object.mount),
-        };
-        let read = self
-            .cookers
-            .schema()
-            .read_object(source, &links)
-            .map_err(|d| fail(d.display(&text)))?;
-        if let Some(error) = read
-            .diagnostics
-            .iter()
-            .find(|d| d.severity == Severity::Error)
-        {
-            return Err(fail(error.display(&text)));
-        }
-        let dependency = Rc::new(Dependency {
+        let dependency = Rc::new(read_object_at(
+            content,
+            self.cookers.schema(),
+            object,
             uuid,
-            mount: content.mount(object.mount).name.clone(),
-            name: source.name.clone(),
-            type_name: source.type_name.clone(),
-            value: read.value,
-        });
+        )?);
         self.read.insert(uuid, dependency.clone());
         Ok(dependency)
     }
+}
+
+/// The source object `uuid`, read from its file and bound to its registered type in `schema`:
+/// what the cook reads build dependencies with, and what the editor opens documents with.
+///
+/// # Errors
+/// No indexed file defines it, the file changed since it was indexed (update the index first),
+/// or the text does not read as its type.
+pub fn read_source_object(
+    content: &Content,
+    schema: &Schema,
+    uuid: Uuid,
+) -> Result<Dependency, String> {
+    let object = content
+        .object(uuid)
+        .ok_or_else(|| format!("no indexed file defines {uuid}"))?;
+    read_object_at(content, schema, object, uuid)
+}
+
+fn read_object_at(
+    content: &Content,
+    schema: &Schema,
+    object: ContentObject,
+    uuid: Uuid,
+) -> Result<Dependency, String> {
+    let db = content.db(object.mount);
+    let file = db.object_info(object.object).file;
+    let mut info = db.file_info(file);
+    let full = db.root().join(&info.path);
+    // Messages name it by qualified path.
+    info.path = content.file_path(content.object_file(object));
+    let text =
+        std::fs::read_to_string(full).map_err(|e| format!("reading `{}`: {e}", info.path))?;
+    // The bytes must be the ones the index (and so any cook key) hashed.
+    if xxh3_128(text.as_bytes()) != info.hash {
+        return Err(format!(
+            "`{}` changed since it was indexed; update the index first",
+            info.path
+        ));
+    }
+    let doc = parse(&text).map_err(|e| format!("{}: {e}", info.path))?;
+    let source = doc
+        .objects
+        .iter()
+        .find(|o| o.uuid == uuid)
+        .ok_or_else(|| format!("`{}` no longer defines {uuid}", info.path))?;
+    let fail = |message: String| format!("{}: {}: {message}", info.path, source.name);
+    let asset_path = db.asset_path(file);
+    let links = DocumentLinks {
+        document: &doc,
+        path: &asset_path,
+        fallback: &content.links(object.mount),
+    };
+    let read = schema
+        .read_object(source, &links)
+        .map_err(|d| fail(d.display(&text)))?;
+    if let Some(error) = read
+        .diagnostics
+        .iter()
+        .find(|d| d.severity == Severity::Error)
+    {
+        return Err(fail(error.display(&text)));
+    }
+    Ok(Dependency {
+        uuid,
+        mount: content.mount(object.mount).name.clone(),
+        name: source.name.clone(),
+        type_name: source.type_name.clone(),
+        value: read.value,
+    })
 }
 
 impl<'a> CookContext<'a> {

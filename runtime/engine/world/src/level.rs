@@ -454,3 +454,90 @@ impl CookedLevel {
             .count()
     }
 }
+
+/// Every Prefab `instances` place, nested ones included, each read once by `read` (the cook
+/// reads build dependencies, the editor its source documents).
+///
+/// # Errors
+/// The first error `read` gives.
+pub fn read_prefabs<E>(
+    instances: &[PrefabInstance],
+    mut read: impl FnMut(Uuid) -> Result<Prefab, E>,
+) -> Result<HashMap<Uuid, Prefab>, E> {
+    let mut prefabs: HashMap<Uuid, Prefab> = HashMap::new();
+    let mut pending: Vec<Uuid> = instances.iter().map(|i| i.prefab.target).collect();
+    while let Some(uuid) = pending.pop() {
+        if prefabs.contains_key(&uuid) {
+            continue;
+        }
+        let prefab = read(uuid)?;
+        pending.extend(prefab.instances.iter().map(|i| i.prefab.target));
+        prefabs.insert(uuid, prefab);
+    }
+    Ok(prefabs)
+}
+
+/// What [`cook_level`] makes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CookKind {
+    /// A level: its entities as they are; the cooked root is nil.
+    Level,
+    /// A Prefab: exactly one entity without a parent, the cooked root.
+    Prefab,
+}
+
+#[derive(Clone, PartialEq, Eq, Debug, marlin_error::Error)]
+pub enum CookError {
+    #[error("{0}")]
+    Flatten(#[from] FlattenError),
+    #[error("a Prefab needs exactly one root entity; this one has {0}")]
+    Roots(usize),
+}
+
+/// A level's or Prefab's `entities` and `instances` cooked: every instance expanded with
+/// `prefabs`, entities grouped by component set. The one path from source to cooked data: the
+/// cook and the editor's play in editor both take it, so they give the same entities.
+///
+/// # Errors
+/// As [`flatten`], and a Prefab without exactly one root.
+pub fn cook_level(
+    entities: &[EntityDesc],
+    instances: &[PrefabInstance],
+    prefabs: &dyn PrefabSource,
+    kind: CookKind,
+) -> Result<CookedLevel, CookError> {
+    let flat = flatten(entities, instances, prefabs)?;
+    let root = match kind {
+        CookKind::Level => EntityGuid::NIL,
+        CookKind::Prefab => {
+            let roots: Vec<EntityGuid> = flat
+                .iter()
+                .filter(|e| e.parent.is_nil())
+                .map(|e| e.guid)
+                .collect();
+            match roots[..] {
+                [root] => root,
+                _ => return Err(CookError::Roots(roots.len())),
+            }
+        }
+    };
+    Ok(CookedLevel::from_flat(flat, root))
+}
+
+/// Entities whose parent is not among `entities` (a parent in another level): they spawn
+/// unparented.
+pub fn dangling_parents(entities: &CookedLevel) -> Vec<&CookedEntity> {
+    let mut guids = HashSet::new();
+    guids.extend(
+        entities
+            .archetypes
+            .iter()
+            .flat_map(|a| a.entities.iter().map(|e| e.guid)),
+    );
+    entities
+        .archetypes
+        .iter()
+        .flat_map(|a| a.entities.iter())
+        .filter(|e| !e.parent.is_nil() && !guids.contains(&e.parent))
+        .collect()
+}

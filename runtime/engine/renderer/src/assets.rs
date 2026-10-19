@@ -1,9 +1,10 @@
-//! The render module's engine assets ([`RenderAssets`]), loaded at startup by name: the engine's
+//! The render module's engine assets ([`RenderShaders`]), loaded at startup by name: the engine's
 //! shaders, the cooked `Marlin.Engine` library from the mounted content
 //! (`content/engine/shaders/`, `docs/design/0003-asset-pipeline.md` §4.4), found by package name.
 //! Which entries a subsystem takes from it, and what it uses them as, is the subsystem's
 //! (`PostShaders::bind`, `UiShaders::bind`..., `marlin_shader::bind`): this module only loads.
 
+use alloc::sync::Arc;
 use core::fmt;
 
 use marlin_asset::{AssetError, AssetServer, Handle, InPlace, LoadState, Vfs};
@@ -109,33 +110,35 @@ pub fn load_pairing_pattern(
 }
 
 /// What every world renderer is made with, loaded once when the render module starts (an
-/// engine resource): the engine's shader library, the default material's resolve permutation and
-/// bake, and ReSTIR's pairing patterns.
-pub struct RenderAssets {
-    pub library: Handle<ShaderLibrary>,
-    pub resolve: Handle<ShaderLibrary>,
-    pub bake: Handle<ShaderLibrary>,
-    pub pairing: Handle<InPlace<PairingPattern>>,
+/// engine resource): the engine's shader library, the default material's resolve permutation
+/// and bake, and ReSTIR's pairing patterns. Shared copies, apart from the asset server: the
+/// render side makes a [`WorldRenderer`](crate::WorldRenderer) whenever a world appears (play in
+/// editor) while the simulation side has the engine.
+#[derive(Clone)]
+pub struct RenderShaders {
+    pub library: Arc<ShaderLibrary>,
+    pub resolve: Arc<ShaderLibrary>,
+    pub bake: Arc<ShaderLibrary>,
+    pub pairing: InPlace<PairingPattern>,
 }
 
-impl RenderAssets {
-    /// Loads them from `vfs`, blocking.
+impl RenderShaders {
+    /// Loads them from `vfs` through `assets`, blocking.
     pub fn load(
         assets: &mut AssetServer,
         vfs: &Vfs,
         jobs: Option<&JobSystem>,
     ) -> Result<Self, ShaderError> {
+        let library = load_engine_shaders(assets, vfs, jobs)?;
+        let resolve = load_default_resolve(assets, vfs, jobs)?;
+        let bake = load_default_bake(assets, vfs, jobs)?;
+        let pairing = load_pairing_pattern(assets, vfs, jobs).map_err(ShaderError::Load)?;
+        let missing = || ShaderError::Load(AssetError::NotFound);
         Ok(Self {
-            library: load_engine_shaders(assets, vfs, jobs)?,
-            resolve: load_default_resolve(assets, vfs, jobs)?,
-            bake: load_default_bake(assets, vfs, jobs)?,
-            pairing: load_pairing_pattern(assets, vfs, jobs).map_err(ShaderError::Load)?,
+            library: Arc::new(assets.get(&library).ok_or_else(missing)?.clone()),
+            resolve: Arc::new(assets.get(&resolve).ok_or_else(missing)?.clone()),
+            bake: Arc::new(assets.get(&bake).ok_or_else(missing)?.clone()),
+            pairing: assets.get(&pairing).ok_or_else(missing)?.clone(),
         })
-    }
-
-    /// The engine's shader library, which other subsystems bind their entries from (UI, the
-    /// stats overlay).
-    pub fn library<'a>(&self, assets: &'a AssetServer) -> Option<&'a ShaderLibrary> {
-        assets.get(&self.library)
     }
 }
