@@ -34,6 +34,7 @@ use crate::raytracing::RtScene;
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct RestirShaders<'a> {
     pub initial: ShaderModule<'a>,
+    pub initial_visibility: ShaderModule<'a>,
     pub temporal: ShaderModule<'a>,
     pub spatial_shift: ShaderModule<'a>,
     pub spatial: ShaderModule<'a>,
@@ -43,8 +44,9 @@ pub struct RestirShaders<'a> {
 
 impl<'a> RestirShaders<'a> {
     /// The entries, in field order.
-    pub const ENTRIES: [EntryDesc; 6] = [
+    pub const ENTRIES: [EntryDesc; 7] = [
         EntryDesc::compute("Marlin.Engine.Lighting.RestirInitial").push::<RestirArgs>(),
+        EntryDesc::compute("Marlin.Engine.Lighting.RestirInitialVisibility").push::<RestirArgs>(),
         EntryDesc::compute("Marlin.Engine.Lighting.RestirTemporal").push::<RestirArgs>(),
         EntryDesc::compute("Marlin.Engine.Lighting.RestirSpatialShift").push::<RestirArgs>(),
         EntryDesc::compute("Marlin.Engine.Lighting.RestirSpatial").push::<RestirArgs>(),
@@ -56,15 +58,17 @@ impl<'a> RestirShaders<'a> {
     pub fn from_modules(
         [
             initial,
+            initial_visibility,
             temporal,
             spatial_shift,
             spatial,
             shade,
             duplication,
-        ]: [ShaderModule<'a>; 6],
+        ]: [ShaderModule<'a>; 7],
     ) -> Self {
         Self {
             initial,
+            initial_visibility,
             temporal,
             spatial_shift,
             spatial,
@@ -181,6 +185,7 @@ pub struct RestirInputs<'g> {
 /// ReSTIR DI's pipelines and settings (see the module docs).
 pub struct RestirDi {
     initial_pass: ComputePipeline,
+    initial_visibility_pass: ComputePipeline,
     temporal_pass: ComputePipeline,
     shade_pass: ComputePipeline,
     duplication_pass: ComputePipeline,
@@ -227,6 +232,7 @@ impl RestirDi {
         };
         Ok(Self {
             initial_pass: compute(shaders.initial)?,
+            initial_visibility_pass: compute(shaders.initial_visibility)?,
             temporal_pass: compute(shaders.temporal)?,
             shade_pass: compute(shaders.shade)?,
             duplication_pass: compute(shaders.duplication)?,
@@ -323,7 +329,6 @@ impl RestirDi {
             let depth = b.read_texture(depth, Access::ComputeRead);
             let lights = b.read_buffer(lights, Access::ComputeRead);
             let tiles = b.read_buffer(tiles.tiles, Access::ComputeRead);
-            rt.read(b);
             let output = b.write_buffer(initial, Access::ComputeWrite);
             (output, move |ctx: &mut PassContext<'_>| {
                 ctx.set_pipeline(&self.initial_pass);
@@ -334,13 +339,38 @@ impl RestirDi {
                     lights: ctx.srv(lights),
                     tiles: ctx.srv(tiles),
                     output: ctx.uav(output),
-                    tlas: rt.index,
                     ..RestirArgs::default()
                 };
                 ctx.push(&args);
                 ctx.dispatch(groups.0, groups.1, 1);
             })
         });
+        // The kept sample's shadow ray, a pass of its own (see `RestirInitialVisibility`).
+        let initial = if self.initial_visibility {
+            g.add_compute("RestirInitialVisibility", |b| {
+                let material = b.read_texture(material, Access::ComputeRead);
+                let depth = b.read_texture(depth, Access::ComputeRead);
+                let lights = b.read_buffer(lights, Access::ComputeRead);
+                rt.read(b);
+                let output = b.write_buffer(initial, Access::ComputeWrite);
+                (output, move |ctx: &mut PassContext<'_>| {
+                    ctx.set_pipeline(&self.initial_visibility_pass);
+                    let args = RestirArgs {
+                        constants: ctx.upload(&constants),
+                        material: ctx.srv(material),
+                        depth: ctx.srv(depth),
+                        lights: ctx.srv(lights),
+                        output: ctx.uav(output),
+                        tlas: rt.index,
+                        ..RestirArgs::default()
+                    };
+                    ctx.push(&args);
+                    ctx.dispatch(groups.0, groups.1, 1);
+                })
+            })
+        } else {
+            initial
+        };
 
         // Last frame's duplication map, this frame's written at the end.
         let map = g.persistent("DiDuplication", view, BufferDesc::structured::<f32>(pixels));
