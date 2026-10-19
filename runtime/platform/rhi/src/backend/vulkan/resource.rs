@@ -318,7 +318,10 @@ pub(crate) fn buffer_requirements(device: &Device, desc: &BufferDesc) -> MemoryR
     unsafe { (s.fns.vkGetDeviceBufferMemoryRequirements)(s.raw, &info, &mut req) };
     // Placed buffers keep the address alignment committed ones have (acceleration structure
     // scratch among them, which the driver's requirements leave out).
-    let alignment = req.memoryRequirements.alignment.max(BUFFER_ADDRESS_ALIGNMENT);
+    let alignment = req
+        .memoryRequirements
+        .alignment
+        .max(BUFFER_ADDRESS_ALIGNMENT);
     MemoryRequirements {
         size: req.memoryRequirements.size.next_multiple_of(alignment),
         alignment,

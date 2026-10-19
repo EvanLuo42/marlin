@@ -108,7 +108,10 @@ fn documents_cook_as_the_cook_does_and_notice_their_files_changing() {
     let cooked = document.cook().unwrap();
     // The Sun, and a post and a light per lamp.
     assert_eq!(cooked.entity_count(), 5);
-    assert_eq!(intensities(&cooked), [("Left".into(), 100.0), ("Right".into(), 10.0)]);
+    assert_eq!(
+        intensities(&cooked),
+        [("Left".into(), 100.0), ("Right".into(), 10.0)]
+    );
 
     // Nothing changed: not stale.
     assert!(!sources.update().unwrap());

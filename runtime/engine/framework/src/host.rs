@@ -364,21 +364,18 @@ pub fn run_app<A: HostApp>(
         } else {
             Duration::ZERO
         });
-        // The loop turns from the pump's tick while the OS holds it (a window drag), else after
-        // it, on the events it gathered.
+        // The loop turns from the pump's tick while the OS holds it (a window drag), then after
+        // it on the events gathered since the last tick (the drag's final size among them).
         let mut step = Ok(Step::Continue);
-        let mut ticked = false;
         let events: Vec<Event> = app
             .pump_with(timeout, |events| {
                 if matches!(step, Ok(Step::Continue)) {
-                    ticked = true;
                     step = host.turn(events);
                 }
             })
             .to_vec();
         let step = match step? {
             Step::Quit => break,
-            _ if ticked => Step::Continue,
             _ => host.turn(&events)?,
         };
         // Windows the application asked for open between turns: opening needs the app.
