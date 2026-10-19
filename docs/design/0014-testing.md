@@ -208,7 +208,7 @@ shader 编译器另有一个只给测试用的 crate `marlin-shaderc-testgen`（
 - 命令行：位置参数是名字过滤；`--quick` 少量短样本；`--list` 只列名字。`cargo test --benches`（不带 `--bench`）时每个基准只跑一次当冒烟测试，不写结果。
 - 结果写到 `target/bench/<crate>/<name>.json`。`xtask test --tier bench --save-baseline <tag>` 存到 `target/bench/baselines/<tag>/`，`--baseline <tag>` 比较，中位数变慢超过 `--threshold`（默认 5%）标出来，不改退出码；每个基准进程超过 `--stall`（默认 1800 秒）就结束。
 - 基线只存在本地 `target/` 下（目前只有一台机器）。
-- 已迁：compress（`codecs`）、ecs（`world`）、net（`loopback`）、asset_db（`index`）、cook_texture（`encode`）、mem（`global_heap`，文件里声明 `MarlinHeap` 为全局分配器）、hash（`simd`）、jobs（`jobs`，同样跑在 `MarlinHeap` 上）、masset（`extract`）、ui_render（`ui`：录制、展平、哈希、prepare、模糊分层的 CPU 开销，以及编辑器式和压力场景一帧 UI pass 的 GPU 时间，取自 render graph 的 timestamp）。测试文件里不再有 `#[ignore]` 基准；profile/stats 的 `spin` 是 stats 测试用来造固定时长 zone 的，不是基准，留在原处。
+- 已迁：compress（`codecs`）、ecs（`world`）、net（`loopback`）、asset_db（`index`）、cook_texture（`encode`）、mem（`global_heap`，文件里声明 `MarlinHeap` 为全局分配器）、hash（`simd`）、jobs（`jobs`，同样跑在 `MarlinHeap` 上）、masset（`extract`）、ui_render（`ui`：录制、展平、哈希、prepare、模糊分层的 CPU 开销，以及编辑器式场景和 `stress/*` 压力场景（参照 Decima UIPainter 演讲的案例：深度重叠、节点图缩放、30 万条线框、时间线、深裁剪链、16 层模糊、大路径、文字缩放）一帧 UI pass 的 GPU 时间，取自 render graph 的 timestamp）。测试文件里不再有 `#[ignore]` 基准；profile/stats 的 `spin` 是 stats 测试用来造固定时长 zone 的，不是基准，留在原处。
 - GPU 计时（timestamp query）以后加到 `marlin-gpu-test-support`。
 
 ### 7.3 Fuzz 与属性测试
