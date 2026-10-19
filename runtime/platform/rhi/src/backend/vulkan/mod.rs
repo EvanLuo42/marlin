@@ -834,6 +834,10 @@ impl crate::contract::Swapchain for Backend {
         swapchain.set_present_mode(mode);
     }
 
+    fn set_max_frame_latency(swapchain: &mut swapchain::Swapchain, frames: u32) {
+        swapchain.set_max_frame_latency(frames);
+    }
+
     fn supports_color_space(swapchain: &swapchain::Swapchain, color_space: ColorSpace) -> bool {
         swapchain.supports_color_space(color_space)
     }

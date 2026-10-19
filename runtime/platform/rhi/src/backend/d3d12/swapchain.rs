@@ -338,6 +338,13 @@ impl crate::contract::Swapchain for Backend {
         swapchain.present_mode = mode;
     }
 
+    fn set_max_frame_latency(swapchain: &mut Swapchain, frames: u32) {
+        let s = &swapchain.swapchain;
+        // SAFETY: valid interface, created with the waitable flag. It only fails for a
+        // latency out of range, which the caller clamped.
+        let _ = unsafe { (s.vtbl().SetMaximumFrameLatency)(s.as_raw(), frames) };
+    }
+
     fn supports_color_space(swapchain: &Swapchain, color_space: ColorSpace) -> bool {
         let mut support = 0;
         let s = &swapchain.swapchain;

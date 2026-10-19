@@ -1132,6 +1132,10 @@ impl Swapchain {
         self.create_chain()
     }
 
+    pub(crate) fn set_max_frame_latency(&mut self, frames: u32) {
+        self.max_frame_latency = frames;
+    }
+
     pub(crate) fn set_present_mode(&mut self, mode: PresentMode) {
         // Modes the swapchain can switch to apply at the next present; others recreate it at the
         // next acquire.

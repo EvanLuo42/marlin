@@ -364,6 +364,10 @@ impl Swapchain for Backend {
         match *swapchain {}
     }
 
+    fn set_max_frame_latency(swapchain: &mut Never, _: u32) {
+        match *swapchain {}
+    }
+
     fn supports_color_space(swapchain: &Never, _: ColorSpace) -> bool {
         match *swapchain {}
     }

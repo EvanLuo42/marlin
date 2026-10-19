@@ -1677,6 +1677,13 @@ impl Swapchain {
         Backend::set_present_mode(&mut self.raw, mode);
     }
 
+    /// Frames the CPU may queue ahead of the display before [`acquire`](Self::acquire) blocks
+    /// ([`SwapchainDesc::max_frame_latency`]), clamped to 1..=16. Takes effect at the next
+    /// `acquire`.
+    pub fn set_max_frame_latency(&mut self, frames: u32) {
+        Backend::set_max_frame_latency(&mut self.raw, frames.clamp(1, 16));
+    }
+
     /// The display can show `color_space` from this swapchain's format.
     pub fn supports_color_space(&self, color_space: ColorSpace) -> bool {
         validate_color_space(self.format(), color_space).is_ok()

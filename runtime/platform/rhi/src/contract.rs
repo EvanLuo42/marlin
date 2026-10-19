@@ -456,6 +456,8 @@ pub(crate) trait Swapchain: Types {
     /// Waits for the GPU to finish with the images, then recreates them.
     fn resize(swapchain: &mut Self::Swapchain, width: u32, height: u32) -> Result<()>;
     fn set_present_mode(swapchain: &mut Self::Swapchain, mode: PresentMode);
+    /// Frames queued ahead of the display before `acquire` blocks, 1..=16.
+    fn set_max_frame_latency(swapchain: &mut Self::Swapchain, frames: u32);
     fn supports_color_space(swapchain: &Self::Swapchain, color_space: ColorSpace) -> bool;
     fn set_color_space(swapchain: &mut Self::Swapchain, color_space: ColorSpace) -> Result<()>;
     fn set_hdr_metadata(
