@@ -7,7 +7,7 @@ use core::fmt;
 use marlin_asset::{AssetError, AssetServer, Handle, LoadState, Vfs};
 use marlin_jobs::JobSystem;
 use marlin_material::MaterialShaders;
-use marlin_render::{PostShaders, VisibilityShaders};
+use marlin_render::{PostShaders, StreamingShaders, VisibilityShaders};
 use marlin_rhi::ShaderModule;
 use marlin_shader::asset::{LibraryEntry, ShaderLibrary};
 use marlin_shader::reflect::Stage;
@@ -161,6 +161,37 @@ pub fn scatter_shader(library: &ShaderLibrary) -> Result<ShaderModule<'_>, Shade
         ));
     }
     Ok(module(e))
+}
+
+/// The streaming passes' entries (`Marlin.Engine.Streaming`).
+pub const STREAMING: [&str; 2] = [
+    "Marlin.Engine.Streaming.PageUpload",
+    "Marlin.Engine.Streaming.ClearWords",
+];
+
+/// The page pool's streaming shaders from the engine's library, checked for their stage and the
+/// push constants marlin-render's `Meshes` sets.
+pub fn streaming_shaders(library: &ShaderLibrary) -> Result<StreamingShaders<'_>, ShaderError> {
+    let get = |name: &'static str, push: u32| {
+        let e = library.entry(name).ok_or(ShaderError::MissingEntry(name))?;
+        let mismatch = |problem| ShaderError::Mismatch {
+            entry: name,
+            problem,
+        };
+        if e.reflection.entry.stage != Stage::Compute {
+            return Err(mismatch("not a compute shader"));
+        }
+        if e.reflection.push.as_ref().map(|p| p.size) != Some(push) {
+            return Err(mismatch(
+                "its push constants are not what the streaming passes set",
+            ));
+        }
+        Ok(module(e))
+    };
+    Ok(StreamingShaders {
+        upload: get(STREAMING[0], marlin_render::UPLOAD_PUSH_BYTES)?,
+        clear: get(STREAMING[1], marlin_render::CLEAR_PUSH_BYTES)?,
+    })
 }
 
 /// The visibility pipeline's entries (`Marlin.Engine.Visibility`).

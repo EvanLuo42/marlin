@@ -186,10 +186,12 @@ impl<'a> MeshView<'a> {
         let float = header.flags & MeshFlags::POSITION_FLOAT != 0;
         let skin = header.flags & MeshFlags::SKIN != 0;
         let color = header.flags & MeshFlags::COLOR != 0;
-        let stride_ok = header.position_stride == if float { 12 } else { 8 }
+        // The UV set count first: the attribute stride is computed from it.
+        let stride_ok = header.uv_sets <= 4
+            && header.position_stride == if float { 12 } else { 8 }
             && header.attribute_stride == 4 + 4 * header.uv_sets + if color { 4 } else { 0 }
             && header.skin_stride == if skin { 12 } else { 0 };
-        if !stride_ok || sections.is_empty() || header.uv_sets > 4 || skin == joints.is_empty() {
+        if !stride_ok || sections.is_empty() || skin == joints.is_empty() {
             return Err(MeshError::Malformed);
         }
         for j in joints {

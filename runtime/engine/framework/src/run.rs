@@ -221,6 +221,7 @@ fn render_frame(
     frames: &mut FrameContext,
     delta: &RenderDelta,
 ) -> Result<PresentStatus, RunError> {
+    render.collect_feedback(frames);
     render.apply(device, delta)?;
     let image = swapchain.acquire(None)?;
     let texture = swapchain.texture(image);

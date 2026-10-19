@@ -1,0 +1,40 @@
+namespace Marlin.Engine.Streaming;
+
+// The streaming passes of the page pool (0009 §6.1): marlin-render's `Meshes` writes the pages it
+// loads and the page table entries it changes with `PageUpload`, and clears the used-slot marks
+// the visibility passes set with `ClearWords`.
+
+public struct UploadArgs
+{
+    /// One op a group: x = first destination byte in the pool, y = first data word, z = words.
+    public ReadOnlyBuffer<uint4> Ops;
+    public ReadOnlyBuffer<uint> Data;
+    /// The page pool, raw.
+    public ByteBuffer Pool;
+    public uint Count;
+}
+
+[Compute(64, 1, 1)]
+public void PageUpload([GroupId] uint3 group, [GroupThreadId] uint3 thread, [Push] in UploadArgs a)
+{
+    // Rows of 65535 groups.
+    uint i = group.x + group.y * 65535;
+    if (i >= a.Count)
+        return;
+    uint4 op = a.Ops[i];
+    for (uint w = thread.x; w < op.z; w += 64)
+        a.Pool.Store(op.x + w * 4, a.Data[op.y + w]);
+}
+
+public struct ClearArgs
+{
+    public Buffer<uint> Words;
+    public uint Count;
+}
+
+[Compute(64, 1, 1)]
+public void ClearWords([DispatchThreadId] uint3 id, [Push] in ClearArgs a)
+{
+    if (id.x < a.Count)
+        a.Words[id.x] = 0;
+}

@@ -6,9 +6,11 @@
 //!   of its groups' spheres. Pages fill in that order, so the coarse levels come first (the
 //!   root pages, always resident) and a page holds neighboring groups of one level.
 //! - **Parts**: pages fill completely; a group that does not fit is split, and each piece is a
-//!   part. A page lists as dependencies the other pages of its groups (a split group streams in
-//!   and out as a whole) and the pages of the clusters its groups were simplified to, which are
-//!   always earlier pages: streaming loads pages coarse to fine and evicts fine to coarse.
+//!   part. A page lists as dependencies every page of the parent groups of its groups (the
+//!   groups holding the coarser clusters they were simplified to), which come earlier: they
+//!   stay resident while it is, so streaming loads coarse to fine and evicts fine to coarse.
+//!   After them it lists its siblings, the other pages of its groups: a split group is drawn
+//!   only whole, so its pages stream in together.
 //! - **Hierarchy**: a BVH over the parts of each level (8 children per node, split by the
 //!   longest axis of the sphere centers), the levels' subtrees under one root, coarsest first.
 //!   Each child has a sphere enclosing its groups' spheres and the largest group error below.
@@ -208,35 +210,45 @@ pub fn pack(dag: &Dag, vertices: &Vertices<'_>, positions: Positions) -> Packed 
         g.part_count += 1;
     }
 
-    // Dependencies.
+    // Dependencies: every page of the parent groups of the page's groups; siblings: the other
+    // pages of its groups.
+    let pages_of = |out: &Packed, g: u32| -> Vec<u32> {
+        let record = out.groups[g as usize];
+        out.parts[record.first_part as usize..][..record.part_count as usize]
+            .iter()
+            .map(|p| p.page)
+            .collect()
+    };
     for (page, clusters) in pages.iter().enumerate() {
-        let mut deps: Vec<u32> = Vec::new();
         let mut groups: Vec<u32> = clusters
             .iter()
             .map(|&c| dag.clusters[c as usize].group)
             .collect();
+        groups.sort_unstable();
         groups.dedup();
+        let mut deps: Vec<u32> = Vec::new();
+        let mut siblings: Vec<u32> = Vec::new();
         for g in groups {
-            let record = out.groups[g as usize];
-            let own = &out.parts[record.first_part as usize..][..record.part_count as usize];
-            deps.extend(own.iter().map(|p| p.page));
-            deps.extend(
-                dag.groups[g as usize]
-                    .simplified
-                    .iter()
-                    .map(|&c| out.cluster_location[c as usize].0),
-            );
+            siblings.extend(pages_of(&out, g));
+            for &c in &dag.groups[g as usize].simplified {
+                deps.extend(pages_of(&out, dag.clusters[c as usize].group));
+            }
         }
         deps.sort_unstable();
         deps.dedup();
         deps.retain(|&d| d != page as u32);
+        siblings.sort_unstable();
+        siblings.dedup();
+        siblings.retain(|&s| s != page as u32 && !deps.contains(&s));
         out.page_records.push(ClusterPage {
             bulk: page as u32,
             cluster_count: clusters.len() as u32,
             first_dependency: out.dependencies.len() as u32,
             dependency_count: deps.len() as u32,
+            sibling_count: siblings.len() as u32,
         });
         out.dependencies.extend(deps);
+        out.dependencies.extend(siblings);
     }
 
     out.pages = pages

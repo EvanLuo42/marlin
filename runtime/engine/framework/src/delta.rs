@@ -8,17 +8,20 @@
 //! it uploads, applies the updates and draws. So the two run on different jobs, the simulation
 //! one frame ahead.
 
+use alloc::collections::VecDeque;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use marlin_containers::{HashMap, HashMapExt};
 use marlin_material::{DEFAULT_PERMUTATION, Materials};
 use marlin_math::Transform;
 use marlin_render::scene::{MeshId, MeshUpdate};
+use marlin_render::visibility::counters;
 use marlin_render::{
-    Camera, DEFAULT_POOL_PAGES, Lighting, MeshHandle, Meshes, PostProcess, RenderScene,
-    ScatterShader, SceneIds, SceneUpdates, Visibility,
+    Camera, Feedback, Lighting, MeshData, MeshHandle, Meshes, PagePoolDesc, PostProcess,
+    RenderScene, ScatterShader, SceneIds, SceneUpdates, Visibility,
 };
-use marlin_render_graph::{FRAMES_IN_FLIGHT, RenderGraph, TextureHandle};
+use marlin_render_graph::{FRAMES_IN_FLIGHT, FrameContext, Readback, RenderGraph, TextureHandle};
 use marlin_rhi::{Device, Format};
 use marlin_shader::asset::ShaderLibrary;
 
@@ -28,7 +31,7 @@ const MAIN_VIEW: u64 = 0;
 use crate::loaders::LoadedMesh;
 use crate::shaders::{
     ShaderError, lighting_shader, material_shaders, post_shaders, resolve_shader, scatter_shader,
-    visibility_shaders,
+    streaming_shaders, visibility_shaders,
 };
 
 /// A mesh the render side should have, at a version.
@@ -76,6 +79,8 @@ pub struct RenderSide {
     retired: Vec<(u64, MeshHandle)>,
     frames_in_flight: u64,
     frame: u64,
+    /// Streaming feedback not read back yet: the frame, its counters, requests and used marks.
+    feedback: VecDeque<(u64, [Readback; 3])>,
 }
 
 impl RenderSide {
@@ -98,7 +103,7 @@ impl RenderSide {
         )?;
         debug_assert_eq!(default, DEFAULT_PERMUTATION);
         Ok(Self {
-            meshes: Meshes::new(device, DEFAULT_POOL_PAGES)?,
+            meshes: Meshes::new(device, &PagePoolDesc::DEFAULT, &streaming_shaders(engine)?)?,
             visibility: Visibility::new(device, &visibility_shaders(engine)?)?,
             materials,
             lighting: Lighting::new(device, lighting_shader(engine)?)?,
@@ -112,6 +117,7 @@ impl RenderSide {
             retired: Vec::new(),
             frames_in_flight: FRAMES_IN_FLIGHT as u64,
             frame: 0,
+            feedback: VecDeque::new(),
         })
     }
 
@@ -136,7 +142,7 @@ impl RenderSide {
             let cooked = &upload.cooked.0;
             let handle = self
                 .meshes
-                .upload_mesh(device, &cooked.view(), &cooked.pages())?;
+                .upload_mesh(device, cooked.clone() as Arc<dyn MeshData>)?;
             if let Some(m) = self.meshes.resident_mesh(handle) {
                 resident.meshes.push(upload.mesh, MeshUpdate::Resident(m));
             }
@@ -183,26 +189,76 @@ impl RenderSide {
     ) -> TextureHandle<'g> {
         let size = *g.texture_desc(target);
         let (width, height) = (size.width, size.height);
-        let gpu = self.scene.add_passes(g, &self.scatter);
-        let material = self.camera.map(|camera| {
-            let vis = self.visibility.add_passes(
-                g,
-                &self.meshes,
-                &self.scene,
-                gpu,
-                camera,
-                width,
-                height,
-            );
-            self.materials
-                .add_passes(g, gpu, &vis, camera, self.previous, width, height)
+        let uploads = self.meshes.take_uploads();
+        let Self {
+            meshes,
+            visibility,
+            materials,
+            lighting,
+            post,
+            scene,
+            scatter,
+            dt,
+            camera,
+            previous,
+            feedback,
+            ..
+        } = self;
+        let meshes: &'g Meshes = meshes;
+        let pool = meshes.add_passes(g, uploads);
+        let gpu = scene.add_passes(g, scatter);
+        let scene: &'g RenderScene = scene;
+        let material = camera.map(|camera| {
+            let vis = visibility.add_passes(g, meshes, scene, gpu, pool, camera, width, height);
+            feedback.push_back((
+                pool.frame,
+                [
+                    g.readback(vis.counters),
+                    g.readback(vis.requests),
+                    g.readback(vis.used),
+                ],
+            ));
+            materials
+                .add_passes(g, gpu, &vis, camera, *previous, width, height)
                 .material
         });
-        let env = *self.scene.environment();
-        let scene = self.lighting.add_passes(g, material, &env, width, height);
-        self.post
-            .add_passes(g, scene, target, MAIN_VIEW, self.dt)
-            .output
+        let env = *scene.environment();
+        let scene = lighting.add_passes(g, material, &env, width, height);
+        post.add_passes(g, scene, target, MAIN_VIEW, *dt).output
+    }
+
+    /// Takes the streaming feedback of the frames `frames` has finished (every frame's readbacks
+    /// must be taken, so call this once a frame with the context [`add_passes`] was declared
+    /// into) and streams pages by it.
+    ///
+    /// [`add_passes`]: RenderSide::add_passes
+    pub fn collect_feedback(&mut self, frames: &mut FrameContext) {
+        while let Some(&(frame, [c, r, u])) = self.feedback.front() {
+            let Some(counter_bytes) = frames.readback(c) else {
+                break;
+            };
+            self.feedback.pop_front();
+            // The same frame's readbacks finish together.
+            let (Some(requests), Some(used)) = (frames.readback(r), frames.readback(u)) else {
+                continue;
+            };
+            let count = counter_bytes
+                .get(counters::REQUESTS * 4..)
+                .and_then(|b| b.first_chunk::<4>())
+                .map_or(0, |w| u32::from_le_bytes(*w));
+            self.meshes.apply_feedback(&Feedback {
+                frame,
+                used: &used,
+                requests: &requests,
+                request_count: count,
+            });
+        }
+    }
+
+    /// Whether page streaming has caught up: the last feedback taken asked for no page that is
+    /// still missing, so the frame it came from drew every page it wanted.
+    pub fn streaming_idle(&self) -> bool {
+        self.meshes.streaming_idle()
     }
 }
 

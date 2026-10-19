@@ -26,7 +26,7 @@ use marlin_rhi::{
 use marlin_serial::cooked::Pod;
 
 use crate::Meshes;
-use crate::meshes::Camera;
+use crate::meshes::{Camera, PagePool};
 use crate::scene::{GpuScene, RenderScene};
 
 /// The visibility pipeline's shaders (`Marlin.Engine.Visibility`), which the engine gets from
@@ -93,9 +93,9 @@ impl<'a> VisibilityShaders<'a> {
     }
 }
 
-/// Bytes of push constants the cull passes set (ten 32-bit words), the raster pass (seven)
+/// Bytes of push constants the cull passes set (twelve 32-bit words), the raster pass (seven)
 /// and the target passes (four).
-pub const CULL_PUSH_BYTES: u32 = 40;
+pub const CULL_PUSH_BYTES: u32 = 48;
 pub const RASTER_PUSH_BYTES: u32 = 28;
 pub const TARGET_PUSH_BYTES: u32 = 16;
 
@@ -117,7 +117,8 @@ struct View {
     node_capacity: u32,
     part_capacity: u32,
     cluster_capacity: u32,
-    spare: [u32; 3],
+    request_capacity: u32,
+    spare: [u32; 2],
 }
 
 #[repr(C)]
@@ -133,6 +134,8 @@ struct CullArgs {
     counters: u32,
     args: u32,
     clusters: u32,
+    requests: u32,
+    used: u32,
 }
 
 #[repr(C)]
@@ -164,8 +167,10 @@ pub mod counters {
     /// Visible clusters found: may pass the capacity.
     pub const CLUSTERS_FOUND: usize = 3;
     pub const CLUSTERS_DRAWN: usize = 4;
+    /// Page requests made: may pass the capacity.
+    pub const REQUESTS: usize = 8;
     /// Words in the counters buffer.
-    pub const WORDS: usize = 8;
+    pub const WORDS: usize = 12;
 }
 
 /// What [`Visibility::add_passes`] makes.
@@ -183,6 +188,15 @@ pub struct VisibilityOutput<'g> {
     pub capacity: u32,
     /// Levels of hierarchy nodes traversed.
     pub levels: u32,
+    /// The page pool, as the passes read it: what later passes reading clusters declare.
+    pub pages: BufferHandle<'g>,
+    /// The page requests (two words each: the byte offset of the page's table entry in the
+    /// pool, the priority as f32 bits) and the used-slot marks: the streaming feedback
+    /// (`Meshes::apply_feedback`).
+    pub requests: BufferHandle<'g>,
+    pub used: BufferHandle<'g>,
+    /// Entries `requests` holds.
+    pub request_capacity: u32,
 }
 
 /// The visibility pipeline's GPU state: its pipelines and budgets. Needs mesh shaders and
@@ -207,6 +221,8 @@ pub struct Visibility {
     pub max_nodes: u32,
     pub max_parts: u32,
     pub max_clusters: u32,
+    /// Most page requests a view makes a frame.
+    pub max_requests: u32,
 }
 
 /// World-space frustum planes of a view-projection (reverse-Z, infinite far): left, right,
@@ -275,6 +291,7 @@ impl Visibility {
             max_nodes: 1 << 21,
             max_parts: 1 << 21,
             max_clusters: 1 << 22,
+            max_requests: 4096,
         })
     }
 
@@ -288,6 +305,7 @@ impl Visibility {
         meshes: &Meshes,
         scene: &RenderScene,
         gpu: GpuScene<'g>,
+        pool: PagePool<'g>,
         camera: (Transform, Camera),
         width: u32,
         height: u32,
@@ -309,6 +327,7 @@ impl Visibility {
         let node_capacity = capacity(nodes, self.max_nodes);
         let part_capacity = capacity(parts, self.max_parts);
         let cluster_capacity = capacity(clusters, self.max_clusters.min(MAX_CLUSTERS));
+        let request_capacity = self.max_requests.max(1);
         let rows = scene.instance_rows();
         let p = eye.translation;
         let view = View {
@@ -325,7 +344,8 @@ impl Visibility {
             node_capacity,
             part_capacity,
             cluster_capacity,
-            spare: [0; 3],
+            request_capacity,
+            spare: [0; 2],
         };
 
         let node_list = g.create_buffer(
@@ -344,6 +364,10 @@ impl Visibility {
         let cluster_list = g.create_buffer(
             "VisibleClusters",
             BufferDesc::structured::<[u32; 2]>(u64::from(cluster_capacity)),
+        );
+        let mut request_list = g.create_buffer(
+            "VisPageRequests",
+            BufferDesc::structured::<[u32; 2]>(u64::from(request_capacity)),
         );
         let vis = g.create_texture(
             "VisBuffer",
@@ -420,16 +444,19 @@ impl Visibility {
                     ctx.dispatch(1, 1, 1);
                 })
             });
-            (node_list, part_list, counters) = g.add_compute("NodeCull", |b| {
+            (node_list, part_list, request_list, counters) = g.add_compute("NodeCull", |b| {
                 let dispatch = b.read_buffer(args.range(0, 16), Access::Indirect);
                 let instances = b.read_buffer(gpu.instance_data, Access::ComputeRead);
                 let transforms = b.read_buffer(gpu.instance_transforms, Access::ComputeRead);
                 let meshes = b.read_buffer(gpu.meshes, Access::ComputeRead);
+                // The clusters are read from the pool through the mesh table's view.
+                b.read_buffer(pool.pages, Access::ComputeRead);
                 let nodes = b.write_buffer(node_list, Access::ComputeWrite);
                 let parts = b.write_buffer(part_list, Access::ComputeWrite);
+                let requests = b.write_buffer(request_list, Access::ComputeWrite);
                 let counters = b.write_buffer(counters, Access::ComputeWrite);
                 (
-                    (nodes, parts, counters),
+                    (nodes, parts, requests, counters),
                     move |ctx: &mut PassContext<'_>| {
                         let view = ctx.upload(&view);
                         ctx.set_pipeline(&self.node_cull);
@@ -441,6 +468,7 @@ impl Visibility {
                             nodes: ctx.uav(nodes),
                             parts: ctx.uav(parts),
                             counters: ctx.uav(counters),
+                            requests: ctx.uav(requests),
                             ..CullArgs::default()
                         });
                         ctx.dispatch_indirect(dispatch, 1, None);
@@ -464,7 +492,10 @@ impl Visibility {
                 ctx.dispatch(1, 1, 1);
             })
         });
-        let (cluster_list, counters) = g.add_compute("ClusterCull", |b| {
+        let (cluster_list, used, counters) = g.add_compute("ClusterCull", |b| {
+            // The clusters are read from the pool through the mesh table's view.
+            b.read_buffer(pool.pages, Access::ComputeRead);
+            let used = b.write_buffer(pool.used, Access::ComputeWrite);
             let dispatch = b.read_buffer(args.range(16, 16), Access::Indirect);
             let instances = b.read_buffer(gpu.instance_data, Access::ComputeRead);
             let transforms = b.read_buffer(gpu.instance_transforms, Access::ComputeRead);
@@ -472,21 +503,25 @@ impl Visibility {
             let parts = b.read_buffer(part_list, Access::ComputeRead);
             let counters = b.write_buffer(counters, Access::ComputeWrite);
             let clusters = b.write_buffer(cluster_list, Access::ComputeWrite);
-            ((clusters, counters), move |ctx: &mut PassContext<'_>| {
-                let view = ctx.upload(&view);
-                ctx.set_pipeline(&self.cluster_cull);
-                ctx.push(&CullArgs {
-                    view,
-                    instances: ctx.srv(instances),
-                    transforms: ctx.srv(transforms),
-                    meshes: ctx.srv(meshes),
-                    parts: ctx.srv(parts),
-                    counters: ctx.uav(counters),
-                    clusters: ctx.uav(clusters),
-                    ..CullArgs::default()
-                });
-                ctx.dispatch_indirect(dispatch, 1, None);
-            })
+            (
+                (clusters, used, counters),
+                move |ctx: &mut PassContext<'_>| {
+                    let view = ctx.upload(&view);
+                    ctx.set_pipeline(&self.cluster_cull);
+                    ctx.push(&CullArgs {
+                        view,
+                        instances: ctx.srv(instances),
+                        transforms: ctx.srv(transforms),
+                        meshes: ctx.srv(meshes),
+                        parts: ctx.srv(parts),
+                        counters: ctx.uav(counters),
+                        clusters: ctx.uav(clusters),
+                        used: ctx.uav(used),
+                        ..CullArgs::default()
+                    });
+                    ctx.dispatch_indirect(dispatch, 1, None);
+                },
+            )
         });
         let (args, counters) = g.add_compute("VisMeshArgs", |b| {
             let counters = b.write_buffer(counters, Access::ComputeWrite);
@@ -511,6 +546,8 @@ impl Visibility {
             let meshes = b.read_buffer(gpu.meshes, Access::MeshRead);
             let clusters = b.read_buffer(cluster_list, Access::MeshRead);
             let counters = b.read_buffer(counters, Access::MeshRead);
+            // The clusters are read from the pool through the mesh table's view.
+            b.read_buffer(pool.pages, Access::MeshRead);
             let vis = b.write_texture(vis, Access::PixelWrite);
             (vis, move |ctx: &mut PassContext<'_>| {
                 let view = ctx.upload(&view);
@@ -548,6 +585,10 @@ impl Visibility {
             counters,
             capacity: cluster_capacity,
             levels,
+            pages: pool.pages,
+            requests: request_list,
+            used,
+            request_capacity,
         }
     }
 }

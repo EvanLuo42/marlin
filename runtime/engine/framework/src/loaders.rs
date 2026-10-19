@@ -103,6 +103,17 @@ impl InPlace<Font> {
     }
 }
 
+/// What the renderer streams pages from: the unit's bytes, all of its blobs loaded.
+impl marlin_render::MeshData for InPlace<Mesh> {
+    fn view(&self) -> MeshView<'_> {
+        InPlace::<Mesh>::view(self)
+    }
+
+    fn bulk(&self, index: usize) -> Option<&[u8]> {
+        (index < self.bulk_count()).then(|| InPlace::bulk(self, index))
+    }
+}
+
 impl InPlace<Skeleton> {
     pub fn view(&self) -> SkeletonView<'_> {
         SkeletonView::new(self.payload()).expect("checked at load")

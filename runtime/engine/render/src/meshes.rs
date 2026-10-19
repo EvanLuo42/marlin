@@ -1,20 +1,48 @@
-//! The resident meshes: each a cooked mesh's cluster DAG on the GPU ([`crate::geometry`]): its
-//! pages in the page pool, its resident part in a buffer of its own, drawn by the visibility
-//! passes through the GPU Scene's mesh table. Also the view and lighting descriptions the
-//! passes share.
+//! The resident meshes and the streaming of their cluster DAG pages (0009 §3.2, §6.1): each
+//! mesh's resident part in a buffer of its own, its pages streamed through the page pool
+//! ([`crate::geometry`]). Also the view and lighting descriptions the passes share.
+//!
+//! # Streaming
+//!
+//! A mesh's root pages (the DAG's coarsest groups) are uploaded with it and stay; every other
+//! page streams. Each frame:
+//!
+//! 1. The visibility passes' traversal requests every page it would draw from but finds
+//!    missing (its page table entry is [`NOT_RESIDENT`](crate::geometry::NOT_RESIDENT)), with
+//!    the projected error as priority, and marks every slot it reads as used. The cut draws a
+//!    cluster whose finer replacement is not resident instead, so a missing page coarsens the
+//!    picture, never tears it.
+//! 2. Once that frame is done, [`Meshes::apply_feedback`] reads both: used slots refresh their
+//!    page's last use; the requests, highest priority first, each with its sibling pages and
+//!    every page they depend on (every page of their groups' parent groups), take free slots
+//!    or evict the least recently used pages (each with the resident pages that depend on
+//!    it), up to [`Meshes::max_page_uploads`] a frame.
+//! 3. The next frame's [`Meshes::add_passes`] copies the new pages into their slots and writes
+//!    the page table, before the visibility passes read either.
+//!
+//! A page is resident only with every page it depends on (every page of its groups' parent
+//! groups), so a whole group's coarser clusters are whole too. A group split across pages is
+//! drawn only once all of its pages are; its sibling pages load with a request for one.
 
+use alloc::collections::BTreeMap;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use marlin_containers::{Handle, SlotMap};
 use marlin_math::Vec3;
+use marlin_render_graph::{
+    Access, BufferDesc as GraphBufferDesc, BufferHandle, PassContext, RenderGraph,
+};
 use marlin_rhi::{
     Buffer, BufferBarrier, BufferDesc, BufferState, BufferUsage, BufferViewDesc, BufferViewKind,
-    Device, Error, ErrorKind, MemoryLocation, Result, ShaderView,
+    ComputePipeline, ComputePipelineDesc, Device, Error, ErrorKind, MemoryLocation, Result,
+    ShaderModule, ShaderView,
 };
+use marlin_serial::cooked::Pod;
 
-use crate::asset::cluster::{ClusterDagView, PAGE_SIZE};
+use crate::asset::cluster::PAGE_SIZE;
 use crate::asset::mesh::MeshView;
-use crate::geometry::{self, Built, DagCounts};
+use crate::geometry::{self, DagCounts, NOT_RESIDENT};
 use crate::scene::{Bounds, ResidentMesh};
 
 /// A view's camera: put it on an entity with a `Transform`. The camera looks
@@ -64,72 +92,329 @@ impl Default for Environment {
     }
 }
 
-/// Page pool slots the engine creates: 512 MiB of 128 KiB pages, the streaming pool a desktop
-/// AAA renderer starts from. Every page stays resident until streaming (R2b) evicts.
-pub const DEFAULT_POOL_PAGES: u32 = 4096;
+/// A cooked mesh the renderer streams pages from. It stays alive while the mesh is uploaded.
+pub trait MeshData: Send + Sync {
+    /// The checked payload.
+    fn view(&self) -> MeshView<'_>;
+    /// Bulk blob `index` (as `ClusterPage::bulk` counts them), or `None` if it is not loaded.
+    fn bulk(&self, index: usize) -> Option<&[u8]>;
+}
+
+/// How big the page pool is.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct PagePoolDesc {
+    /// Slots of 128 KiB pages.
+    pub slots: u32,
+    /// Page table entries: the pages of every uploaded mesh, resident or not.
+    pub table_entries: u32,
+}
+
+impl PagePoolDesc {
+    /// What the engine creates: 512 MiB of slots, the streaming pool a desktop AAA renderer
+    /// starts from, and a page table for 256 Ki pages (32 GiB of geometry).
+    pub const DEFAULT: Self = Self {
+        slots: 4096,
+        table_entries: 1 << 18,
+    };
+}
+
+impl Default for PagePoolDesc {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+/// The streaming passes' shaders (`Marlin.Engine.Streaming`).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct StreamingShaders<'a> {
+    pub upload: ShaderModule<'a>,
+    pub clear: ShaderModule<'a>,
+}
+
+/// Bytes of push constants the upload pass sets (four words) and the clear (two).
+pub const UPLOAD_PUSH_BYTES: u32 = 16;
+pub const CLEAR_PUSH_BYTES: u32 = 8;
+
+/// Most slots a pool may have: byte offsets into it stay 32-bit.
+pub const MAX_POOL_SLOTS: u32 = 32 << 10;
+
+#[derive(Clone, Copy, Debug)]
+struct PageState {
+    /// Its slot, or [`NOT_RESIDENT`].
+    slot: u32,
+    /// The frame that last read it (or uploaded it).
+    last_used: u64,
+    /// A root page: never evicted.
+    pinned: bool,
+    /// Failed its check: never loaded.
+    failed: bool,
+}
 
 struct Mesh {
+    data: Arc<dyn MeshData>,
     _dag: Buffer,
     _dag_view: ShaderView,
-    /// The pool slot of each page, in DAG order.
-    slots: Vec<u32>,
+    /// Its first page table entry.
+    table: u32,
+    pages: Vec<PageState>,
+    /// Each page's bulk blob.
+    bulk: Vec<u32>,
+    /// Each page's dependencies (every page of its groups' parent groups), the pages that
+    /// depend on it, and its siblings (the other pages of its groups).
+    dependencies: Vec<Vec<u32>>,
+    dependents: Vec<Vec<u32>>,
+    siblings: Vec<Vec<u32>>,
     counts: DagCounts,
     resident: ResidentMesh,
 }
 
-/// The resident meshes and the page pool their pages are in (see the module docs).
+/// A write the next frame's upload pass makes into the pool.
+#[derive(Clone, Copy, Debug)]
+enum Write {
+    /// A page's bytes into its slot.
+    Page {
+        mesh: MeshHandle,
+        page: u32,
+        slot: u32,
+    },
+    /// A page table entry.
+    Entry {
+        mesh: MeshHandle,
+        entry: u32,
+        value: u32,
+    },
+}
+
+impl Write {
+    fn mesh(&self) -> MeshHandle {
+        match *self {
+            Self::Page { mesh, .. } | Self::Entry { mesh, .. } => mesh,
+        }
+    }
+}
+
+/// The writes of one frame's upload pass: ops (destination byte, first data word, words) and
+/// their data.
+pub struct Uploads {
+    ops: Vec<[u32; 4]>,
+    data: Vec<u32>,
+    frame: u64,
+}
+
+impl Uploads {
+    /// Pages and table entries written.
+    pub fn len(&self) -> usize {
+        self.ops.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.ops.is_empty()
+    }
+}
+
+/// What [`Meshes::add_passes`] makes: the pool after this frame's uploads, the used-slot marks
+/// the visibility passes set, and the frame's number for its feedback.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct PagePool<'g> {
+    pub pages: BufferHandle<'g>,
+    /// A u32 per slot, cleared: nonzero once a pass read the slot.
+    pub used: BufferHandle<'g>,
+    pub frame: u64,
+}
+
+/// The visibility passes' feedback of one frame, read back.
+#[derive(Clone, Copy, Debug)]
+pub struct Feedback<'a> {
+    /// [`PagePool::frame`] of the frame.
+    pub frame: u64,
+    /// The used-slot marks ([`PagePool::used`]).
+    pub used: &'a [u8],
+    /// Page requests: (byte offset of the page's table entry in the pool, priority as f32 bits).
+    pub requests: &'a [u8],
+    /// Requests made (may pass what `requests` holds).
+    pub request_count: u32,
+}
+
+#[repr(C)]
+#[derive(Pod, Clone, Copy)]
+struct UploadArgs {
+    ops: u32,
+    data: u32,
+    pool: u32,
+    count: u32,
+}
+
+#[repr(C)]
+#[derive(Pod, Clone, Copy)]
+struct ClearArgs {
+    words: u32,
+    count: u32,
+}
+
+/// The resident meshes and the page pool their pages stream through (see the module docs).
 pub struct Meshes {
     pool: Buffer,
     pool_view: ShaderView,
+    upload: ComputePipeline,
+    clear: ComputePipeline,
+    slots: u32,
     /// Free slots, the lowest last.
     free: Vec<u32>,
+    /// The page in each slot.
+    owner: Vec<Option<(MeshHandle, u32)>>,
+    /// Free runs of page table entries: start → length.
+    table_free: BTreeMap<u32, u32>,
+    /// Owned runs: start → (length, mesh).
+    tables: BTreeMap<u32, (u32, MeshHandle)>,
     meshes: SlotMap<Mesh>,
+    writes: Vec<Write>,
+    /// The frame the next [`add_passes`](Self::add_passes) declares.
+    frame: u64,
+    /// The newest frame whose feedback was applied.
+    seen: u64,
+    /// Pages the last feedback asked for that are still missing.
+    wanted: usize,
+    /// Most pages loaded a frame (each up to 128 KiB of upload).
+    pub max_page_uploads: u32,
 }
 
 impl Meshes {
-    /// A page pool of `pool_pages` slots ([`DEFAULT_POOL_PAGES`] for the engine).
-    pub fn new(device: &Device, pool_pages: u32) -> Result<Self> {
-        let slots = pool_pages.max(1);
+    /// A page pool of `desc`'s size (at most [`MAX_POOL_SLOTS`] slots) and its passes' shaders.
+    pub fn new(
+        device: &Device,
+        desc: &PagePoolDesc,
+        shaders: &StreamingShaders<'_>,
+    ) -> Result<Self> {
+        let slots = desc.slots.clamp(1, MAX_POOL_SLOTS);
+        let entries = desc.table_entries.max(1);
         let pool = device.create_buffer(&BufferDesc {
-            size: geometry::pool_size(slots),
-            usage: BufferUsage::SHADER_READ | BufferUsage::COPY_DST,
+            size: geometry::table_offset(slots) + u64::from(entries) * 4,
+            usage: BufferUsage::SHADER_READ | BufferUsage::SHADER_WRITE | BufferUsage::COPY_DST,
             memory: MemoryLocation::GpuOnly,
         })?;
         let pool_view =
             device.create_buffer_view(&pool, &BufferViewDesc::whole(BufferViewKind::Raw, false))?;
+        let compute = |shader| {
+            device.create_compute_pipeline(&ComputePipelineDesc {
+                shader,
+                cache: None,
+            })
+        };
         Ok(Self {
             pool,
             pool_view,
+            upload: compute(shaders.upload)?,
+            clear: compute(shaders.clear)?,
+            slots,
             free: (0..slots).rev().collect(),
+            owner: alloc::vec![None; slots as usize],
+            table_free: BTreeMap::from([(0, entries)]),
+            tables: BTreeMap::new(),
             meshes: SlotMap::new(),
+            writes: Vec::new(),
+            frame: 1,
+            seen: 0,
+            wanted: 0,
+            max_page_uploads: 64,
         })
     }
 
-    /// Uploads a cooked mesh's cluster DAG, blocking until the GPU has copied it: every page
-    /// into a free slot of the pool, the resident part into a buffer of its own. `pages` are
-    /// the mesh's bulk blobs; each DAG page is checked first. A malformed page is
-    /// `InvalidInput`; a mesh whose pages do not fit in the pool's free slots is `OutOfMemory`.
-    pub fn upload_mesh(
-        &mut self,
-        device: &Device,
-        mesh: &MeshView<'_>,
-        pages: &[&[u8]],
-    ) -> Result<MeshHandle> {
-        let (dag, built) =
-            geometry::build(mesh, pages).map_err(|_| Error::from_kind(ErrorKind::InvalidInput))?;
-        if built.pages.len() > self.free.len() {
-            return Err(Error::from_kind(ErrorKind::OutOfMemory));
+    /// Byte offset of page table entry `entry` in the pool.
+    fn entry_offset(&self, entry: u32) -> u32 {
+        (geometry::table_offset(self.slots) + u64::from(entry) * 4) as u32
+    }
+
+    /// Takes a run of `len` page table entries.
+    fn alloc_table(&mut self, len: u32) -> Option<u32> {
+        let (&start, &free) = self.table_free.iter().find(|(_, l)| **l >= len)?;
+        self.table_free.remove(&start);
+        if free > len {
+            self.table_free.insert(start + len, free - len);
         }
-        let at = self.free.len() - built.pages.len();
-        let slots: Vec<u32> = self.free.drain(at..).rev().collect();
-        let (dag_buffer, dag_view) = match self.copy(device, &dag, &built, &slots) {
+        Some(start)
+    }
+
+    fn free_table(&mut self, start: u32, len: u32) {
+        let (mut start, mut len) = (start, len);
+        if let Some((&before, &l)) = self.table_free.range(..start).next_back()
+            && before + l == start
+        {
+            self.table_free.remove(&before);
+            start = before;
+            len += l;
+        }
+        if let Some(l) = self.table_free.remove(&(start + len)) {
+            len += l;
+        }
+        self.table_free.insert(start, len);
+    }
+
+    /// Uploads a cooked mesh: its resident part into a buffer of its own (blocking until the GPU
+    /// has copied it) and its root pages into the pool (with the next frame's uploads); its other
+    /// pages stream. A malformed root page is `InvalidInput`; a mesh whose root pages find no
+    /// slots, or whose pages find no page table entries, is `OutOfMemory`.
+    pub fn upload_mesh(&mut self, device: &Device, data: Arc<dyn MeshData>) -> Result<MeshHandle> {
+        let invalid = || Error::from_kind(ErrorKind::InvalidInput);
+        let out_of_memory = || Error::from_kind(ErrorKind::OutOfMemory);
+        let view = data.view();
+        let dag = view.cluster_dag;
+        let bulk: Vec<u32> = dag.pages.iter().map(|p| p.bulk).collect();
+        let dependencies: Vec<Vec<u32>> = (0..dag.pages.len())
+            .map(|p| dag.page_dependencies(p).to_vec())
+            .collect();
+        let siblings: Vec<Vec<u32>> = (0..dag.pages.len())
+            .map(|p| dag.page_siblings(p).to_vec())
+            .collect();
+        // Pinned: the root pages and every page of a root group, so the coarsest groups are
+        // always whole, with what they depend on.
+        let mut pinned: Vec<u32> = (0..dag.header.root_page_count).collect();
+        pinned.extend(
+            dag.groups
+                .iter()
+                .filter(|g| g.error == f32::INFINITY)
+                .flat_map(|g| &dag.parts[g.first_part as usize..][..g.part_count as usize])
+                .map(|p| p.page),
+        );
+        pinned.sort_unstable();
+        pinned.dedup();
+        let pinned = dependency_closure(&dependencies, pinned);
+        for &page in &pinned {
+            let bytes = data
+                .bulk(dag.pages[page as usize].bulk as usize)
+                .ok_or_else(invalid)?;
+            if !geometry::check_page(&dag, page as usize, bytes) {
+                return Err(invalid());
+            }
+        }
+        let page_count = bulk.len() as u32;
+        let table = self.alloc_table(page_count).ok_or_else(out_of_memory)?;
+        let mut slots = Vec::with_capacity(pinned.len());
+        for _ in &pinned {
+            match self.take_slot(&[]) {
+                Some(s) => slots.push(s),
+                None => {
+                    self.free.extend(slots.iter().rev());
+                    self.free_table(table, page_count);
+                    return Err(out_of_memory());
+                }
+            }
+        }
+        let dag_bytes = geometry::dag_buffer(&dag, self.entry_offset(table));
+        let (dag_buffer, dag_view) = match copy_to_new_buffer(device, &dag_bytes) {
             Ok(r) => r,
             Err(e) => {
                 self.free.extend(slots.iter().rev());
+                self.free_table(table, page_count);
                 return Err(e);
             }
         };
-        let h = mesh.header;
+        let mut dependents = alloc::vec![Vec::new(); bulk.len()];
+        for (p, deps) in dependencies.iter().enumerate() {
+            for &d in deps {
+                dependents[d as usize].push(p as u32);
+            }
+        }
+        let h = view.header;
         let s = h.sphere;
         let resident = ResidentMesh {
             // Set below, once the slot is known.
@@ -148,101 +433,377 @@ impl Meshes {
                 max: h.bounds_max,
             },
         };
+        let counts = geometry::counts(&dag);
+        let mut pages: Vec<PageState> = (0..bulk.len())
+            .map(|_| PageState {
+                slot: NOT_RESIDENT,
+                last_used: self.frame,
+                pinned: false,
+                failed: false,
+            })
+            .collect();
+        for (&page, &slot) in pinned.iter().zip(&slots) {
+            pages[page as usize].slot = slot;
+            pages[page as usize].pinned = true;
+        }
         let handle = MeshHandle(self.meshes.insert(Mesh {
+            data,
             _dag: dag_buffer,
             _dag_view: dag_view,
-            slots,
-            counts: built.counts,
+            table,
+            bulk,
+            dependencies,
+            dependents,
+            siblings,
+            counts,
             resident,
+            pages,
         }));
-        if let Some(m) = self.meshes.get_mut(handle.0) {
-            m.resident.handle = handle;
+        let Some(mesh) = self.meshes.get_mut(handle.0) else {
+            unreachable!("just inserted");
+        };
+        mesh.resident.handle = handle;
+        self.tables.insert(table, (page_count, handle));
+        for (&page, &slot) in pinned.iter().zip(&slots) {
+            self.owner[slot as usize] = Some((handle, page));
+            self.writes.push(Write::Page {
+                mesh: handle,
+                page,
+                slot,
+            });
+        }
+        for (page, state) in mesh.pages.iter().enumerate() {
+            self.writes.push(Write::Entry {
+                mesh: handle,
+                entry: table + page as u32,
+                value: state.slot,
+            });
         }
         Ok(handle)
     }
 
-    /// Copies the pages into `slots` of the pool and the DAG buffer into a new buffer.
-    fn copy(
-        &self,
-        device: &Device,
-        dag: &ClusterDagView<'_>,
-        built: &Built<'_>,
-        slots: &[u32],
-    ) -> Result<(Buffer, ShaderView)> {
-        let dag_bytes = geometry::dag_buffer(dag, slots);
-        let pages_size: usize = built
-            .pages
-            .iter()
-            .map(|p| p.len().next_multiple_of(16))
-            .sum();
-        let staging = device.create_buffer(&BufferDesc {
-            size: (pages_size + dag_bytes.len()) as u64,
-            usage: BufferUsage::COPY_SRC,
-            memory: MemoryLocation::Upload,
-        })?;
-        let dag_buffer = device.create_buffer(&BufferDesc {
-            size: dag_bytes.len() as u64,
-            usage: BufferUsage::SHADER_READ | BufferUsage::COPY_DST,
-            memory: MemoryLocation::GpuOnly,
-        })?;
-        let mut copies = Vec::with_capacity(built.pages.len());
-        let mut at = 0u64;
-        for (page, &slot) in built.pages.iter().zip(slots) {
-            // SAFETY: the GPU has no work using the new buffer.
-            unsafe { staging.write(at, page) };
-            copies.push((at, u64::from(slot) * PAGE_SIZE as u64, page.len() as u64));
-            at += page.len().next_multiple_of(16) as u64;
+    /// A free slot, evicting for it if there is none; never evicts one of `keep`.
+    fn take_slot(&mut self, keep: &[(MeshHandle, u32)]) -> Option<u32> {
+        if let Some(s) = self.free.pop() {
+            return Some(s);
         }
-        // SAFETY: as above.
-        unsafe { staging.write(at, &dag_bytes) };
-
-        let mut pool = device.create_command_pool()?;
-        let mut list = device.create_command_list(&pool)?;
-        let fence = device.create_fence(0)?;
-        list.begin(&mut pool)?;
-        // Frames in flight read other slots of the pool; the barrier orders the copies after
-        // them all the same.
-        list.buffer_barriers(&[BufferBarrier {
-            buffer: &self.pool,
-            before: BufferState::SHADER_READ,
-            after: BufferState::COPY_DST,
-        }]);
-        for &(src, dst, size) in &copies {
-            list.copy_buffer(&staging, src, &self.pool, dst, size);
-        }
-        list.copy_buffer(&staging, at, &dag_buffer, 0, dag_bytes.len() as u64);
-        list.buffer_barriers(&[
-            BufferBarrier {
-                buffer: &self.pool,
-                before: BufferState::COPY_DST,
-                after: BufferState::SHADER_READ,
-            },
-            BufferBarrier {
-                buffer: &dag_buffer,
-                before: BufferState::COPY_DST,
-                after: BufferState::SHADER_READ,
-            },
-        ]);
-        list.end()?;
-        // SAFETY: everything the list uses lives until the wait below returns.
-        unsafe { device.queue().submit(&[&list], Some((&fence, 1)))? };
-        fence.wait(1, None)?;
-        let view = device.create_buffer_view(
-            &dag_buffer,
-            &BufferViewDesc::whole(BufferViewKind::Raw, false),
-        )?;
-        Ok((dag_buffer, view))
+        self.evict_one(keep);
+        self.free.pop()
     }
 
-    /// Frees a mesh's DAG buffer and its pool slots. Its handle draws nothing from now on.
+    /// Evicts the least recently used page that may go, with every resident page that depends
+    /// on it: not pinned, not read in the newest frame seen, not one of `keep`.
+    fn evict_one(&mut self, keep: &[(MeshHandle, u32)]) -> bool {
+        let seen = self.seen;
+        let mut candidates: Vec<(u64, MeshHandle, u32)> = self
+            .owner
+            .iter()
+            .flatten()
+            .filter_map(|&(m, p)| {
+                let state = self.meshes.get(m.0)?.pages[p as usize];
+                (!state.pinned && state.last_used < seen).then_some((state.last_used, m, p))
+            })
+            .collect();
+        candidates.sort_unstable_by_key(|c| c.0);
+        for (_, m, p) in candidates {
+            let Some(mesh) = self.meshes.get(m.0) else {
+                continue;
+            };
+            // The page and every resident page that depends on it, transitively.
+            let mut closure = alloc::vec![p];
+            let mut i = 0;
+            while i < closure.len() {
+                for &d in &mesh.dependents[closure[i] as usize] {
+                    if mesh.pages[d as usize].slot != NOT_RESIDENT && !closure.contains(&d) {
+                        closure.push(d);
+                    }
+                }
+                i += 1;
+            }
+            let blocked = closure.iter().any(|&q| {
+                let s = mesh.pages[q as usize];
+                s.pinned || s.last_used >= seen || keep.contains(&(m, q))
+            });
+            if blocked {
+                continue;
+            }
+            let Some(mesh) = self.meshes.get_mut(m.0) else {
+                continue;
+            };
+            let table = mesh.table;
+            for &q in &closure {
+                let slot = core::mem::replace(&mut mesh.pages[q as usize].slot, NOT_RESIDENT);
+                self.owner[slot as usize] = None;
+                self.free.push(slot);
+                self.writes.push(Write::Entry {
+                    mesh: m,
+                    entry: table + q,
+                    value: NOT_RESIDENT,
+                });
+            }
+            return true;
+        }
+        false
+    }
+
+    /// Applies one frame's feedback (see the module docs): refreshes used pages and loads
+    /// requested ones, evicting for them, up to [`max_page_uploads`](Self::max_page_uploads).
+    pub fn apply_feedback(&mut self, feedback: &Feedback<'_>) {
+        self.seen = self.seen.max(feedback.frame);
+        for (slot, w) in feedback.used.as_chunks::<4>().0.iter().enumerate() {
+            if u32::from_le_bytes(*w) == 0 {
+                continue;
+            }
+            if let Some(Some((m, p))) = self.owner.get(slot)
+                && let Some(mesh) = self.meshes.get_mut(m.0)
+            {
+                let state = &mut mesh.pages[*p as usize];
+                state.last_used = state.last_used.max(feedback.frame);
+            }
+        }
+
+        // Requested pages, deduplicated, highest priority first.
+        let table = geometry::table_offset(self.slots);
+        let count = (feedback.request_count as usize).min(feedback.requests.len() / 8);
+        let mut wanted: BTreeMap<u32, f32> = BTreeMap::new();
+        for r in feedback.requests[..count * 8].as_chunks::<8>().0 {
+            let at = u64::from(u32::from_le_bytes([r[0], r[1], r[2], r[3]]));
+            let priority = f32::from_le_bytes([r[4], r[5], r[6], r[7]]);
+            if at < table || !(at - table).is_multiple_of(4) {
+                continue;
+            }
+            let entry = ((at - table) / 4) as u32;
+            let p = wanted.entry(entry).or_insert(priority);
+            *p = p.max(priority);
+        }
+        let mut order: Vec<(f32, MeshHandle, u32)> = wanted
+            .into_iter()
+            .filter_map(|(entry, priority)| {
+                let (&start, &(len, mesh)) = self.tables.range(..=entry).next_back()?;
+                (entry < start + len).then_some((priority, mesh, entry - start))
+            })
+            .collect();
+        order.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
+
+        let mut loaded: Vec<(MeshHandle, u32)> = Vec::new();
+        let mut missing = 0;
+        for (_, m, page) in order {
+            let Some(mesh) = self.meshes.get(m.0) else {
+                continue;
+            };
+            // The page with its siblings (its groups whole) and what they depend on,
+            // transitively, that is not resident yet.
+            let mut start = alloc::vec![page];
+            start.extend(&mesh.siblings[page as usize]);
+            let mut closure = dependency_closure(&mesh.dependencies, start);
+            closure.retain(|&q| mesh.pages[q as usize].slot == NOT_RESIDENT);
+            if closure.is_empty() {
+                continue;
+            }
+            if closure.iter().any(|&q| mesh.pages[q as usize].failed)
+                // A closure larger than the budget still loads, alone in its frame.
+                || (!loaded.is_empty()
+                    && loaded.len() + closure.len() > self.max_page_uploads as usize)
+                || !self.load(m, &closure, &mut loaded)
+            {
+                missing += 1;
+            }
+        }
+        self.wanted = missing;
+    }
+
+    /// Loads `pages` of mesh `m` together, or none of them: their checks, then slots (evicting
+    /// for them, but none of `loaded` or `pages`).
+    fn load(&mut self, m: MeshHandle, pages: &[u32], loaded: &mut Vec<(MeshHandle, u32)>) -> bool {
+        let Some(data) = self.meshes.get(m.0).map(|mesh| mesh.data.clone()) else {
+            return false;
+        };
+        let bad: Vec<u32> = {
+            let view = data.view();
+            let Some(mesh) = self.meshes.get(m.0) else {
+                return false;
+            };
+            pages
+                .iter()
+                .copied()
+                .filter(|&q| {
+                    !data
+                        .bulk(mesh.bulk[q as usize] as usize)
+                        .is_some_and(|b| geometry::check_page(&view.cluster_dag, q as usize, b))
+                })
+                .collect()
+        };
+        if !bad.is_empty() {
+            if let Some(mesh) = self.meshes.get_mut(m.0) {
+                for q in bad {
+                    mesh.pages[q as usize].failed = true;
+                }
+            }
+            return false;
+        }
+        let mut keep: Vec<(MeshHandle, u32)> = loaded.clone();
+        keep.extend(pages.iter().map(|&q| (m, q)));
+        let mut slots = Vec::with_capacity(pages.len());
+        for _ in pages {
+            match self.take_slot(&keep) {
+                Some(s) => slots.push(s),
+                None => {
+                    self.free.extend(slots.iter().rev());
+                    return false;
+                }
+            }
+        }
+        let frame = self.frame;
+        let Some(mesh) = self.meshes.get_mut(m.0) else {
+            self.free.extend(slots.iter().rev());
+            return false;
+        };
+        let table = mesh.table;
+        for (&q, &slot) in pages.iter().zip(&slots) {
+            let state = &mut mesh.pages[q as usize];
+            state.slot = slot;
+            state.last_used = frame;
+            self.owner[slot as usize] = Some((m, q));
+            self.writes.push(Write::Page {
+                mesh: m,
+                page: q,
+                slot,
+            });
+            self.writes.push(Write::Entry {
+                mesh: m,
+                entry: table + q,
+                value: slot,
+            });
+            loaded.push((m, q));
+        }
+        true
+    }
+
+    /// Loads every page of `mesh` with the next frame's uploads, evicting for them if it must
+    /// (a level's loading screen, a cinematic's close-up, tools): all of them, or none if they
+    /// do not fit or one fails its check. Not bounded by
+    /// [`max_page_uploads`](Self::max_page_uploads).
+    pub fn prefetch(&mut self, mesh: MeshHandle) -> bool {
+        let Some(m) = self.meshes.get(mesh.0) else {
+            return false;
+        };
+        let missing: Vec<u32> = (0..m.pages.len() as u32)
+            .filter(|&p| m.pages[p as usize].slot == NOT_RESIDENT)
+            .collect();
+        missing.is_empty() || self.load(mesh, &missing, &mut Vec::new())
+    }
+
+    /// Whether streaming has caught up: no writes pending, and the last feedback asked for no
+    /// page it could not load.
+    pub fn streaming_idle(&self) -> bool {
+        self.writes.is_empty() && self.wanted == 0
+    }
+
+    /// Takes the writes for this frame's upload pass (call once a frame, before
+    /// [`add_passes`](Self::add_passes)). The last write to a slot or table entry wins.
+    pub fn take_uploads(&mut self) -> Uploads {
+        let frame = self.frame;
+        self.frame += 1;
+        let mut pages: BTreeMap<u32, (MeshHandle, u32)> = BTreeMap::new();
+        let mut entries: BTreeMap<u32, u32> = BTreeMap::new();
+        for w in core::mem::take(&mut self.writes) {
+            match w {
+                Write::Page { mesh, page, slot } => {
+                    pages.insert(slot, (mesh, page));
+                }
+                Write::Entry { entry, value, .. } => {
+                    entries.insert(entry, value);
+                }
+            }
+        }
+        let mut ops = Vec::new();
+        let mut data: Vec<u32> = Vec::new();
+        for (slot, (m, page)) in pages {
+            let Some(mesh) = self.meshes.get(m.0) else {
+                continue;
+            };
+            let Some(bytes) = mesh.data.bulk(mesh.bulk[page as usize] as usize) else {
+                continue;
+            };
+            let first = data.len() as u32;
+            data.extend(bytes.chunks(4).map(|c| {
+                u32::from_le_bytes(core::array::from_fn(|i| c.get(i).copied().unwrap_or(0)))
+            }));
+            ops.push([
+                (u64::from(slot) * PAGE_SIZE as u64) as u32,
+                first,
+                data.len() as u32 - first,
+                0,
+            ]);
+        }
+        for (entry, value) in entries {
+            ops.push([self.entry_offset(entry), data.len() as u32, 1, 0]);
+            data.push(value);
+        }
+        Uploads { ops, data, frame }
+    }
+
+    /// Declares the frame's upload pass (`uploads`, from [`take_uploads`](Self::take_uploads))
+    /// into the imported pool, and the cleared used-slot marks.
+    pub fn add_passes<'g>(&'g self, g: &mut RenderGraph<'g>, uploads: Uploads) -> PagePool<'g> {
+        let mut pages = g.import_buffer("PagePool", &self.pool);
+        let frame = uploads.frame;
+        if !uploads.ops.is_empty() {
+            pages = g.add_compute("PageUpload", |b| {
+                let pool = b.write_buffer(pages, Access::ComputeWrite);
+                (pool, move |ctx: &mut PassContext<'_>| {
+                    let count = uploads.ops.len() as u32;
+                    let ops = ctx.upload_slice(&uploads.ops);
+                    let data = ctx.upload_slice(&uploads.data);
+                    ctx.set_pipeline(&self.upload);
+                    ctx.push(&UploadArgs {
+                        ops,
+                        data,
+                        pool: ctx.uav(pool),
+                        count,
+                    });
+                    ctx.dispatch(count.min(65535), count.div_ceil(65535), 1);
+                })
+            });
+        }
+        let slots = self.slots;
+        let used = g.create_buffer(
+            "PageUsed",
+            GraphBufferDesc::structured::<u32>(u64::from(slots)),
+        );
+        let used = g.add_compute("PageUsedClear", |b| {
+            let used = b.write_buffer(used, Access::ComputeWrite);
+            (used, move |ctx: &mut PassContext<'_>| {
+                ctx.set_pipeline(&self.clear);
+                ctx.push(&ClearArgs {
+                    words: ctx.uav(used),
+                    count: slots,
+                });
+                ctx.dispatch(slots.div_ceil(64), 1, 1);
+            })
+        });
+        PagePool { pages, used, frame }
+    }
+
+    /// Frees a mesh's DAG buffer, its slots and its page table entries. Its handle draws nothing
+    /// from now on.
     ///
     /// # Safety
     /// The GPU has finished every frame that drew the mesh (after `frames_in_flight` more frames,
     /// or a wait for idle).
     pub unsafe fn release_mesh(&mut self, mesh: MeshHandle) {
-        if let Some(m) = self.meshes.remove(mesh.0) {
-            self.free.extend(m.slots.iter().rev());
+        let Some(m) = self.meshes.remove(mesh.0) else {
+            return;
+        };
+        for state in &m.pages {
+            if state.slot != NOT_RESIDENT {
+                self.owner[state.slot as usize] = None;
+                self.free.push(state.slot);
+            }
         }
+        self.writes.retain(|w| w.mesh() != mesh);
+        self.tables.remove(&m.table);
+        self.free_table(m.table, m.pages.len() as u32);
     }
 
     /// What one instance of `mesh` may add to the visibility passes' buffers (zero if it was
@@ -263,6 +824,13 @@ impl Meshes {
         self.free.len()
     }
 
+    /// Resident pages of `mesh` (0 if it was released).
+    pub fn resident_pages(&self, mesh: MeshHandle) -> usize {
+        self.meshes.get(mesh.0).map_or(0, |m| {
+            m.pages.iter().filter(|p| p.slot != NOT_RESIDENT).count()
+        })
+    }
+
     /// What the GPU Scene's mesh table needs of `mesh` (for `MeshUpdate::Resident`). `None` if
     /// the mesh was released.
     pub fn resident_mesh(&self, mesh: MeshHandle) -> Option<ResidentMesh> {
@@ -270,9 +838,60 @@ impl Meshes {
     }
 
     /// The pool slot holding page `page` (in DAG order) of `mesh`, for tools and reference
-    /// rasterizers that address clusters as the visibility passes do. `None` if the mesh was
-    /// released or has no such page.
+    /// rasterizers that address clusters as the visibility passes do. `None` if the page is not
+    /// resident or the mesh was released.
     pub fn page_slot(&self, mesh: MeshHandle, page: usize) -> Option<u32> {
-        self.meshes.get(mesh.0)?.slots.get(page).copied()
+        let slot = self.meshes.get(mesh.0)?.pages.get(page)?.slot;
+        (slot != NOT_RESIDENT).then_some(slot)
     }
+}
+
+/// A new GPU buffer holding `bytes`, read through a raw view, copied before this returns.
+fn copy_to_new_buffer(device: &Device, bytes: &[u8]) -> Result<(Buffer, ShaderView)> {
+    let size = bytes.len() as u64;
+    let staging = device.create_buffer(&BufferDesc {
+        size,
+        usage: BufferUsage::COPY_SRC,
+        memory: MemoryLocation::Upload,
+    })?;
+    // SAFETY: the GPU has no work using the new buffer.
+    unsafe { staging.write(0, bytes) };
+    let buffer = device.create_buffer(&BufferDesc {
+        size,
+        usage: BufferUsage::SHADER_READ | BufferUsage::COPY_DST,
+        memory: MemoryLocation::GpuOnly,
+    })?;
+    let mut pool = device.create_command_pool()?;
+    let mut list = device.create_command_list(&pool)?;
+    let fence = device.create_fence(0)?;
+    list.begin(&mut pool)?;
+    list.copy_buffer(&staging, 0, &buffer, 0, size);
+    list.buffer_barriers(&[BufferBarrier {
+        buffer: &buffer,
+        before: BufferState::COPY_DST,
+        after: BufferState::SHADER_READ,
+    }]);
+    list.end()?;
+    // SAFETY: everything the list uses lives until the wait below returns.
+    unsafe { device.queue().submit(&[&list], Some((&fence, 1)))? };
+    fence.wait(1, None)?;
+    let view =
+        device.create_buffer_view(&buffer, &BufferViewDesc::whole(BufferViewKind::Raw, false))?;
+    Ok((buffer, view))
+}
+
+/// `start` and every page it depends on, transitively, sorted.
+fn dependency_closure(dependencies: &[Vec<u32>], start: Vec<u32>) -> Vec<u32> {
+    let mut seen = alloc::vec![false; dependencies.len()];
+    let mut stack = start;
+    let mut out = Vec::new();
+    while let Some(p) = stack.pop() {
+        if core::mem::replace(&mut seen[p as usize], true) {
+            continue;
+        }
+        out.push(p);
+        stack.extend(&dependencies[p as usize]);
+    }
+    out.sort_unstable();
+    out
 }

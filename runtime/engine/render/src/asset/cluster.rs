@@ -192,11 +192,15 @@ pub struct ClusterPage {
     /// Bulk blob index.
     pub bulk: u32,
     pub cluster_count: u32,
-    /// The pages that must be resident before this one is used: the other pages of its groups
-    /// and the pages of the clusters its groups were simplified to (always earlier pages). A
-    /// group split across pages needs all of them, so its pages stream in and out together.
+    /// The pages that must be resident while this one is: every page of every parent group of
+    /// its groups (the groups holding the coarser clusters its groups were simplified to). They
+    /// are always earlier pages. `dependency_count` entries of the dependency list from
+    /// `first_dependency`.
     pub first_dependency: u32,
     pub dependency_count: u32,
+    /// The other pages of its groups, right after its dependencies in the list: a group split
+    /// across pages is drawn only once all of them are resident, so they stream in together.
+    pub sibling_count: u32,
 }
 
 /// A group of the DAG, resident.
@@ -527,7 +531,7 @@ impl<'a> ClusterDagView<'a> {
             let size = *bulk_sizes.get(p.bulk as usize).ok_or(bad)?;
             let deps = dependencies
                 .get(p.first_dependency as usize..)
-                .and_then(|d| d.get(..p.dependency_count as usize))
+                .and_then(|d| d.get(..p.dependency_count as usize + p.sibling_count as usize))
                 .ok_or(bad)?;
             if size > PAGE_SIZE as u64
                 || deps
@@ -612,11 +616,19 @@ impl<'a> ClusterDagView<'a> {
         })
     }
 
-    /// The dependencies of page `page`.
+    /// The dependencies of page `page`: every page of its groups' parent groups.
     pub fn page_dependencies(&self, page: usize) -> &'a [u32] {
         let p = &self.pages[page];
         // Checked in `new`.
         &self.dependencies[p.first_dependency as usize..][..p.dependency_count as usize]
+    }
+
+    /// The other pages of page `page`'s groups.
+    pub fn page_siblings(&self, page: usize) -> &'a [u32] {
+        let p = &self.pages[page];
+        // Checked in `new`.
+        &self.dependencies[p.first_dependency as usize + p.dependency_count as usize..]
+            [..p.sibling_count as usize]
     }
 
     /// Checks loaded page `page` ([`PageView::new`]) and that its clusters agree with the

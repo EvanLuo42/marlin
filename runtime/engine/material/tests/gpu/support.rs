@@ -10,8 +10,8 @@ use marlin_render::scene::{
     MeshUpdate,
 };
 use marlin_render::{
-    Camera, Environment, Lighting, Meshes, RenderScene, ScatterShader, SceneUpdates, Visibility,
-    VisibilityShaders,
+    Camera, Environment, Lighting, Meshes, PagePoolDesc, RenderScene, ScatterShader, SceneUpdates,
+    StreamingShaders, Visibility, VisibilityShaders,
 };
 use marlin_render_graph::{
     Access, FrameContext, FrameContextDesc, PassContext, TextureDesc as GraphTextureDesc,
@@ -113,7 +113,18 @@ impl Harness {
         ));
         Self {
             device,
-            meshes: Meshes::new(device, 64).unwrap(),
+            meshes: Meshes::new(
+                device,
+                &PagePoolDesc {
+                    slots: 64,
+                    table_entries: 1024,
+                },
+                &StreamingShaders {
+                    upload: shader("Marlin.Engine.Streaming.PageUpload"),
+                    clear: shader("Marlin.Engine.Streaming.ClearWords"),
+                },
+            )
+            .unwrap(),
             scene: RenderScene::new(),
             scatter,
             vis,
@@ -136,8 +147,10 @@ impl Harness {
     pub fn upload(&mut self, mesh: &cook::Cooked) -> MeshId {
         let handle = self
             .meshes
-            .upload_mesh(self.device, &mesh.view(), &mesh.pages())
+            .upload_mesh(self.device, std::sync::Arc::new(mesh.clone()))
             .unwrap();
+        // Every page resident: these tests are about materials, not streaming.
+        assert!(self.meshes.prefetch(handle));
         let id = self.scene.ids().meshes.reserve();
         self.updates.meshes.push(id, MeshUpdate::Add);
         let resident = self.meshes.resident_mesh(handle).unwrap();
@@ -180,6 +193,7 @@ impl Harness {
     pub fn frame(&mut self, debug: Option<MaterialDebug>) -> Frame {
         let updates = core::mem::take(&mut self.updates);
         self.scene.apply(&updates);
+        let uploads = self.meshes.take_uploads();
         let (meshes, scene, scatter, vis, materials) = (
             &self.meshes,
             &mut self.scene,
@@ -191,8 +205,9 @@ impl Harness {
         let (tickets, debug_ticket) = self
             .frame
             .execute(self.device, |g, _| {
+                let pool = meshes.add_passes(g, uploads);
                 let gpu = scene.add_passes(g, scatter);
-                let v = vis.add_passes(g, meshes, scene, gpu, camera, WIDTH, HEIGHT);
+                let v = vis.add_passes(g, meshes, scene, gpu, pool, camera, WIDTH, HEIGHT);
                 let out = materials.add_passes(g, gpu, &v, camera, previous, WIDTH, HEIGHT);
                 let debug = debug.map(|mode| {
                     let view = materials.add_debug_pass(g, &out, mode);
@@ -280,6 +295,7 @@ impl Harness {
     pub fn lit_image(&mut self, width: u32, height: u32) -> Image {
         let updates = core::mem::take(&mut self.updates);
         self.scene.apply(&updates);
+        let uploads = self.meshes.take_uploads();
         let (meshes, scene, scatter, vis, materials, lighting, unorm) = (
             &self.meshes,
             &mut self.scene,
@@ -293,8 +309,9 @@ impl Harness {
         let ticket = self
             .frame
             .execute(self.device, |g, _| {
+                let pool = meshes.add_passes(g, uploads);
                 let gpu = scene.add_passes(g, scatter);
-                let v = vis.add_passes(g, meshes, scene, gpu, camera, width, height);
+                let v = vis.add_passes(g, meshes, scene, gpu, pool, camera, width, height);
                 let out = materials.add_passes(g, gpu, &v, camera, previous, width, height);
                 let env = *scene.environment();
                 let lit = lighting.add_passes(g, Some(out.material), &env, width, height);

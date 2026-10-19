@@ -18,9 +18,15 @@ impl Cooked {
         let sizes: Vec<u64> = self.pages.iter().map(|p| p.len() as u64).collect();
         MeshView::new(&self.payload, &sizes).unwrap()
     }
+}
 
-    pub fn pages(&self) -> Vec<&[u8]> {
-        self.pages.iter().map(Vec::as_slice).collect()
+impl marlin_render::MeshData for Cooked {
+    fn view(&self) -> MeshView<'_> {
+        Cooked::view(self)
+    }
+
+    fn bulk(&self, index: usize) -> Option<&[u8]> {
+        self.pages.get(index).map(Vec::as_slice)
     }
 }
 

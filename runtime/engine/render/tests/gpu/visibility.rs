@@ -25,7 +25,7 @@ fn rgba8(c: [f32; 4]) -> u32 {
 /// of the CPU's cut, each once; the same pixels covered, at the same depth (the two pipelines
 /// rasterize the same positions: on the test GPU they agree exactly); the depth texture split
 /// out exactly; every id naming a drawn cluster and one of its triangles.
-fn check_against_reference(h: &Harness, f: &VisFrame) {
+pub(crate) fn check_against_reference(h: &Harness, f: &VisFrame) {
     let [_, found, drawn] = f.counters;
     assert_eq!(found, drawn, "the capacity held every cluster");
     assert!(drawn <= f.capacity);
@@ -58,6 +58,19 @@ fn check_against_reference(h: &Harness, f: &VisFrame) {
             "pixel {p}: depths"
         );
     }
+}
+
+/// Frames until streaming has caught up, each checked against the reference; the last (the
+/// first frame that drew every page it wanted).
+pub(crate) fn settle(h: &mut Harness) -> VisFrame {
+    for _ in 0..64 {
+        let f = h.visibility_frame();
+        check_against_reference(h, &f);
+        if h.meshes.streaming_idle() {
+            return f;
+        }
+    }
+    panic!("streaming did not settle in 64 frames");
 }
 
 /// Checks that every covered pixel's cluster belongs to the instance whose color the reference
@@ -142,7 +155,7 @@ fn the_visibility_buffer_matches_the_reference() {
     let mut h = Harness::new(Environment::default());
     h.camera_at(4.0);
     let (inside, rows) = scene(&mut h);
-    let f = h.visibility_frame();
+    let f = settle(&mut h);
     assert_eq!(f.counters[0], 4, "the instances in the frustum");
     assert!(f.levels >= 1);
     check_against_reference(&h, &f);
@@ -153,7 +166,7 @@ fn the_visibility_buffer_matches_the_reference() {
         inside[1],
         InstanceUpdate::Transform(Transform::from_translation(Vec3::new(0.0, 50.0, 0.0))),
     );
-    let f = h.visibility_frame();
+    let f = settle(&mut h);
     assert_eq!(f.counters[0], 3);
     check_against_reference(&h, &f);
     check_instances(&f, &rows);
@@ -166,7 +179,7 @@ fn coarser_cuts_still_match_the_reference() {
     let (_, rows) = scene(&mut h);
     for budget in [0.5, 1.0, 4.0, 16.0] {
         h.vis.lod_error_pixels = budget;
-        let f = h.visibility_frame();
+        let f = settle(&mut h);
         check_against_reference(&h, &f);
         check_instances(&f, &rows);
     }
@@ -177,39 +190,39 @@ fn hidden_removed_and_unresident_instances_are_not_drawn() {
     let mut h = Harness::new(Environment::default());
     h.camera_at(3.0);
     let a = h.add(h.cube, Transform::IDENTITY, [1.0, 0.0, 0.0, 1.0]);
-    let f = h.visibility_frame();
+    let f = settle(&mut h);
     assert_eq!(f.counters[0], 1);
     check_against_reference(&h, &f);
 
     h.set(a, InstanceUpdate::Flags(flags::HIDDEN));
-    let f = h.visibility_frame();
+    let f = settle(&mut h);
     assert_eq!(f.counters[0], 0, "hidden");
     assert!(f.visbuffer.iter().all(|&v| v == 0));
     check_against_reference(&h, &f);
     h.set(a, InstanceUpdate::Flags(0));
-    assert_eq!(h.visibility_frame().counters[0], 1, "shown again");
+    assert_eq!(settle(&mut h).counters[0], 1, "shown again");
 
     // A mesh referenced but not resident yet draws nothing; once resident it does.
     let pending = h.scene.ids().meshes.reserve();
     h.updates.meshes.push(pending, MeshUpdate::Add);
     h.set(a, InstanceUpdate::Mesh(pending));
-    assert_eq!(h.visibility_frame().counters[0], 0, "not resident");
+    assert_eq!(settle(&mut h).counters[0], 0, "not resident");
     let (_, handle) = h.upload(&cube());
     let resident = h.meshes.resident_mesh(handle).unwrap();
     h.updates
         .meshes
         .push(pending, MeshUpdate::Resident(resident));
-    let f = h.visibility_frame();
+    let f = settle(&mut h);
     assert_eq!(f.counters[0], 1, "resident");
     check_against_reference(&h, &f);
 
     // Removed: nothing, and its row comes back for the next instance.
     h.set(a, InstanceUpdate::Remove);
-    let f = h.visibility_frame();
+    let f = settle(&mut h);
     assert_eq!(f.counters, [0, 0, 0]);
     let b = h.add(h.cube, Transform::IDENTITY, [0.0, 1.0, 0.0, 1.0]);
     assert_eq!(b.index(), a.index());
-    let f = h.visibility_frame();
+    let f = settle(&mut h);
     assert_eq!(f.counters[0], 1);
     check_against_reference(&h, &f);
 }
@@ -221,7 +234,7 @@ fn back_facing_clusters_are_culled_without_changing_the_picture() {
     let (ball, _) = h.upload(&s);
     h.camera_at(2.0);
     h.add(ball, Transform::IDENTITY, [1.0; 4]);
-    let f = h.visibility_frame();
+    let f = settle(&mut h);
     assert_eq!(f.counters[0], 1);
     let drawn = f.counters[2];
     // A budget of 0 draws the finest level: a curved surface's every simplification has an
@@ -252,7 +265,7 @@ fn farther_instances_draw_coarser_cuts() {
             )
         })
         .collect();
-    let f = h.visibility_frame();
+    let f = settle(&mut h);
     assert_eq!(f.counters[0], ids.len() as u32);
     check_against_reference(&h, &f);
     // Triangles and the finest level in each instance's cut.
@@ -278,7 +291,7 @@ fn farther_instances_draw_coarser_cuts() {
 fn an_empty_view_leaves_the_buffer_clear() {
     let mut h = Harness::new(Environment::default());
     h.camera_at(3.0);
-    let f = h.visibility_frame();
+    let f = settle(&mut h);
     assert_eq!(f.counters, [0, 0, 0]);
     assert_eq!((f.nodes, f.parts), (0, 0));
     assert!(f.visbuffer.iter().all(|&v| v == 0));

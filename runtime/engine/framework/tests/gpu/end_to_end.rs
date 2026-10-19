@@ -126,8 +126,17 @@ fn start<'a>(boot: &'a Boot) -> (Engine<'a>, Viewer, Vec<u32>) {
             false
         }
     });
-    // The frame that sent the last uploads, then one more to be sure everything is drawn.
-    viewer.frame(&mut engine);
+    // Then frames until the meshes' pages have streamed in: the frame after streaming catches
+    // up draws every page it wants.
+    let mut frames = 0;
+    loop {
+        viewer.frame(&mut engine);
+        frames += 1;
+        if viewer.render.streaming_idle() {
+            break;
+        }
+        assert!(frames < 64, "streaming did not catch up");
+    }
     let pixels = viewer.frame(&mut engine);
     (engine, viewer, pixels)
 }

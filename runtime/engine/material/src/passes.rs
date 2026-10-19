@@ -322,6 +322,8 @@ impl Materials {
             let meshes = b.read_buffer(gpu.meshes, Access::ComputeRead);
             let materials = b.read_buffer(gpu.materials, Access::ComputeRead);
             let counts = b.read_buffer(counts, Access::ComputeRead);
+            // The triangles are read from the page pool through the mesh table's view.
+            b.read_buffer(vis.pages, Access::ComputeRead);
             let pixels = b.read_buffer(pixels, Access::ComputeRead);
             let material = b.write_texture(material, Access::ComputeWrite);
             let velocity = b.write_texture(velocity, Access::ComputeWrite);

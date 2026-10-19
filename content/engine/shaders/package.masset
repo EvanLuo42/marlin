@@ -14,6 +14,7 @@ ShaderPackage
         `source:shaders/Post/Post.mshader`,
         `source:shaders/Scene/Geometry.mshader`,
         `source:shaders/Scene/Scene.mshader`,
+        `source:shaders/Streaming/Streaming.mshader`,
         `source:shaders/Ui/Ui.mshader`,
         `source:shaders/Visibility/Visibility.mshader`,
     ]

@@ -37,7 +37,7 @@ struct Tables {
 }
 
 fn frame(h: &mut Harness) -> Tables {
-    let tickets = h.frame_with(read_all);
+    let tickets = h.frame_with(|g, gpu, _| read_all(g, gpu));
     let [data, transforms, bounds, lights] = tickets.map(|t| words(&h.wait_readback(t)));
     Tables {
         data,
@@ -201,7 +201,7 @@ fn materials_and_their_parameters_reach_their_tables() {
     let instance = h.add(h.cube, Transform::IDENTITY, [1.0; 4]);
     h.set(instance, InstanceUpdate::Material(c));
     let read = |h: &mut Harness| {
-        let tickets = h.frame_with(|g, gpu| {
+        let tickets = h.frame_with(|g, gpu, _| {
             [
                 g.readback(gpu.materials),
                 g.readback(gpu.material_params[1]),

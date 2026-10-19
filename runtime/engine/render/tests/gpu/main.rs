@@ -11,4 +11,5 @@ mod support;
 mod geometry;
 mod gpu_scene;
 mod post;
+mod streaming;
 mod visibility;

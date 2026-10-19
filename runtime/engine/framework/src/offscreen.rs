@@ -35,6 +35,7 @@ impl Offscreen {
         render: &mut RenderSide,
         delta: &RenderDelta,
     ) -> marlin_rhi::Result<Vec<u32>> {
+        render.collect_feedback(&mut self.frame);
         render.apply(device, delta)?;
         let (width, height) = (self.width, self.height);
         let ticket = self.frame.execute(device, |g, _| {

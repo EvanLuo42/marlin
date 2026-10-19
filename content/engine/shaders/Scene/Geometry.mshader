@@ -2,10 +2,11 @@ namespace Marlin.Engine.Scene;
 
 // Resident geometry (0009 §3.2): a cooked mesh's cluster DAG on the GPU, decoded where it is
 // read. marlin-render's `geometry` module lays it out: the pages in slots of the page pool, as
-// cooked (`marlin_render::asset::cluster`'s streams, offsets from the slot's start), and each
-// mesh's resident part in its DAG buffer: four words (the groups', parts' and page table's byte
-// offsets, the node count), the hierarchy nodes from byte 16, the groups, the parts and the page
-// table (a slot per page).
+// cooked (`marlin_render::asset::cluster`'s streams, offsets from the slot's start), then the
+// page table (a slot per page of every mesh, `0xFFFFFFFF` while the page is not resident); each
+// mesh's resident part in its DAG buffer: four words (the groups' and parts' byte offsets, the
+// byte offset of its page table entries in the pool, the node count), the hierarchy nodes from
+// byte 16, the groups and the parts.
 //
 // A cluster is addressed as `slot << 12 | cluster`: its page's pool slot and its index in the
 // page.
@@ -163,6 +164,8 @@ public struct DagGroup
     public float4 Sphere;
     /// Object-space simplification error; +∞ for a root group.
     public float Error;
+    public uint FirstPart;
+    public uint PartCount;
 }
 
 public DagGroup LoadGroup(ReadOnlyByteBuffer dag, uint group)
@@ -172,6 +175,8 @@ public DagGroup LoadGroup(ReadOnlyByteBuffer dag, uint group)
     {
         Sphere = AsFloat(dag.Load4(at)),
         Error = AsFloat(dag.Load(at + 16)),
+        FirstPart = dag.Load(at + 24),
+        PartCount = dag.Load(at + 28),
     };
 }
 
@@ -190,8 +195,23 @@ public DagPart LoadPart(ReadOnlyByteBuffer dag, uint part)
     return DagPart { Page = w.x, FirstCluster = w.y, ClusterCount = w.z, Group = w.w };
 }
 
-/// The pool slot of page `page`.
-public uint PageSlot(ReadOnlyByteBuffer dag, uint page) => dag.Load(dag.Load(8) + page * 4);
+/// The byte offset in the pool of page `page`'s table entry.
+public uint PageEntry(ReadOnlyByteBuffer dag, uint page) => dag.Load(8) + page * 4;
+
+/// The pool slot of page `page`, or `0xFFFFFFFF` while it is not resident.
+public uint PageSlot(ReadOnlyByteBuffer pool, ReadOnlyByteBuffer dag, uint page) => pool.Load(PageEntry(dag, page));
+
+/// Whether every page of group `group` is resident.
+public bool GroupResident(ReadOnlyByteBuffer pool, ReadOnlyByteBuffer dag, uint group)
+{
+    DagGroup g = LoadGroup(dag, group);
+    for (uint i = 0; i < g.PartCount; i++)
+    {
+        if (PageSlot(pool, dag, LoadPart(dag, g.FirstPart + i).Page) == 4294967295)
+            return false;
+    }
+    return true;
+}
 
 /// A child of a hierarchy node (`HierarchyChild`).
 public struct HierarchyChild

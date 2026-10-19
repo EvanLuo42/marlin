@@ -618,36 +618,42 @@ fn pages_hold_every_cluster_within_limits() {
         assert_eq!(group.error, dag.groups[g].error);
     }
     let mut splits = 0;
+    let pages_of = |g: u32| -> Vec<u32> {
+        let group = &packed.groups[g as usize];
+        packed.parts[group.first_part as usize..][..group.part_count as usize]
+            .iter()
+            .map(|p| p.page)
+            .collect()
+    };
     for (i, record) in packed.page_records.iter().enumerate() {
-        let deps = &packed.dependencies[record.first_dependency as usize..]
-            [..record.dependency_count as usize];
+        let list = &packed.dependencies[record.first_dependency as usize..];
+        let deps = &list[..record.dependency_count as usize];
+        let siblings = &list[deps.len()..][..record.sibling_count as usize];
         let groups_here: Vec<u32> = (0..record.cluster_count as usize)
             .map(|k| views[i].cluster(k).group)
             .collect();
-        let mut split = false;
+        // Dependencies: earlier pages, and every page of every parent group of the page's groups.
         for &d in deps {
-            assert!(d < packed.pages.len() as u32 && d != i as u32);
-            // A later page only for another part of a group split across pages.
-            if d > i as u32 {
-                split = true;
-                assert!(
-                    packed
-                        .parts
-                        .iter()
-                        .any(|p| p.page == d && groups_here.contains(&p.group))
-                );
+            assert!(d < i as u32, "page {i} depends on later page {d}");
+        }
+        for &g in &groups_here {
+            for &c in &dag.groups[g as usize].simplified {
+                for page in pages_of(dag.clusters[c as usize].group) {
+                    assert!(page == i as u32 || deps.contains(&page));
+                }
             }
         }
-        splits += usize::from(split);
-        // The coarser clusters of this page's groups are on pages it depends on.
-        for k in 0..record.cluster_count as usize {
-            let g = views[i].cluster(k).group as usize;
-            for &c in &dag.groups[g].simplified {
-                let page = packed.cluster_location[c as usize].0;
-                assert!(page == i as u32 || deps.contains(&page));
-                assert!(page <= i as u32, "coarser clusters on later pages");
+        // Siblings: the other pages of its groups, and only those.
+        for &s in siblings {
+            assert!(s != i as u32 && !deps.contains(&s));
+            assert!(groups_here.iter().any(|&g| pages_of(g).contains(&s)));
+        }
+        for &g in &groups_here {
+            for page in pages_of(g) {
+                assert!(page == i as u32 || siblings.contains(&page) || deps.contains(&page));
             }
         }
+        splits += usize::from(!siblings.is_empty());
     }
     assert!(splits > 0, "groups split across pages");
 

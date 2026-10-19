@@ -6,15 +6,17 @@ use marlin_asset::cooked::write::{UnitObject, unit};
 use marlin_asset::cooked::{Encoding, platform_id, unit_id};
 use marlin_asset::{AssetServer, MemorySource, Uuid, Vfs};
 use marlin_framework::loaders::engine_loaders;
-use marlin_framework::shaders::{DEFAULT_RESOLVE, DIRECT_LIGHT, ENGINE_SHADERS, RESOLVE, SCATTER};
+use marlin_framework::shaders::{
+    DEFAULT_RESOLVE, DIRECT_LIGHT, ENGINE_SHADERS, RESOLVE, SCATTER, STREAMING,
+};
 use marlin_framework::{
     ShaderError, lighting_shader, load_default_resolve, load_engine_shaders, resolve_shader,
-    scatter_shader,
+    scatter_shader, streaming_shaders,
 };
 use marlin_material::RESOLVE_PUSH_BYTES;
 use marlin_reflect::type_info;
-use marlin_render::LIGHTING_PUSH_BYTES;
 use marlin_render::scene::SCATTER_PUSH_BYTES;
+use marlin_render::{CLEAR_PUSH_BYTES, LIGHTING_PUSH_BYTES, UPLOAD_PUSH_BYTES};
 use marlin_shader::asset::{LibraryEntry, ShaderLibrary};
 use marlin_shader::reflect::{EntryInfo, ShaderReflection, Stage, StructLayout};
 
@@ -141,4 +143,26 @@ fn the_scatter_is_a_compute_shader_with_the_gpu_scenes_push() {
     ));
     let wrong_stage = library(vec![entry(SCATTER, Stage::Pixel, SCATTER_PUSH_BYTES)]);
     assert!(scatter_shader(&wrong_stage).is_err());
+}
+
+#[test]
+fn the_streaming_passes_are_compute_shaders_with_the_pools_push() {
+    // Entries sorted by name, as the cooker writes them.
+    let ok = library(vec![
+        entry(STREAMING[1], Stage::Compute, CLEAR_PUSH_BYTES),
+        entry(STREAMING[0], Stage::Compute, UPLOAD_PUSH_BYTES),
+    ]);
+    assert!(streaming_shaders(&ok).is_ok());
+    assert!(matches!(
+        streaming_shaders(&library(vec![entry(STREAMING[0], Stage::Compute, UPLOAD_PUSH_BYTES)])),
+        Err(ShaderError::MissingEntry(e)) if e == STREAMING[1]
+    ));
+    let wrong_push = library(vec![
+        entry(STREAMING[1], Stage::Compute, CLEAR_PUSH_BYTES),
+        entry(STREAMING[0], Stage::Compute, UPLOAD_PUSH_BYTES + 4),
+    ]);
+    assert!(matches!(
+        streaming_shaders(&wrong_push),
+        Err(ShaderError::Mismatch { .. })
+    ));
 }

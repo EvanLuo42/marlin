@@ -9,12 +9,15 @@ namespace Marlin.Engine.Visibility;
 //    `NodeArgs` takes the nodes the last level appended as this level's, `NodeCull` tests each
 //    of their children (8 threads a node): frustum, then the largest error below projected
 //    against the budget (within it, nothing below is drawn). Passing children append to
-//    `Nodes`, or to `Parts` for a leaf (a group's clusters in one page).
+//    `Nodes`, or to `Parts` for a leaf (a group's clusters in one page) whose group is whole:
+//    every page of it resident. A leaf whose group is not appends its missing pages to
+//    `Requests` instead, for marlin-render's streaming.
 // 4. `PartArgs` + `ClusterCull`: one group per part. A part whose group's projected error is
 //    within the budget draws nothing (the group is good enough, so a coarser one is drawn);
-//    otherwise each of its clusters whose own LOD error projects within the budget is drawn
-//    once it passes the frustum and normal-cone tests: it is appended to `Clusters`, whose index
-//    is the cluster id the visibility buffer stores.
+//    otherwise each of its clusters whose own LOD error projects within the budget, or whose
+//    finer source group is not resident, is drawn once it passes the frustum and normal-cone
+//    tests: it is appended to `Clusters`, whose index is the cluster id the visibility buffer
+//    stores. Every slot a part is read from is marked in `Used`.
 // 5. `FinishArgs` turns the cluster count into the mesh dispatch.
 // 6. `VisMesh` + `VisPs`: one mesh group per visible cluster; each pixel keeps the nearest
 //    `depth << 32 | cluster << 7 | triangle` with a 64-bit atomic max (no attachments).
@@ -25,7 +28,8 @@ namespace Marlin.Engine.Visibility;
 //
 // `Counters` words (atomics): 0 the visible instances, 1 the nodes appended, 2 the parts
 // appended, 3 the visible clusters appended (each may pass its capacity), 4 the clusters drawn;
-// 5 where the next level's nodes start, 6 and 7 the current level's range. `Args` (indirect
+// 5 where the next level's nodes start, 6 and 7 the current level's range, 8 the page requests
+// (may pass their capacity). `Args` (indirect
 // arguments, a pass never both counts into and dispatches from one buffer) holds three records
 // of the RHI's indirect dispatches: a constant (push word 31, unused here), then x, y, z. Words
 // 0–3 are the node level's, 4–7 the cluster cull's, 8–11 the mesh dispatch.
@@ -49,7 +53,9 @@ public struct View
     public uint NodeCapacity;
     public uint PartCapacity;
     public uint ClusterCapacity;
-    public uint[3] Spare;
+    /// Entries `Requests` holds.
+    public uint RequestCapacity;
+    public uint[2] Spare;
 }
 
 public struct CullArgs
@@ -68,6 +74,11 @@ public struct CullArgs
     public Buffer<uint> Args;
     /// Visible clusters: instance row, `slot << 12 | cluster`.
     public Buffer<uint2> Clusters;
+    /// Page requests: the byte offset of the page's table entry in the pool, the projected
+    /// error (float bits) as priority.
+    public Buffer<uint2> Requests;
+    /// A word per pool slot: set once a slot is read.
+    public Buffer<uint> Used;
 }
 
 /// Groups per row of a dispatch (the smallest maximum every device allows); more go to rows.
@@ -92,7 +103,7 @@ void WriteDispatch(in CullArgs a, uint at, uint groups)
 [Compute(1, 1, 1)]
 public void Reset([Push] in CullArgs a)
 {
-    for (uint i = 0; i < 8; i++)
+    for (uint i = 0; i < 12; i++)
         a.Counters[i] = 0;
 }
 
@@ -191,13 +202,32 @@ public void NodeCull([GroupId] uint3 group, [GroupThreadId] uint3 thread, [Push]
         return;
     // Every group below is good enough: nothing below is drawn. The margin keeps a group whose
     // error projects right at the budget here, so `ClusterCull` decides it.
-    if (ProjectedError(v, t, scale, child.Sphere, child.MaxError) <= v.LodErrorPixels * 0.99)
+    float projected = ProjectedError(v, t, scale, child.Sphere, child.MaxError);
+    if (projected <= v.LodErrorPixels * 0.99)
         return;
     if ((child.Child & LeafBit) != 0)
     {
+        uint part = child.Child & (LeafBit - 1);
+        // A group is drawn whole: until every page of it is resident, ask for the missing ones;
+        // coarser clusters draw this part of the surface meanwhile.
+        DagGroup g = LoadGroup(mesh.Dag, LoadPart(mesh.Dag, part).Group);
+        bool whole = true;
+        for (uint i = 0; i < g.PartCount; i++)
+        {
+            uint page = LoadPart(mesh.Dag, g.FirstPart + i).Page;
+            if (PageSlot(mesh.Pages, mesh.Dag, page) == NoChild)
+            {
+                whole = false;
+                uint request = a.Counters.AtomicAdd(8, 1);
+                if (request < v.RequestCapacity)
+                    a.Requests[request] = uint2(PageEntry(mesh.Dag, page), AsUInt(projected));
+            }
+        }
+        if (!whole)
+            return;
         uint slot = a.Counters.AtomicAdd(2, 1);
         if (slot < v.PartCapacity)
-            a.Parts[slot] = uint2(row, child.Child & (LeafBit - 1));
+            a.Parts[slot] = uint2(row, part);
     }
     else
     {
@@ -239,16 +269,21 @@ public void ClusterCull([GroupId] uint3 group, [GroupThreadId] uint3 thread, [Pu
     DagGroup g = LoadGroup(mesh.Dag, part.Group);
     if (ProjectedError(v, t, scale, g.Sphere, g.Error) <= v.LodErrorPixels)
         return;
-    uint slot = PageSlot(mesh.Dag, part.Page);
+    uint slot = PageSlot(mesh.Pages, mesh.Dag, part.Page);
+    a.Used[slot] = 1;
     Page page = LoadPage(mesh.Pages, slot);
     bool cones = UniformScale(t);
     for (uint i = thread.x; i < part.ClusterCount; i += 32)
     {
         uint cluster = part.FirstCluster + i;
         Cluster c = LoadCluster(mesh.Pages, page, cluster);
-        // Not good enough itself: finer clusters draw it.
+        // Not good enough itself: the finer clusters it was made from draw it, once they are
+        // resident (level 0 has no error, so it always has a source group here).
         if (ProjectedError(v, t, scale, c.LodSphere, c.LodError) > v.LodErrorPixels)
-            continue;
+        {
+            if (GroupResident(mesh.Pages, mesh.Dag, c.SourceGroup))
+                continue;
+        }
         float3 center = Apply(t, float4(c.Sphere.xyz, 1));
         float radius = c.Sphere.w * scale;
         if (!InFrustum(v, center, radius))

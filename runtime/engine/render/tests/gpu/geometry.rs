@@ -1,6 +1,6 @@
 //! Resident geometry: a mesh's cluster DAG pages in the page pool decode on the GPU by the
 //! engine's own decode (`Marlin.Engine.Scene`) as on the CPU, quantized positions round-trip,
-//! and the pool's slots come back when a mesh is released.
+//! for every page of the DAG.
 
 use marlin_gpu_test_support::crate_shader;
 use marlin_render::Environment;
@@ -11,8 +11,8 @@ use marlin_render_graph::{Access, BufferDesc, PassContext};
 use marlin_rhi::{ComputePipeline, ComputePipelineDesc};
 use marlin_serial::cooked::Pod;
 
-use crate::support::cook::{Cooked, cook_with, sphere, sphere_source};
-use crate::support::{Harness, POOL_PAGES, words};
+use crate::support::cook::{Cooked, cook_with, sphere_source};
+use crate::support::{Harness, words};
 
 #[repr(C)]
 #[derive(Pod, Clone, Copy)]
@@ -42,6 +42,7 @@ type Decoded = Vec<([f32; 3], [f32; 3])>;
 fn gpu_decode(h: &mut Harness, cooked: &Cooked) -> Vec<Decoded> {
     let pipeline = decode_pipeline(h);
     let (mesh, handle) = h.upload(cooked);
+    assert!(h.meshes.prefetch(handle), "every page fits");
     let view = cooked.view();
     let dag = view.cluster_dag;
     let pages: Vec<(u32, u32)> = (0..dag.pages.len())
@@ -51,12 +52,13 @@ fn gpu_decode(h: &mut Harness, cooked: &Cooked) -> Vec<Decoded> {
             (h.meshes.page_slot(handle, p).unwrap(), count)
         })
         .collect();
-    let tickets = h.frame_with(|g, gpu| {
+    let tickets = h.frame_with(|g, gpu, pool| {
         let mut tickets = Vec::new();
         for &(slot, count) in &pages {
             let out = g.create_buffer("Decoded", BufferDesc::new(u64::from(count) * 24));
             let out = g.add_compute("DecodeVertices", |b| {
                 let meshes = b.read_buffer(gpu.meshes, Access::ComputeRead);
+                b.read_buffer(pool.pages, Access::ComputeRead);
                 let out = b.write_buffer(out, Access::ComputeWrite);
                 (out, move |ctx: &mut PassContext<'_>| {
                     ctx.set_pipeline(pipeline);
@@ -144,53 +146,4 @@ fn the_gpu_decodes_every_page_as_the_cpu_does() {
             }
         }
     }
-}
-
-#[test]
-fn released_meshes_give_their_pool_slots_back() {
-    let mut h = Harness::new(Environment::default());
-    let free = h.meshes.free_pages();
-    assert_eq!(free, POOL_PAGES as usize - 1, "the cube's one page");
-    let ball = sphere(64, 128);
-    let pages = ball.view().cluster_dag.pages.len();
-    assert!(pages > 1, "{pages} pages");
-    let (_, handle) = h.upload(&ball);
-    assert_eq!(h.meshes.free_pages(), free - pages);
-    let slots: Vec<u32> = (0..pages)
-        .map(|p| h.meshes.page_slot(handle, p).unwrap())
-        .collect();
-    let mut sorted = slots.clone();
-    sorted.sort_unstable();
-    sorted.dedup();
-    assert_eq!(sorted.len(), pages, "a slot each");
-    h.wait_idle();
-    // SAFETY: the GPU is idle.
-    unsafe { h.meshes.release_mesh(handle) };
-    assert_eq!(h.meshes.free_pages(), free);
-    assert!(h.meshes.resident_mesh(handle).is_none());
-    // The next upload takes the same slots.
-    let (_, again) = h.upload(&ball);
-    let reused: Vec<u32> = (0..pages)
-        .map(|p| h.meshes.page_slot(again, p).unwrap())
-        .collect();
-    assert_eq!(reused, slots);
-}
-
-#[test]
-fn a_mesh_that_does_not_fit_in_the_pool_is_refused() {
-    let mut h = Harness::new(Environment::default());
-    let ball = sphere(64, 128);
-    let pages = ball.view().cluster_dag.pages.len();
-    let mut uploaded = 0;
-    loop {
-        match h.meshes.upload_mesh(h.device, &ball.view(), &ball.pages()) {
-            Ok(_) => uploaded += 1,
-            Err(e) => {
-                assert_eq!(e.kind(), marlin_rhi::ErrorKind::OutOfMemory, "{e}");
-                break;
-            }
-        }
-    }
-    assert_eq!(uploaded, (POOL_PAGES as usize - 1) / pages);
-    assert!(h.meshes.free_pages() < pages);
 }
