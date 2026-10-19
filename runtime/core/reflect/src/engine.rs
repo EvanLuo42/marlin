@@ -17,8 +17,8 @@ use core::mem::offset_of;
 
 use marlin_containers::{ArrayVec, Handle, HashMap, HashMapExt, HashSet, HashSetExt, SmallVec};
 use marlin_math::{
-    Aabb, Frustum, IVec2, IVec3, Mat3, Mat4, Plane, Quat, Ray, Sphere, Transform, UVec2, Vec2,
-    Vec3, Vec4, Xyzw,
+    Aabb, DVec3, Frustum, IVec2, IVec3, Mat3, Mat4, Plane, Quat, Ray, Sphere, Transform, UVec2,
+    Vec2, Vec3, Vec4, Xyzw,
 };
 use marlin_text::{InlineString, Name};
 
@@ -71,6 +71,7 @@ plain_struct!(Vec4 = "marlin_math::Vec4" via Xyzw, default Vec4::ZERO);
 plain_struct!(Quat = "marlin_math::Quat" via Xyzw, default Quat::IDENTITY);
 plain_struct!(IVec2 = "marlin_math::IVec2", default IVec2::ZERO, { x: i32, y: i32 });
 plain_struct!(IVec3 = "marlin_math::IVec3", default IVec3::ZERO, { x: i32, y: i32, z: i32 });
+plain_struct!(DVec3 = "marlin_math::DVec3", default DVec3::ZERO, { x: f64, y: f64, z: f64 });
 plain_struct!(UVec2 = "marlin_math::UVec2", default UVec2::ZERO, { x: u32, y: u32 });
 plain_struct!(Mat3 = "marlin_math::Mat3", default Mat3::IDENTITY, {
     x_axis: Vec3,

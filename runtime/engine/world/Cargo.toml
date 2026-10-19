@@ -1,11 +1,24 @@
 [package]
 name = "marlin-world"
-description = "Levels, world streaming, transform hierarchy and the entity object API."
+description = "The world: tick groups, simulation time, the transform hierarchy and entity identity."
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+marlin-config.workspace = true
+marlin-containers.workspace = true
+marlin-diag.workspace = true
+marlin-ecs.workspace = true
+marlin-jobs.workspace = true
+marlin-math.workspace = true
+marlin-profile.workspace = true
+marlin-reflect.workspace = true
+marlin-sync.workspace = true
+
+[dev-dependencies]
+marlin-test-support.workspace = true
+
 
 [lints]
 workspace = true

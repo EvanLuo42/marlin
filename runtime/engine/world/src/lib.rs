@@ -1,4 +1,41 @@
-//! Levels, world streaming, transform hierarchy and the entity object API.
+//! The world: entities and components on `marlin-ecs`, the frame's tick groups, simulation time,
+//! the transform hierarchy and stable entity identity (docs/design/0019-engine-framework-and-world.md).
+//!
+//! - [`World`]: an ECS world of a [`WorldKind`] (game, editor, PIE, preview) with its
+//!   [`WorldSchedule`]. [`World::frame`] runs the [`TickGroup`]s in order; the physics groups run
+//!   once per fixed step ([`FixedTime`]), and [`Interpolated`] entities are drawn between steps.
+//! - [`Transform`] (relative to the parent, `f64` translation) and [`GlobalTransform`] (in the
+//!   world), kept in step by [`propagate_transforms`] in `TransformPropagate`. Code working in
+//!   `f32` takes positions relative to an origin near it ([`GlobalTransform::relative_to`]).
+//! - [`ComponentRegistry`]: the component types worlds know, with what each may be used for
+//!   ([`ComponentFlags`]: saved in levels, replicated). Shared by every world of a process.
+//! - [`EntityGuid`]: an entity's identity in data; [`EntityRef`] refers to one, and the world's
+//!   [`GuidIndex`] resolves it to the live [`Entity`](marlin_ecs::Entity).
+//!
+//! Subsystems (render, physics, audio, scripts) depend on this crate, never the reverse: they
+//! register their components and put their systems in tick groups.
 #![cfg_attr(not(test), no_std)]
 
 extern crate alloc;
+
+mod guid;
+mod registry;
+mod schedule;
+mod time;
+mod transform;
+mod world;
+
+pub use guid::{EntityGuid, EntityRef, GuidIndex};
+pub use registry::{ComponentFlags, ComponentRegistration, ComponentRegistry};
+pub use schedule::{TickGroup, WorldSchedule};
+pub use time::{FixedTime, Interpolated, T_FIXED_HZ, T_MAX_DT, T_MAX_SUBSTEPS, Time, TimeSettings};
+pub use transform::{GlobalTransform, Transform, propagate_transforms};
+pub use world::{NetRole, World, WorldKind};
+
+/// Registers the world's cvars (`t.*`) with `marlin-config`; once per process.
+pub fn register_cvars() {
+    static ONCE: marlin_sync::Once = marlin_sync::Once::new();
+    ONCE.call_once(|| {
+        let _ = marlin_config::register_all(&[&T_MAX_DT, &T_FIXED_HZ, &T_MAX_SUBSTEPS]);
+    });
+}

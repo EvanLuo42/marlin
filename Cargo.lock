@@ -1246,6 +1246,18 @@ version = "0.1.0"
 [[package]]
 name = "marlin-world"
 version = "0.1.0"
+dependencies = [
+ "marlin-config",
+ "marlin-containers",
+ "marlin-diag",
+ "marlin-ecs",
+ "marlin-jobs",
+ "marlin-math",
+ "marlin-profile",
+ "marlin-reflect",
+ "marlin-sync",
+ "marlin-test-support",
+]
 
 [[package]]
 name = "memchr"

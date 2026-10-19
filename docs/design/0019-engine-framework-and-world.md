@@ -252,7 +252,7 @@ pub struct GlobalTransform { pub translation: DVec3, pub rotation: Quat, pub sca
 ```
 
 - 位置用 f64，旋转和缩放仍然用 f32，和 UE5 的大世界坐标一样。`marlin-math` 增加 `DVec3`，以及必要的 f64 运算（加减、与 f32 向量混合运算、转换成相对坐标）。
-- 传播在 `TransformPropagate` group 里，只处理 `Changed<Transform>` 的子树，按根节点并行。
+- 传播在 `TransformPropagate` group 里：从根节点深度优先遍历，只重写确实移动了的 `GlobalTransform`（自己的 `Transform` 变了、父节点变了、祖先移动了），所以 extract 用 `Changed<GlobalTransform>` 拿到的正好是移动过的实体。W1 的实现是单线程的独占 system，每帧会访问所有带 Transform 的实体；等 profile 显示它是瓶颈时再按根节点并行。
 - 和 f32 系统的边界：
   - **render**：`RenderScene` 里实例的位置存成 **tile（`IVec3`）+ tile 内的 f32 偏移**；视图也有自己的 tile。shader 先用整数算出两个 tile 之差，再加上 f32 偏移，得到相对相机的 f32 坐标。这样不需要原点重定位，也不会因为相机移动而重写所有实例。具体格式在 0009 里改。迁移期间先用 tile = 0，结果和现在一样。
   - **physics**：physics scene 用 f32，相对一个场景原点；原点怎么选（以及要不要分区）由以后的 physics 文档决定。接口只传 f64 的世界坐标。
@@ -434,3 +434,18 @@ W6 之后再回到 render（R4f 剩下的部分、R5）。physics、audio、anim
 - 存档：哪些组件要存、格式（大概率是 `Saved` 组件的反射序列化加上 `EntityGuid`），等脚本可用后再定。
 - 相机混合和镜头系统。
 - 可选插件的机制（§3.2）。
+
+## 17. 实施状态
+
+### W1（2026-10-19）：World 核心
+
+- `marlin-math::DVec3`：f64 位置，`relative_to(origin)` 先在 f64 里求差再舍入成 f32；`Quat * DVec3` 在 f64 里旋转。反射名 `marlin_math::DVec3`。
+- `marlin-world`：
+  - `World`：`WorldKind`（Game / Editor / Pie / Preview）、`NetRole`（只实现了 Standalone）、`WorldSchedule`（每个 `TickGroup` 一个 `marlin-ecs` 的 `Schedule`）。`World::frame` 按 §4.2 的顺序运行；Editor World 和暂停的 World 只跑 `FrameStart`、`TransformPropagate`、`Extract`、`FrameEnd`；最后调用 `clear_trackers`，所以世界级查询里的 "changed" 指的是"本帧"。
+  - `Time`、`FixedTime`、`TimeSettings`（来自 cvar `t.max_dt`、`t.fixed_hz`、`t.max_substeps`；host 可以按 World 覆盖）。超出 `max_substeps` 的时间直接丢掉。
+  - `Interpolated`：World 在每个固定步长前后记录 `Transform`；新加的实体从静止状态开始；`at(alpha)` 给出绘制用的变换。
+  - `Transform` / `GlobalTransform`（f64 平移）和 `propagate_transforms`。父节点被删除或 despawn 后，子节点回到世界空间；没有 `Transform` 的祖先会切断传递链。
+  - `ComponentRegistry`：`add`（带反射，`SAVED` / `REPLICATED` / `TRANSIENT`）、`add_with_storage`、`add_runtime`（不带反射，只用于运行时）；按反射名和类型查找；类型或名字重复时 panic。World 创建时把所有注册项安装进 ECS（存储方式加反射信息）。
+  - `EntityGuid`（128 位；`derive(instance, inner)` 属于 cooked 数据格式，测试里固定了一个参考值）、`EntityRef`、`GuidIndex`：由 `EntityGuid` 的 `on_insert` / `on_replace` hook 维护，每次结构操作返回后就是最新的；重复的 guid 保留第一个并记录警告。
+- 测试：`cargo test -p marlin-world --test unit`（传播、精度、只写移动过的实体、换父节点、tick 顺序、暂停和 editor、固定步长、插值、guid 索引、注册表）；`marlin-math` 的 `dvec` 测试。
+- 还没做：模块接口（W3）会把 `ComponentRegistry` 和 system 的登记接到 `Module::register` 上；现在由调用方直接调用 `World::add_system`。

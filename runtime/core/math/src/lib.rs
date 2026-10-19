@@ -11,6 +11,8 @@
 //! - Angles are radians. Rotations are counter-clockwise when looking down the axis toward the
 //!   origin.
 //!
+//! [`DVec3`] holds world positions in `f64` (large worlds); everything else is `f32`.
+//!
 //! `Vec4`, `Quat` and `Mat4` columns are 16-byte-aligned `core::simd::f32x4`. `Vec2`/`Vec3` are plain
 //! `repr(C)` floats (8 and 12 bytes) for tight GPU vertex layouts. Transcendental functions are
 //! implemented in [`scalar`] (`core` has none) and are bit-identical across platforms.
@@ -19,6 +21,7 @@
 #![cfg_attr(not(test), no_std)]
 #![feature(core_float_math, portable_simd)]
 
+mod dvec;
 mod geom;
 mod mat;
 mod quat;
@@ -27,6 +30,7 @@ pub mod scalar;
 mod transform;
 mod vec;
 
+pub use dvec::DVec3;
 pub use geom::{Aabb, Frustum, Plane, Ray, Sphere};
 pub use mat::{Mat3, Mat4};
 pub use quat::Quat;
