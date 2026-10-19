@@ -93,7 +93,16 @@ pub(crate) fn signature(l: &mut Lowering<'_, '_>, instance: &Instance) -> R<Sign
         };
         let member = data.kind == ItemKind::Function || accessor;
         if pdata.kind.is_type() && !data.is_static && member {
-            let this = l.resolve_assoc(&subst.ty(&self_ty(l.cx, parent_id)?));
+            // An interface's default member: `this` is the type it was reached through.
+            let reached = subst
+                .assoc
+                .iter()
+                .find(|(o, _)| *o == parent_id && pdata.kind == ItemKind::Interface)
+                .map(|(_, t)| t.clone());
+            let this = match reached {
+                Some(t) => l.resolve_assoc(&t),
+                None => l.resolve_assoc(&subst.ty(&self_ty(l.cx, parent_id)?)),
+            };
             let pass = if (data.is_readonly || pdata.is_readonly || accessor) && !setter {
                 Pass::Value
             } else {
@@ -408,7 +417,15 @@ impl FnCx<'_, '_, '_> {
 
     /// A front-end type of this body made concrete.
     pub(crate) fn concrete(&self, ty: &Ty) -> Ty {
-        self.l.resolve_assoc(&self.subst().ty(ty))
+        let ty = self.l.resolve_assoc(&self.subst().ty(ty));
+        // In an interface's default member, the interface itself is the type it was reached
+        // through (`this`, and calls through it).
+        if let Ty::Adt { item, .. } = &ty
+            && let Some((_, reached)) = self.instance.subst.assoc.iter().find(|(o, _)| o == item)
+        {
+            return reached.clone();
+        }
+        ty
     }
 
     pub(crate) fn binding_ty(&self, b: BindingId) -> Ty {

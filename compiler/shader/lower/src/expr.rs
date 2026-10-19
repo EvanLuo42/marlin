@@ -353,6 +353,12 @@ impl FnCx<'_, '_, '_> {
             Root::Item(item) => {
                 let tree = self.l.cx.get::<ItemTreeQuery>(&item.file)?;
                 let data = &tree.items[item.local];
+                let in_interface = data
+                    .parent
+                    .is_some_and(|p| tree.items[p].kind == ItemKind::Interface);
+                if data.is_const && in_interface {
+                    return self.interface_const(*item, e);
+                }
                 if !(data.is_const || data.kind == ItemKind::EnumMember) {
                     return Err(LowerError::unsupported(
                         "a module-level variable",
@@ -1235,8 +1241,12 @@ impl FnCx<'_, '_, '_> {
         subst: &Subst,
     ) -> R<Option<Value>> {
         let subst = self.concrete_subst(subst);
-        // An interface member: the one the concrete receiver type implements.
-        let on = self.infer.receivers.get(e).map(|t| self.concrete(t));
+        // An interface member: the one the concrete receiver type implements; called bare inside
+        // a method, the receiver is `this`.
+        let on = match self.infer.receivers.get(e) {
+            Some(t) => Some(self.concrete(t)),
+            None => self.this.as_ref().map(|(_, t)| self.concrete(t)),
+        };
         let (item, subst) = match self.resolve_callee(item, &subst, on.as_ref(), Self::loc(e))? {
             Resolved::Item(i, s) => (i, s),
             Resolved::Builtin => {

@@ -61,3 +61,18 @@ fn generic_structs_interfaces_and_associated_types() {
     );
     assert_eq!(w.run("Game.BushWeight", &[Val::f32(2.0)])[0], Val::f32(6.0));
 }
+
+#[test]
+fn interface_defaults_through_a_type_parameter() {
+    let w = generics();
+    // `Pane` takes the default `Opacity` (half its `Thickness`, through `this`) and `Layers` (1).
+    assert_eq!(
+        w.run("Game.PaneOpacity", &[Val::f32(0.5)])[0],
+        Val::f32(0.25)
+    );
+    // `Laminate` overrides both: 0.75 times 3 layers.
+    assert_eq!(
+        w.run("Game.LaminateOpacity", &[Val::f32(0.5)])[0],
+        Val::f32(2.25)
+    );
+}

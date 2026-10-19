@@ -27,6 +27,16 @@ public interface ISurfaceMaterial<TSelf> where TSelf : ISurfaceMaterial<TSelf>
 {
     type Tree : ISubstrateNode<Tree>;
     Tree Surface(in SurfaceContext ctx);
+    float Opacity(in SurfaceContext ctx) => 1;
+    const BlendMode Blend = BlendMode.Opaque;
+}
+
+public enum BlendMode : uint
+{
+    Opaque,
+    Masked,
+    Translucent,
+    TranslucentOit,
 }
 
 /// What a material sees of the surface point (0011 §6.2).

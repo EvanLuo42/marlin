@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 use marlin_front_hir_def::store::BindingId;
 use marlin_front_hir_def::{
-    BodyOwner, BodyQuery, ItemId, ItemKind, ItemTreeQuery, body_owners, item_path,
+    BodyOwner, BodyPart, BodyQuery, ItemId, ItemKind, ItemTreeQuery, body_owners, item_path,
 };
 use marlin_shaderc_hir_ty::{InferQuery, ItemTypesQuery, Subst, Ty};
 use marlin_shaderc_ir::{
@@ -39,12 +39,26 @@ impl Lowering<'_, '_> {
                 format!("the value of `{path}` depends on itself"),
             ));
         }
-        let v = self.evaluate(item)?;
+        let v = self.evaluate(item, &Subst::new())?;
         self.consts.insert(item, v.clone());
         Ok(v)
     }
 
-    fn evaluate(&mut self, item: ItemId) -> R<ConstValue> {
+    /// The value of an interface's constant `item` for the type whose arguments for the interface
+    /// `subst` holds: its default initializer, evaluated with them (not cached: it may depend on
+    /// them).
+    pub(crate) fn const_value_in(&mut self, item: ItemId, subst: &Subst) -> R<ConstValue> {
+        if self.evaluating.contains(&item) {
+            let path = item_path(self.cx, item)?;
+            return Err(LowerError::new(
+                "E1306",
+                format!("the value of `{path}` depends on itself"),
+            ));
+        }
+        self.evaluate(item, subst)
+    }
+
+    fn evaluate(&mut self, item: ItemId, subst: &Subst) -> R<ConstValue> {
         let tree = self.cx.get::<ItemTreeQuery>(&item.file)?;
         let data = &tree.items[item.local];
         let types = self.cx.get::<ItemTypesQuery>(&item)?;
@@ -109,7 +123,15 @@ impl Lowering<'_, '_> {
             mesh: None,
             payload_field: None,
         };
-        let f = scratch.function(item)?;
+        let f = scratch.instance(Instance {
+            owner: BodyOwner {
+                item,
+                part: BodyPart::Main,
+            },
+            subst: subst.clone(),
+            closures: Vec::new(),
+            inner: None,
+        })?;
         scratch.run()?;
         let errors = verify_module(&scratch.module);
         if let Some(e) = errors.first() {

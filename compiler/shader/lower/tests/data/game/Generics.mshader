@@ -142,3 +142,33 @@ public float SecondOfTwo(float x)
     TwoPairs t = TwoPairs { First = Pair3 { A = float4(1, 2, 3, 4), B = float4(5, 6, 7, 8) }, Second = Pair3 { A = float4(x, 0, 0, 0), B = float4(0, 0, 0, x * 2) } };
     return t.Second.A.x + t.Second.B.w + t.First.B.y;
 }
+
+// An interface's default members, used through a type parameter (0004 §12): a default method
+// (its `this` the implementer) and a constant with a default, which one implementer overrides
+// and the other takes.
+public interface IGlass<TSelf> where TSelf : IGlass<TSelf>
+{
+    float Thickness();
+    float Opacity() => Thickness() * 0.5;
+    const int Layers = 1;
+}
+
+public struct Pane : IGlass<Pane>
+{
+    public float Depth;
+    public float Thickness() => Depth;
+}
+
+public struct Laminate : IGlass<Laminate>
+{
+    public float Depth;
+    public float Thickness() => Depth * 2;
+    public float Opacity() => 0.75;
+    public const int Layers = 3;
+}
+
+public float OpacityOf<G>(G g) where G : IGlass<G> => g.Opacity() * (float)G.Layers;
+
+public float PaneOpacity(float depth) => OpacityOf(Pane { Depth = depth });
+
+public float LaminateOpacity(float depth) => OpacityOf(Laminate { Depth = depth });

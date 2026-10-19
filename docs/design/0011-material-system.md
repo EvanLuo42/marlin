@@ -74,6 +74,7 @@ public interface ISurfaceMaterial<TSelf> where TSelf : ISurfaceMaterial<TSelf>
 
 - 实现了 `Opacity` 并且 `Blend == Masked` 的材质，或者实现了 `Deform` 的材质，会有自己的光栅 permutation（0009 §4.4）。
 - `Blend` 是静态参数，所以同一个材质类型的不同实例可以分别选择不透明或半透明，代价是不同的 permutation。
+- 2026-10-19（R4e）：`Opacity` 和 `Blend` 已经加到 `ISurfaceMaterial`（`content/engine/substrate/Substrate.mshader`，`BlendMode` 有 `Opaque`、`Masked`、`Translucent`、`TranslucentOit`），用户确认采用这种接口成员的写法。简化材质的烘焙在 `Blend` 不是 `Opaque` 时把 `Opacity` 写进图集（`SimpleMaterial.Opacity`）。`Deform`、`MaskThreshold`、`MaxDisplacement`、`Bake` 还没有加。
 
 ### 2.3 一个材质
 

@@ -1,0 +1,21 @@
+namespace Material;
+
+using Marlin.Substrate;
+
+/// A fourth material type for the tests: translucent, a tinted dielectric whose opacity is a
+/// parameter (R4e).
+public struct Glass : ISurfaceMaterial<Glass>
+{
+    public float3 Tint = 1;
+    public float Roughness = 0.05;
+    public float Coverage = 0.3;
+
+    public const BlendMode Blend = BlendMode.Translucent;
+
+    public type Tree = Slab;
+
+    public Slab Surface(in SurfaceContext ctx) =>
+        Slab.Default with { DiffuseAlbedo = Tint, Roughness = Roughness };
+
+    public float Opacity(in SurfaceContext ctx) => Coverage;
+}

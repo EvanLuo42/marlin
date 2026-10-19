@@ -414,10 +414,19 @@ impl Lowering<'_, '_> {
             };
             entries.push((owner, args));
         }
-        instance.subst = Subst {
-            entries,
-            ..Subst::default()
-        };
+        // An interface's default member keeps the type it was reached through, its `this`.
+        let assoc = instance
+            .subst
+            .assoc
+            .iter()
+            .filter(|(o, _)| {
+                o.file == item.file
+                    && tree.items[item.local].parent == Some(o.local)
+                    && tree.items[o.local].kind == marlin_front_hir_def::ItemKind::Interface
+            })
+            .cloned()
+            .collect();
+        instance.subst = Subst { entries, assoc };
         Ok(instance)
     }
 }

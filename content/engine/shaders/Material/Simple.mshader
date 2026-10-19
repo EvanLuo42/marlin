@@ -92,19 +92,22 @@ public struct SimpleBakeArgs<M>
     public Buffer<float4> Factors;
 }
 
+/// The surface a simplified material is evaluated on: a flat patch facing +Z at the origin.
+SurfaceContext SimpleContext(float2 uv, float4 custom) => SurfaceContext
+{
+    Position = float3(0, 0, 0),
+    Normal = float3(0, 0, 1),
+    GeometricNormal = float3(0, 0, 1),
+    Uv0 = uv,
+    InstanceId = 0,
+    CustomData = custom,
+};
+
 /// A merged closure of `m` at `uv` with per-instance data `custom`: its `Surface`, emitted as
 /// the material pass does (the proxy lobe, 0011 §4.2), on a flat patch facing +Z.
 ClosureWriter EvaluateSimple<M>(in M m, float2 uv, float4 custom) where M : ISurfaceMaterial<M>
 {
-    SurfaceContext ctx = SurfaceContext
-    {
-        Position = float3(0, 0, 0),
-        Normal = float3(0, 0, 1),
-        GeometricNormal = float3(0, 0, 1),
-        Uv0 = uv,
-        InstanceId = 0,
-        CustomData = custom,
-    };
+    SurfaceContext ctx = SimpleContext(uv, custom);
     M.Tree tree = m.Surface(ctx);
     ClosureWriter w = ClosureWriter.Open();
     tree.Emit(ref w, float3(1, 1, 1), EmitContext { Normal = float3(0, 0, 1), Wo = float3(0, 0, 1) });
@@ -130,7 +133,9 @@ public void BakeSimple<M>([DispatchThreadId] uint3 id, [Push] in SimpleBakeArgs<
         float roughness = w.SpecularSum > 0 ? w.RoughnessSum / w.SpecularSum : 0.5;
         int2 texel = SimpleTexel(material, uv);
         a.Albedo[texel] = float4(Sqrt(Saturate(w.Albedo)), Saturate(roughness));
-        a.Specular[texel] = float4(Sqrt(Saturate(w.F0)), 1);
+        // Opaque materials are opaque whatever their `Opacity` says.
+        float opacity = M.Blend == BlendMode.Opaque ? 1 : Saturate(tile.Opacity(SimpleContext(uv, float4(1, 1, 1, 1))));
+        a.Specular[texel] = float4(Sqrt(Saturate(w.F0)), opacity);
         a.Emission[texel] = float4(w.Emission, 1);
         return;
     }

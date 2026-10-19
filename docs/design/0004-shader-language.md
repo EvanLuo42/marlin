@@ -358,6 +358,8 @@ public interface IArithmetic<TSelf> where TSelf : IArithmetic<TSelf>
 
 - 保留 C# 11 的 `static abstract` 和 `static virtual` 接口成员，包括运算符。
 - 保留默认接口方法，例如 `IBsdf.Albedo(wo)` 可以有一个默认实现。
+- 接口里可以有带默认值的常量（`const BlendMode Blend = BlendMode.Opaque;`），实现者可以声明同名常量来覆盖。经类型参数读取（`M.Blend`）时，得到的是 `M` 实际类型的值：它自己声明了就用自己的，否则用接口的默认值。2026-10-19 为 R4e 的 `ISurfaceMaterial.Blend` 实现（用户选择了 0011 §2.2 的接口成员写法）。
+- 单态化时，实现者没有覆盖的默认方法（和默认常量的初始值）以接口自己的成员编译，接口的类型参数取实现者给的实参（`DefaultMaterial : ISurfaceMaterial<DefaultMaterial>`），里面的 `this` 是到达它的那个具体类型，经 `this` 的调用照样分派到实现者。
 
 ### 8.4 扩展
 
