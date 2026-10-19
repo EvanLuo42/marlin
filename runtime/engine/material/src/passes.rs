@@ -380,7 +380,8 @@ impl Materials {
                             permutation: p as u32,
                             ..shared
                         });
-                        ctx.dispatch_indirect(*record, 1, None);
+                        // The record's constant is the bin's first pixel.
+                        ctx.dispatch_indirect_with_constant(*record, 1, None);
                     }
                 },
             )

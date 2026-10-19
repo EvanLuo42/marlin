@@ -507,15 +507,31 @@ impl<'a> PassContext<'a, Rhi> {
     }
 
     /// `max_count` dispatches from arguments at `args` (declared [`Access::Indirect`]); with
-    /// `count`, the first as many as the `u32` there says. Like every indirect command here, the
-    /// records' constant is skipped: [`marlin_rhi::INDIRECT_CONSTANT_WORD`] keeps what was pushed.
+    /// `count`, the first as many as the `u32` there says. The records' constants are not
+    /// delivered (shaders must not read [`marlin_rhi::INDIRECT_CONSTANT_WORD`]), so the backend
+    /// runs its native indirect command; see
+    /// [`dispatch_indirect_with_constant`](Self::dispatch_indirect_with_constant). The other
+    /// indirect commands here do the same.
     pub fn dispatch_indirect(
         &mut self,
         args: BufferHandle<'_>,
         max_count: u32,
         count: Option<BufferHandle<'_>>,
     ) {
-        let args = self.indirect(args, max_count, count);
+        let args = self.indirect(args, max_count, count, false);
+        self.parts.list().dispatch_indirect(&args);
+    }
+
+    /// [`dispatch_indirect`](Self::dispatch_indirect) with each record's constant in
+    /// [`marlin_rhi::INDIRECT_CONSTANT_WORD`]: on Vulkan, through device-generated commands, which
+    /// cost much more.
+    pub fn dispatch_indirect_with_constant(
+        &mut self,
+        args: BufferHandle<'_>,
+        max_count: u32,
+        count: Option<BufferHandle<'_>>,
+    ) {
+        let args = self.indirect(args, max_count, count, true);
         self.parts.list().dispatch_indirect(&args);
     }
 
@@ -526,7 +542,7 @@ impl<'a> PassContext<'a, Rhi> {
         count: Option<BufferHandle<'_>>,
     ) {
         self.parts.draws();
-        let args = self.indirect(args, max_count, count);
+        let args = self.indirect(args, max_count, count, false);
         self.parts.list().dispatch_mesh_indirect(&args);
     }
 
@@ -537,7 +553,7 @@ impl<'a> PassContext<'a, Rhi> {
         count: Option<BufferHandle<'_>>,
     ) {
         self.parts.draws();
-        let args = self.indirect(args, max_count, count);
+        let args = self.indirect(args, max_count, count, false);
         self.parts.list().draw_indirect(&args);
     }
 
@@ -548,7 +564,7 @@ impl<'a> PassContext<'a, Rhi> {
         count: Option<BufferHandle<'_>>,
     ) {
         self.parts.draws();
-        let args = self.indirect(args, max_count, count);
+        let args = self.indirect(args, max_count, count, false);
         self.parts.list().draw_indexed_indirect(&args);
     }
 
@@ -557,6 +573,7 @@ impl<'a> PassContext<'a, Rhi> {
         args: BufferHandle<'_>,
         max_count: u32,
         count: Option<BufferHandle<'_>>,
+        constant: bool,
     ) -> IndirectArgs<'a> {
         let buffer = self.buffer(args, Access::Indirect);
         let count = count.map(|c| (self.buffer(c, Access::Indirect), c.offset));
@@ -565,8 +582,7 @@ impl<'a> PassContext<'a, Rhi> {
             offset: args.offset,
             max_count,
             count,
-            // No pass reads the record constant: the native indirect commands are much cheaper.
-            constant: false,
+            constant,
         }
     }
 
