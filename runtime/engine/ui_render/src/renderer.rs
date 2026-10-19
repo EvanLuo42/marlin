@@ -33,7 +33,8 @@ use marlin_rhi::{
     AddressMode, Buffer, BufferUsage, ColorTargetState, ComputePipeline, ComputePipelineDesc,
     CullMode, Device, Error, ErrorKind, Format, FormatFeatures, GraphicsPipeline,
     GraphicsPipelineDesc, LoadOp, MemoryLocation, MultisampleState, PrimitiveTopology, RasterState,
-    Result, Sampler, SamplerDesc, ShaderModule, StoreOp, Texture, TextureUsage,
+    Result, Sampler, SamplerDesc, ShaderModule, ShaderView, StoreOp, Texture, TextureUsage,
+    TextureViewDesc,
 };
 use marlin_serial::cooked::Pod;
 
@@ -268,7 +269,7 @@ pub struct UiPages<'g> {
 #[derive(Clone, Copy, Debug)]
 pub struct UiOutput<'g> {
     /// The UI target: [`UI_FORMAT`], sRGB-encoded, premultiplied; the surface's, kept across
-    /// frames.
+    /// frames (a texture surface's texture, every mip).
     pub target: TextureHandle<'g>,
     /// Per tile (row by row): its list's first block, its length, whether it was shaded (four
     /// words).
@@ -295,6 +296,28 @@ impl UiSurfaceDesc {
     }
 }
 
+/// A surface drawn into a texture the caller samples (§10: UI in the world, on a material)
+/// rather than a window.
+#[derive(Clone, Copy, Debug)]
+pub struct UiTextureDesc {
+    pub width: u32,
+    pub height: u32,
+    /// A full mip chain, remade after every redraw (each mip the 2 × 2 average of the one
+    /// above, in the UI target's encoding).
+    pub mips: bool,
+}
+
+/// A texture surface's own texture.
+struct SurfaceTexture {
+    texture: Texture,
+    view: ShaderView,
+    width: u32,
+    height: u32,
+    mips: u32,
+    /// Whether a frame has drawn it: until then every tile is shaded.
+    drawn: AtomicBool,
+}
+
 /// One window or render target the UI is drawn to.
 pub struct UiSurface {
     key: u64,
@@ -305,6 +328,7 @@ pub struct UiSurface {
     readbacks: Vec<(Buffer, AtomicBool)>,
     /// The last frame drawn: its hash (0: none yet).
     last: AtomicU64,
+    texture: Option<SurfaceTexture>,
 }
 
 impl UiSurface {
@@ -326,7 +350,63 @@ impl UiSurface {
             overflowed: AtomicBool::new(false),
             readbacks,
             last: AtomicU64::new(0),
+            texture: None,
         })
+    }
+
+    /// A surface drawn into its own texture (§10): [`UI_FORMAT`], sampled through an sRGB view
+    /// and written by the UI's passes. The view's bindless index ([`view`](Self::view)) stays
+    /// the same for the surface's life, so a material can hold it.
+    pub fn new_texture(device: &Device, desc: &UiSurfaceDesc, t: &UiTextureDesc) -> Result<Self> {
+        let mips = if t.mips {
+            32 - t.width.max(t.height).max(1).leading_zeros()
+        } else {
+            1
+        };
+        let texture = device.create_texture(&marlin_rhi::TextureDesc {
+            mip_levels: mips,
+            ..marlin_rhi::TextureDesc::new_2d(
+                t.width,
+                t.height,
+                UI_FORMAT,
+                TextureUsage::SAMPLED | TextureUsage::STORAGE | TextureUsage::COPY_SRC,
+            )
+        })?;
+        let view = device.create_texture_view(
+            &texture,
+            &TextureViewDesc {
+                format: Some(Format::Rgba8UnormSrgb),
+                ..TextureViewDesc::SAMPLED
+            },
+        )?;
+        Ok(Self {
+            texture: Some(SurfaceTexture {
+                texture,
+                view,
+                width: t.width,
+                height: t.height,
+                mips,
+                drawn: AtomicBool::new(false),
+            }),
+            ..Self::new(device, desc)?
+        })
+    }
+
+    /// A texture surface's texture: every mip, premultiplied. Through [`view`](Self::view) a
+    /// texel reads as linear color where the UI is opaque; where it is translucent, its color
+    /// was premultiplied before the sRGB encoding (§8.1) and reads a little dark.
+    pub fn texture(&self) -> Option<&Texture> {
+        self.texture.as_ref().map(|t| &t.texture)
+    }
+
+    /// A texture surface's sampled view (sRGB, every mip).
+    pub fn view(&self) -> Option<&ShaderView> {
+        self.texture.as_ref().map(|t| &t.view)
+    }
+
+    /// A texture surface's size.
+    pub fn size(&self) -> Option<(u32, u32)> {
+        self.texture.as_ref().map(|t| (t.width, t.height))
     }
 
     /// Whether `data` at `width` × `height` over `clear` draws anything this surface has not
@@ -356,6 +436,9 @@ impl UiSurface {
     pub fn forget(&self, frames: &mut FrameContext) {
         for (b, _) in &self.readbacks {
             frames.forget_buffer(b);
+        }
+        if let Some(t) = &self.texture {
+            frames.forget_texture(&t.texture);
         }
     }
 }
@@ -544,17 +627,34 @@ impl UiRenderer {
         let key = surface.key;
 
         // The target and the tile hashes outlive the frame (§5.5): new ones redraw everything.
-        let target = g.persistent(
-            "UiTarget",
-            key,
-            TextureDesc::new_2d(width, height, UI_FORMAT),
-        );
+        // A texture surface draws into its own texture (§10).
+        let (mut target, fresh) = match &surface.texture {
+            Some(t) => {
+                assert_eq!(
+                    (width, height),
+                    (t.width, t.height),
+                    "a texture surface is drawn at its texture's size"
+                );
+                (
+                    g.import_texture("UiSurfaceTexture", &t.texture),
+                    !t.drawn.swap(true, Ordering::Relaxed),
+                )
+            }
+            None => {
+                let t = g.persistent(
+                    "UiTarget",
+                    key,
+                    TextureDesc::new_2d(width, height, UI_FORMAT),
+                );
+                (t.handle, t.fresh)
+            }
+        };
         let tile_hashes = g.persistent("UiTileHashes", key, BufferDesc::structured::<u32>(tiles));
         // Backdrop blurs draw the frame in layers (§5.6). What a blur shows depends on pixels
         // outside its tiles, so a frame with blurs shades every tile.
         let plan = blur::plan(&data.chunk, pages.glyphs, width, height);
         let layers = plan.starts.len();
-        let force = !self.damage || target.fresh || tile_hashes.fresh || layers > 1;
+        let force = !self.damage || fresh || tile_hashes.fresh || layers > 1;
         let frame = UiFrame {
             width,
             height,
@@ -725,7 +825,6 @@ impl UiRenderer {
         // layer's blurs from the one below.
         let externals: Vec<(ExternalImageId, TextureHandle<'g>)> = externals.to_vec();
         let mut below: Option<TextureHandle<'g>> = None;
-        let mut target = target.handle;
         for l in 0..layers {
             let (first, end) = plan.range(l, commands);
             let images: Vec<(u32, TextureHandle<'g>)> = match below {
@@ -759,7 +858,7 @@ impl UiRenderer {
                     .map(|&(i, t)| (i, b.read_texture(t, Access::ComputeRead)))
                     .collect();
                 let previous = below.map(|t| b.read_texture(t, Access::ComputeRead));
-                let out = b.write_texture(out, Access::ComputeWrite);
+                let out = b.write_texture(out.mip(0), Access::ComputeWrite);
                 (out, move |ctx: &mut PassContext<'_>| {
                     // External images and blurred backdrops get their views now; one without a
                     // texture draws nothing.
@@ -789,7 +888,7 @@ impl UiRenderer {
                         heads: ctx.srv(h),
                         pool: ctx.srv(p),
                         glyph_pages: ctx.srv(gp),
-                        output: ctx.uav(out),
+                        output: ctx.uav(out.mip(0)),
                         first,
                         end,
                         previous: previous.map_or(0, |t| ctx.srv(t)),
@@ -804,6 +903,37 @@ impl UiRenderer {
                 target = out;
             } else {
                 below = Some(out);
+            }
+        }
+        // A texture surface's mips, each from the one above (§10).
+        if let Some(t) = &surface.texture {
+            for mip in 1..t.mips {
+                let size = |m: u32| (t.width >> m).max(1) | (t.height >> m).max(1) << 16;
+                let (w, h) = ((t.width >> mip).max(1), (t.height >> mip).max(1));
+                let args = BlurArgs {
+                    source: 0,
+                    output: 0,
+                    mode: 0,
+                    scale: 2,
+                    origin: 0,
+                    size: size(mip),
+                    source_size: size(mip - 1),
+                    sigma: 0.0,
+                };
+                let pipeline = &self.blur;
+                target = g.add_compute("UiMip", |b| {
+                    let s = b.read_texture(target.mip(mip - 1), Access::ComputeRead);
+                    let o = b.write_texture(target.mip(mip), Access::ComputeWrite);
+                    (o, move |ctx: &mut PassContext<'_>| {
+                        ctx.set_pipeline(pipeline);
+                        ctx.push(&BlurArgs {
+                            source: ctx.srv(s),
+                            output: ctx.uav(o.mip(mip)),
+                            ..args
+                        });
+                        ctx.dispatch(w.div_ceil(8), h.div_ceil(8), 1);
+                    })
+                });
             }
         }
         UiOutput {

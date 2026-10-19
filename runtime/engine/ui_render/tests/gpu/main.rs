@@ -14,6 +14,7 @@ mod gradients;
 mod groups;
 mod paths;
 mod shading;
+mod texture;
 
 use marlin_font::{FontView, GlyphCache, GlyphRecord, GlyphUpload};
 use marlin_gpu_test_support::{hardware_device, shader};
