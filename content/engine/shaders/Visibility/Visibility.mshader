@@ -25,9 +25,12 @@ namespace Marlin.Engine.Visibility;
 //    normal-cone and occlusion tests: it is appended to `Clusters`, whose index is the cluster
 //    id the visibility buffer stores. Pass 1 keeps occluded clusters in `OccludedClusters`;
 //    pass 2's `ClusterRetest` tests them again. Every slot a part is read from is marked in
-//    `Used`.
-// 5. `FinishArgs` turns the clusters appended this pass into the mesh dispatch.
-// 6. `VisMesh` + `VisPs`: one mesh group per cluster of the pass; each pixel keeps the nearest
+//    `Used`. A cluster whose triangles are small on screen (`Software`) goes to the software
+//    raster instead of the mesh shader.
+// 5. `FinishArgs` turns the clusters appended this pass into the mesh dispatch and the
+//    software raster's.
+// 6. `VisMesh` + `VisPs`: one mesh group per hardware cluster of the pass; `SwRaster`: one
+//    group per software cluster, a thread per triangle. Each pixel keeps the nearest
 //    `depth << 32 | cluster << 7 | triangle` with a 64-bit atomic max (no attachments).
 // 7. `VisDepth` splits the depth out into an `R32Float` texture, and `Hzb.mshader` builds the
 //    HZB from it.
@@ -41,11 +44,14 @@ namespace Marlin.Engine.Visibility;
 // appended, 3 the visible clusters appended (each may pass its capacity), 4 the clusters drawn;
 // 5 where the next level's nodes start, 6 and 7 the current level's range, 8 the page requests
 // (may pass their capacity), 9 the occluded instances, 10 the pass's first cluster, 11 the
-// occluded clusters, 12 where the next pass's parts start, 13 and 14 the pass's part range.
+// occluded clusters, 12 where the next pass's parts start, 13 and 14 the pass's part range,
+// 15 the software-raster clusters appended, 16 those drawn, 17 the pass's first one. Software
+// raster clusters are kept in `Clusters` from `ClusterCapacity` on.
 // `Args` (indirect arguments, a pass never both counts into and dispatches from one buffer)
 // holds five records of the RHI's indirect dispatches: a constant (push word 31, unused here),
 // then x, y, z. Words 0–3 are the node level's, 4–7 the cluster cull's, 8–11 the mesh
-// dispatch, 12–15 the instance retest's, 16–19 the cluster retest's.
+// dispatch, 12–15 the instance retest's, 16–19 the cluster retest's, 20–23 the software
+// raster's.
 
 using Marlin.Engine.Scene;
 
@@ -75,7 +81,13 @@ public struct View
     /// The HZB's mip count; its mip 0 is `HzbSize`.
     public uint HzbMips;
     public uint2 HzbSize;
-    public uint2 Spare;
+    /// Clusters whose triangles' average edge is shorter than this many pixels draw in
+    /// software.
+    public float SwEdgePixels;
+    /// The view's size in pixels.
+    public uint Width;
+    public uint Height;
+    public uint[3] Spare;
 }
 
 public struct CullArgs
@@ -135,7 +147,7 @@ void WriteDispatch(in CullArgs a, uint at, uint groups)
 [Compute(1, 1, 1)]
 public void Reset([Push] in CullArgs a)
 {
-    for (uint i = 0; i < 16; i++)
+    for (uint i = 0; i < 20; i++)
         a.Counters[i] = 0;
 }
 
@@ -378,9 +390,31 @@ float Snorm8(uint w, uint shift)
     return Max((float)b / 127, -1);
 }
 
-/// Appends a visible cluster.
-void Draw(in CullArgs a, in View v, uint row, uint address)
+/// Whether a cluster of `triangles` triangles in the world sphere (`center`, `radius`) draws
+/// in software: its triangles are small on screen (their average edge, estimated from the
+/// sphere's projected diameter, under `SwEdgePixels`) and it does not reach the near plane
+/// (software raster does not clip).
+bool Software(in View v, float3 center, float radius, uint triangles)
 {
+    float4 near = v.Planes[4];
+    float d = Dot(near.xyz, center) + near.w;
+    if (d <= radius)
+        return false;
+    float diameter = 2 * radius * v.Eye.w / Max(Length(center - v.Eye.xyz) - radius, 0.0001);
+    return diameter * Sqrt(2 / (float)Max(triangles, 1)) < v.SwEdgePixels;
+}
+
+/// Appends a visible cluster: hardware raster from the front of `Clusters`, software raster
+/// from `ClusterCapacity` on.
+void Draw(in CullArgs a, in View v, uint row, uint address, bool software)
+{
+    if (software)
+    {
+        uint index = a.Counters.AtomicAdd(15, 1);
+        if (index < v.ClusterCapacity)
+            a.Clusters[v.ClusterCapacity + index] = uint2(row, address);
+        return;
+    }
     uint at = a.Counters.AtomicAdd(3, 1);
     if (at < v.ClusterCapacity)
         a.Clusters[at] = uint2(row, address);
@@ -432,6 +466,7 @@ public void ClusterCull([GroupId] uint3 group, [GroupThreadId] uint3 thread, [Pu
                 continue;
         }
         uint address = (slot << 12) | cluster;
+        bool software = Software(v, center, radius, c.TriangleCount);
         if (PassOccludes(a, v, center, radius))
         {
             // Pass 1: pass 2 decides.
@@ -441,11 +476,11 @@ public void ClusterCull([GroupId] uint3 group, [GroupThreadId] uint3 thread, [Pu
                 if (at < v.OccludedCapacity)
                     a.OccludedClusters[at] = uint2(row, address);
                 else
-                    Draw(a, v, row, address);
+                    Draw(a, v, row, address, software);
             }
             continue;
         }
-        Draw(a, v, row, address);
+        Draw(a, v, row, address, software);
     }
 }
 
@@ -470,19 +505,26 @@ public void ClusterRetest([GroupId] uint3 group, [GroupThreadId] uint3 thread, [
     Cluster c = LoadCluster(mesh.Pages, page, AddressCluster(item.y));
     Rows3x4 t = a.Transforms[row].Current;
     float3 center = Apply(t, float4(c.Sphere.xyz, 1));
-    if (!PassOccludes(a, v, center, c.Sphere.w * MaxScale(t)))
-        Draw(a, v, row, item.y);
+    float radius = c.Sphere.w * MaxScale(t);
+    if (!PassOccludes(a, v, center, radius))
+        Draw(a, v, row, item.y, Software(v, center, radius, c.TriangleCount));
 }
 
-/// The clusters appended this pass become its mesh dispatch.
+/// The clusters appended this pass become its mesh dispatch and its software raster dispatch.
 [Compute(1, 1, 1)]
 public void FinishArgs([Push] in CullArgs a)
 {
+    uint capacity = a.View.Value.ClusterCapacity;
     uint first = a.Counters[4];
-    uint count = Min(a.Counters[3], a.View.Value.ClusterCapacity);
+    uint count = Min(a.Counters[3], capacity);
     a.Counters[10] = first;
     a.Counters[4] = count;
     WriteDispatch(a, 8, count - first);
+    uint swFirst = a.Counters[16];
+    uint swCount = Min(a.Counters[15], capacity);
+    a.Counters[17] = swFirst;
+    a.Counters[16] = swCount;
+    WriteDispatch(a, 20, swCount - swFirst);
 }
 
 public struct RasterArgs
@@ -549,6 +591,104 @@ public void VisPs([Position] float4 position, [PrimitiveId] uint id, [Push] in R
     // the float does.
     ulong value = ((ulong)AsUInt(position.z) << 32) | (ulong)id;
     a.Vis.AtomicMax((int2)position.xy, value);
+}
+
+/// Sub-pixel bits of the software raster's fixed-point positions: what the hardware snaps to
+/// (8 on the GPUs we ship on), so both cover the same pixels.
+const int SubPixelBits = 8;
+
+/// A screen position (pixels, y down) snapped to fixed point.
+long2 Snap(float2 p) => long2((long)Floor(p.x * 256 + 0.5), (long)Floor(p.y * 256 + 0.5));
+
+/// `Cross(b - a, p - a)` in fixed point: positive on the inside of an edge `a`→`b` of a
+/// triangle whose corners make a positive area.
+long Edge(long2 a, long2 b, long2 p) => (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
+
+/// Whether edge `a`→`b` is a top or a left edge (y down, positive area): pixels exactly on it
+/// are covered, as on the hardware's top-left rule.
+bool TopLeft(long2 a, long2 b) => b.y < a.y || (b.y == a.y && b.x > a.x);
+
+/// Software raster: one group per cluster of the pass, one thread per triangle; each covered
+/// pixel center keeps the nearest `depth << 32 | cluster << 7 | triangle`, as `VisPs` does.
+/// Coverage follows the hardware's rules: positions snapped to 1/256 pixel, pixel centers,
+/// top-left fill, back faces (clockwise on screen with y up) culled; depth is interpolated
+/// linearly on screen.
+[Compute(128, 1, 1)]
+public void SwRaster([GroupId] uint3 group, [GroupThreadId] uint3 thread, [Push] in RasterArgs a)
+{
+    View v = a.View.Value;
+    uint index = a.Counters[17] + GroupIndex(group);
+    if (index >= a.Counters[16])
+        return;
+    uint cluster = v.ClusterCapacity + index;
+    uint2 entry = a.Clusters[cluster];
+    uint row = entry.x;
+    MeshEntry mesh = a.Meshes[a.Instances[row].Mesh];
+    ReadOnlyByteBuffer pool = mesh.Pages;
+    Page page = LoadPage(pool, AddressSlot(entry.y));
+    Cluster c = LoadCluster(pool, page, AddressCluster(entry.y));
+    uint triangle = thread.x;
+    if (triangle >= c.TriangleCount)
+        return;
+    uint3 corners = LoadTriangle(pool, page, c, triangle);
+    Rows3x4 t = a.Transforms[row].Current;
+    float width = (float)v.Width;
+    float height = (float)v.Height;
+    long2[3] p = default;
+    float[3] z = default;
+    for (uint k = 0; k < 3; k++)
+    {
+        uint vertex = k == 0 ? corners.x : (k == 1 ? corners.y : corners.z);
+        float3 world = Apply(t, float4(DecodePosition(pool, mesh, page, vertex), 1));
+        float4 clip = v.ViewProjection * float4(world, 1);
+        float3 ndc = clip.xyz / clip.w;
+        p[k] = Snap(float2((ndc.x * 0.5 + 0.5) * width, (0.5 - ndc.y * 0.5) * height));
+        z[k] = ndc.z;
+    }
+    long area = Edge(p[0], p[1], p[2]);
+    // Front faces turn counter-clockwise with y up: a negative area with y down. Back faces
+    // and degenerate triangles cover nothing.
+    if (area >= 0)
+        return;
+    // Positive area from here: swap two corners.
+    long2 p1 = p[2];
+    long2 p2 = p[1];
+    long2 p0 = p[0];
+    float z0 = z[0];
+    float z1 = z[2];
+    float z2 = z[1];
+    area = -area;
+    long bias0 = TopLeft(p1, p2) ? 0 : -1;
+    long bias1 = TopLeft(p2, p0) ? 0 : -1;
+    long bias2 = TopLeft(p0, p1) ? 0 : -1;
+    long halfPixel = 1 << (SubPixelBits - 1);
+    long pixel = 1 << SubPixelBits;
+    // The pixels whose centers can be inside: the corners' bounds, on screen.
+    long minX = Min(p0.x, Min(p1.x, p2.x));
+    long minY = Min(p0.y, Min(p1.y, p2.y));
+    long maxX = Max(p0.x, Max(p1.x, p2.x));
+    long maxY = Max(p0.y, Max(p1.y, p2.y));
+    int x0 = Max((int)((minX - halfPixel + pixel - 1) >> SubPixelBits), 0);
+    int y0 = Max((int)((minY - halfPixel + pixel - 1) >> SubPixelBits), 0);
+    int x1 = Min((int)((maxX - halfPixel) >> SubPixelBits), (int)v.Width - 1);
+    int y1 = Min((int)((maxY - halfPixel) >> SubPixelBits), (int)v.Height - 1);
+    float inverse = 1 / (float)area;
+    uint id = (cluster << 7) | triangle;
+    for (int y = y0; y <= y1; y++)
+    {
+        for (int x = x0; x <= x1; x++)
+        {
+            long2 s = long2((long)x * pixel + halfPixel, (long)y * pixel + halfPixel);
+            long w0 = Edge(p1, p2, s);
+            long w1 = Edge(p2, p0, s);
+            long w2 = Edge(p0, p1, s);
+            if (w0 + bias0 < 0 || w1 + bias1 < 0 || w2 + bias2 < 0)
+                continue;
+            float depth = ((float)w0 * z0 + (float)w1 * z1 + (float)w2 * z2) * inverse;
+            ulong value = ((ulong)AsUInt(Max(depth, 0)) << 32) | (ulong)id;
+            a.Vis.AtomicMax(int2(x, y), value);
+        }
+    }
 }
 
 public struct TargetArgs

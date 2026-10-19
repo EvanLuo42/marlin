@@ -196,7 +196,7 @@ pub fn streaming_shaders(library: &ShaderLibrary) -> Result<StreamingShaders<'_>
 
 /// The visibility pipeline's entries (`Marlin.Engine.Visibility`), in
 /// `VisibilityShaders::ENTRIES` order.
-pub const VISIBILITY: [&str; 17] = [
+pub const VISIBILITY: [&str; 18] = [
     "Marlin.Engine.Visibility.Reset",
     "Marlin.Engine.Visibility.InstanceCull",
     "Marlin.Engine.Visibility.InstanceRetestArgs",
@@ -214,6 +214,7 @@ pub const VISIBILITY: [&str; 17] = [
     "Marlin.Engine.Visibility.VisDepth",
     "Marlin.Engine.Visibility.HzbFirst",
     "Marlin.Engine.Visibility.HzbDown",
+    "Marlin.Engine.Visibility.SwRaster",
 ];
 
 /// The visibility pipeline's shaders from the engine's library, checked for their stages and
@@ -229,6 +230,7 @@ pub fn visibility_shaders(library: &ShaderLibrary) -> Result<VisibilityShaders<'
             "VisPs" => (Stage::Pixel, RASTER_PUSH_BYTES),
             "VisClear" | "VisDepth" => (Stage::Compute, TARGET_PUSH_BYTES),
             "HzbFirst" | "HzbDown" => (Stage::Compute, HZB_PUSH_BYTES),
+            "SwRaster" => (Stage::Compute, RASTER_PUSH_BYTES),
             _ => (Stage::Compute, CULL_PUSH_BYTES),
         };
         let e = library.entry(name).ok_or(ShaderError::MissingEntry(name))?;

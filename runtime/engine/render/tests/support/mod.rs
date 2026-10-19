@@ -378,9 +378,12 @@ impl Harness {
             vis_depth: floats(&vis_depth),
             counters: [
                 c[counters::INSTANCES],
-                c[counters::CLUSTERS_FOUND],
-                c[counters::CLUSTERS_DRAWN],
+                c[counters::CLUSTERS_FOUND] + c[counters::SW_CLUSTERS_FOUND],
+                c[counters::CLUSTERS_DRAWN] + c[counters::SW_CLUSTERS_DRAWN],
             ],
+            hw_drawn: c[counters::CLUSTERS_DRAWN],
+            sw_drawn: c[counters::SW_CLUSTERS_DRAWN],
+            pass_first_sw_cluster: c[counters::PASS_FIRST_SW_CLUSTER],
             nodes: c[counters::NODES],
             parts: c[counters::PARTS],
             requests: c[counters::REQUESTS],
@@ -503,8 +506,13 @@ pub struct VisFrame {
     pub depth: Vec<f32>,
     pub visbuffer: Vec<u64>,
     pub vis_depth: Vec<f32>,
-    /// Visible instances, visible clusters found, clusters drawn.
+    /// Visible instances, visible clusters found, clusters drawn (hardware and software raster).
     pub counters: [u32; 3],
+    /// Clusters drawn by the mesh shader and by the software raster, and the first software one
+    /// of the last pass.
+    pub hw_drawn: u32,
+    pub sw_drawn: u32,
+    pub pass_first_sw_cluster: u32,
     /// Hierarchy nodes and group parts the traversal appended, and the page requests it made.
     pub nodes: u32,
     pub parts: u32,
@@ -517,11 +525,31 @@ pub struct VisFrame {
     pub two_pass: bool,
     /// The final HZB's mips, row-major (empty without occlusion culling).
     pub hzb: Vec<Vec<f32>>,
-    /// Instance row, `slot << 12 | cluster`, for each of the buffer's entries.
+    /// Instance row, `slot << 12 | cluster`, for each of the buffer's entries: hardware raster
+    /// from 0, software raster from `capacity`.
     pub clusters: Vec<[u32; 2]>,
     pub capacity: u32,
     /// Levels of hierarchy nodes the passes traversed.
     pub levels: u32,
     /// The CPU cut the reference drew.
     pub cut: Vec<[u32; 2]>,
+}
+
+impl VisFrame {
+    /// The clusters drawn, hardware and software raster: (visibility buffer cluster id, entry).
+    pub fn drawn(&self) -> Vec<(u32, [u32; 2])> {
+        let hw = (0..self.hw_drawn).map(|i| (i, self.clusters[i as usize]));
+        let sw = (0..self.sw_drawn).map(|i| {
+            let id = self.capacity + i;
+            (id, self.clusters[id as usize])
+        });
+        hw.chain(sw).collect()
+    }
+
+    /// The clusters the last pass drew (pass 2 when there was one).
+    pub fn last_pass(&self) -> Vec<[u32; 2]> {
+        let hw = self.pass_first_cluster..self.hw_drawn;
+        let sw = self.capacity + self.pass_first_sw_cluster..self.capacity + self.sw_drawn;
+        hw.chain(sw).map(|i| self.clusters[i as usize]).collect()
+    }
 }

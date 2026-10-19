@@ -58,11 +58,12 @@ pub struct VisibilityShaders<'a> {
     pub depth: ShaderModule<'a>,
     pub hzb_first: ShaderModule<'a>,
     pub hzb_down: ShaderModule<'a>,
+    pub sw_raster: ShaderModule<'a>,
 }
 
 impl<'a> VisibilityShaders<'a> {
     /// The entries' names in `Marlin.Engine.Visibility`, in field order.
-    pub const ENTRIES: [&'static str; 17] = [
+    pub const ENTRIES: [&'static str; 18] = [
         "Reset",
         "InstanceCull",
         "InstanceRetestArgs",
@@ -80,6 +81,7 @@ impl<'a> VisibilityShaders<'a> {
         "VisDepth",
         "HzbFirst",
         "HzbDown",
+        "SwRaster",
     ];
 
     /// The shaders `module` gives for each of [`ENTRIES`](Self::ENTRIES).
@@ -102,6 +104,7 @@ impl<'a> VisibilityShaders<'a> {
             depth,
             hzb_first,
             hzb_down,
+            sw_raster,
         ] = Self::ENTRIES.map(&mut module);
         Self {
             reset,
@@ -121,6 +124,7 @@ impl<'a> VisibilityShaders<'a> {
             depth,
             hzb_first,
             hzb_down,
+            sw_raster,
         }
     }
 }
@@ -162,7 +166,10 @@ struct View {
     occluded_capacity: u32,
     hzb_mips: u32,
     hzb_size: [u32; 2],
-    spare: [u32; 2],
+    sw_edge_pixels: f32,
+    width: u32,
+    height: u32,
+    spare: [u32; 3],
 }
 
 #[repr(C)]
@@ -233,8 +240,13 @@ pub mod counters {
     /// The first cluster of the last pass: pass 1 drew the clusters before it.
     pub const PASS_FIRST_CLUSTER: usize = 10;
     pub const OCCLUDED_CLUSTERS: usize = 11;
+    /// Software-raster clusters found (may pass the capacity) and drawn, and the first of the
+    /// last pass.
+    pub const SW_CLUSTERS_FOUND: usize = 15;
+    pub const SW_CLUSTERS_DRAWN: usize = 16;
+    pub const PASS_FIRST_SW_CLUSTER: usize = 17;
     /// Words in the counters buffer.
-    pub const WORDS: usize = 16;
+    pub const WORDS: usize = 20;
 }
 
 /// One view the visibility passes draw.
@@ -257,11 +269,13 @@ pub struct VisibilityOutput<'g> {
     pub visbuffer: TextureHandle<'g>,
     /// `R32Float`: the visibility buffer's depth (0 where nothing was drawn).
     pub depth: TextureHandle<'g>,
-    /// The visible clusters: two words each (instance row, `slot << 12 | cluster`).
+    /// The visible clusters: two words each (instance row, `slot << 12 | cluster`), the
+    /// hardware raster's from 0, the software raster's from `capacity`.
     pub clusters: BufferHandle<'g>,
     /// [`counters::WORDS`] words, indexed by [`counters`].
     pub counters: BufferHandle<'g>,
-    /// Entries `clusters` holds.
+    /// Entries each half of `clusters` holds: hardware-raster clusters are in the first,
+    /// software-raster ones from `capacity` on.
     pub capacity: u32,
     /// Levels of hierarchy nodes traversed.
     pub levels: u32,
@@ -299,6 +313,7 @@ pub struct Visibility {
     depth: ComputePipeline,
     hzb_first: ComputePipeline,
     hzb_down: ComputePipeline,
+    sw_raster: ComputePipeline,
     /// The screen-space error, in pixels, the LOD cut may have: every instance draws the
     /// coarsest clusters whose error, projected at their distance, stays within it.
     pub lod_error_pixels: f32,
@@ -313,6 +328,10 @@ pub struct Visibility {
     pub max_occluded: u32,
     /// Most page requests a view makes a frame.
     pub max_requests: u32,
+    /// Clusters whose triangles' average edge on screen is shorter than this many pixels
+    /// draw in software (`r.geo.sw_raster_edge_px`, 0009 §4.1): 0 draws everything with the
+    /// mesh shader.
+    pub sw_edge_pixels: f32,
 }
 
 /// World-space frustum planes of a view-projection (reverse-Z, infinite far): left, right,
@@ -422,6 +441,7 @@ impl Visibility {
             depth: compute(shaders.depth)?,
             hzb_first: compute(shaders.hzb_first)?,
             hzb_down: compute(shaders.hzb_down)?,
+            sw_raster: compute(shaders.sw_raster)?,
             lod_error_pixels: 1.0,
             occlusion: true,
             max_nodes: 1 << 21,
@@ -429,6 +449,7 @@ impl Visibility {
             max_clusters: 1 << 22,
             max_occluded: 1 << 20,
             max_requests: 4096,
+            sw_edge_pixels: 32.0,
         })
     }
 
@@ -464,7 +485,7 @@ impl Visibility {
         let levels = levels.max(1);
         let node_capacity = capacity(nodes, self.max_nodes);
         let part_capacity = capacity(parts, self.max_parts);
-        let cluster_capacity = capacity(clusters, self.max_clusters.min(MAX_CLUSTERS));
+        let cluster_capacity = capacity(clusters, self.max_clusters.min(MAX_CLUSTERS / 2));
         let occluded_capacity = capacity(clusters.max(instances), self.max_occluded);
         let request_capacity = self.max_requests.max(1);
         let rows = scene.instance_rows();
@@ -489,7 +510,10 @@ impl Visibility {
             occluded_capacity,
             hzb_mips,
             hzb_size: [hzb_w, hzb_h],
-            spare: [0; 2],
+            sw_edge_pixels: self.sw_edge_pixels,
+            width,
+            height,
+            spare: [0; 3],
         };
 
         let structured = |n: u32| BufferDesc::structured::<[u32; 2]>(u64::from(n));
@@ -500,8 +524,9 @@ impl Visibility {
                 "VisCounters",
                 BufferDesc::structured::<u32>(counters::WORDS as u64),
             ),
-            args: g.create_buffer("VisArgs", BufferDesc::structured::<u32>(20)),
-            clusters: g.create_buffer("VisibleClusters", structured(cluster_capacity)),
+            args: g.create_buffer("VisArgs", BufferDesc::structured::<u32>(24)),
+            // Hardware clusters in the first half, software ones in the second.
+            clusters: g.create_buffer("VisibleClusters", structured(2 * cluster_capacity)),
             requests: g.create_buffer("VisPageRequests", structured(request_capacity)),
             used: pool.used,
             occluded_instances: g.create_buffer(
@@ -824,6 +849,31 @@ impl Visibility {
                     vis: ctx.uav(vis),
                 });
                 ctx.dispatch_mesh_indirect(dispatch, 1, None);
+            })
+        });
+        let vis = g.add_compute("SwRaster", |b| {
+            let dispatch = b.read_buffer(lists.args.range(80, 16), Access::Indirect);
+            let instances = b.read_buffer(p.gpu.instance_data, Access::ComputeRead);
+            let transforms = b.read_buffer(p.gpu.instance_transforms, Access::ComputeRead);
+            let meshes = b.read_buffer(p.gpu.meshes, Access::ComputeRead);
+            let clusters = b.read_buffer(lists.clusters, Access::ComputeRead);
+            let counters = b.read_buffer(lists.counters, Access::ComputeRead);
+            // The clusters are read from the pool through the mesh table's view.
+            b.read_buffer(p.pages, Access::ComputeRead);
+            let vis = b.write_texture(vis, Access::ComputeWrite);
+            (vis, move |ctx: &mut PassContext<'_>| {
+                let view = ctx.upload(&view);
+                ctx.set_pipeline(&self.sw_raster);
+                ctx.push(&RasterArgs {
+                    view,
+                    instances: ctx.srv(instances),
+                    transforms: ctx.srv(transforms),
+                    meshes: ctx.srv(meshes),
+                    clusters: ctx.srv(clusters),
+                    counters: ctx.srv(counters),
+                    vis: ctx.uav(vis),
+                });
+                ctx.dispatch_indirect(dispatch, 1, None);
             })
         });
         (lists, vis)

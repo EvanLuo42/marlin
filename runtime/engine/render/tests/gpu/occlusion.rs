@@ -91,7 +91,7 @@ fn occluders_hide_what_is_behind_them() {
     let drawn = f.counters[2] as usize;
     assert!(drawn > 0);
     assert!(
-        f.clusters[..drawn].iter().all(|c| c[0] == wall.index()),
+        f.drawn().iter().all(|(_, c)| c[0] == wall.index()),
         "only the wall is drawn"
     );
 
@@ -119,11 +119,7 @@ fn what_comes_out_from_behind_is_drawn_the_same_frame() {
     check_against_reference(&h, &f);
     assert!(f.two_pass);
     assert_eq!(f.occluded_instances, balls.len() as u32);
-    let drawn = f.counters[2] as usize;
-    let rows: Vec<u32> = f.clusters[f.pass_first_cluster as usize..drawn]
-        .iter()
-        .map(|c| c[0])
-        .collect();
+    let rows: Vec<u32> = f.last_pass().iter().map(|c| c[0]).collect();
     for ball in &balls {
         assert!(
             rows.contains(&ball.index()),
@@ -199,9 +195,8 @@ fn clusters_behind_an_occluder_are_culled_one_by_one() {
     check_against_reference(&h, &f);
     assert_eq!(f.occluded_instances, 0);
     assert!(f.occluded_clusters > 0, "clusters behind the wall");
-    let drawn = f.counters[2] as usize;
-    assert!(f.clusters[..drawn].iter().any(|c| c[0] == big.index()));
-    assert!(f.clusters[..drawn].iter().any(|c| c[0] == wall.index()));
+    assert!(f.drawn().iter().any(|(_, c)| c[0] == big.index()));
+    assert!(f.drawn().iter().any(|(_, c)| c[0] == wall.index()));
 
     // The wall moves away: pass 2 draws the clusters pass 1 culled.
     h.set(
@@ -211,11 +206,8 @@ fn clusters_behind_an_occluder_are_culled_one_by_one() {
     let f = h.visibility_frame();
     check_against_reference(&h, &f);
     assert!(f.occluded_clusters > 0);
-    let drawn = f.counters[2] as usize;
     assert!(
-        f.clusters[f.pass_first_cluster as usize..drawn]
-            .iter()
-            .any(|c| c[0] == big.index()),
+        f.last_pass().iter().any(|c| c[0] == big.index()),
         "pass 2 drew the ball's clusters"
     );
 }

@@ -12,5 +12,6 @@ mod geometry;
 mod gpu_scene;
 mod occlusion;
 mod post;
+mod software;
 mod streaming;
 mod visibility;

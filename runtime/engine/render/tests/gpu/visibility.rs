@@ -28,12 +28,13 @@ fn rgba8(c: [f32; 4]) -> u32 {
 pub(crate) fn check_against_reference(h: &Harness, f: &VisFrame) {
     let [_, found, drawn] = f.counters;
     assert_eq!(found, drawn, "the capacity held every cluster");
-    assert!(drawn <= f.capacity);
+    assert!(f.hw_drawn <= f.capacity && f.sw_drawn <= f.capacity);
     let cut: HashSet<[u32; 2]> = f.cut.iter().copied().collect();
     let mut seen = HashSet::new();
-    for c in &f.clusters[..drawn as usize] {
-        assert!(cut.contains(c), "{c:x?} is not in the cut");
-        assert!(seen.insert(*c), "{c:x?} drawn twice");
+    let drawn: HashSet<u32> = f.drawn().iter().map(|&(id, _)| id).collect();
+    for (_, c) in f.drawn() {
+        assert!(cut.contains(&c), "{c:x?} is not in the cut");
+        assert!(seen.insert(c), "{c:x?} drawn twice");
     }
     for p in 0..(SIZE * SIZE) as usize {
         let v = f.visbuffer[p];
@@ -47,15 +48,20 @@ pub(crate) fn check_against_reference(h: &Harness, f: &VisFrame) {
             continue;
         }
         let cluster = cluster_of(v);
-        assert!(cluster < drawn as usize, "pixel {p}: {v:x}");
+        assert!(drawn.contains(&(cluster as u32)), "pixel {p}: {v:x}");
         let record = h.cluster(f.clusters[cluster][1]);
         assert!(
             (v & 127) < u64::from(record.triangle_count),
             "pixel {p}: {v:x}"
         );
+        // The software raster interpolates depth in floating point, the hardware its own way:
+        // within a few parts in 10 000 (coverage is the same).
+        let d = (f.depth[p] - f.vis_depth[p]).abs();
         assert!(
-            (f.depth[p] - f.vis_depth[p]).abs() <= 1e-6,
-            "pixel {p}: depths"
+            d <= 1e-6 || d <= f.depth[p] * 5e-4,
+            "pixel {p}: depths {} and {}",
+            f.depth[p],
+            f.vis_depth[p]
         );
     }
 }

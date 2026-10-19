@@ -406,3 +406,10 @@ R2d（2026-10-18）定下的细节：两遍 HZB 遮挡剔除（§4.2）：
 - **容量**：被挡实例和被挡 cluster 表的容量按"可绘制实例数"和"cluster 总数"中大的那个取 2 的幂，上限 `max_occluded`（2^20）；放不下的直接画（保守）。计数器扩到 16 个字，indirect 参数 5 条记录（加上实例重测和 cluster 重测）。
 - **接口**：`Visibility::add_passes(g, meshes, scene, gpu, pool, &ViewDesc { id, camera, previous, width, height })`；`VisibilityOutput` 多了 `hzb`（最终的 HZB）和 `two_pass`。`VisibilityShaders` 多了 `instance_retest_args`、`instance_retest`、`cluster_retest_args`、`cluster_retest`、`hzb_first`、`hzb_down`，cull 的 push constant 是 16 个字（`CULL_PUSH_BYTES = 64`），HZB 的 6 个字。
 - **测试**（`marlin-render/tests/gpu/occlusion.rs`，以及原有的可见性和流送测试：它们现在每一帧都在两遍下和参考光栅逐像素一致）：一堵铺满视野的墙后面三个球：稳定以后第一遍挡掉三个实例，第二遍仍然挡住，只画墙；关掉遮挡剔除画的 cluster 更多，画面完全相同。墙挪走的那一帧：第一遍按旧 HZB 挡掉三个球，第二遍把它们画出来，画面和参考一致；之后相机转动、移动的几帧同样一致。半边墙后面一个大球（预算 0，最细的 cluster）：实例可见、左半边的 cluster 被挡（`OccludedClusters` 非空）；墙挪走那一帧第二遍画出这些 cluster。HZB 的每一级和 CPU 按同样规则从深度图算出的逐值相等，最后一级是 1×1。材质的 golden 和 `sample_first_frame` 不变。开窗口跑 `samples/basic` 10 秒，开着验证层，没有报错。
+
+R2e（2026-10-18）定下的细节：软光栅（§4.1、§4.3）：
+- **分流**（`Software`，在 `ClusterCull` 和 `ClusterRetest` 里）：按 cluster 球的投影直径（近侧距离）和三角形数估计屏幕上三角形的平均边长（直径 × √(2 / 三角形数)），小于 `Visibility::sw_edge_pixels`（§4.1 的 `r.geo.sw_raster_edge_px`，默认 32 像素）的走软光栅；碰到近平面的 cluster（球心到近平面的距离不超过半径）一律走硬件，软光栅不裁剪。设成 0 就全走 mesh shader。
+- **可见 cluster 表分两半**：容量翻倍，硬件光栅的 cluster 从 0 起，软光栅的从 `capacity` 起（各自的计数器：第 15、16、17 个字是软光栅找到的、画了的、这一遍的第一个）。visbuffer 里的 cluster 下标就是表里的下标，所以材质分箱和解算不用区分两种光栅；每半的容量上限是 2^24，两半加起来仍在 25 位以内。两遍遮挡剔除的第二遍在两半里都接着往后追加。
+- **软光栅**（`SwRaster`）：每个 cluster 一个 128 线程的 group，一个线程一个三角形，直接从页里解码三个顶点（不共享顶点，簇小，重复的解码比 groupshared 同步便宜）。顶点吸附到 1/256 像素（8 位子像素，和这里的 GPU 一样），64 位整数的边函数，像素中心采样，top-left 填充规则，按硬件一样剔除背面（y 向上时顺时针）；深度按屏幕空间线性插值 NDC 的 z，用 64 位原子 max 写 visbuffer，值和 `VisPs` 的一样。每个三角形遍历它的像素包围盒。
+- **和硬件对比**：同一场景全走硬件和全走软件，覆盖的像素逐个相同、每个像素属于同一个实例；深度相差在 5×10⁻⁴（相对）以内（硬件按自己的方式插值，最多见到 1.5×10⁻⁴）。所以和参考光栅的逐像素比较里，深度改成相对 5×10⁻⁴ 或绝对 10⁻⁶ 的容差，覆盖仍然逐像素相同。
+- **测试**（`marlin-render/tests/gpu/software.rs`，以及所有可见性、流送、遮挡测试：64 像素的视图里大多数 cluster 走软光栅，它们照样和参考光栅一致）：全硬件和全软件逐像素对比（如上）；默认阈值下小三角形走软件、近处的大立方体走硬件；相机在一个大球里面时，穿过近平面的 cluster 留在硬件上、其余走软件，画面和参考一致。材质的 golden 和 `sample_first_frame` 不变。开窗口跑 `samples/basic` 10 秒，开着验证层，没有报错。
