@@ -13,7 +13,7 @@ namespace Marlin.Engine.Lighting;
 //    keeps its confidence but no weight, so occluded lights do not spread through reuse.
 //    With `Gi`, `RestirInitialGi` then adds a second kind of candidate: a cosine-distributed bounce
 //    from the pixel's surface, its sample the surface `x2` it reaches (with the radiance leaving
-//    it, `RadianceAt`) or the sky. The passes below reuse every kind alike (`SampleContribution`,
+//    it, `RadianceAt`) or the sky. The passes below reuse every kind alike (`SampleLobes`,
 //    `SampleVisible`): a surface sample is in area measure at `x2`, so reusing it at another
 //    pixel is a reconnection whose Jacobian its target already holds.
 // 2. `RestirTemporal` (0010 §2.4): the pixel's reservoir last frame, found through the motion
@@ -185,10 +185,12 @@ public struct RestirArgs
     /// slot, the target there; negative: no partner (off screen, or another surface).
     public Buffer<float> ShiftsOut;
     public ReadOnlyBuffer<float> Shifts;
-    /// The shading's output, a noisy signal for the denoiser (0010 §6.1, `Denoise.mshader`): the
-    /// light demodulated (divided by the albedo) and the distance to the light; and its hints,
-    /// `Novelty` and `CorrelationRadius`.
+    /// The shading's output, noisy signals for the denoisers (0010 §6.1, `Denoise.mshader`): the
+    /// diffuse light demodulated (divided by the albedo) and the distance to the sample; the
+    /// specular light demodulated (divided by `SpecularAlbedo`) and the same distance; and their
+    /// hints, `Novelty` and `CorrelationRadius`.
     public StorageTexture2D<float4> Signal;
+    public StorageTexture2D<float4> SpecularSignal;
     public StorageTexture2D<float2> Hints;
     /// What a GI bounce's hit is made of, and the world cache it ends at (`RestirInitialGi`).
     public Uniform<GiSources> Gi;
@@ -224,11 +226,19 @@ float3 WorldAt(in RestirConstants c, uint2 px, float depth)
 /// spot's cone.
 float3 Contribution(in LightRow l, float3 x, float3 n, float3 albedo)
 {
+    float3 toward;
+    float3 incident = LightIncident(l, x, out toward);
+    return albedo * (0.31830989 * Saturate(Dot(n, toward))) * incident;
+}
+
+/// What light `l` sends to `x`, before the surface's cosine: I · window / d² (times a spot's
+/// cone), and the direction toward it.
+float3 LightIncident(in LightRow l, float3 x, out float3 toward)
+{
     float3 d = l.Position - x;
     float d2 = Max(Dot(d, d), 0.0001);
     float dist = Sqrt(d2);
-    float3 toward = d / dist;
-    float cosine = Saturate(Dot(n, toward));
+    toward = d / dist;
     float window = Saturate(1 - Pow(dist / Max(l.Range, 0.0001), 4));
     float falloff = window * window / d2;
     float spot = 1;
@@ -240,7 +250,23 @@ float3 Contribution(in LightRow l, float3 x, float3 n, float3 albedo)
     }
     if (l.Kind == 0)
         return float3(0, 0, 0);
-    return albedo * 0.31830989 * l.Intensity * (falloff * spot * cosine);
+    return l.Intensity * (falloff * spot);
+}
+
+/// What light `l` gives the proxy lobe `p` at `x` seen along `v`, unshadowed: diffuse, and
+/// specular of at least `MinLightRoughness`.
+Lobes LightLobes(in LightRow l, float3 x, float3 v, in Proxy p)
+{
+    float3 toward;
+    float3 incident = LightIncident(l, x, out toward);
+    return ProxyLobes(p, v, toward, incident, true, MinLightRoughness);
+}
+
+/// The luminance of `LightLobes`: a light candidate's target.
+float LightTarget(in LightRow l, float3 x, float3 v, in Proxy p)
+{
+    Lobes o = LightLobes(l, x, v, p);
+    return Luminance(o.Diffuse + o.Specular);
 }
 
 /// Whether the surface at `x` (facing `n`) sees the point of light `l`'s sphere that `sample`
@@ -306,24 +332,37 @@ bool HasSample(in PathReservoir r) => r.Light != NoLight;
 /// Whether `r`'s sample is a light (a row of the light table).
 bool IsLight(in PathReservoir r) => r.Light < SkySample;
 
-/// The light the Lambert surface at `x` (facing `n`, of albedo `albedo`) receives from `r`'s
-/// sample and reflects toward the eye, unshadowed: the sample's target there. A surface sample's
-/// is in area measure at its point: albedo / π · cos θ₁ · L · cos θ₂ / d², which a reconnection
-/// to another pixel's surface weighs as it would a light's point (no Jacobian to apply).
-float3 SampleContribution(in RestirArgs a, in PathReservoir r, float3 x, float3 n, float3 albedo)
+/// What `r`'s sample gives the proxy lobe `p` at `x` seen along `v` (toward the eye),
+/// unshadowed: diffuse and specular, whose luminance is the sample's target there. A light's
+/// specular is there at any roughness (at least `MinLightRoughness`); a surface's or the sky's
+/// only from `SpecularTau` up: below, the specular tracing owns their reflection (0010 §2.7).
+/// A surface sample is in area measure at its point (the incident radiance times cos θ₂ / d²),
+/// which a reconnection to another pixel's surface weighs as it would a light's point (no
+/// Jacobian to apply).
+Lobes SampleLobes(in RestirArgs a, in PathReservoir r, float3 x, float3 v, in Proxy p)
 {
     if (IsLight(r))
-        return Contribution(a.Lights[r.Light], x, n, albedo);
+        return LightLobes(a.Lights[r.Light], x, v, p);
     float3 radiance = UnpackRgb9e5(r.Radiance);
+    bool specular = p.Roughness >= SpecularTau;
     if (r.Light == SkySample)
-        return albedo * (0.31830989 * Saturate(Dot(n, r.Point))) * radiance;
+        return ProxyLobes(p, v, r.Point, radiance, specular, 0);
     float3 d = r.Point - x;
     float d2 = Max(Dot(d, d), 0.0001);
     float3 toward = d * (1 / Sqrt(d2));
-    float cos1 = Saturate(Dot(n, toward));
     float cos2 = Saturate(-Dot(UnpackOct(r.Sample), toward));
-    return albedo * (0.31830989 * cos1 * cos2 / d2) * radiance;
+    return ProxyLobes(p, v, toward, radiance * (cos2 / d2), specular, 0);
 }
+
+/// The luminance of `SampleLobes`: the sample's target at `x`.
+float SampleTarget(in RestirConstants c, in RestirArgs a, in PathReservoir r, float3 x, in Proxy p)
+{
+    Lobes o = SampleLobes(a, r, x, ViewOf(c, x), p);
+    return Luminance(o.Diffuse + o.Specular);
+}
+
+/// The direction from `x` toward the eye.
+float3 ViewOf(in RestirConstants c, float3 x) => Normalize(c.Eye.xyz - x);
 
 /// Whether the surface at `x` (facing `n`) sees `r`'s sample: one ray.
 bool SampleVisible(in RestirConstants c, in RestirArgs a, in PathReservoir r, float3 x, float3 n)
@@ -386,7 +425,7 @@ public void RestirInitial([DispatchThreadId] uint3 id, [Push] in RestirArgs a)
         float source = AsFloat(entry.y);
         if (source <= 0)
             continue;
-        float target = Luminance(Contribution(a.Lights[entry.x], x, p.Normal, p.Albedo));
+        float target = LightTarget(a.Lights[entry.x], x, ViewOf(c, x), p);
         float weight = target / source;
         sum += weight;
         if (weight > 0 && Random(h ^ 0x68E31DA4) * sum < weight)
@@ -492,9 +531,28 @@ public void RestirInitialGi([DispatchThreadId] uint3 id, [Push] in RestirArgs a)
     Proxy p = UnpackProxy(a.MaterialBuffer.Load((int2)px));
     float3 x = WorldAt(c, px, depth);
     uint state = Hash(c.Seed ^ 0x3C6EF372 ^ Hash(px.y * c.Width + px.x));
+    float3 view = ViewOf(c, x);
+    // A direction from the lobes: the specular one (VNDF) with probability `chance` where it is
+    // resampled (roughness from `SpecularTau`), else the diffuse one (cosine); the pdf is the
+    // mixture's (one-sample MIS).
+    float chance = 0;
+    if (p.Roughness >= SpecularTau)
+    {
+        float specular = Luminance(SpecularAlbedo(p.F0, p.Roughness, Saturate(Dot(p.Normal, view))));
+        chance = Clamp(specular / Max(specular + Luminance(p.Albedo), 1e-6), 0.1, 1);
+    }
+    float pick = PathRandom(ref state);
     float u = PathRandom(ref state);
     float v = PathRandom(ref state);
-    float3 direction = CosineDirection(p.Normal, u, v);
+    float3 direction = pick < chance ? SampleSpecular(p.Normal, view, p.Roughness, u, v) : CosineDirection(p.Normal, u, v);
+    float cosine = Dot(p.Normal, direction);
+    if (cosine <= 0)
+        return;
+    float pdf = (1 - chance) * cosine * 0.31830989;
+    if (chance > 0)
+        pdf += chance * SpecularPdf(p.Normal, view, direction, p.Roughness);
+    if (pdf <= 0)
+        return;
     Ray ray = Ray { Origin = Lift(x, p.Normal, c.Eye.xyz), TMin = 0, Direction = direction, TMax = 100000 };
     RayHit hit = a.Tlas.TraceClosest(ray, RayFlags.CullBackFace);
     PathReservoir g = r;
@@ -504,7 +562,8 @@ public void RestirInitialGi([DispatchThreadId] uint3 id, [Push] in RestirArgs a)
         g.Light = SkySample;
         g.Point = direction;
         g.Radiance = PackRgb9e5(c.Sky.xyz);
-        weight = Luminance(p.Albedo * c.Sky.xyz);
+        Lobes o = ProxyLobes(p, view, direction, c.Sky.xyz, chance > 0, 0);
+        weight = Luminance(o.Diffuse + o.Specular) / pdf;
     }
     else if (hit.FrontFace)
     {
@@ -515,7 +574,8 @@ public void RestirInitialGi([DispatchThreadId] uint3 id, [Push] in RestirArgs a)
         g.Sample = PackOct(surface.Normal);
         g.Point = surface.Position;
         g.Radiance = PackRgb9e5(radiance);
-        weight = Luminance(p.Albedo * radiance);
+        Lobes o = ProxyLobes(p, view, direction, radiance, chance > 0, 0);
+        weight = Luminance(o.Diffuse + o.Specular) / pdf;
     }
     if (weight <= 0)
         return;
@@ -526,7 +586,7 @@ public void RestirInitialGi([DispatchThreadId] uint3 id, [Push] in RestirArgs a)
     if (PathRandom(ref state) * sum < weight)
     {
         TakeSample(ref s, g);
-        s.Target = Luminance(SampleContribution(a, g, x, p.Normal, p.Albedo));
+        s.Target = SampleTarget(c, a, g, x, p);
     }
     s.W = s.Target > 0 ? sum / s.Target : 0;
     s.M = 1;
@@ -571,7 +631,7 @@ public void RestirTemporal([DispatchThreadId] uint3 id, [Push] in RestirArgs a)
     Proxy p = UnpackProxy(a.MaterialBuffer.Load((int2)px));
     float3 x = WorldAt(c, px, depth);
     // Last frame's sample, weighed at this frame's surface (its light may have moved or gone).
-    float qTarget = Luminance(SampleContribution(a, q, x, p.Normal, p.Albedo));
+    float qTarget = SampleTarget(c, a, q, x, p);
     float cap = c.MaxHistory;
     if (c.Duplication != 0)
         cap = Lerp(c.MaxHistory, 1, Pow(Saturate(a.DuplicationMap[pixel]), c.DuplicationPower));
@@ -671,7 +731,7 @@ public void RestirSpatialShift([DispatchThreadId] uint3 id, [Push] in RestirArgs
                     int2 at = (int2)PixelOf(c, uint2((uint)q.x, (uint)q.y));
                     Proxy p = UnpackProxy(a.MaterialBuffer.Load(at));
                     float3 x = WorldAt(c, (uint2)at, a.Depth.Load(at));
-                    shifted = Luminance(SampleContribution(a, r, x, p.Normal, p.Albedo));
+                    shifted = SampleTarget(c, a, r, x, p);
                     if (shifted > 0 && c.SpatialVisibility != 0 && !SampleVisible(c, a, r, x, p.Normal))
                         shifted = 0;
                 }
@@ -813,7 +873,7 @@ public void RestirSpatialBiased([DispatchThreadId] uint3 id, [Push] in RestirArg
         fresh += n.M * n.Fresh;
         if (!HasSample(n) || n.W <= 0)
             continue;
-        float target = Luminance(SampleContribution(a, n, x, p.Normal, p.Albedo));
+        float target = SampleTarget(c, a, n, x, p);
         float weight = target * n.W * n.M;
         sum += weight;
         if (weight > 0 && Random(Hash(seed + k * 0x9E3779B9)) * sum < weight)
@@ -870,7 +930,7 @@ PathReservoir ShadedReservoir(in RestirConstants c, in RestirArgs a, uint2 px, o
                 duplication += a.DuplicationMap[CellIndex(c, uint2((uint)q.x >> 1, (uint)q.y))];
             if (!HasSample(n) || n.W <= 0)
                 continue;
-            float target = Luminance(SampleContribution(a, n, x, p.Normal, p.Albedo));
+            float target = SampleTarget(c, a, n, x, p);
             if (target <= 0)
                 continue;
             float weight = target * n.W;
@@ -909,7 +969,8 @@ public void RestirShade([DispatchThreadId] uint3 id, [Push] in RestirArgs a)
         radius = Max(Sqrt(area / 3.14159265), 1);
     }
     a.Hints[(int2)id.xy] = float2(r.Fresh, radius);
-    float3 radiance = float3(0, 0, 0);
+    float3 diffuse = float3(0, 0, 0);
+    float3 specular = float3(0, 0, 0);
     float hit = 0;
     if (HasSample(r) && r.W > 0)
     {
@@ -917,11 +978,21 @@ public void RestirShade([DispatchThreadId] uint3 id, [Push] in RestirArgs a)
         Proxy p = UnpackProxy(a.MaterialBuffer.Load((int2)id.xy));
         float3 x = WorldAt(c, id.xy, depth);
         hit = SampleDistance(a, r, x);
-        // Demodulated: the albedo is the composition's.
         if (SampleVisible(c, a, r, x, p.Normal))
-            radiance = SampleContribution(a, r, x, p.Normal, float3(1, 1, 1)) * r.W;
+        {
+            // Demodulated: the albedos are the composition's. The diffuse lobe is linear in the
+            // albedo: shaded with a white one.
+            float3 view = ViewOf(c, x);
+            Proxy white = p;
+            white.Albedo = float3(1, 1, 1);
+            Lobes o = SampleLobes(a, r, x, view, white);
+            float3 albedo = SpecularAlbedo(p.F0, p.Roughness, Saturate(Dot(p.Normal, view)));
+            diffuse = o.Diffuse * r.W;
+            specular = o.Specular / Max(albedo, float3(1e-3, 1e-3, 1e-3)) * r.W;
+        }
     }
-    a.Signal[(int2)id.xy] = float4(radiance, hit);
+    a.Signal[(int2)id.xy] = float4(diffuse, hit);
+    a.SpecularSignal[(int2)id.xy] = float4(specular, hit);
 }
 
 /// What tells an initial sample from every other: its light and the random numbers it was drawn

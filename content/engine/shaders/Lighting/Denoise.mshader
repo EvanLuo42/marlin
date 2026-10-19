@@ -20,11 +20,12 @@ namespace Marlin.Engine.Lighting;
 //    pixel and frame, with depth-plane, normal and luminance edge stops. The radius shrinks with
 //    the frames averaged, never below the correlation radius, and never past the hit distance's
 //    footprint, which keeps contact shadows.
-// 4. `DenoiseCompose`: the signal, which is demodulated (divided by the albedo), times the
-//    material's albedo, added to the HDR scene. Also composes a signal not denoised.
+// 4. `DenoiseCompose`: the diffuse signal, which is demodulated (divided by the albedo), times
+//    the material's albedo, and the specular one times the lobe's specular albedo
+//    (`SpecularAlbedo`), added to the HDR scene. Also composes signals not denoised.
 //
-// Diffuse only for now (R3d); the specular signal, with its virtual-motion reprojection, joins
-// with the final shading's specular (0010 §2.6).
+// One signal an instance: the specular signal (R4d) goes through a second one, its history a view
+// of its own; its virtual-motion reprojection (0010 §6) is still to come.
 
 using Marlin.Substrate;
 
@@ -61,7 +62,8 @@ public struct DenoiseConstants
     public uint Taps;
     /// The relative error at which a blur takes its full radius; less error, less radius. 0: off.
     public float TargetError;
-    public uint Spare1;
+    /// `DenoiseCompose`: 1 with a specular signal (in `Signal`).
+    public uint HasSpecular;
     public uint Spare2;
 }
 
@@ -386,6 +388,13 @@ public void DenoiseCompose([DispatchThreadId] uint3 id, [Push] in DenoiseArgs a)
     if (a.Depth.Load(px) <= 0 || p.Count == 0)
         return;
     float3 light = a.Input.Load(px).xyz * p.Albedo;
+    if (c.HasSpecular != 0)
+    {
+        float2 ndc = float2(((float)px.x + 0.5) / (float)c.Width * 2 - 1, 1 - ((float)px.y + 0.5) / (float)c.Height * 2);
+        float4 h = c.InverseViewProjection * float4(ndc, a.Depth.Load(px), 1);
+        float3 v = Normalize(c.Eye.xyz - h.xyz / h.w);
+        light += a.Signal.Load(px).xyz * SpecularAlbedo(p.F0, p.Roughness, Saturate(Dot(p.Normal, v)));
+    }
     float4 scene = a.Scene[px];
     a.Scene[px] = float4(scene.xyz + light, scene.w);
 }

@@ -1,32 +1,40 @@
 namespace Marlin.Engine.Lighting;
 
 // Direct lighting, R1's minimal set (0010): one directional light (shadowed by the virtual
-// shadow maps' mask, R2f) and ambient over the material buffer's proxy lobe, Lambert diffuse,
-// into the HDR scene. Pixels without closures (the sky)
-// get the environment's clear color. Specular and every other light come with 0010's final
-// shading.
+// shadow maps' mask, R2f) and the ambient sky over the material buffer's proxy lobe, Lambert
+// diffuse and GGX specular (`Brdf.mshader`, R4d), into the HDR scene. Pixels without closures
+// (the sky) get the environment's clear color. The ambient light is uniform: its specular is the
+// lobe's directional albedo times it. With GI the reservoirs own the sky and the ambient is 0.
 
 using Marlin.Substrate;
 
 public struct LightConstants
 {
+    /// The camera's clip space to world. Column-major.
+    public float4x4 InverseViewProjection;
+    /// xyz: the camera.
+    public float4 Eye;
     /// xyz: the direction the light travels, normalized.
     public float4 Direction;
-    /// rgb: linear radiance.
+    /// rgb: the illuminance over π (what a white Lambert surface facing it reflects).
     public float4 Color;
     /// rgb: linear radiance.
     public float4 Ambient;
     /// Linear RGBA.
     public float4 Clear;
+    public uint Width;
+    public uint Height;
+    public uint Spare0;
+    public uint Spare1;
 }
 
 public struct DirectArgs
 {
     public Uniform<LightConstants> Light;
     public Texture2D<uint4> MaterialBuffer;
+    /// The camera's depth (`R32Float`, reverse-Z).
+    public Texture2D<float> Depth;
     public StorageTexture2D<float4> Output;
-    public uint Width;
-    public uint Height;
     /// The sun's visibility (1 lit), when `Shadowed` is 1.
     public Texture2D<float> ShadowMask;
     public uint Shadowed;
@@ -35,19 +43,26 @@ public struct DirectArgs
 [Compute(8, 8, 1)]
 public void DirectLight([DispatchThreadId] uint3 id, [Push] in DirectArgs a)
 {
-    if (id.x >= a.Width || id.y >= a.Height)
+    LightConstants l = a.Light.Value;
+    if (id.x >= l.Width || id.y >= l.Height)
         return;
     int2 px = (int2)id.xy;
-    LightConstants l = a.Light.Value;
     Proxy p = UnpackProxy(a.MaterialBuffer.Load(px));
-    if (p.Count == 0)
+    float depth = a.Depth.Load(px);
+    if (p.Count == 0 || depth <= 0)
     {
         a.Output[px] = l.Clear;
         return;
     }
-    float lit = Saturate(Dot(p.Normal, -l.Direction.xyz));
-    if (a.Shadowed != 0)
-        lit *= a.ShadowMask.Load(px);
-    float3 radiance = l.Ambient.xyz + l.Color.xyz * lit;
-    a.Output[px] = float4(p.Albedo * radiance, 1);
+    float2 ndc = float2(((float)px.x + 0.5) / (float)l.Width * 2 - 1, 1 - ((float)px.y + 0.5) / (float)l.Height * 2);
+    float4 h = l.InverseViewProjection * float4(ndc, depth, 1);
+    float3 v = Normalize(l.Eye.xyz - h.xyz / h.w);
+    float3 toward = -l.Direction.xyz;
+    float lit = Saturate(Dot(p.Normal, toward));
+    float visible = a.Shadowed != 0 ? a.ShadowMask.Load(px) : 1.0;
+    float3 diffuse = p.Albedo * (l.Ambient.xyz + l.Color.xyz * (lit * visible));
+    // The sun's illuminance is Color · π.
+    float3 sun = SpecularCos(p.Normal, v, toward, Max(p.Roughness, MinLightRoughness), p.F0) * (3.14159265 * visible);
+    float3 ambient = SpecularAlbedo(p.F0, p.Roughness, Saturate(Dot(p.Normal, v)));
+    a.Output[px] = float4(diffuse + sun * l.Color.xyz + ambient * l.Ambient.xyz, 1);
 }

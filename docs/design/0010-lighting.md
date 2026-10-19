@@ -252,6 +252,29 @@ DI 和 GI 怎么合在一起：
 
   PC 代理预算的测试在 R4f。
 
+### 2.12 R4d1 的实现：proxy lobe 的 GGX 镜面（2026-10-19）
+
+R4d 分三步：
+- R4d1 着色和重采样用 proxy lobe 的 GGX，信号分成漫反射和镜面两路；
+- R4d2 低粗糙度的镜面追踪（§2.7）；
+- R4d3 镜面降噪器（虚拟运动重投影）。
+
+R4d1 定下的细节：
+
+- **BRDF**（`Lighting/Brdf.mshader`）：Lambert 漫反射（proxy 的漫反射反照率）+ GGX 镜面（F0、感知粗糙度 α = roughness²、height-correlated Smith、Schlick Fresnel）。精确 BSDF 按 closure bucket 着色等 R5，在那之前 proxy lobe 就是着色用的 BSDF（§2.6）。
+- **镜面反照率**用 Karis 的解析拟合（`SpecularAlbedo`，split-sum 预积分的近似），不需要 LUT。镜面信号用它解调，合成时乘回去。
+- **光照 pass**：太阳加上 GGX 高光（粗糙度不低于 `MinLightRoughness` = 0.05：点光源打在镜子上是 delta，而且光源有大小）。环境光的镜面是镜面反照率 × 环境光。GI 开着时环境光为 0，天空的镜面归蓄水池（粗糙度 ≥ τ）或镜面追踪（< τ，R4d2）。光照 pass 因此要读深度和相机（`LitView`）。
+- **蓄水池的 target 是漫反射 + 镜面的亮度**（`SampleLobes`）：
+  - 光源样本：任何粗糙度都有镜面（同样不低于 0.05），因为镜面追踪打不到点光源；
+  - 表面样本、天空样本：粗糙度 ≥ τ（`SpecularTau` = 0.2）时才有镜面，低于 τ 的那部分归镜面追踪（§2.7、§2.9 的 `S`）。
+
+  光源候选的 RIS 也按完整的 target。
+- **GI 候选按两个 lobe 的混合分布采样**：以概率 p 用 VNDF（Heitz 2018）采样 GGX，否则按余弦分布。p 正比于镜面反照率的亮度（夹在 0.1–1），粗糙度 < τ 时 p = 0。pdf 取混合的（单样本 MIS），候选权重 = 亮度(f · cos · L) / pdf。
+- **两路信号**：`RestirShade` 写漫反射（除以反照率，即用白色反照率着色）和镜面（除以镜面反照率）两个信号，hit distance 和 hints 相同。镜面信号现在先走第二个降噪器实例，历史用另一个 view 键（`SPECULAR_VIEW`）。它沿用表面运动重投影，对低粗糙度会拖影，R4d3 换成虚拟运动。`DenoiseCompose` 把两路分别乘上反照率和镜面反照率后相加。
+- **CPU 参考**：`marlin-test-scenes` 的实例有了粗糙度和金属度（默认 0.5、0，和默认材质一致；`Instance::lobes` 给出漫反射反照率和 F0）。参考里的光源和 GPU 一样有 GGX 高光（`light_lobes`）。`global_illumination` 只在 `x1` 有镜面（光源的，加上粗糙度 ≥ τ 时第一次弹射的），之后是 Lambert，因为 GPU 的命中点用简化材质的 Lambert。harness 的 `load` 按每个实例的粗糙度和金属度建默认材质。
+- **测试**：已有的参考对比（光源墙、Cornell box 的 DI 和 GI）两边都加上镜面以后照样通过。新测试：光源墙改成粗糙度 0.3 的金属，光全是 GGX 高光。128 帧平均和参考比：平均误差 < 5%，p90 < 15%。帧数翻 4 倍时误差减半（64 帧 4.4%/14.8%，256 帧 2.1%/5.8%），说明是噪声，不是偏差。
+- **golden**：默认材质的 F0 = 0.04、粗糙度 0.5，所有表面都多了一点高光，所以 6 张 material golden 和 `sample_first_frame` 都要重新 bless（单独一个提交）。Cornell box 的天花板在点光源旁边亮了不少（光源离天花板 15 cm，掠射角下的 GGX），CPU 参考也是这样。
+
 ## 3. 档位
 
 | | L0 | L1 | L2 | L3 | L4（Cinematic） |

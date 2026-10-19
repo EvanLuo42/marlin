@@ -10,6 +10,7 @@ use marlin_material::{
 use marlin_math::{Transform, Vec3};
 use marlin_render::asset::{PairingPattern, PairingPatternView};
 use marlin_render::denoise::{DenoiseInputs, DenoiseShaders, Denoiser};
+use marlin_render::lighting::LitView;
 use marlin_render::lights::LightTiles;
 use marlin_render::raytracing::{HitSources, Ray, RtShaders, Tlas};
 use marlin_render::restir::{RestirDi, RestirInputs, RestirShaders};
@@ -264,8 +265,22 @@ impl Harness {
             .iter()
             .map(|m| self.upload(&m.cooked()))
             .collect();
-        let material = self.default_material(DefaultMaterial::default());
+        // A default material per roughness and metallic, the instance color the albedo.
+        let mut materials: Vec<((u32, u32), MaterialId)> = Vec::new();
         for i in &scene.instances {
+            let key = (i.roughness.to_bits(), i.metallic.to_bits());
+            let material = match materials.iter().find(|(k, _)| *k == key) {
+                Some(&(_, m)) => m,
+                None => {
+                    let m = self.default_material(DefaultMaterial {
+                        base_color: [1.0; 3],
+                        roughness: i.roughness,
+                        metallic: i.metallic,
+                    });
+                    materials.push((key, m));
+                    m
+                }
+            };
             let [r, g, b] = i.albedo;
             self.add(meshes[i.mesh], material, i.transform, [r, g, b, 1.0]);
         }
@@ -469,7 +484,18 @@ impl Harness {
                 let v = vis.add_passes(g, meshes, scene, gpu, pool, &view);
                 let out = materials.add_passes(g, gpu, &v, camera, previous, width, height);
                 let env = *scene.environment();
-                let lit = lighting.add_passes(g, Some(out.material), None, &env, width, height);
+                let lit = lighting.add_passes(
+                    g,
+                    Some(LitView {
+                        material: out.material,
+                        depth: v.depth,
+                        camera,
+                    }),
+                    None,
+                    &env,
+                    width,
+                    height,
+                );
                 let target = g.create_texture(
                     "Unorm",
                     GraphTextureDesc::new_2d(width, height, Format::Rgba8Unorm),
@@ -561,8 +587,18 @@ impl Harness {
                     ambient: if restir.gi { [0.0; 3] } else { env.ambient },
                     ..env
                 };
-                let mut lit =
-                    lighting.add_passes(g, Some(out.material), None, &lit_env, width, height);
+                let mut lit = lighting.add_passes(
+                    g,
+                    Some(LitView {
+                        material: out.material,
+                        depth: v.depth,
+                        camera,
+                    }),
+                    None,
+                    &lit_env,
+                    width,
+                    height,
+                );
                 if drawn.is_some() || restir.gi {
                     let inputs = RestirInputs {
                         view: 0,
@@ -577,19 +613,31 @@ impl Harness {
                         cache,
                         environment: env,
                     };
-                    let signal = restir.add_passes(g, inputs, camera, width, height, seed);
-                    let light = if denoise {
-                        let inputs = DenoiseInputs {
-                            view: 0,
-                            material: out.material,
-                            depth: v.depth,
-                            velocity: out.velocity,
-                        };
-                        denoiser.add_passes(g, signal, inputs, camera, width, height, seed)
-                    } else {
-                        signal.light
-                    };
-                    lit = denoiser.add_compose(g, lit, light, out.material, v.depth, width, height);
+                    let signals = restir.add_passes(g, inputs, camera, width, height, seed);
+                    let [diffuse, specular] = [(signals.diffuse, 0), (signals.specular, 1 << 32)]
+                        .map(|(signal, view)| {
+                            if !denoise {
+                                return signal.light;
+                            }
+                            let inputs = DenoiseInputs {
+                                view,
+                                material: out.material,
+                                depth: v.depth,
+                                velocity: out.velocity,
+                            };
+                            denoiser.add_passes(g, signal, inputs, camera, width, height, seed)
+                        });
+                    lit = denoiser.add_compose(
+                        g,
+                        lit,
+                        diffuse,
+                        Some(specular),
+                        out.material,
+                        v.depth,
+                        camera,
+                        width,
+                        height,
+                    );
                 }
                 g.readback_texture(lit)
             })
@@ -789,7 +837,18 @@ impl Harness {
                 let v = vis.add_passes(g, meshes, scene, gpu, pool, &view);
                 let out = materials.add_passes(g, gpu, &v, camera, previous, width, height);
                 let env = *scene.environment();
-                let mut lit = lighting.add_passes(g, Some(out.material), None, &env, width, height);
+                let mut lit = lighting.add_passes(
+                    g,
+                    Some(LitView {
+                        material: out.material,
+                        depth: v.depth,
+                        camera,
+                    }),
+                    None,
+                    &env,
+                    width,
+                    height,
+                );
                 if mode.is_some() {
                     // No post chain: an exposure of 0, which TSR takes as 1.
                     let exposure = marlin_render::PostProcess::exposure(g, 0);

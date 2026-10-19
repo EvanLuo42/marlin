@@ -17,7 +17,8 @@ use marlin_material::{BAKE, DEFAULT_PERMUTATION, MaterialShaders, Materials, RES
 use marlin_math::{Transform, UVec2, Vec2};
 use marlin_render::Environment;
 use marlin_render::asset::PairingPatternView;
-use marlin_render::denoise::{DenoiseInputs, DenoiseShaders, Denoiser};
+use marlin_render::denoise::{DenoiseInputs, DenoiseShaders, Denoiser, NoisySignal};
+use marlin_render::lighting::LitView;
 use marlin_render::lights::LightTiles;
 use marlin_render::raytracing::{RtShaders, Tlas};
 use marlin_render::restir::{RestirDi, RestirInputs, RestirShaders};
@@ -38,6 +39,8 @@ use marlin_shader::bind::{BindError, bind_one};
 
 /// The view whose exposure the game's frames adapt.
 const MAIN_VIEW: u64 = 0;
+/// The main view's specular signal's denoising history.
+const SPECULAR_VIEW: u64 = 1 << 32;
 
 use crate::loaders::LoadedMesh;
 
@@ -361,7 +364,11 @@ impl RenderSide {
         };
         let mut scene = lighting.add_passes(
             g,
-            lit.map(|l| l.0),
+            lit.map(|(material, _, depth, _, camera)| LitView {
+                material,
+                depth,
+                camera,
+            }),
             lit.map(|l| l.1),
             &lit_env,
             width,
@@ -384,19 +391,33 @@ impl RenderSide {
                 cache,
                 environment: env,
             };
-            let signal = restir.add_passes(g, inputs, camera, width, height, seed);
-            let light = if *denoise {
+            let signals = restir.add_passes(g, inputs, camera, width, height, seed);
+            // Each signal denoised with a history of its own: the specular one's is another view's.
+            let mut denoised = |signal: NoisySignal<'g>, view| {
+                if !*denoise {
+                    return signal.light;
+                }
                 let inputs = DenoiseInputs {
-                    view: MAIN_VIEW,
+                    view,
                     material,
                     depth,
                     velocity,
                 };
                 denoiser.add_passes(g, signal, inputs, camera, width, height, seed)
-            } else {
-                signal.light
             };
-            scene = denoiser.add_compose(g, scene, light, material, depth, width, height);
+            let diffuse = denoised(signals.diffuse, MAIN_VIEW);
+            let specular = denoised(signals.specular, SPECULAR_VIEW);
+            scene = denoiser.add_compose(
+                g,
+                scene,
+                diffuse,
+                Some(specular),
+                material,
+                depth,
+                camera,
+                width,
+                height,
+            );
         }
         // The radiance cache's view, in place of the lit scene.
         if let (Some(sharc), Some(cache), true, Some((material, _, depth, _, _))) =

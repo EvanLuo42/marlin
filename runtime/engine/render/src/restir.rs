@@ -155,6 +155,7 @@ struct RestirArgs {
     shifts_out: u32,
     shifts: u32,
     signal: u32,
+    specular_signal: u32,
     hints: u32,
     gi: u32,
 }
@@ -224,6 +225,14 @@ pub struct RestirInputs<'g> {
     pub environment: Environment,
     /// The light rows added, changed or removed this frame (`RenderScene::light_changes`).
     pub changed_lights: &'g [u32],
+}
+
+/// What [`RestirDi::add_passes`] gives: the diffuse and the specular light, each a noisy signal
+/// (demodulated, by the albedo and by the specular albedo) with the same hints.
+#[derive(Clone, Copy)]
+pub struct RestirOutput<'g> {
+    pub diffuse: NoisySignal<'g>,
+    pub specular: NoisySignal<'g>,
 }
 
 /// ReSTIR DI's pipelines and settings (see the module docs).
@@ -333,7 +342,7 @@ impl RestirDi {
         width: u32,
         height: u32,
         seed: u32,
-    ) -> NoisySignal<'g> {
+    ) -> RestirOutput<'g> {
         let view_projection = crate::view_projection((eye, camera), width, height);
         let p = eye.translation;
         let RestirInputs {
@@ -668,11 +677,15 @@ impl RestirDi {
             "DiSignal",
             GraphTextureDesc::new_2d(width, height, SIGNAL_FORMAT),
         );
+        let specular = g.create_texture(
+            "DiSpecular",
+            GraphTextureDesc::new_2d(width, height, SIGNAL_FORMAT),
+        );
         let hints = g.create_texture(
             "DiHints",
             GraphTextureDesc::new_2d(width, height, HINTS_FORMAT),
         );
-        let (light, hints) = g.add_compute("RestirShade", |b| {
+        let (light, specular, hints) = g.add_compute("RestirShade", |b| {
             let material = b.read_texture(material, Access::ComputeRead);
             let depth = b.read_texture(depth, Access::ComputeRead);
             let lights = b.read_buffer(lights, Access::ComputeRead);
@@ -680,8 +693,9 @@ impl RestirDi {
             let map = b.read_buffer(map_handle, Access::ComputeRead);
             rt.read(b);
             let light = b.write_texture(light, Access::ComputeWrite);
+            let specular = b.write_texture(specular, Access::ComputeWrite);
             let hints = b.write_texture(hints, Access::ComputeWrite);
-            ((light, hints), move |ctx: &mut PassContext<'_>| {
+            ((light, specular, hints), move |ctx: &mut PassContext<'_>| {
                 ctx.set_pipeline(&self.shade_pass);
                 let args = RestirArgs {
                     constants: ctx.upload(&shade),
@@ -692,6 +706,7 @@ impl RestirDi {
                     duplication_map: ctx.srv(map),
                     tlas: rt.index,
                     signal: ctx.uav(light),
+                    specular_signal: ctx.uav(specular),
                     hints: ctx.uav(hints),
                     ..RestirArgs::default()
                 };
@@ -699,6 +714,12 @@ impl RestirDi {
                 ctx.dispatch(pixel_groups.0, pixel_groups.1, 1);
             })
         });
-        NoisySignal { light, hints }
+        RestirOutput {
+            diffuse: NoisySignal { light, hints },
+            specular: NoisySignal {
+                light: specular,
+                hints,
+            },
+        }
     }
 }

@@ -112,7 +112,8 @@ struct Constants {
     fast_frames: f32,
     taps: u32,
     target_error: f32,
-    spare: [u32; 2],
+    has_specular: u32,
+    spare: u32,
 }
 
 /// `Marlin.Engine.Lighting.DenoiseArgs`.
@@ -250,7 +251,8 @@ impl Denoiser {
             fast_frames: self.fast_frames.max(1.0),
             taps: 16,
             target_error: self.target_error.max(0.0),
-            spare: [0; 2],
+            has_specular: 0,
+            spare: 0,
         };
         let groups = (width.div_ceil(8), height.div_ceil(8));
         let texture = |g: &mut RenderGraph<'g>, name, format| {
@@ -379,22 +381,28 @@ impl Denoiser {
         blurred
     }
 
-    /// Declares adding `light` (demodulated, [`SIGNAL_FORMAT`] or the denoiser's output) times the
-    /// material's albedo to `scene`; returns `scene` after. Composes a signal not denoised too.
+    /// Declares adding `light` (demodulated diffuse, [`SIGNAL_FORMAT`] or the denoiser's output)
+    /// times the material's albedo, and `specular` (demodulated) times the lobe's specular albedo
+    /// as `camera` sees it, to `scene`; returns `scene` after. Composes signals not denoised too.
     #[allow(clippy::too_many_arguments, reason = "one view's inputs")]
     pub fn add_compose<'g>(
         &'g self,
         g: &mut RenderGraph<'g>,
         scene: TextureHandle<'g>,
         light: TextureHandle<'g>,
+        specular: Option<TextureHandle<'g>>,
         material: TextureHandle<'g>,
         depth: TextureHandle<'g>,
+        camera: (Transform, Camera),
         width: u32,
         height: u32,
     ) -> TextureHandle<'g> {
+        let eye = camera.0.translation;
         let constants = Constants {
-            inverse_view_projection: [0.0; 16],
-            eye: [0.0; 4],
+            inverse_view_projection: crate::view_projection(camera, width, height)
+                .inverse()
+                .to_cols_array(),
+            eye: [eye.x, eye.y, eye.z, 0.0],
             width,
             height,
             has_history: 0,
@@ -409,10 +417,12 @@ impl Denoiser {
             fast_frames: 0.0,
             taps: 0,
             target_error: 0.1,
-            spare: [0; 2],
+            has_specular: u32::from(specular.is_some()),
+            spare: 0,
         };
         g.add_compute("DenoiseCompose", |b| {
             let light = b.read_texture(light, Access::ComputeRead);
+            let specular = specular.map(|s| b.read_texture(s, Access::ComputeRead));
             let material = b.read_texture(material, Access::ComputeRead);
             let depth = b.read_texture(depth, Access::ComputeRead);
             let scene = b.write_texture(scene, Access::ComputeWrite);
@@ -423,6 +433,8 @@ impl Denoiser {
                     material: ctx.srv(material),
                     depth: ctx.srv(depth),
                     input: ctx.srv(light),
+                    // Not read without (`HasSpecular` 0).
+                    signal: ctx.srv(specular.unwrap_or(light)),
                     scene: ctx.uav(scene),
                     ..DenoiseArgs::default()
                 };

@@ -255,3 +255,20 @@ fn history_follows_the_camera() {
         "after the step {after}, a first frame {first}"
     );
 }
+
+#[test]
+fn metal_highlights_converge_to_the_reference() {
+    // The lit wall as rough metal: its light is all GGX highlights (R4d).
+    let mut scene = lit_wall();
+    scene.instances[0].metallic = 1.0;
+    scene.instances[0].roughness = 0.3;
+    let mut h = Harness::new();
+    h.load(&scene);
+    // Highlights are noisier than diffuse light: more frames (the error halves with four times
+    // as many, so it is noise, not bias).
+    let picture = average(&mut h, 128);
+    let reference = direct_lighting(&scene, WIDTH, HEIGHT, 1);
+    let (mean, p90) = errors(&picture, &reference, 0.02);
+    assert!(mean < 0.05, "mean relative error {mean}");
+    assert!(p90 < 0.15, "90th percentile of the per-pixel error {p90}");
+}

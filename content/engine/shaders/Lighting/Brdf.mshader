@@ -1,0 +1,134 @@
+namespace Marlin.Engine.Lighting;
+
+// The proxy lobe's BRDF (0011 §4.2): Lambert diffuse of the diffuse albedo plus GGX specular
+// (height-correlated Smith visibility, Schlick Fresnel) of F0 and the perceptual roughness
+// (α = roughness²). What the lighting passes shade and resample with until the exact BSDF's
+// closure buckets (0010 §2.6). Its specular is split at `SpecularTau` (0010 §2.7): below it,
+// reflections of surfaces and the sky are traced (`SpecularTrace`), not resampled.
+
+using Marlin.Substrate;
+
+/// τ: the roughness below which reconnection cannot reuse the specular lobe (0010 §2.3).
+const float SpecularTau = 0.2;
+/// The least roughness a light's highlight takes: a point light on a mirror would be a delta,
+/// and the lights have a size.
+const float MinLightRoughness = 0.05;
+
+/// The light a surface reflects toward the eye, split for the denoisers (0010 §2.6).
+public struct Lobes
+{
+    public float3 Diffuse;
+    public float3 Specular;
+}
+
+float GgxD(float noh, float a2)
+{
+    float d = noh * noh * (a2 - 1) + 1;
+    return a2 / (3.14159265 * d * d);
+}
+
+/// Height-correlated Smith visibility, G / (4 n·v n·l).
+float SmithVisibility(float nov, float nol, float a2)
+{
+    float v = nol * Sqrt(nov * nov * (1 - a2) + a2);
+    float l = nov * Sqrt(nol * nol * (1 - a2) + a2);
+    return 0.5 / Max(v + l, 1e-6);
+}
+
+float3 FresnelSchlick(float3 f0, float voh)
+{
+    float f = Pow(1 - Saturate(voh), 5);
+    return f0 + (float3(1, 1, 1) - f0) * f;
+}
+
+/// The GGX specular BRDF times cos θ_l, toward `v` from `l` about `n`.
+public float3 SpecularCos(float3 n, float3 v, float3 l, float roughness, float3 f0)
+{
+    float nol = Dot(n, l);
+    float nov = Dot(n, v);
+    if (nol <= 0 || nov <= 0)
+        return float3(0, 0, 0);
+    float a = Max(roughness * roughness, 1e-4);
+    float a2 = a * a;
+    float3 h = Normalize(v + l);
+    float noh = Saturate(Dot(n, h));
+    return FresnelSchlick(f0, Dot(v, h)) * (GgxD(noh, a2) * SmithVisibility(nov, nol, a2) * nol);
+}
+
+/// The specular lobe's directional albedo (its integral over the hemisphere for a white
+/// environment): Karis's analytic fit of the split-sum's pre-integration. What the specular
+/// signal is demodulated by.
+public float3 SpecularAlbedo(float3 f0, float roughness, float nov)
+{
+    float4 c0 = float4(-1, -0.0275, -0.572, 0.022);
+    float4 c1 = float4(1, 0.0425, 1.04, -0.04);
+    float4 r = c0 * roughness + c1;
+    float a004 = Min(r.x * r.x, Exp2(-9.28 * Saturate(nov))) * r.x + r.y;
+    float2 ab = float2(-1.04, 1.04) * a004 + r.zw;
+    return f0 * ab.x + float3(ab.y, ab.y, ab.y);
+}
+
+/// The proxy lobe `p` at a surface seen along `v`, lit from `l` by radiance (or, for a point
+/// light, the intensity over d²) `li`: Lambert diffuse and, with `specular`, GGX of at least
+/// `minRoughness`.
+public Lobes ProxyLobes(in Proxy p, float3 v, float3 l, float3 li, bool specular, float minRoughness)
+{
+    float nol = Saturate(Dot(p.Normal, l));
+    Lobes o = Lobes { Diffuse = p.Albedo * (0.31830989 * nol) * li, Specular = float3(0, 0, 0) };
+    if (specular)
+        o.Specular = SpecularCos(p.Normal, v, l, Max(p.Roughness, minRoughness), p.F0) * li;
+    return o;
+}
+
+/// A tangent frame about `n`: two axes perpendicular to it.
+void Basis(float3 n, out float3 t, out float3 b)
+{
+    t = Normalize(Cross(Abs(n.y) < 0.99 ? float3(0, 1, 0) : float3(1, 0, 0), n));
+    b = Cross(n, t);
+}
+
+/// A GGX microfacet normal about +Z drawn from the distribution of the normals visible from
+/// `ve` (tangent space, z up; Heitz 2018), of roughness α `a`.
+float3 SampleVndf(float3 ve, float a, float u1, float u2)
+{
+    float3 vh = Normalize(float3(a * ve.x, a * ve.y, ve.z));
+    float lensq = vh.x * vh.x + vh.y * vh.y;
+    float3 t1 = lensq > 0 ? float3(-vh.y, vh.x, 0) / Sqrt(lensq) : float3(1, 0, 0);
+    float3 t2 = Cross(vh, t1);
+    float r = Sqrt(u1);
+    float phi = 6.2831853 * u2;
+    float p1 = r * Cos(phi);
+    float p2 = r * Sin(phi);
+    float s = 0.5 * (1 + vh.z);
+    p2 = (1 - s) * Sqrt(Max(1 - p1 * p1, 0)) + s * p2;
+    float3 nh = t1 * p1 + t2 * p2 + vh * Sqrt(Max(1 - p1 * p1 - p2 * p2, 0));
+    return Normalize(float3(a * nh.x, a * nh.y, Max(nh.z, 0)));
+}
+
+/// A reflection direction about `n` for a surface seen along `v`, from the GGX lobe of
+/// roughness `roughness` (VNDF sampling).
+public float3 SampleSpecular(float3 n, float3 v, float roughness, float u1, float u2)
+{
+    float3 t;
+    float3 b;
+    Basis(n, out t, out b);
+    float3 ve = float3(Dot(v, t), Dot(v, b), Dot(v, n));
+    float a = Max(roughness * roughness, 1e-4);
+    float3 m = SampleVndf(ve, a, u1, u2);
+    float3 h = t * m.x + b * m.y + n * m.z;
+    return Reflect(-v, h);
+}
+
+/// The solid-angle pdf of `SampleSpecular` drawing `l`: G1(v) D(h) / (4 n·v).
+public float SpecularPdf(float3 n, float3 v, float3 l, float roughness)
+{
+    float nov = Dot(n, v);
+    if (nov <= 0 || Dot(n, l) <= 0)
+        return 0;
+    float a = Max(roughness * roughness, 1e-4);
+    float a2 = a * a;
+    float3 h = Normalize(v + l);
+    float noh = Saturate(Dot(n, h));
+    float g1 = 2 * nov / (nov + Sqrt(a2 + (1 - a2) * nov * nov));
+    return g1 * GgxD(noh, a2) / (4 * nov);
+}

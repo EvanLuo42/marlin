@@ -39,8 +39,23 @@ pub struct Instance {
     /// Its index in [`Scene::meshes`].
     pub mesh: usize,
     pub transform: Transform,
-    /// Its diffuse albedo: the default material's instance color.
+    /// Its color: the default material's instance color, the diffuse albedo of a dielectric and
+    /// the F0 of a metal.
     pub albedo: [f32; 3],
+    /// The default material's roughness (0.5 unless a scene says) and metallic (0 or 1).
+    pub roughness: f32,
+    pub metallic: f32,
+}
+
+impl Instance {
+    /// Its diffuse albedo and F0, as the default material makes them.
+    pub fn lobes(&self) -> ([f32; 3], [f32; 3]) {
+        let m = self.metallic;
+        (
+            self.albedo.map(|c| c * (1.0 - m)),
+            self.albedo.map(|c| 0.04 + (c - 0.04) * m),
+        )
+    }
 }
 
 /// A test scene (see the crate docs).
@@ -90,6 +105,8 @@ fn block(at: Vec3, size: Vec3, yaw: f32, albedo: [f32; 3]) -> Instance {
             scale: size,
         },
         albedo,
+        roughness: 0.5,
+        metallic: 0.0,
     }
 }
 
@@ -184,6 +201,8 @@ pub fn lit_wall() -> Scene {
             scale: Vec3::new(20.0, 20.0, 0.2),
         },
         albedo: [0.8, 0.7, 0.6],
+        roughness: 0.5,
+        metallic: 0.0,
     };
     let white = [1.0; 3];
     Scene {

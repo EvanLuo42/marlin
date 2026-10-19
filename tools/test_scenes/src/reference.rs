@@ -8,7 +8,7 @@ use marlin_math::{Mat4, Rng, Vec3, Vec4};
 use marlin_render::Camera;
 use marlin_render::scene::{LightDesc, LightKind};
 
-use crate::Scene;
+use crate::{Instance, Scene};
 
 /// A ray's hit: where, the surface's normal there (facing the ray), whose.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -136,6 +136,58 @@ pub fn light_contribution(light: &LightDesc, x: Vec3, n: Vec3, albedo: [f32; 3])
     [0, 1, 2].map(|i| albedo[i] * light.radiance[i] * k)
 }
 
+/// The GGX specular BRDF times cos θ_l, toward `v` from `l` about `n` (height-correlated Smith,
+/// Schlick Fresnel; α = roughness²): the renderer's `SpecularCos` (`Lighting/Brdf.mshader`).
+pub fn specular_cos(n: Vec3, v: Vec3, l: Vec3, roughness: f32, f0: [f32; 3]) -> [f32; 3] {
+    let (nol, nov) = (n.dot(l), n.dot(v));
+    if nol <= 0.0 || nov <= 0.0 {
+        return [0.0; 3];
+    }
+    let a = (roughness * roughness).max(1e-4);
+    let a2 = a * a;
+    let h = (v + l).normalize();
+    let noh = n.dot(h).clamp(0.0, 1.0);
+    let d = noh * noh * (a2 - 1.0) + 1.0;
+    let ggx = a2 / (core::f32::consts::PI * d * d);
+    let vis = 0.5
+        / (nol * (nov * nov * (1.0 - a2) + a2).sqrt() + nov * (nol * nol * (1.0 - a2) + a2).sqrt())
+            .max(1e-6);
+    let f = (1.0 - v.dot(h).clamp(0.0, 1.0)).powi(5);
+    f0.map(|c| (c + (1.0 - c) * f) * ggx * vis * nol)
+}
+
+/// The least roughness a light's highlight takes (the renderer's `MinLightRoughness`).
+pub const MIN_LIGHT_ROUGHNESS: f32 = 0.05;
+
+/// The roughness below which the specular lobe is traced, not resampled (the renderer's
+/// `SpecularTau`, 0010 §2.7).
+pub const SPECULAR_TAU: f32 = 0.2;
+
+/// What `light` gives the specular lobe (`roughness`, `f0`) at `x` facing `n` seen along `v`,
+/// unshadowed.
+pub fn light_specular(
+    light: &LightDesc,
+    x: Vec3,
+    n: Vec3,
+    v: Vec3,
+    roughness: f32,
+    f0: [f32; 3],
+) -> [f32; 3] {
+    // The diffuse formula for a white surface over cos θ / π is the incident light.
+    let toward = (Vec3::from(light.position) - x).normalize();
+    let lambert = light_contribution(light, x, toward, [1.0; 3]);
+    let s = specular_cos(n, v, toward, roughness.max(MIN_LIGHT_ROUGHNESS), f0);
+    [0, 1, 2].map(|i| lambert[i] * core::f32::consts::PI * s[i])
+}
+
+/// What `light` gives `instance`'s surface at `x` facing `n` seen along `v`, unshadowed: its
+/// diffuse and specular lobes.
+pub fn light_lobes(light: &LightDesc, x: Vec3, n: Vec3, v: Vec3, instance: &Instance) -> [f32; 3] {
+    let (albedo, f0) = instance.lobes();
+    let d = light_contribution(light, x, n, albedo);
+    let s = light_specular(light, x, n, v, instance.roughness, f0);
+    [0, 1, 2].map(|i| d[i] + s[i])
+}
 /// The fraction of the half of `light`'s sphere facing `x` that `x` (offset along `n`) sees:
 /// `samples`² stratified points (the renderer draws one a frame); 1 or 0 for a light without
 /// size.
@@ -185,10 +237,10 @@ pub fn direct_lighting(
         .map(|p| {
             let (origin, dir) = pixel_ray(scene.camera, width, height, p % width, p / width);
             let hit = tracer.trace(origin, dir, f32::INFINITY)?;
-            let albedo = scene.instances[hit.instance].albedo;
+            let instance = &scene.instances[hit.instance];
             let mut sum = [0.0f32; 3];
             for light in &scene.lights {
-                let c = light_contribution(light, hit.point, hit.normal, albedo);
+                let c = light_lobes(light, hit.point, hit.normal, -dir, instance);
                 if c == [0.0; 3] {
                     continue;
                 }
@@ -214,18 +266,24 @@ fn cosine_direction(n: Vec3, u: f32, v: f32) -> Vec3 {
 }
 
 /// The light a Lambert surface of `albedo` at `x` facing `n` reflects from the scene's lights,
-/// each seen from one random point of its sphere's half facing `x`.
+/// each seen from one random point of its sphere's half facing `x`; with `specular` (the view
+/// direction, roughness and F0), its GGX lobe's too.
 fn direct_sample(
     tracer: &Tracer,
     scene: &Scene,
     x: Vec3,
     n: Vec3,
     albedo: [f32; 3],
+    specular: Option<(Vec3, f32, [f32; 3])>,
     rng: &mut Rng,
 ) -> [f32; 3] {
     let mut sum = [0.0f32; 3];
     for light in &scene.lights {
-        let c = light_contribution(light, x, n, albedo);
+        let mut c = light_contribution(light, x, n, albedo);
+        if let Some((v, roughness, f0)) = specular {
+            let s = light_specular(light, x, n, v, roughness, f0);
+            c = [0, 1, 2].map(|i| c[i] + s[i]);
+        }
         if c == [0.0; 3] {
             continue;
         }
@@ -280,12 +338,16 @@ pub fn global_illumination(
                 let mut hit = first;
                 let mut throughput = [1.0f32; 3];
                 for bounce in 0.. {
-                    let albedo = scene.instances[hit.instance].albedo;
-                    let direct =
-                        direct_sample(&tracer, scene, hit.point, hit.normal, albedo, &mut rng);
+                    let instance = &scene.instances[hit.instance];
+                    let (albedo, f0) = instance.lobes();
+                    // GGX at `x1` only: the renderer's hits shade with the simplified materials'
+                    // Lambert.
+                    let specular = (bounce == 0).then_some((-dir, instance.roughness, f0));
+                    let direct = direct_sample(
+                        &tracer, scene, hit.point, hit.normal, albedo, specular, &mut rng,
+                    );
                     for i in 0..3 {
                         sum[i] += throughput[i] * direct[i];
-                        throughput[i] *= albedo[i];
                     }
                     if bounce >= 3 {
                         let keep = throughput.iter().fold(0.0f32, |a, &t| a.max(t)).min(0.95);
@@ -295,6 +357,17 @@ pub fn global_illumination(
                         throughput = throughput.map(|t| t / keep);
                     }
                     let d = cosine_direction(hit.normal, rng.f32(), rng.f32());
+                    // Cosine-sampled: the weight is the BRDF times cos over the pdf (cos / π). The
+                    // specular lobe from `x1`, where it is resampled (roughness from τ).
+                    let mut weight = albedo;
+                    if bounce == 0 && instance.roughness >= SPECULAR_TAU {
+                        let cos = hit.normal.dot(d).max(1e-6);
+                        let s = specular_cos(hit.normal, -dir, d, instance.roughness, f0);
+                        weight = [0, 1, 2].map(|i| weight[i] + core::f32::consts::PI * s[i] / cos);
+                    }
+                    for i in 0..3 {
+                        throughput[i] *= weight[i];
+                    }
                     match tracer.trace(hit.point + hit.normal * 1e-3, d, f32::INFINITY) {
                         Some(next) => hit = next,
                         None => {

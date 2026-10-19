@@ -498,9 +498,9 @@ fn the_engine_package_cooks() {
         assert_eq!(e.reflection.entry.stage, stage);
         assert_eq!(e.code[..4], SPIRV_MAGIC);
     }
-    // The lighting's push constants: seven 32-bit words.
+    // The lighting's push constants: six 32-bit words.
     let light = lib.entry("Marlin.Engine.Lighting.DirectLight").unwrap();
-    assert_eq!(light.reflection.push.as_ref().unwrap().size, 28);
+    assert_eq!(light.reflection.push.as_ref().unwrap().size, 24);
 }
 
 /// `Marlin` and `Marlin.…` are the engine's package names, and the engine uses no others: a
