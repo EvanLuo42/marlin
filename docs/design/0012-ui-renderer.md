@@ -1,6 +1,6 @@
 # 0012 — UIRenderer：SDF 图元与 GPU tile 渲染
 
-状态：草案 · 2026-10-16
+状态：U1 完成 · 2026-10-18（草案 2026-10-16）
 
 前置：
 - [0007](0007-render-graph.md)：render graph
@@ -309,6 +309,51 @@ TextLayout（shaping、换行，marlin-font）─▶ painter.text ─▶ 字形�
 | U3 | UI 效果；背景模糊；渲染到纹理；HDR 窗口；大字号文字走路径 |
 
 U1 完成后，editor 的窗口外壳就可以换成它；U2 完成后，视口嵌进 UI。
+
+**U1 的记录**（2026-10-18 完成）：U1 分成 U1a–U1g 七步，每步一个提交，各带测试。定下的细节：
+
+- **字体资产（U1a）**：`Font` 是按名字注册的资产类型（`marlin_font::Font`），新 crate `marlin-cook-font` 自己解析 TrueType（`head`、`maxp`、`hhea`、`hmtx`、`OS/2`、`cmap` 格式 4 和 12、`loca`、`glyf` 含组合字形、`name`），运行时只读烘焙后的格式，不解析字体文件。烘焙格式：
+  - 竖直度量：`OS/2` 设了 `USE_TYPO_METRICS` 时取 typo 的三个值，否则取 `hhea`；另存 cap height、x height。
+  - 字符映射存成区间（连续字符对应连续字形的合成一段）；每个字形存 advance、左侧距和包围盒。
+  - 轮廓是闭合的二次曲线段，坐标用 **半字体单位** 的 `i16`：TrueType 两个 off-curve 点之间隐含的 on-curve 点正好在半单位上，所以每个点都精确。一个 n 段的轮廓存 2n 个点（起点、各段的控制点和终点，最后一段回到起点）；直线段的控制点等于起点。
+  - 组合字形在 cooker 里展平，分量的点在变换之后取整到整字体单位。CFF 轮廓（`OTTO`）暂不支持，cook 时报错并说明。
+  - 引擎的 UI 字体是 Inter 4.1 Regular（SIL OFL），放在 `content/engine/fonts/`（字体文件走 Git LFS），名字 `Marlin.Engine.Fonts.Inter`，按名字加载（framework 的 `load_ui_font`）。
+- **栅格化和字形缓存（U1b）**：
+  - 栅格化用精确的面积累积（font-rs 的做法）：每条线段把它扫过的带符号面积加到经过的像素上，按行前缀和得到覆盖率，取绝对值截到 1（相当于 non-zero 规则）。二次曲线按拍平误差不超过 1/64 像素切成直线。
+  - 字形 id = key 的序号 × 4 + 子像素位置。key 是（字体，字形，以 1/64 像素计的字号）。`GlyphIds` 带锁，多个 painter 并行录制时共用一份。
+  - 页是 2048² 的 `R8`，默认最多 4 页（16 MB），纹理至少 2 层，保证视图总是数组；字形四周留 1 像素空白。新字形在 job 里并行栅格化（8 个一组）。
+  - LRU 的保护规则：本帧画到的字形如果在帧开始前就在某页里，这一页不淘汰；本帧刚放进某页的新字形不保护这一页，这页被淘汰时，这些字形重新排队放置。淘汰之后仍放不下的字形本帧不画（`PrepareStats::dropped`），下一帧再试。
+  - `TextLayout` 是最小版：按字符映射和 advance 排，`\n` 换行，没有字距、连字和其他 shaping（§6.5、§15）。
+- **命令格式（U1c）**，`marlin_ui_render::command`：
+  - 头 16 字节：kind（6 位）、flags（10 位）、组（16 位）、裁剪（16 位）、paint 下标、payload 偏移（字）。组和裁剪在 U1 里都是 0。payload 是 32 位字，各图元的布局写在模块文档里。
+  - paint 4 个字：种类、颜色（sRGB、直通 alpha 的 RGBA8），图像 paint 另有纹理视图下标和采样器下标。纹理放在 paint 里，shader 可以按类型读到 `Texture2D` 和 `Sampler`。图像的采样器默认是 `DEFAULT_SAMPLER`，`prepare` 时换成 renderer 自己的双线性 clamp 采样器。相邻的同色命令共用一个 paint。
+  - 坐标是物理像素，DPI 缩放在写命令时乘上。
+  - chunk：`Painter::chunk` 预留位置，`ChunkSlot` 可以交给别的线程录制，再用 `UiDrawList::fill` 放回。`RetainedChunk::replay` 的偏移对齐到整物理像素，所以文字的子像素位置和字形 id 不变（§2.3 说的"只是一次内存拷贝"，外加坐标平移）。
+- **图元的细节（U1c）**：
+  - 描边以边缘为中心，`|d| − w/2`；填充在描边下面，按预乘 alpha 合成。
+  - 圆角逐角给出，每个角最多取短边的一半。虚线一律是平头，和端点样式无关。
+  - 不透明内部（§5.3 的遮挡用）：矩形按最大的圆角向内缩；圆取内接正方形。只有填充和描边都不透明的矩形和圆才标 `OPAQUE`。
+  - 图像：默认按 sRGB 视图采样（得到线性值、直通 alpha），编码回 sRGB 后再预乘；`ImageColor::SrgbPremultiplied` 的纹理原样使用。mip 用显式的 lod（纹素与像素之比的 log2）。
+- **CPU 参考（U1c）**：`shape` 和 shader 逐个表达式对应，`reference` 用它分箱和着色。包围盒只用加减、乘常数、min、max、floor、ceil，CPU 和 GPU 的结果逐位相同。线段是否碰到 tile 要开方和做除法，两边的舍入可能不同，所以离阈值 1/64 像素以内的条目在参考里标为可选（GPU 可以有也可以没有，这样的条目在 tile 里本来就没有墨迹）。
+- **GPU 管线（U1d、U1e）**：shader 是 `content/engine/shaders/Ui/Ui.mshader`，namespace `Marlin.Engine.Ui`，入口 `GlyphUpload`、`Bounds`、`Bin`、`Coarse`、`Fine`、`EncodeVs`、`EncodePs`（命名方案是用户定的，graph 里的 pass 名仍叫 `UiBounds`……）。
+  - `UiBounds` 每个线程处理一条命令，把包围盒和不透明内部打包成 16 位的坐标。
+  - `UiBin` 用全局原子 OR 写掩码，布局是 chunk × bin × 8 个字。
+  - `UiCoarse` 每个 bin 一个 16 × 16 的 workgroup，每个线程负责一个 tile，按命令顺序遍历掩码（`FirstBitLow`）。线段的判定是：tile 中心到线段的距离 ≤ 半线宽（方头乘 √2）+ tile 的半对角线 + 0.5，相当于保守 DDA。遇到不透明遮挡时把计数清零，已有的块原样复用。
+  - tile 列表的块是 32 个字：31 条命令，加上下一块的下标。池的大小按读回的已用块数乘 1.5 增长，溢出了就翻倍。读回用 renderer 自己的 readback buffer，等这个帧槽再轮到时读，不需要 `FrameContext`。
+  - `UiFine` 每个 tile 一个 workgroup，写 `Rgba8Unorm` 的 UI 目标（sRGB 编码值，预乘）。`EncodePs` 用全屏三角形写进 swapchain，目标是 sRGB 视图时先解码成线性。
+  - 新字形由一个 compute pass 写进 `R8` 存储纹理数组。这要求 `R8Unorm` 支持 `STORAGE_WRITE`，`UiRenderer::new` 会检查。页纹理由 `UiRenderer` 自己持有，每帧导入 graph。
+  - 命令、payload、paint 和字形表用 `ctx.upload_slice` 在每个用到它们的 pass 里各传一份（每帧几百 KB 的拷贝）。以后改成一次上传到 GPU buffer。
+- **接入（U1f、U1g）**：framework 的 `ui_shaders` 检查每个入口的 stage 和 push 大小（`UI_PUSH_BYTES`，另有 GPU 测试拿它和编译出的 shader 对比），`InPlace<Font>` 原地加载字体。`marlin-editor <project> [--frames N]` 在进程内运行项目的 cook 服务并挂载，按名字加载引擎 shader 和 UI 字体，每帧用 UIRenderer 画窗口外壳（`marlin_editor::shell`：菜单、工具栏、大纲、细节、内容浏览器、视口占位、状态栏，带悬停高亮）。U1 没有裁剪，所以先画视口，再画面板，盖住视口溢出的网格线。
+- **验收**：
+  - GPU 的 tile 列表和 CPU 参考逐条一致：示例场景在三种尺寸下（含不是整 bin 的尺寸）、三轮 900–1500 条随机命令、空列表、池溢出后增长。
+  - 着色和参考光栅比较：场景每通道最多差 3 级，差 1 级以上的像素不超过 1%；文字最多差 1 级；图像最多差 3 级（硬件双线性的权重是 8 位小数）；编码进 sRGB 目标最多差 1 级。
+  - 新的参考图 `ui_scene`、`editor_shell`。
+  - editor 开着验证层跑 `samples/basic` 300 帧，没有报错。
+- **没做**（U1 的范围之外，或者要先定设计的）：
+  - §2.1 的渐变 paint：§13 的阶段表里没有列，建议放进 U2。
+  - 圆弧、折线和贝塞尔描边：§4.1 有，§13 的 U1 没有列。
+  - 裁剪和组、损伤检测和整帧跳过：属于 U2。
+  - 字距和 shaping、CFF 字体、cook 好的图标图集。
 
 ## 14. 测试
 

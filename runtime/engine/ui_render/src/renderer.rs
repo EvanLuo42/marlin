@@ -34,6 +34,9 @@ use crate::command::{
 use crate::list::UiDrawList;
 use crate::style::Color;
 
+/// The most tile list blocks the pool grows to (256 MiB).
+pub const MAX_POOL_BLOCKS: u32 = 1 << 21;
+
 /// The format of the UI target: sRGB-encoded values in a linear format, blended as they are
 /// (§5.6, §8.1).
 pub const UI_FORMAT: Format = Format::Rgba8Unorm;
@@ -219,7 +222,8 @@ pub struct UiRenderer {
     /// The pool's size this frame, raised from what frames used.
     pool_blocks: AtomicU32,
     overflowed: AtomicBool,
-    readbacks: Vec<Buffer>,
+    /// Per frame slot: the counters' copy, and whether a frame has written it yet.
+    readbacks: Vec<(Buffer, AtomicBool)>,
 }
 
 impl UiRenderer {
@@ -271,11 +275,13 @@ impl UiRenderer {
         })?;
         let readbacks = (0..FRAMES_IN_FLIGHT)
             .map(|_| {
-                device.create_buffer(&marlin_rhi::BufferDesc {
-                    size: 8,
-                    usage: BufferUsage::COPY_DST,
-                    memory: MemoryLocation::Readback,
-                })
+                device
+                    .create_buffer(&marlin_rhi::BufferDesc {
+                        size: 8,
+                        usage: BufferUsage::COPY_DST,
+                        memory: MemoryLocation::Readback,
+                    })
+                    .map(|b| (b, AtomicBool::new(false)))
             })
             .collect::<Result<Vec<_>>>()?;
         Ok(Self {
@@ -477,7 +483,7 @@ impl UiRenderer {
 
         // The pool's use, for sizing the next frames.
         let slot = (g.frame() % FRAMES_IN_FLIGHT as u64) as usize;
-        let readback = &self.readbacks[slot];
+        let (readback, written) = &self.readbacks[slot];
         let rb = g.import_buffer("UiCountersReadback", readback);
         let pool_size = &self.pool_blocks;
         let overflowed = &self.overflowed;
@@ -486,11 +492,13 @@ impl UiRenderer {
             let k = b.read_buffer(counters, Access::CopySrc);
             let r = b.write_buffer(rb, Access::CopyDst);
             ((), move |ctx: &mut PassContext<'_>| {
-                // The slot's last frame has finished: its count is in.
+                // The slot's last frame has finished: its count is in (once there was one).
                 let mut bytes = [0u8; 8];
-                // SAFETY: the frame that last wrote this buffer has finished (its frame slot
-                // was waited for before recording), and no other frame writes it.
-                unsafe { readback.read(0, &mut bytes) };
+                if written.swap(true, Ordering::Relaxed) {
+                    // SAFETY: the frame that last wrote this buffer has finished (its frame
+                    // slot was waited for before recording), and no other frame writes it.
+                    unsafe { readback.read(0, &mut bytes) };
+                }
                 let used = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
                 let over = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
                 let current = pool_size.load(Ordering::Relaxed);
@@ -502,7 +510,7 @@ impl UiRenderer {
                     used.saturating_add(used / 2)
                 };
                 if want > current {
-                    pool_size.store(want, Ordering::Relaxed);
+                    pool_size.store(want.min(MAX_POOL_BLOCKS), Ordering::Relaxed);
                 }
                 ctx.copy_buffer(k, 0, r, 0, 8);
             })
@@ -611,7 +619,7 @@ impl UiRenderer {
     /// Makes `frames` forget the renderer's own resources; call before dropping it.
     pub fn forget(&self, frames: &mut FrameContext) {
         frames.forget_texture(&self.pages);
-        for b in &self.readbacks {
+        for (b, _) in &self.readbacks {
             frames.forget_buffer(b);
         }
     }
