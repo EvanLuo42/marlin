@@ -7,7 +7,7 @@ use marlin_render_graph::{FrameContext, FrameContextDesc};
 use marlin_ui_render::command::{BLOCK_COMMANDS, BLOCK_WORDS};
 use marlin_ui_render::reference::{bin, tile_counts};
 use marlin_ui_render::{
-    Color, Corners, LineCap, Rect, RectStyle, ShapeStyle, Stroke, StrokeStyle, UiDrawList,
+    Color, Corners, LineCap, Painter, Rect, RectStyle, ShapeStyle, Stroke, StrokeStyle, UiDrawList,
     UiRendererDesc,
 };
 
@@ -92,8 +92,60 @@ fn the_scene_bins_like_the_reference() {
     finish(&mut frames, &r);
 }
 
-/// Many random commands: more than one 256-command chunk, lines in every direction, opaque
-/// panels hiding some, and long lists that take several blocks.
+/// A random rect, circle, line or triangle on a `w` × `h` surface and a little past it, opaque
+/// half the time.
+fn random_command(p: &mut Painter<'_>, rng: &mut Rng, w: u32, h: u32) {
+    let pt = |rng: &mut Rng| {
+        Vec2::new(
+            rng.range_f32(-40.0, w as f32 + 40.0),
+            rng.range_f32(-40.0, h as f32 + 40.0),
+        )
+    };
+    let color = |rng: &mut Rng| {
+        Color::rgba(
+            rng.next_u32() as u8,
+            rng.next_u32() as u8,
+            rng.next_u32() as u8,
+            if rng.bool() { 255 } else { 128 },
+        )
+    };
+    match rng.below(4) {
+        0 => {
+            let a = pt(rng);
+            let size = Vec2::new(rng.range_f32(1.0, 300.0), rng.range_f32(1.0, 200.0));
+            p.rect(
+                Rect::from_min_size(a, size),
+                &RectStyle {
+                    fill: color(rng),
+                    corners: Corners::all(rng.range_f32(0.0, 12.0)),
+                    stroke: rng.bool().then_some(Stroke {
+                        width: 1.5,
+                        color: Color::WHITE,
+                    }),
+                },
+            );
+        }
+        1 => p.circle(
+            pt(rng),
+            rng.range_f32(0.5, 90.0),
+            &ShapeStyle::fill(color(rng)),
+        ),
+        2 => {
+            let cap = [LineCap::Butt, LineCap::Round, LineCap::Square][rng.below(3)];
+            let style = StrokeStyle {
+                width: rng.range_f32(0.5, 9.0),
+                color: color(rng),
+                cap,
+                dash: None,
+            };
+            p.line(pt(rng), pt(rng), &style);
+        }
+        _ => p.triangle([pt(rng), pt(rng), pt(rng)], &ShapeStyle::fill(color(rng))),
+    }
+}
+
+/// Many random commands: more than one 256-command chunk (UiCoarse's segments), lines in every
+/// direction, opaque panels hiding some, and long lists that take several blocks.
 #[test]
 fn random_commands_bin_like_the_reference() {
     let mut r = renderer(&UiRendererDesc::default());
@@ -103,56 +155,50 @@ fn random_commands_bin_like_the_reference() {
     for round in 0..3 {
         let mut list = UiDrawList::new(1.0);
         let mut p = list.painter(&r.glyph_cache().ids);
-        let pt = |rng: &mut Rng| {
-            Vec2::new(
-                rng.range_f32(-40.0, w as f32 + 40.0),
-                rng.range_f32(-40.0, h as f32 + 40.0),
-            )
-        };
-        let color = |rng: &mut Rng| {
-            Color::rgba(
-                rng.next_u32() as u8,
-                rng.next_u32() as u8,
-                rng.next_u32() as u8,
-                if rng.bool() { 255 } else { 128 },
-            )
-        };
         for _ in 0..900 + round * 300 {
-            match rng.below(4) {
-                0 => {
-                    let a = pt(&mut rng);
-                    let size = Vec2::new(rng.range_f32(1.0, 300.0), rng.range_f32(1.0, 200.0));
-                    p.rect(
-                        Rect::from_min_size(a, size),
-                        &RectStyle {
-                            fill: color(&mut rng),
-                            corners: Corners::all(rng.range_f32(0.0, 12.0)),
-                            stroke: rng.bool().then_some(Stroke {
-                                width: 1.5,
-                                color: Color::WHITE,
-                            }),
-                        },
-                    );
-                }
-                1 => p.circle(
-                    pt(&mut rng),
-                    rng.range_f32(0.5, 90.0),
-                    &ShapeStyle::fill(color(&mut rng)),
-                ),
-                2 => {
-                    let cap = [LineCap::Butt, LineCap::Round, LineCap::Square][rng.below(3)];
-                    let style = StrokeStyle {
-                        width: rng.range_f32(0.5, 9.0),
-                        color: color(&mut rng),
-                        cap,
-                        dash: None,
-                    };
-                    p.line(pt(&mut rng), pt(&mut rng), &style);
-                }
-                _ => p.triangle(
-                    [pt(&mut rng), pt(&mut rng), pt(&mut rng)],
-                    &ShapeStyle::fill(color(&mut rng)),
-                ),
+            random_command(&mut p, &mut rng, w, h);
+        }
+        compare(&mut r, &mut frames, &list, w, h);
+    }
+    finish(&mut frames, &r);
+}
+
+/// Random commands in layers: backdrop blurs over one another start a layer mid-segment, and an
+/// opaque panel hides only its own layer's commands, also those of earlier segments. Enough
+/// commands for segments of several chunks.
+#[test]
+fn layered_commands_bin_like_the_reference() {
+    let mut r = crate::renderer_with(
+        &UiRendererDesc::default(),
+        &marlin_ui_render::UiSurfaceDesc {
+            initial_pool_blocks: 1 << 20,
+            ..marlin_ui_render::UiSurfaceDesc::new(1)
+        },
+    );
+    let mut frames = FrameContext::new(hardware_device(), &FrameContextDesc::default()).unwrap();
+    let (w, h) = (700u32, 420u32);
+    let mut rng = Rng::new(0x1a7e);
+    for commands in [1500, 40_000] {
+        let mut list = UiDrawList::new(1.0);
+        let mut p = list.painter(&r.glyph_cache().ids);
+        for i in 0..commands {
+            if rng.below(commands / 6) == 0 {
+                // Over the middle, so each is over the last: a new layer.
+                let a = Vec2::new(rng.range_f32(150.0, 300.0), rng.range_f32(100.0, 180.0));
+                p.backdrop_blur(
+                    Rect::from_min_size(a, Vec2::new(250.0, 140.0)),
+                    4.0,
+                    Corners::all(6.0),
+                );
+            } else if i % 97 == 0 {
+                // A panel over most of the surface, hiding whole tiles.
+                let a = Vec2::new(rng.range_f32(-20.0, 200.0), rng.range_f32(-20.0, 100.0));
+                p.rect(
+                    Rect::from_min_size(a, Vec2::new(500.0, 300.0)),
+                    &RectStyle::fill(Color::rgb(20, 30, 40)),
+                );
+            } else {
+                random_command(&mut p, &mut rng, w, h);
             }
         }
         compare(&mut r, &mut frames, &list, w, h);

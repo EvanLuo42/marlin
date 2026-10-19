@@ -5,9 +5,13 @@ namespace Marlin.Engine.Ui;
 // 1. `Bounds`: one thread per command: its screen bounding box and opaque interior.
 // 2. `Bin`: one thread per command: a bit per (256-command chunk, 256 × 256 bin) mask word for
 //    every bin the bounds touch.
-// 3. `Coarse`: one workgroup per bin, one thread per 16 × 16 tile: walks the masks in command
-//    order and appends each command that reaches the tile to the tile's list; an opaque command
-//    covering the whole tile empties the list first. Lists are 32-word blocks from a pool.
+// 3. `CoarsePlan`: one workgroup per bin: cuts a bin crowded with commands into segments of
+//    chunks, about as much work each. `Coarse`: one workgroup per bin and segment, one
+//    thread per 16 × 16 tile: walks the segment's masks in command order and appends each
+//    command that reaches the tile to the tile's list; an opaque command covering the whole tile
+//    empties the list first. A bin of one segment is done here. `CoarseMerge`, `CoarseCopy`: in
+//    a bin of several, the segments' parts of each tile's list joined in order, without what
+//    later opaque commands hide. Lists are 32-word blocks from a pool.
 //    `PathTiles`, beside them: every path segment walked through the tiles it crosses, giving
 //    each tile of a path its segments and its backdrop (the winding number at its corner).
 // 4. `Fine`: one workgroup per tile, one thread per pixel: every listed command's coverage and
@@ -372,7 +376,8 @@ public struct CoarseArgs
     /// Per tile: first block, command count, 1 if it is shaded this frame.
     public Buffer<uint4> Heads;
     public Buffer<uint> Pool;
-    /// 0: blocks taken; 1: nonzero if the pool ran out. Cleared before.
+    /// 0: blocks taken; 1: nonzero if the pool ran out; 2: the most work in a bin, which
+    /// sets how far the next frames cut bins. Cleared before.
     public Buffer<uint> Counters;
     /// Per tile: the hash of its list last frame, this frame's after (§5.5).
     public Buffer<uint> TileHashes;
@@ -380,16 +385,176 @@ public struct CoarseArgs
     /// empties a tile's list only of its own layer's commands, since a blur in a later layer
     /// may read the tile (§5.6).
     public ReadOnlyBuffer<uint> LayerStarts;
+    /// Per bin, `MaxSegments + 2` words: its segments, then the chunk each one starts at and the
+    /// chunk after the last (`CoarsePlan`).
+    public ReadOnlyBuffer<uint> Plans;
+    /// Per segment of a bin cut into several, per tile, in four planes of `MaxSegments` × tiles
+    /// words: the first block of the segment's part of the tile's list; its commands (bit 30:
+    /// the pool ran out); their hash; and the first command of the layer of its first opaque
+    /// command covering the tile, which hides the earlier parts' commands from there on.
+    /// `CoarseMerge` replaces the commands with those kept, and the hash with the commands kept
+    /// from the part on to the end (0: none).
+    public Buffer<uint> Lists;
+    public uint MaxSegments;
+}
+
+/// A bin's work: its commands, and `ChunkWork` for each chunk whose masks it walks. A bin is cut
+/// into a segment per `SegmentWork` of it.
+const uint SegmentWork = 1024;
+const uint ChunkWork = 4;
+const uint HashPrime = 16777619;
+const uint PartFull = 1073741824;
+const uint PartCount = 1073741823;
+
+public struct CoarsePlanArgs
+{
+    public Uniform<UiFrame> Frame;
+    public ReadOnlyBuffer<uint> Masks;
+    /// `CoarseArgs.Plans`.
+    public Buffer<uint> Plans;
+    /// `CoarseArgs.Counters`.
+    public Buffer<uint> Counters;
+    public uint MaxSegments;
+}
+
+/// Per wave of `CoarsePlan`: its work.
+[GroupShared] uint[256] PlanSums;
+
+/// The work of chunk `c` in `bin`.
+uint ChunkWorkOf(in CoarsePlanArgs a, uint c, uint bin, uint bins)
+{
+    uint at = (c * bins + bin) * 8;
+    uint n = ChunkWork;
+    for (uint w = 0; w < 8; w++)
+        n += CountBits(a.Masks[at + w]);
+    return n;
+}
+
+/// One workgroup per bin: how many workgroups walk it, and where each one's chunks start, so
+/// that they have about as much work each.
+[Compute(256, 1, 1)]
+public void CoarsePlan([GroupId] uint3 group, [GroupIndex] uint t, [Push] in CoarsePlanArgs a)
+{
+    UiFrame f = a.Frame.Value;
+    uint bin = group.y * f.BinsX + group.x;
+    uint bins = f.BinsX * f.BinsY;
+    uint per = (f.Chunks + 255) / 256;
+    uint c0 = Min(t * per, f.Chunks);
+    uint c1 = Min(c0 + per, f.Chunks);
+    uint sum = 0;
+    for (uint c = c0; c < c1; c++)
+        sum += ChunkWorkOf(a, c, bin, bins);
+    // The sums of the waves before this thread's, and of all.
+    uint waves = 256 / Wave.LaneCount;
+    uint wave = t / Wave.LaneCount;
+    uint before = Wave.PrefixSum(sum);
+    uint all = Wave.Sum(sum);
+    if (Wave.IsFirstLane)
+        PlanSums[wave] = all;
+    Barrier.Group();
+    uint total = 0;
+    for (uint k = 0; k < waves; k++)
+    {
+        uint v = PlanSums[k];
+        if (k < wave)
+            before += v;
+        total += v;
+    }
+    uint segs = Min(Max((total + SegmentWork - 1) / SegmentWork, 1), a.MaxSegments);
+    uint at = bin * (a.MaxSegments + 2);
+    if (t == 0)
+    {
+        a.Plans[at] = segs;
+        a.Plans[at + 1] = 0;
+        a.Plans[at + 1 + segs] = f.Chunks;
+        a.Counters.AtomicMax(2, total);
+    }
+    if (segs == 1)
+        return;
+    // Segment `k` starts after the chunk where the bin's work reaches `k * total / segs`.
+    for (uint c = c0; c < c1; c++)
+    {
+        uint through = before + ChunkWorkOf(a, c, bin, bins);
+        for (uint k = 1; k < segs; k++)
+        {
+            uint target = k * total / segs;
+            if (before < target && target <= through)
+                a.Plans[at + 1 + k] = c + 1;
+        }
+        before = through;
+    }
+}
+
+/// Whether command `i` reaches the tile at `x0`, `y0`: 0 no, 1 yes, 2 yes and its opaque
+/// interior holds the whole tile.
+uint Reach(in CoarseArgs a, uint i, int x0, int y0)
+{
+    uint4 b = a.Bounds[i];
+    int bx0 = (int)(b.x & 65535);
+    int by0 = (int)(b.x >> 16);
+    int bx1 = (int)(b.y & 65535);
+    int by1 = (int)(b.y >> 16);
+    if (x0 + 16 <= bx0 || x0 >= bx1 || y0 + 16 <= by0 || y0 >= by1)
+        return 0;
+    uint4 cmd = a.Commands[i];
+    float2 center = float2((float)x0 + 8, (float)y0 + 8);
+    if ((cmd.x & 63) == KindLine && LineTouchesTile(a.Payload, cmd.w, a.Groups, cmd.x >> 16, center) > 0)
+        return 0;
+    int ix0 = (int)(b.z & 65535);
+    int iy0 = (int)(b.z >> 16);
+    int ix1 = (int)(b.w & 65535);
+    int iy1 = (int)(b.w >> 16);
+    return x0 >= ix0 && y0 >= iy0 && x0 + 16 <= ix1 && y0 + 16 <= iy1 ? 2u : 1u;
+}
+
+/// `b` to the power `e`, wrapping.
+uint PowWrap(uint b, uint e)
+{
+    uint r = 1;
+    while (e != 0)
+    {
+        if ((e & 1) != 0)
+            r *= b;
+        b *= b;
+        e = e >> 1;
+    }
+    return r;
+}
+
+/// A tile's list done: its head and `count` commands of `total` (fewer when the pool ran out),
+/// and its hash compared with last frame's: folded over the list from the salt,
+/// `hash = (hash + command's) * HashPrime`.
+void FinishTile(in CoarseArgs a, uint tile, uint head, uint count, uint total, uint hash, bool full)
+{
+    UiFrame f = a.Frame.Value;
+    // Dirty when its list changed: content, order, or a command dropped for want of blocks.
+    bool dirty = f.Force != 0 || full || a.TileHashes[tile] != hash;
+    a.TileHashes[tile] = full ? 0 : hash;
+    a.Heads[tile] = uint4(head, count, dirty ? 1u : 0u, total);
 }
 
 [Compute(16, 16, 1)]
 public void Coarse([GroupId] uint3 group, [GroupThreadId] uint3 thread, [Push] in CoarseArgs a)
 {
     UiFrame f = a.Frame.Value;
+    uint bin = group.y * f.BinsX + group.x;
+    // `MaxSegments` 1: no bin is cut, and there are no plans.
+    uint plan = bin * (a.MaxSegments + 2);
+    uint segs = 1;
+    uint c0 = 0;
+    uint c1 = f.Chunks;
+    if (a.MaxSegments > 1)
+    {
+        segs = a.Plans[plan];
+        if (group.z >= segs)
+            return;
+        c0 = a.Plans[plan + 1 + group.z];
+        c1 = a.Plans[plan + 2 + group.z];
+    }
     uint tx = group.x * 16 + thread.x;
     uint ty = group.y * 16 + thread.y;
-    bool live = tx < f.TilesX && ty < f.TilesY;
-    uint bin = group.y * f.BinsX + group.x;
+    if (tx >= f.TilesX || ty >= f.TilesY)
+        return;
     uint bins = f.BinsX * f.BinsY;
     int x0 = (int)(tx * 16);
     int y0 = (int)(ty * 16);
@@ -398,14 +563,16 @@ public void Coarse([GroupId] uint3 group, [GroupThreadId] uint3 thread, [Push] i
     uint current = NoBlock;
     uint count = 0;
     bool full = false;
-    uint hash = f.Salt;
+    uint hash = 0;
     // The layers seen, and the list as it stood when the current one began: an opaque command
     // hides only its own layer's commands (§5.6).
     uint layer = 0;
     uint layerCount = 0;
     uint layerCurrent = NoBlock;
-    uint layerHash = f.Salt;
-    for (uint c = 0; c < f.Chunks; c++)
+    uint layerHash = 0;
+    uint cut = NoBlock;
+    uint seen = 0;
+    for (uint c = c0; c < c1; c++)
     {
         for (uint w = 0; w < 8; w++)
         {
@@ -414,7 +581,8 @@ public void Coarse([GroupId] uint3 group, [GroupThreadId] uint3 thread, [Push] i
             {
                 uint i = c * 256 + w * 32 + FirstBitLow(m);
                 m = m & (m - 1);
-                if (!live || full)
+                seen++;
+                if (full)
                     continue;
                 uint4 b = a.Bounds[i];
                 int bx0 = (int)(b.x & 65535);
@@ -444,6 +612,7 @@ public void Coarse([GroupId] uint3 group, [GroupThreadId] uint3 thread, [Push] i
                     count = layerCount;
                     current = layerCount == 0 ? head : layerCurrent;
                     hash = layerHash;
+                    cut = Min(cut, a.LayerStarts[layer - 1]);
                 }
                 uint slot = count % BlockCommands;
                 if (slot == 0)
@@ -468,17 +637,158 @@ public void Coarse([GroupId] uint3 group, [GroupThreadId] uint3 thread, [Push] i
                 }
                 a.Pool[current * BlockWords + slot] = i;
                 count++;
-                hash = (hash ^ a.Hashes[i]) * 16777619;
+                hash = (hash + a.Hashes[i]) * HashPrime;
             }
         }
     }
-    if (live)
+    uint tile = ty * f.TilesX + tx;
+    if (segs == 1)
     {
-        // Dirty when its list changed: content, order, or a command dropped for want of blocks.
-        uint tile = ty * f.TilesX + tx;
-        bool dirty = f.Force != 0 || full || a.TileHashes[tile] != hash;
-        a.TileHashes[tile] = full ? 0 : hash;
-        a.Heads[tile] = uint4(head, count, dirty ? 1u : 0u, 0);
+        // The bin's work, which sets how far the next frames cut bins (`CoarsePlan` measures it
+        // when there are plans).
+        if (a.MaxSegments == 1 && thread.x == 0 && thread.y == 0)
+            a.Counters.AtomicMax(2, seen + ChunkWork * f.Chunks);
+        hash += f.Salt * PowWrap(HashPrime, count);
+        FinishTile(a, tile, head, count, count, hash, full);
+        return;
+    }
+    // A part, for `CoarseMerge`.
+    uint planes = a.MaxSegments * f.TilesX * f.TilesY;
+    uint at = group.z * f.TilesX * f.TilesY + tile;
+    a.Lists[at] = head;
+    a.Lists[planes + at] = full ? count | PartFull : count;
+    a.Lists[2 * planes + at] = hash;
+    a.Lists[3 * planes + at] = cut;
+}
+
+/// One thread per tile of a bin cut into segments: the parts joined in order, without what
+/// later opaque commands hide. A tile with one part left keeps it as its list; one with more
+/// takes blocks for the whole list, in one piece, which `CoarseCopy` fills.
+[Compute(16, 16, 1)]
+public void CoarseMerge([GroupId] uint3 group, [GroupThreadId] uint3 thread, [Push] in CoarseArgs a)
+{
+    UiFrame f = a.Frame.Value;
+    uint plan = (group.y * f.BinsX + group.x) * (a.MaxSegments + 2);
+    uint segs = a.Plans[plan];
+    uint tx = group.x * 16 + thread.x;
+    uint ty = group.y * 16 + thread.y;
+    if (segs == 1 || tx >= f.TilesX || ty >= f.TilesY)
+        return;
+    uint tiles = f.TilesX * f.TilesY;
+    uint tile = ty * f.TilesX + tx;
+    uint planes = a.MaxSegments * tiles;
+    // Back to front, the commands from `cut` on hidden. The hash comes out as folding the
+    // joined list front to back.
+    uint cut = NoBlock;
+    uint after = 0;
+    uint scale = 1;
+    uint hash = 0;
+    uint parts = 0;
+    uint only = NoBlock;
+    bool full = false;
+    uint s = segs;
+    while (s > 0)
+    {
+        s--;
+        uint at = s * tiles + tile;
+        uint first = a.Lists[at];
+        uint e = a.Lists[planes + at];
+        uint n = e & PartCount;
+        uint h = a.Lists[2 * planes + at];
+        if (n > 0 && a.Plans[plan + 2 + s] * 256 > cut)
+        {
+            if (a.Plans[plan + 1 + s] * 256 >= cut)
+            {
+                n = 0;
+            }
+            else
+            {
+                // The cut is inside the part: its commands before it.
+                uint block = first;
+                uint kept = 0;
+                h = 0;
+                for (uint k = 0; k < n; k++)
+                {
+                    uint slot = k % BlockCommands;
+                    if (slot == 0 && k > 0)
+                        block = a.Pool[block * BlockWords + BlockCommands];
+                    uint i = a.Pool[block * BlockWords + slot];
+                    if (i >= cut)
+                        break;
+                    h = (h + a.Hashes[i]) * HashPrime;
+                    kept++;
+                }
+                n = kept;
+            }
+        }
+        if (n > 0)
+        {
+            hash += h * scale;
+            scale *= PowWrap(HashPrime, n);
+            after += n;
+            parts++;
+            only = first;
+            full = full || (e & PartFull) != 0;
+        }
+        a.Lists[planes + at] = n;
+        a.Lists[2 * planes + at] = after;
+        cut = Min(cut, a.Lists[3 * planes + at]);
+    }
+    uint count = after;
+    uint head = parts == 1 ? only : NoBlock;
+    uint blocks = parts > 1 ? (count + BlockCommands - 1) / BlockCommands : 0;
+    if (blocks > 0)
+    {
+        head = a.Counters.AtomicAdd(0, blocks);
+        if (head >= f.PoolBlocks || f.PoolBlocks - head < blocks)
+        {
+            // Out of blocks: the commands that fit, the rest dropped.
+            a.Counters.AtomicOr(1, 1);
+            full = true;
+            blocks = head < f.PoolBlocks ? f.PoolBlocks - head : 0;
+            count = blocks * BlockCommands;
+            if (blocks == 0)
+                head = NoBlock;
+        }
+        for (uint b = 0; b < blocks; b++)
+            a.Pool[(head + b) * BlockWords + BlockCommands] = b + 1 < blocks ? head + b + 1 : NoBlock;
+    }
+    FinishTile(a, tile, head, count, after, hash + f.Salt * scale, full);
+}
+
+/// One thread per tile and part of a bin cut into segments: the part into its place in the
+/// tile's list.
+[Compute(16, 16, 1)]
+public void CoarseCopy([GroupId] uint3 group, [GroupThreadId] uint3 thread, [Push] in CoarseArgs a)
+{
+    UiFrame f = a.Frame.Value;
+    uint segs = a.Plans[(group.y * f.BinsX + group.x) * (a.MaxSegments + 2)];
+    uint tx = group.x * 16 + thread.x;
+    uint ty = group.y * 16 + thread.y;
+    if (segs == 1 || group.z >= segs || tx >= f.TilesX || ty >= f.TilesY)
+        return;
+    uint tiles = f.TilesX * f.TilesY;
+    uint tile = ty * f.TilesX + tx;
+    uint planes = a.MaxSegments * tiles;
+    uint at = group.z * tiles + tile;
+    uint n = a.Lists[planes + at];
+    if (n == 0)
+        return;
+    uint block = a.Lists[at];
+    uint4 h = a.Heads[tile];
+    // The tile's only part: its list as it is.
+    if (h.x == block)
+        return;
+    uint first = h.w - a.Lists[2 * planes + at];
+    for (uint k = 0; k < n; k++)
+    {
+        uint slot = k % BlockCommands;
+        if (slot == 0 && k > 0)
+            block = a.Pool[block * BlockWords + BlockCommands];
+        uint d = first + k;
+        if (d >= h.y)
+            return;
+        a.Pool[(h.x + d / BlockCommands) * BlockWords + d % BlockCommands] = a.Pool[block * BlockWords + slot];
     }
 }
 

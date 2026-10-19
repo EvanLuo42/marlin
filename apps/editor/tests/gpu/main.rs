@@ -51,6 +51,9 @@ fn the_shell_draws_like_the_reference_and_its_golden() {
             encode_ps: s(6),
             blur: s(7),
             path_tiles: s(8),
+            coarse_merge: s(9),
+            coarse_copy: s(10),
+            coarse_plan: s(11),
         },
         &UiRendererDesc::default(),
     )

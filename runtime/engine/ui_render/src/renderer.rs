@@ -52,6 +52,15 @@ use crate::style::{Color, ExternalImageId};
 /// The most tile list blocks the pool grows to (256 MiB).
 pub const MAX_POOL_BLOCKS: u32 = 1 << 21;
 
+/// The workgroups UiCoarse walks the bins with at most: a bin crowded with commands is cut into
+/// segments walked by a workgroup each, up to this over the bins and to 64 a bin.
+const COARSE_WORKGROUPS: u32 = 2048;
+
+/// A bin's work in UiCoarse: its commands, and `CHUNK_WORK` for each chunk whose masks it walks.
+/// A crowded bin is cut into a segment per `SEGMENT_WORK` of it (`SegmentWork`, `ChunkWork`).
+const SEGMENT_WORK: u32 = 1024;
+const CHUNK_WORK: u32 = 4;
+
 /// The format of the UI target: sRGB-encoded values in a linear format, blended as they are
 /// (§5.6, §8.1).
 pub const UI_FORMAT: Format = Format::Rgba8Unorm;
@@ -67,10 +76,13 @@ pub struct UiShaders<'a> {
     pub encode_ps: ShaderModule<'a>,
     pub blur: ShaderModule<'a>,
     pub path_tiles: ShaderModule<'a>,
+    pub coarse_merge: ShaderModule<'a>,
+    pub coarse_copy: ShaderModule<'a>,
+    pub coarse_plan: ShaderModule<'a>,
 }
 
 /// The entries, in [`UiShaders`] order.
-pub const UI_ENTRIES: [&str; 9] = [
+pub const UI_ENTRIES: [&str; 12] = [
     "Marlin.Engine.Ui.GlyphUpload",
     "Marlin.Engine.Ui.Bounds",
     "Marlin.Engine.Ui.Bin",
@@ -80,11 +92,14 @@ pub const UI_ENTRIES: [&str; 9] = [
     "Marlin.Engine.Ui.EncodePs",
     "Marlin.Engine.Ui.Blur",
     "Marlin.Engine.Ui.PathTiles",
+    "Marlin.Engine.Ui.CoarseMerge",
+    "Marlin.Engine.Ui.CoarseCopy",
+    "Marlin.Engine.Ui.CoarsePlan",
 ];
 
 /// Push constant bytes of each entry, in [`UI_ENTRIES`] order (the encode vertex shader has
 /// none).
-pub const UI_PUSH_BYTES: [Option<u32>; 9] = [
+pub const UI_PUSH_BYTES: [Option<u32>; 12] = [
     Some(size_of::<GlyphUploadArgs>() as u32),
     Some(size_of::<BoundsArgs>() as u32),
     Some(size_of::<BinArgs>() as u32),
@@ -94,6 +109,9 @@ pub const UI_PUSH_BYTES: [Option<u32>; 9] = [
     Some(size_of::<EncodeArgs>() as u32),
     Some(size_of::<BlurArgs>() as u32),
     Some(size_of::<PathTilesArgs>() as u32),
+    Some(size_of::<CoarseArgs>() as u32),
+    Some(size_of::<CoarseArgs>() as u32),
+    Some(size_of::<CoarsePlanArgs>() as u32),
 ];
 
 #[repr(C)]
@@ -147,6 +165,16 @@ struct BinArgs {
 
 #[repr(C)]
 #[derive(Pod, Clone, Copy)]
+struct CoarsePlanArgs {
+    frame: u32,
+    masks: u32,
+    plans: u32,
+    counters: u32,
+    max_segments: u32,
+}
+
+#[repr(C)]
+#[derive(Pod, Clone, Copy)]
 struct CoarseArgs {
     frame: u32,
     commands: u32,
@@ -160,6 +188,9 @@ struct CoarseArgs {
     counters: u32,
     tile_hashes: u32,
     layer_starts: u32,
+    plans: u32,
+    lists: u32,
+    max_segments: u32,
 }
 
 #[repr(C)]
@@ -359,6 +390,9 @@ pub struct UiSurface {
     /// The pool's size this frame, raised from what frames used.
     pool_blocks: AtomicU32,
     overflowed: AtomicBool,
+    /// The most work a bin had in the last frame read back (`u32::MAX` before one is): how
+    /// far UiCoarse cuts bins.
+    bin_work: AtomicU32,
     /// Per frame slot: the counters' copy, and whether a frame has written it yet.
     readbacks: Vec<(Buffer, AtomicBool)>,
     /// The last frame drawn: its hash (0: none yet).
@@ -372,7 +406,7 @@ impl UiSurface {
             .map(|_| {
                 device
                     .create_buffer(&marlin_rhi::BufferDesc {
-                        size: 8,
+                        size: 12,
                         usage: BufferUsage::COPY_DST,
                         memory: MemoryLocation::Readback,
                     })
@@ -383,6 +417,7 @@ impl UiSurface {
             key: desc.key,
             pool_blocks: AtomicU32::new(desc.initial_pool_blocks.max(64)),
             overflowed: AtomicBool::new(false),
+            bin_work: AtomicU32::new(u32::MAX),
             readbacks,
             last: AtomicU64::new(0),
             texture: None,
@@ -484,6 +519,9 @@ pub struct UiRenderer {
     bounds: ComputePipeline,
     bin: ComputePipeline,
     coarse: ComputePipeline,
+    coarse_merge: ComputePipeline,
+    coarse_copy: ComputePipeline,
+    coarse_plan: ComputePipeline,
     fine: ComputePipeline,
     blur: ComputePipeline,
     path_tiles: ComputePipeline,
@@ -546,6 +584,9 @@ impl UiRenderer {
             bounds: compute(shaders.bounds)?,
             bin: compute(shaders.bin)?,
             coarse: compute(shaders.coarse)?,
+            coarse_merge: compute(shaders.coarse_merge)?,
+            coarse_copy: compute(shaders.coarse_copy)?,
+            coarse_plan: compute(shaders.coarse_plan)?,
             fine: compute(shaders.fine)?,
             blur: compute(shaders.blur)?,
             path_tiles: compute(shaders.path_tiles)?,
@@ -742,7 +783,7 @@ impl UiRenderer {
             "UiTilePool",
             BufferDesc::structured::<u32>(u64::from(pool_blocks * BLOCK_WORDS)),
         );
-        let counters = g.create_buffer("UiCounters", BufferDesc::structured::<u32>(2));
+        let counters = g.create_buffer("UiCounters", BufferDesc::structured::<u32>(3));
 
         let (masks, counters) = g.add_compute("UiClear", |b| {
             let m = b.write_buffer(masks, Access::Clear);
@@ -788,16 +829,90 @@ impl UiRenderer {
             })
         });
 
+        // Coarse binning: each bin walked by one workgroup, or a crowded one cut into segments
+        // walked by a workgroup each, their parts of the tile lists joined after. How far bins
+        // are cut follows the most crowded bin of a recent frame (all the way until one is read
+        // back): a frame whose bins were all small skips the planning and the joining.
+        let crowd = surface
+            .bin_work
+            .load(Ordering::Relaxed)
+            .min(commands + CHUNK_WORK * chunks);
+        let max_segments = if crowd > SEGMENT_WORK {
+            crowd
+                .div_ceil(SEGMENT_WORK)
+                .min((COARSE_WORKGROUPS / (bins_x * bins_y)).clamp(1, 64))
+        } else {
+            1
+        };
+        // What a pass leaves out of its arguments is 0.
+        let base = CoarseArgs {
+            frame: 0,
+            commands: 0,
+            payload: 0,
+            groups: 0,
+            hashes: 0,
+            bounds: 0,
+            masks: 0,
+            heads: 0,
+            pool: 0,
+            counters: 0,
+            tile_hashes: 0,
+            layer_starts: 0,
+            plans: 0,
+            lists: 0,
+            max_segments,
+        };
+        let split = (max_segments > 1).then(|| {
+            let plans = g.create_buffer(
+                "UiCoarsePlans",
+                BufferDesc::structured::<u32>(u64::from(bins_x * bins_y * (max_segments + 2))),
+            );
+            let lists = g.create_buffer(
+                "UiCoarseLists",
+                BufferDesc::structured::<u32>(4 * tiles * u64::from(max_segments)),
+            );
+            let pipeline = &self.coarse_plan;
+            let (plans, counters) = g.add_compute("UiCoarsePlan", |b| {
+                let m = b.read_buffer(masks, Access::ComputeRead);
+                let pl = b.write_buffer(plans, Access::ComputeWrite);
+                let k = b.write_buffer(counters, Access::ComputeWrite);
+                ((pl, k), move |ctx: &mut PassContext<'_>| {
+                    let args = CoarsePlanArgs {
+                        frame: ctx.upload(&frame),
+                        masks: ctx.srv(m),
+                        plans: ctx.uav(pl),
+                        counters: ctx.uav(k),
+                        max_segments,
+                    };
+                    ctx.set_pipeline(pipeline);
+                    ctx.push(&args);
+                    ctx.dispatch(bins_x, bins_y, 1);
+                })
+            });
+            (plans, lists, counters)
+        });
+        let (split, counters) = match split {
+            Some((plans, lists, counters)) => (Some((plans, lists)), counters),
+            None => (None, counters),
+        };
+
         let starts = plan.starts.clone();
         let pipeline = &self.coarse;
-        let (heads, pool, counters) = g.add_compute("UiCoarse", |b| {
+        let (split, heads, pool, counters, tile_hashes) = g.add_compute("UiCoarse", |b| {
             let bd = b.read_buffer(bounds, Access::ComputeRead);
             let m = b.read_buffer(masks, Access::ComputeRead);
+            let split = split.map(|(pl, l)| {
+                (
+                    b.read_buffer(pl, Access::ComputeRead),
+                    b.write_buffer(l, Access::ComputeWrite),
+                )
+            });
             let h = b.write_buffer(heads, Access::ComputeWrite);
             let p = b.write_buffer(pool, Access::ComputeWrite);
             let k = b.write_buffer(counters, Access::ComputeWrite);
             let th = b.write_buffer(tile_hashes.handle, Access::ComputeWrite);
-            ((h, p, k), move |ctx: &mut PassContext<'_>| {
+            ((split, h, p, k, th), move |ctx: &mut PassContext<'_>| {
+                let (plans, lists) = split.map_or((0, 0), |(pl, l)| (ctx.srv(pl), ctx.uav(l)));
                 let args = CoarseArgs {
                     frame: ctx.upload(&frame),
                     commands: ctx.upload_slice(cmds),
@@ -811,18 +926,74 @@ impl UiRenderer {
                     counters: ctx.uav(k),
                     tile_hashes: ctx.uav(th),
                     layer_starts: ctx.upload_slice(&starts),
+                    plans,
+                    lists,
+                    ..base
                 };
                 ctx.set_pipeline(pipeline);
                 ctx.push(&args);
-                ctx.dispatch(bins_x, bins_y, 1);
+                ctx.dispatch(bins_x, bins_y, max_segments);
             })
         });
+
+        let (heads, pool, counters) = match split {
+            None => (heads, pool, counters),
+            Some((plans, lists)) => {
+                let pipeline = &self.coarse_merge;
+                let (lists, heads, pool, counters) = g.add_compute("UiCoarseMerge", |b| {
+                    let pl = b.read_buffer(plans, Access::ComputeRead);
+                    let l = b.write_buffer(lists, Access::ComputeWrite);
+                    let h = b.write_buffer(heads, Access::ComputeWrite);
+                    let p = b.write_buffer(pool, Access::ComputeWrite);
+                    let k = b.write_buffer(counters, Access::ComputeWrite);
+                    let th = b.write_buffer(tile_hashes, Access::ComputeWrite);
+                    ((l, h, p, k), move |ctx: &mut PassContext<'_>| {
+                        let args = CoarseArgs {
+                            frame: ctx.upload(&frame),
+                            hashes: ctx.upload_slice(hashes),
+                            heads: ctx.uav(h),
+                            pool: ctx.uav(p),
+                            counters: ctx.uav(k),
+                            tile_hashes: ctx.uav(th),
+                            plans: ctx.srv(pl),
+                            lists: ctx.uav(l),
+                            ..base
+                        };
+                        ctx.set_pipeline(pipeline);
+                        ctx.push(&args);
+                        ctx.dispatch(bins_x, bins_y, 1);
+                    })
+                });
+                let pipeline = &self.coarse_copy;
+                let (heads, pool) = g.add_compute("UiCoarseCopy", |b| {
+                    let pl = b.read_buffer(plans, Access::ComputeRead);
+                    let l = b.write_buffer(lists, Access::ComputeWrite);
+                    let h = b.write_buffer(heads, Access::ComputeWrite);
+                    let p = b.write_buffer(pool, Access::ComputeWrite);
+                    ((h, p), move |ctx: &mut PassContext<'_>| {
+                        let args = CoarseArgs {
+                            frame: ctx.upload(&frame),
+                            heads: ctx.uav(h),
+                            pool: ctx.uav(p),
+                            plans: ctx.srv(pl),
+                            lists: ctx.uav(l),
+                            ..base
+                        };
+                        ctx.set_pipeline(pipeline);
+                        ctx.push(&args);
+                        ctx.dispatch(bins_x, bins_y, max_segments);
+                    })
+                });
+                (heads, pool, counters)
+            }
+        };
 
         // The pool's use, for sizing the next frames.
         let slot = (g.frame() % FRAMES_IN_FLIGHT as u64) as usize;
         let (readback, written) = &surface.readbacks[slot];
         let rb = g.import_buffer("UiCountersReadback", readback);
         let pool_size = &surface.pool_blocks;
+        let crowd = &surface.bin_work;
         let overflowed = &surface.overflowed;
         g.add_copy("UiCounters", |b| {
             b.side_effect();
@@ -830,7 +1001,7 @@ impl UiRenderer {
             let r = b.write_buffer(rb, Access::CopyDst);
             ((), move |ctx: &mut PassContext<'_>| {
                 // The slot's last frame has finished: its count is in (once there was one).
-                let mut bytes = [0u8; 8];
+                let mut bytes = [0u8; 12];
                 if written.swap(true, Ordering::Relaxed) {
                     // SAFETY: the frame that last wrote this buffer has finished (its frame
                     // slot was waited for before recording), and no other frame writes it.
@@ -838,6 +1009,10 @@ impl UiRenderer {
                 }
                 let used = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
                 let over = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+                crowd.store(
+                    u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]),
+                    Ordering::Relaxed,
+                );
                 let current = pool_size.load(Ordering::Relaxed);
                 let want = if over != 0 {
                     overflowed.store(true, Ordering::Relaxed);
@@ -849,7 +1024,7 @@ impl UiRenderer {
                 if want > current {
                     pool_size.store(want.min(MAX_POOL_BLOCKS), Ordering::Relaxed);
                 }
-                ctx.copy_buffer(k, 0, r, 0, 8);
+                ctx.copy_buffer(k, 0, r, 0, 12);
             })
         });
 

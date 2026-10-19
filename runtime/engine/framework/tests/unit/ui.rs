@@ -26,6 +26,9 @@ fn library(push: impl Fn(usize) -> Option<u32>) -> ShaderLibrary {
         Stage::Pixel,
         Stage::Compute,
         Stage::Compute,
+        Stage::Compute,
+        Stage::Compute,
+        Stage::Compute,
     ];
     let mut entries: Vec<LibraryEntry> = (0..UI_ENTRIES.len())
         .map(|i| LibraryEntry {
