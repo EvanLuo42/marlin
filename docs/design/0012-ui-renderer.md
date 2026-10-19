@@ -173,6 +173,8 @@ impl Painter<'_> {
   - 线段和描边：沿线段做保守的 DDA，只分进真正穿过的 tile。这对应 Decima 后来用 Wu 算法做的优化，网格线框那种几十万条线段的情况靠它才撑得住；
   - 路径：线段分进它们穿过的 tile，同时为路径算每个 tile 的 backdrop（§4.2）。
 - 一个 bin 里的 tile 列表只由这一个 workgroup 写，而它按命令顺序遍历，所以列表天然有序。
+- **拥挤的 bin 拆开遍历**（2026-10-18）：命令挤在少数 bin 里时，一个 workgroup 串行遍历就是瓶颈。`UiCoarsePlan` 每个 bin 一个 workgroup，数出 bin 的工作量（命令数，加上每个要遍历的 chunk 算 4），超过 1024 就按工作量均匀地把 chunk 切成若干段（一帧最多约 2048 个 workgroup，每个 bin 最多 64 段）；`UiCoarse` 每段一个 workgroup，写出这一段在每个 tile 里的那部分列表；`UiCoarseMerge` 每个 tile 一个线程，从后往前把各段接起来：后面段里的不透明遮挡去掉前面段里同一层的命令（遮挡点落在某段中间时，顺着那段的列表数出层起点之前的命令），哈希用 `(h + 命令哈希) × 16777619` 折叠，所以分段算的结果能按长度拼成和整条列表一样的值；只剩一段的 tile 直接用那段的块，多段的 tile 一次分配连续的块，由 `UiCoarseCopy` 每段一个线程拷进去。列表格式不变，`UiFine` 不用改。
+  - 不拆的 bin 还是原来的单遍历，直接写出列表和哈希。拆到多深看最近一帧回读的最拥挤 bin 的工作量（和池子的用量一起回读）：所有 bin 都不拥挤时整套规划和合并都不声明，小场景的开销和原来一样；场景突然变挤时那一两帧先按不拆的方式走。还没回读到时按最多拆。
 - **不透明遮挡**：一条命令完全不透明地盖住整个 tile 时（面板背景就是这样），清空这个 tile 在它之前的列表。底层被盖住的命令不再着色。
 - tile 列表的存储按 bin 从一个全局池里成块分配。
 
@@ -335,7 +337,7 @@ U1 完成后，editor 的窗口外壳就可以换成它；U2 完成后，视口�
   - 不透明内部（§5.3 的遮挡用）：矩形按最大的圆角向内缩；圆取内接正方形。只有填充和描边都不透明的矩形和圆才标 `OPAQUE`。
   - 图像：默认按 sRGB 视图采样（得到线性值、直通 alpha），编码回 sRGB 后再预乘；`ImageColor::SrgbPremultiplied` 的纹理原样使用。mip 用显式的 lod（纹素与像素之比的 log2）。
 - **CPU 参考（U1c）**：`shape` 和 shader 逐个表达式对应，`reference` 用它分箱和着色。包围盒只用加减、乘常数、min、max、floor、ceil，CPU 和 GPU 的结果逐位相同。线段是否碰到 tile 要开方和做除法，两边的舍入可能不同，所以离阈值 1/64 像素以内的条目在参考里标为可选（GPU 可以有也可以没有，这样的条目在 tile 里本来就没有墨迹）。
-- **GPU 管线（U1d、U1e）**：shader 是 `content/engine/shaders/Ui/Ui.mshader`，namespace `Marlin.Engine.Ui`，入口 `GlyphUpload`、`Bounds`、`Bin`、`Coarse`、`Fine`、`EncodeVs`、`EncodePs`（命名方案是用户定的，graph 里的 pass 名仍叫 `UiBounds`……）。
+- **GPU 管线（U1d、U1e）**：shader 是 `content/engine/shaders/Ui/Ui.mshader`，namespace `Marlin.Engine.Ui`，入口 `GlyphUpload`、`Bounds`、`Bin`、`CoarsePlan`、`Coarse`、`CoarseMerge`、`CoarseCopy`、`Fine`、`EncodeVs`、`EncodePs`（命名方案是用户定的，graph 里的 pass 名仍叫 `UiBounds`……）。
   - `UiBounds` 每个线程处理一条命令，把包围盒和不透明内部打包成 16 位的坐标。
   - `UiBin` 用全局原子 OR 写掩码，布局是 chunk × bin × 8 个字。
   - `UiCoarse` 每个 bin 一个 16 × 16 的 workgroup，每个线程负责一个 tile，按命令顺序遍历掩码（`FirstBitLow`）。线段的判定是：tile 中心到线段的距离 ≤ 半线宽（方头乘 √2）+ tile 的半对角线 + 0.5，相当于保守 DDA。遇到不透明遮挡时把计数清零，已有的块原样复用。
@@ -454,10 +456,23 @@ U1 完成后，editor 的窗口外壳就可以换成它；U2 完成后，视口�
     | 编辑器，每帧悬停的行不同（损伤检测） | 0.16 ms | `UiCoarse` 0.11，`UiFine` 只有 27 µs |
     - CPU：文字每帧换一个字号（128 种字号循环，超过字形页的容量，每帧都栅格化和淘汰）时 `prepare` 约 0.14 ms。
   - 看到的问题，按影响排：
-    1. `UiCoarse` 的并行度：每个 bin 一个 workgroup，按命令顺序遍历所有 chunk。命令集中在少数 bin 时（缩小的节点图、密集线框），它就是串行的，最坏 5.9–10.6 ms。要按 chunk 拆分遍历，或者让 bin 变小。
+    1. ~~`UiCoarse` 的并行度~~：已做，拥挤的 bin 按 chunk 拆给多个 workgroup（§5.3），数字见下。
     2. 大路径：按带建的 CPU 索引让每个像素遍历整个带的线段。应该做 §4.2 原来的方案：GPU 上每个 tile 一份线段列表和 backdrop。（已做，见下面的"路径的 tile"）
     3. 深度重叠：没有遮挡时 `UiFine` 和列表长度成正比。可以加上 tile 内的提前退出（累积 alpha 到 1 之后跳过下面的命令要反向遍历，需要设计）。
     4. 深裁剪链：每条命令每像素都重新算整条链。可以把"完全在链内"的 tile 标出来，跳过裁剪计算。
+  - **UiCoarse 拆分前后**（2026-10-18，同一台机器，`cargo bench -p marlin-ui-render --bench ui -- stress`；拆分后是 `UiCoarsePlan`、`UiCoarse`、`UiCoarseMerge`、`UiCoarseCopy` 之和）：
+    | 场景 | 拆分前 `UiCoarse` | 拆分后 | 一帧 GPU 前 → 后 |
+    |---|---|---|---|
+    | 节点图缩小到 0.15 | 5907 µs | 682 µs | 7.35 → 2.46 ms |
+    | 网格线框 30 万条线 | 10575 µs | 2760 µs | 17.7 → 10.1 ms |
+    | 同上，放大 8 倍 | 892 µs | 454 µs | 2.17 → 1.64 ms |
+    | 节点图 | 650 µs | 397 µs | 3.58 → 3.34 ms |
+    | 时间线 | 588 µs | 350 µs | 2.21 → 1.97 ms |
+    | 河流发光 | 338 µs | 248 µs | 1.11 → 1.02 ms |
+    | 节点图放大 4 倍（不拆） | 155 µs | 158–162 µs | 0.95 → 0.96 ms |
+    | 其余（不拆：全屏叠加、4K 文字、深裁剪、16 层毛玻璃、大路径、悬停） | | 和原来相同（±2%） | |
+    - 拆开的场景多用一些池子：每段的部分列表各占块，多段的 tile 再占一份连续的块（线框 16 → 32 MiB，节点图 2 → 4 MiB）。
+    - 线框还剩 2.7 ms：每个 bin 有几万条线，拆到 51 段后每段仍有上千条，而且每条线都要做距离判定。再快要让 bin 变小或者在 `UiBin` 里就按 tile 行细分。
 - **没做**：
   - UI 效果（§9）和 HDR 窗口（§8.3）：等 R。
   - 材质采样 UI 纹理、限制世界内 UI 的更新频率：属于 R 和 gameplay。
