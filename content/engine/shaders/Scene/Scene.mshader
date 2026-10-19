@@ -15,6 +15,18 @@ public struct Rows3x4
 /// `m` applied to `v` (w = 1 for a point, 0 for a direction).
 public float3 Apply(Rows3x4 m, float4 v) => float3(Dot(m.R0, v), Dot(m.R1, v), Dot(m.R2, v));
 
+/// A normal `n` under `m`: the inverse transpose of its 3×3 part (as the cofactor matrix, which
+/// is it up to scale, times the determinant's sign so mirrors keep the facing), not normalized.
+/// A non-uniform scale tilts normals otherwise.
+public float3 ApplyNormal(Rows3x4 m, float3 n)
+{
+    float3 c0 = float3(m.R0.x, m.R1.x, m.R2.x);
+    float3 c1 = float3(m.R0.y, m.R1.y, m.R2.y);
+    float3 c2 = float3(m.R0.z, m.R1.z, m.R2.z);
+    float3 cofactor = Cross(c1, c2) * n.x + Cross(c2, c0) * n.y + Cross(c0, c1) * n.z;
+    return Dot(c0, Cross(c1, c2)) < 0 ? -cofactor : cofactor;
+}
+
 public struct InstanceData
 {
     /// The mesh's row in the mesh table.

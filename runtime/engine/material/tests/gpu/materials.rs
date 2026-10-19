@@ -123,6 +123,38 @@ fn normals_are_the_surfaces() {
 }
 
 #[test]
+fn scaled_instances_keep_their_normals() {
+    // A wall: scaled 100 times more across than deep, which tilts normals transformed by the
+    // model matrix itself (the inverse transpose keeps them).
+    for (scale, turn) in [
+        (Vec3::new(20.0, 20.0, 0.2), 0.0f32),
+        (Vec3::new(4.0, 0.5, 2.0), 0.5),
+    ] {
+        let mut h = Harness::new();
+        let c = h.upload(&cube());
+        let m = h.default_material(DefaultMaterial::default());
+        h.add(
+            c,
+            m,
+            Transform {
+                translation: Vec3::new(0.0, 0.0, -2.0),
+                rotation: Quat::from_rotation_y(turn),
+                scale,
+            },
+            [1.0; 4],
+        );
+        let f = h.frame(None);
+        let center = (HEIGHT / 2 * WIDTH + WIDTH / 2) as usize;
+        let n = proxy(f.material[center]).normal;
+        let want = [turn.sin(), 0.0, turn.cos()];
+        assert!(
+            (0..3).all(|i| (n[i] - want[i]).abs() < 5e-3),
+            "scale {scale:?}: {n:?}, want {want:?}"
+        );
+    }
+}
+
+#[test]
 fn velocities_follow_the_instances_and_the_camera() {
     let mut h = Harness::new();
     let c = h.upload(&cube());

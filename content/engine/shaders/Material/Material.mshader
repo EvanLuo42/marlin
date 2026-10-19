@@ -195,7 +195,7 @@ public void ResolvePixel<M>([DispatchThreadId] uint3 id, [Push] in ResolveArgs<M
         float3 p = DecodePosition(pool, mesh, page, vertex);
         world[k] = Apply(t.Current, float4(p, 1));
         previous[k] = Apply(t.Previous, float4(p, 1));
-        normal[k] = Apply(t.Current, float4(DecodeVertexNormal(pool, mesh, page, vertex), 0));
+        normal[k] = ApplyNormal(t.Current, DecodeVertexNormal(pool, mesh, page, vertex));
         clip[k] = v.ViewProjection * float4(world[k], 1);
     }
     float2 ndc = Ndc(xy, v);
