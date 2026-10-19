@@ -20,9 +20,12 @@ use crate::style::Color;
 /// Half a tile's diagonal: how far from its center a tile reaches.
 pub const TILE_RADIUS: f32 = 11.313_708;
 
-/// What commands refer to: the frame's payload, paints, groups, clips and glyph table.
+/// What commands refer to: the frame's commands, payload, paints, groups, clips and glyph
+/// table.
 #[derive(Clone, Copy)]
 pub struct Scene<'a> {
+    /// Every command: group effects read their members.
+    pub commands: &'a [CommandWords],
     pub payload: &'a [u32],
     pub paints: &'a [PaintWords],
     pub groups: &'a [GroupWords],
@@ -33,6 +36,7 @@ pub struct Scene<'a> {
 impl<'a> Scene<'a> {
     pub fn new(chunk: &'a Chunk, glyphs: &'a [GlyphRecord]) -> Self {
         Self {
+            commands: &chunk.commands,
             payload: &chunk.payload,
             paints: &chunk.paints,
             groups: &chunk.groups,
@@ -162,6 +166,31 @@ pub fn bounds(c: &CommandWords, s: &Scene<'_>, width: u32, height: u32) -> Bound
             ([x0 - e, y0 - e, x1 + e, y1 + e], None)
         }
         Some(Kind::Image) => ([w(p, 0), w(p, 1), w(p, 2), w(p, 3)], None),
+        Some(Kind::Effect) => {
+            // On the screen: the members' box, moved by the shadow's offset and grown by its
+            // blur or the glow's radius.
+            let (x0, y0, x1, y1) = (w(p, 2), w(p, 3), w(p, 4), w(p, 5));
+            if x0 >= x1 {
+                return Bounds::default();
+            }
+            let (dx, dy, e) = if p[0] == 0 {
+                (w(g, 17), w(g, 18), w(g, 19) * 1.5)
+            } else {
+                (0.0, 0.0, w(g, 21))
+            };
+            let bbox = pixels(
+                x0 + dx - e - 0.5,
+                y0 + dy - e - 0.5,
+                x1 + dx + e + 0.5,
+                y1 + dy + e + 0.5,
+                width,
+                height,
+            );
+            return Bounds {
+                bbox: intersect(bbox, clip_box),
+                interior: none,
+            };
+        }
         Some(Kind::Glyph) => {
             // Glyphs are placed on the screen.
             let Some(gr) = s.glyphs.get(p[2] as usize) else {
@@ -484,6 +513,7 @@ fn shade_unclipped(
         (d, pixels_per_unit(g, x, y, d, dist))
     };
     match Kind::from_word(c[0]) {
+        Some(Kind::Effect) => effect(c, s, paint, x, y),
         Some(Kind::Rect) => {
             let (d, k) = measure(&|q| rect_distance(p, q[0], q[1]));
             fill_and_stroke(paint, d, k, w(p, 8), p[9])
@@ -562,4 +592,112 @@ fn shade_unclipped(
         }
         None => [0.0; 4],
     }
+}
+
+/// `erf(x)`, Abramowitz and Stegun 7.1.26 (error below 1.5e-7).
+pub fn erf(x: f32) -> f32 {
+    let t = 1.0 / (1.0 + 0.327_591_1 * x.abs());
+    let y = 1.0
+        - (((((1.061_405_4 * t - 1.453_152) * t) + 1.421_413_8) * t - 0.284_496_74) * t
+            + 0.254_829_6)
+            * t
+            * marlin_math::scalar::exp(-x * x);
+    if x < 0.0 { -y } else { y }
+}
+
+/// A member's distance at screen pixel `(x, y)`, in screen pixels: its shape's outer edge
+/// (strokes included), a glyph's bitmap box; nothing for effects.
+fn member_distance(c: &CommandWords, s: &Scene<'_>, x: f32, y: f32) -> f32 {
+    let p = &s.payload[c[3] as usize..];
+    let g = &s.groups[group_of(c) as usize];
+    let q = apply(g, 6, x, y);
+    let k = 1.0 / w(g, 13);
+    let d = match Kind::from_word(c[0]) {
+        Some(Kind::Rect) => rect_distance(p, q[0], q[1]) - w(p, 8) * 0.5,
+        Some(Kind::Circle) => length(q[0] - w(p, 0), q[1] - w(p, 1)) - w(p, 2) - w(p, 3) * 0.5,
+        Some(Kind::Line) => line_distance(p, q[0], q[1]),
+        Some(Kind::Triangle) => {
+            triangle_distance(
+                q,
+                [w(p, 0), w(p, 1)],
+                [w(p, 2), w(p, 3)],
+                [w(p, 4), w(p, 5)],
+            ) - w(p, 6) * 0.5
+        }
+        Some(Kind::Image) => {
+            let rect = [p[0], p[1], p[2], p[3], p[9], p[10], p[11], p[12]];
+            rect_distance(&rect, q[0], q[1])
+        }
+        Some(Kind::Glyph) => {
+            let Some(gr) = s.glyphs.get(p[2] as usize) else {
+                return f32::MAX;
+            };
+            let x0 = (p[0] as i32 + (gr[2] & 0xFFFF) as u16 as i16 as i32) as f32;
+            let y0 = (p[1] as i32 + (gr[2] >> 16) as u16 as i16 as i32) as f32;
+            let (gw, gh) = ((gr[1] & 0xFFFF) as f32, (gr[1] >> 16) as f32);
+            if gw == 0.0 {
+                return f32::MAX;
+            }
+            return round_box(
+                x - (x0 + gw * 0.5),
+                y - (y0 + gh * 0.5),
+                gw * 0.5,
+                gh * 0.5,
+                0.0,
+            );
+        }
+        Some(Kind::Effect) | None => return f32::MAX,
+    };
+    d * k
+}
+
+/// The distance to a group effect's members at screen pixel `(x, y)`: the nearest member, or
+/// their box as a rounded rectangle.
+fn effect_distance(c: &CommandWords, s: &Scene<'_>, x: f32, y: f32) -> f32 {
+    let p = &s.payload[c[3] as usize..];
+    let g = &s.groups[group_of(c) as usize];
+    let (first, count) = (g[15], g[16]);
+    let radius = w(p, 6);
+    if radius >= 0.0 || count > crate::list::MAX_EFFECT_MEMBERS {
+        let (x0, y0, x1, y1) = (w(p, 2), w(p, 3), w(p, 4), w(p, 5));
+        let r = radius.max(0.0).min((x1 - x0).min(y1 - y0) * 0.5);
+        return round_box(
+            x - (x0 + x1) * 0.5,
+            y - (y0 + y1) * 0.5,
+            (x1 - x0) * 0.5,
+            (y1 - y0) * 0.5,
+            r,
+        );
+    }
+    let mut d = f32::MAX;
+    for i in first..first + count {
+        d = d.min(member_distance(&s.commands[i as usize], s, x, y));
+    }
+    d
+}
+
+/// A group's shadow (a Gaussian blur of the members' shape: half the blur radius is σ) or
+/// glow (fading quadratically over its radius), §4.3.
+fn effect(c: &CommandWords, s: &Scene<'_>, paint: [f32; 4], x: f32, y: f32) -> [f32; 4] {
+    let p = &s.payload[c[3] as usize..];
+    let g = &s.groups[group_of(c) as usize];
+    let a = if p[0] == 0 {
+        let d = effect_distance(c, s, x - w(g, 17), y - w(g, 18));
+        let sigma = w(g, 19) * 0.5;
+        if sigma > 0.0 {
+            0.5 - 0.5 * erf(d / (sigma * core::f32::consts::SQRT_2))
+        } else {
+            coverage(d)
+        }
+    } else {
+        let d = effect_distance(c, s, x, y);
+        let r = w(g, 21);
+        if r > 0.0 {
+            let t = 1.0 - (d / r).clamp(0.0, 1.0);
+            t * t
+        } else {
+            coverage(d)
+        }
+    };
+    scale4(paint, a)
 }

@@ -7,6 +7,7 @@
 mod support;
 
 mod binning;
+mod effects;
 mod groups;
 mod recording;
 mod sdf;

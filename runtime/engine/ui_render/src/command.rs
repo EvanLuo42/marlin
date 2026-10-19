@@ -24,7 +24,8 @@
 //! | `Line` | ax ay bx by, width, cap, dash, gap, phase (dash 0: solid) |
 //! | `Triangle` | x0 y0 x1 y1 x2 y2, stroke width, stroke color |
 //! | `Glyph` | pen x, pen y (whole pixels, `i32`), glyph id |
-//! | `Image` | x0 y0 x1 y1, u0 v0 u1 v1, texture width | height << 16, radii ×4 || height << 16, radii ×4 |
+//! | `Image` | x0 y0 x1 y1, u0 v0 u1 v1, texture width \| height << 16, radii ×4 |
+//! | `Effect` | 0 shadow / 1 glow, 0, the members' screen box x0 y0 x1 y1 (`f32`), and the radius of the box used instead of the members' shape (`f32`, negative: their shape) |
 
 use alloc::vec::Vec;
 
@@ -57,6 +58,8 @@ pub enum Kind {
     Triangle = 4,
     Glyph = 5,
     Image = 6,
+    /// A group's shadow or glow, before its members (§4.3).
+    Effect = 7,
 }
 
 impl Kind {
@@ -68,6 +71,7 @@ impl Kind {
             4 => Self::Triangle,
             5 => Self::Glyph,
             6 => Self::Image,
+            7 => Self::Effect,
             _ => return None,
         })
     }
@@ -81,6 +85,7 @@ impl Kind {
             Self::Triangle => 8,
             Self::Glyph => 3,
             Self::Image => 13,
+            Self::Effect => 7,
         }
     }
 }

@@ -68,7 +68,9 @@ fn in_rect(r: Rect, p: Vec2) -> bool {
 fn rotated_and_scaled_groups_keep_one_pixel_edges() {
     // A 20 × 10 rectangle, scaled 2× and rotated 30° about the surface's middle.
     let r = Rect::new(-10.0, -5.0, 10.0, 5.0);
-    let t = Affine2::translate(32.0, 32.0) * Affine2::rotate(0.5236) * Affine2::scale(2.0, 2.0);
+    let t = Affine2::translate(32.0, 32.0)
+        * Affine2::rotate(core::f32::consts::FRAC_PI_6)
+        * Affine2::scale(2.0, 2.0);
     let chunk = record(1.0, |p| {
         p.begin_group(&GroupDesc {
             transform: t,

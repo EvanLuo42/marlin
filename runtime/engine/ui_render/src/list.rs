@@ -48,6 +48,15 @@ enum Part {
     },
 }
 
+/// A group with a shadow or glow being recorded: its effect commands, filled at `end_group`.
+struct Effects {
+    group: u32,
+    commands: Vec<usize>,
+    approximate: f32,
+    /// The members' screen box so far.
+    bbox: [f32; 4],
+}
+
 #[derive(Clone, Copy)]
 struct Scope {
     group: u32,
@@ -65,6 +74,7 @@ pub struct UiDrawList {
     parts: Vec<Part>,
     groups: Vec<Scope>,
     clips: Vec<u32>,
+    effects: Vec<Effects>,
 }
 
 impl UiDrawList {
@@ -77,6 +87,7 @@ impl UiDrawList {
             parts: Vec::new(),
             groups: Vec::new(),
             clips: Vec::new(),
+            effects: Vec::new(),
         }
     }
 
@@ -418,6 +429,16 @@ impl Painter<'_> {
         let paint = paint(chunk);
         chunk.push(kind, flags, scope.group, clip, paint, payload);
         self.list.extend_own();
+        if !self.list.effects.is_empty()
+            && let Some(l) = local_box(kind, payload)
+        {
+            let to_screen = if scope.group == 0 {
+                Affine2::IDENTITY
+            } else {
+                self.to_screen()
+            };
+            self.list.union_box(to_screen, l);
+        }
     }
 
     /// The transform from the current group's space to physical screen pixels.
@@ -452,7 +473,6 @@ impl Painter<'_> {
         } else {
             0
         };
-        g[15] = self.list.own.commands.len() as u32;
         if let Some(sh) = desc.shadow {
             g[17] = f(sh.offset.x * s);
             g[18] = f(sh.offset.y * s);
@@ -476,6 +496,32 @@ impl Painter<'_> {
             transform,
             opacity,
         });
+        // The shadow, then the glow, under the members (§4.3).
+        if desc.shadow.is_some() || desc.glow.is_some() {
+            let clip = self.list.clip();
+            let mut commands = Vec::new();
+            let effects = [
+                desc.shadow.map(|s| (0, s.color)),
+                desc.glow.map(|g| (1, g.color)),
+            ];
+            for (effect, color) in effects.into_iter().flatten() {
+                let own = &mut self.list.own;
+                let paint = own.solid(color);
+                let mut payload = [0u32; 7];
+                payload[0] = effect;
+                own.push(Kind::Effect, 0, group, clip, paint, &payload);
+                commands.push(own.commands.len() - 1);
+                self.list.extend_own();
+            }
+            self.list.effects.push(Effects {
+                group,
+                commands,
+                approximate: desc.approximate.map_or(-1.0, |r| r.max(0.0) * s),
+                bbox: [f32::MAX, f32::MAX, f32::MIN, f32::MIN],
+            });
+        }
+        let first = self.list.own.commands.len() as u32;
+        self.list.own.groups[group as usize][15] = first;
     }
 
     pub fn end_group(&mut self) {
@@ -486,6 +532,26 @@ impl Painter<'_> {
             .expect("end_group without begin_group");
         let g = &mut self.list.own.groups[scope.group as usize];
         g[16] = self.list.own.commands.len() as u32 - g[15];
+        let members = g[16];
+        if let Some(e) = self.list.effects.pop_if(|e| e.group == scope.group) {
+            // Many members: their box, as a rounded rectangle, stands in for their shape.
+            let radius = if members > MAX_EFFECT_MEMBERS {
+                e.approximate.max(0.0)
+            } else {
+                e.approximate
+            };
+            let bbox = if e.bbox[0] <= e.bbox[2] {
+                e.bbox
+            } else {
+                [0.0; 4]
+            };
+            for c in e.commands {
+                let at = self.list.own.commands[c][3] as usize;
+                let p = &mut self.list.own.payload[at..at + 7];
+                p[2..6].copy_from_slice(&bits(bbox));
+                p[6] = f(radius);
+            }
+        }
     }
 
     /// Clips what follows to a rounded rectangle in the current space, inside the current clip,
@@ -657,6 +723,15 @@ impl Painter<'_> {
         let mut color = color;
         // Glyphs are on the screen, not in the group: they take its opacity here.
         color.a = (f32::from(color.a) * scope.opacity + 0.5) as u8;
+        if !self.list.effects.is_empty() {
+            let b = [
+                origin.x,
+                origin.y,
+                origin.x + layout.width,
+                origin.y + layout.height,
+            ];
+            self.list.union_box(to_screen, b);
+        }
         let list = &mut *self.list;
         let paint = list.own.solid(color);
         ids.with(|id| {
@@ -745,5 +820,70 @@ impl Painter<'_> {
             dy,
             clip,
         });
+    }
+}
+
+/// Members a group's shadow and glow follow exactly; beyond this, the members' box does.
+pub const MAX_EFFECT_MEMBERS: u32 = 16;
+
+/// The box a command's ink stays in, in its own units (strokes and line reach included); none
+/// for glyphs, which [`Painter::text`] boxes itself, and effects.
+fn local_box(kind: Kind, p: &[u32]) -> Option<[f32; 4]> {
+    let w = |i: usize| f32::from_bits(p[i]);
+    Some(match kind {
+        Kind::Rect => {
+            let e = w(8) * 0.5;
+            [w(0) - e, w(1) - e, w(2) + e, w(3) + e]
+        }
+        Kind::Circle => {
+            let e = w(2) + w(3) * 0.5;
+            [w(0) - e, w(1) - e, w(0) + e, w(1) + e]
+        }
+        Kind::Line => {
+            let e =
+                w(4) * if p[5] == 2 {
+                    core::f32::consts::SQRT_2
+                } else {
+                    1.0
+                } * 0.5;
+            [
+                w(0).min(w(2)) - e,
+                w(1).min(w(3)) - e,
+                w(0).max(w(2)) + e,
+                w(1).max(w(3)) + e,
+            ]
+        }
+        Kind::Triangle => {
+            let e = w(6) * 0.5;
+            [
+                w(0).min(w(2)).min(w(4)) - e,
+                w(1).min(w(3)).min(w(5)) - e,
+                w(0).max(w(2)).max(w(4)) + e,
+                w(1).max(w(3)).max(w(5)) + e,
+            ]
+        }
+        Kind::Image => [w(0), w(1), w(2), w(3)],
+        Kind::Glyph | Kind::Effect => return None,
+    })
+}
+
+impl UiDrawList {
+    /// Adds the local box `l`, mapped by `to_screen`, to every open group effect's members.
+    fn union_box(&mut self, to_screen: Affine2, l: [f32; 4]) {
+        let corners = [
+            Vec2::new(l[0], l[1]),
+            Vec2::new(l[2], l[1]),
+            Vec2::new(l[0], l[3]),
+            Vec2::new(l[2], l[3]),
+        ]
+        .map(|p| to_screen.apply(p));
+        for e in &mut self.effects {
+            for c in corners {
+                e.bbox[0] = e.bbox[0].min(c.x);
+                e.bbox[1] = e.bbox[1].min(c.y);
+                e.bbox[2] = e.bbox[2].max(c.x);
+                e.bbox[3] = e.bbox[3].max(c.y);
+            }
+        }
     }
 }
