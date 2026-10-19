@@ -38,7 +38,9 @@ impl FunctionPass for SimplifyCfg {
         _: &mut Analyses,
     ) -> Changed {
         let mut changed = false;
-        // Each round makes one kind of change and the analyses are rebuilt.
+        // Each round makes one kind of change, everywhere the analyses it starts with allow,
+        // and the analyses are rebuilt: the rounds grow with how deep changes enable each
+        // other, not with the function's size.
         while round(m, f) {
             changed = true;
         }
@@ -55,10 +57,13 @@ fn round(m: &Module, f: &mut Function) -> bool {
     }
     let cfg = Cfg::new(f);
     let st = Structure::new(f, &cfg);
-    remove_unreachable(f, &cfg, &st)
-        || degenerate_regions(f, &cfg, &st)
-        || merge_chains(f, &cfg, &st)
-        || jump_over_empty(f, &cfg, &st)
+    if remove_unreachable(f, &cfg, &st) {
+        return true;
+    }
+    let at = Blocks::new(&cfg, &st);
+    degenerate_regions(f, &cfg, &st, &at)
+        || merge_chains(f, &cfg, &at)
+        || jump_over_empty(f, &cfg, &at)
 }
 
 fn const_bits(m: &Module, f: &Function, v: Value) -> Option<u64> {
@@ -177,16 +182,63 @@ pub(crate) fn remove_unreachable(f: &mut Function, cfg: &Cfg, st: &Structure) ->
     true
 }
 
-/// Whether every jump to `target` from a reachable block comes from the region `r` itself, not
-/// from a region nested in it (a break out of it).
-fn only_direct_jumps(cfg: &Cfg, st: &Structure, r: usize, target: usize) -> bool {
-    cfg.preds[target]
-        .iter()
-        .all(|&p| st.innermost(p) == Some(r) || !st.regions[r].blocks[p])
+/// Facts a round reads about each block, from the analyses it started with.
+struct Blocks {
+    /// The smallest region that holds each block.
+    innermost: Vec<Option<usize>>,
+    /// Merge and continue blocks, and loop headers.
+    structural: Vec<bool>,
 }
 
-/// Switches without cases and loops that never loop, once nothing breaks out of them.
-fn degenerate_regions(f: &mut Function, cfg: &Cfg, st: &Structure) -> bool {
+impl Blocks {
+    fn new(cfg: &Cfg, st: &Structure) -> Blocks {
+        let n = cfg.len();
+        let sizes: Vec<usize> = st
+            .regions
+            .iter()
+            .map(|r| r.blocks.iter().filter(|x| **x).count())
+            .collect();
+        // As `Structure::innermost`: the smallest, the first of equals.
+        let mut innermost: Vec<Option<usize>> = vec![None; n];
+        for (ri, r) in st.regions.iter().enumerate() {
+            for (b, slot) in innermost.iter_mut().enumerate() {
+                if r.blocks.get(b).copied().unwrap_or(false)
+                    && slot.is_none_or(|o| sizes[ri] < sizes[o])
+                {
+                    *slot = Some(ri);
+                }
+            }
+        }
+        let mut structural = vec![false; n];
+        for r in &st.regions {
+            structural[r.merge] = true;
+            if let Some(c) = r.cont {
+                structural[c] = true;
+            }
+            if r.kind == RegionKind::Loop {
+                structural[r.header] = true;
+            }
+        }
+        Blocks {
+            innermost,
+            structural,
+        }
+    }
+}
+
+/// Whether every jump to `target` from a reachable block comes from the region `r` itself, not
+/// from a region nested in it (a break out of it).
+fn only_direct_jumps(cfg: &Cfg, st: &Structure, at: &Blocks, r: usize, target: usize) -> bool {
+    cfg.preds[target]
+        .iter()
+        .all(|&p| at.innermost[p] == Some(r) || !st.regions[r].blocks[p])
+}
+
+/// Switches without cases and loops that never loop, once nothing breaks out of them. Each
+/// becomes a `br` to where it goes, which the CFG already has, so every one the analyses show
+/// goes in the same round: what makes one of them go only holds better without the others.
+fn degenerate_regions(f: &mut Function, cfg: &Cfg, st: &Structure, at: &Blocks) -> bool {
+    let mut changed = false;
     for (ri, r) in st.regions.iter().enumerate() {
         if !cfg.reachable(r.owner) {
             continue;
@@ -195,66 +247,81 @@ fn degenerate_regions(f: &mut Function, cfg: &Cfg, st: &Structure) -> bool {
         let Some(t) = f.terminator(owner) else {
             continue;
         };
-        match (&f.insts[t].op, r.kind) {
-            (Op::Switch { cases, .. }, RegionKind::Switch) if cases.is_empty() => {
-                if only_direct_jumps(cfg, st, ri, r.merge) {
-                    let (target, args) = jumps(f, t).remove(0);
-                    set_br(f, t, target, args);
-                    return true;
-                }
+        let goes = match (&f.insts[t].op, r.kind) {
+            (Op::Switch { cases, .. }, RegionKind::Switch) => {
+                cases.is_empty() && only_direct_jumps(cfg, st, at, ri, r.merge)
             }
             (Op::Loop { .. }, RegionKind::Loop) => {
                 let cont = r.cont.unwrap_or(r.header);
                 let loops_back = cfg.preds[r.header].iter().any(|&p| r.blocks[p]);
-                if !loops_back && !cfg.reachable(cont) && only_direct_jumps(cfg, st, ri, r.merge) {
-                    let (target, args) = jumps(f, t).remove(0);
-                    set_br(f, t, target, args);
-                    return true;
-                }
+                !loops_back && !cfg.reachable(cont) && only_direct_jumps(cfg, st, at, ri, r.merge)
             }
-            _ => {}
+            _ => false,
+        };
+        if goes {
+            let (target, args) = jumps(f, t).remove(0);
+            set_br(f, t, target, args);
+            changed = true;
         }
     }
-    false
+    changed
 }
 
-/// `a: ... br b(args)` where only `a` jumps to `b`: `b`'s instructions move into `a`.
-fn merge_chains(f: &mut Function, cfg: &Cfg, st: &Structure) -> bool {
-    for (ai, &a) in cfg.blocks.iter().enumerate() {
-        if !cfg.reachable(ai) {
+/// `a: ... br b(args)` where only `a` jumps to `b`: `b`'s instructions move into `a`. Whole
+/// chains join in one round: once `b` is in `a`, `a` ends with `b`'s jump, and the block that
+/// jump goes to joins too if `b` was the only block to jump to it.
+fn merge_chains(f: &mut Function, cfg: &Cfg, at: &Blocks) -> bool {
+    let n = cfg.len();
+    let mut gone = vec![false; n];
+    // The block whose terminator ends each block now (by position).
+    let mut tail: Vec<usize> = (0..n).collect();
+    for ai in 0..n {
+        if gone[ai] || !cfg.reachable(ai) {
             continue;
         }
-        let Some(t) = f.terminator(a) else { continue };
-        let Op::Br(b) = f.insts[t].op else { continue };
-        let bi = cfg.index[&b];
-        if bi == ai || bi == 0 || cfg.preds[bi] != [ai] || st.is_structural(bi) {
-            continue;
+        let a = cfg.blocks[ai];
+        while let Some(t) = f.terminator(a) {
+            let Op::Br(b) = f.insts[t].op else { break };
+            let bi = cfg.index[&b];
+            if bi == ai || bi == 0 || gone[bi] || cfg.preds[bi] != [tail[ai]] || at.structural[bi] {
+                break;
+            }
+            let args = f.operands(t).to_vec();
+            let params = f.blocks[b].params.clone();
+            for (&p, &arg) in params.iter().zip(&args) {
+                f.replace_all_uses(p, arg);
+            }
+            f.remove_inst(t);
+            let moved: Vec<_> = f.insts(b).collect();
+            for inst in moved {
+                f.detach(inst);
+                f.append_inst(a, inst);
+            }
+            for i in (0..params.len()).rev() {
+                f.remove_param(b, i);
+            }
+            gone[bi] = true;
+            tail[ai] = tail[bi];
         }
-        let args = f.operands(t).to_vec();
-        let params = f.blocks[b].params.clone();
-        for (&p, &arg) in params.iter().zip(&args) {
-            f.replace_all_uses(p, arg);
-        }
-        f.remove_inst(t);
-        let moved: Vec<_> = f.insts(b).collect();
-        for inst in moved {
-            f.detach(inst);
-            f.append_inst(a, inst);
-        }
-        for i in (0..params.len()).rev() {
-            f.remove_param(b, i);
-        }
-        f.layout.retain(|&x| x != b);
-        return true;
     }
-    false
+    if !gone.contains(&true) {
+        return false;
+    }
+    let mut i = 0;
+    f.layout.retain(|_| {
+        i += 1;
+        !gone[i - 1]
+    });
+    true
 }
 
-/// `b: br c(args)` with nothing else in it: jumps to `b` go straight to `c`.
-fn jump_over_empty(f: &mut Function, cfg: &Cfg, st: &Structure) -> bool {
+/// `b: br c(args)` with nothing else in it: jumps to `b` go straight to `c`. Every such block
+/// in one round; each rewrite reads the terminators as the ones before it left them, so a jump
+/// that already goes to `c`, or that an earlier rewrite moved off `b`, is left as it is.
+fn jump_over_empty(f: &mut Function, cfg: &Cfg, at: &Blocks) -> bool {
     let mut changed = false;
     for (bi, &b) in cfg.blocks.iter().enumerate() {
-        if bi == 0 || !cfg.reachable(bi) || st.is_structural(bi) || f.insts(b).count() != 1 {
+        if bi == 0 || !cfg.reachable(bi) || at.structural[bi] || f.insts(b).count() != 1 {
             continue;
         }
         let Some(t) = f.terminator(b) else { continue };
@@ -268,7 +335,10 @@ fn jump_over_empty(f: &mut Function, cfg: &Cfg, st: &Structure) -> bool {
             let p = cfg.blocks[pi];
             let Some(pt) = f.terminator(p) else { continue };
             let js = jumps(f, pt);
-            if matches!(f.insts[pt].op, Op::Loop { .. }) || js.iter().any(|(x, _)| *x == c) {
+            if matches!(f.insts[pt].op, Op::Loop { .. })
+                || js.iter().any(|(x, _)| *x == c)
+                || js.iter().all(|(x, _)| *x != b)
+            {
                 continue;
             }
             let new = js
@@ -290,9 +360,6 @@ fn jump_over_empty(f: &mut Function, cfg: &Cfg, st: &Structure) -> bool {
             set_jumps(f, pt, new);
             changed = true;
         }
-        if changed {
-            return true;
-        }
     }
-    false
+    changed
 }

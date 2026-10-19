@@ -204,3 +204,85 @@ fn stage_0_guards_divisions_strips_debug_and_spreads_precise() {
         ]),
     );
 }
+
+/// A function of `segments` pieces, each a selection on a constant (either way) or on the
+/// argument, with empty arms, or a loop that runs once; then a chain of blocks. About six
+/// blocks a piece.
+fn long_function(segments: usize) -> String {
+    let mut s = String::from("func @long(%a: i32) -> i32 {\nblock0:\n    br block1(%a)\n");
+    let mut b = 1;
+    for i in 0..segments {
+        let (h, m) = (b, b + 3);
+        s += &format!("block{h}(%x{i}: i32):\n");
+        if i % 4 == 3 {
+            s += &format!(
+                "    loop header block{}(%x{i}) continue block{} merge block{m}\n\
+                 block{}(%y{i}: i32):\n    %z{i} = add %y{i}, i32 1\n    br block{m}(%z{i})\n\
+                 block{}:\n    br block{}(i32 0)\n",
+                h + 1,
+                h + 2,
+                h + 1,
+                h + 2,
+                h + 1
+            );
+        } else {
+            let cond = match i % 4 {
+                0 => "i1 true".to_string(),
+                1 => "i1 false".to_string(),
+                _ => {
+                    s += &format!("    %c{i} = icmp slt %x{i}, i32 {i}\n");
+                    format!("%c{i}")
+                }
+            };
+            s += &format!(
+                "    cond_br {cond}, block{}, block{} merge block{m}\n\
+                 block{}:\n    br block{m}(i32 {i})\n\
+                 block{}:\n    br block{m}(%x{i})\n",
+                h + 1,
+                h + 2,
+                h + 1,
+                h + 2
+            );
+        }
+        s += &format!(
+            "block{m}(%m{i}: i32):\n    %s{i} = add %m{i}, i32 1\n    br block{}\n\
+             block{}:\n    %t{i} = mul %s{i}, i32 3\n    br block{}\n\
+             block{}:\n    br block{}(%t{i})\n",
+            m + 1,
+            m + 1,
+            m + 2,
+            m + 2,
+            m + 3
+        );
+        b = m + 3;
+    }
+    s += &format!("block{b}(%r: i32):\n    return %r\n}}\n");
+    s
+}
+
+#[test]
+fn simplify_cfg_takes_long_functions_in_few_rounds() {
+    let segments = 600;
+    // The generated function is well formed by construction: the verifier is not yet quick on
+    // functions this long, and the pass's own check verifies what it makes.
+    let before = parse_module(&long_function(segments)).unwrap();
+    let blocks = |m: &Module| m.funcs.iter().map(|(_, f)| f.layout.len()).sum::<usize>();
+    assert!(blocks(&before) > 3500);
+
+    let mut after = before.clone();
+    let report = alone(SimplifyCfg).run(&mut after).unwrap();
+    assert_eq!(report.ran, [("simplify-cfg", true)]);
+    // About 0.15 s in a debug build; one change per round, with the analyses rebuilt after
+    // each, had not finished after five minutes.
+    let (_, took) = report.timings[0];
+    assert!(took.as_secs_f64() < 1.0, "simplify-cfg took {took:?}");
+    // Only the selections on the argument are left: a header, the arm the `cond_br` still
+    // jumps to and the merge block each.
+    let kept = (0..segments).filter(|i| i % 4 == 2).count();
+    assert!(blocks(&after) <= 3 * kept + 2, "{} blocks", blocks(&after));
+    // Nothing is left to do.
+    let mut again = after.clone();
+    let report = alone(SimplifyCfg).run(&mut again).unwrap();
+    assert_eq!(report.ran, [("simplify-cfg", false)]);
+    same_results("long", &before, &after);
+}

@@ -176,37 +176,32 @@ impl Structure {
         } else {
             dominators(n, 0, &structural)
         };
-        let depth = |mut b: usize| {
-            let mut d = 0;
-            while let Some(p) = sdom[b].filter(|&p| p != b) {
-                b = p;
-                d += 1;
-            }
-            d
-        };
+        let tree = DomTree::new(&sdom);
         // Region blocks, outermost first. A region inside a loop also stops at the loop's
         // continue block (unless it is in the continue block's part of the loop), as SPIR-V's
         // constructs do.
-        regions.sort_by_key(|r| (depth(r.header), r.kind != RegionKind::Loop));
+        regions.sort_by_key(|r| (tree.depth[r.header], r.kind != RegionKind::Loop));
         let mut innermost_loop: Vec<Option<usize>> = Vec::with_capacity(regions.len());
+        let mut sizes: Vec<usize> = Vec::with_capacity(regions.len());
         for i in 0..regions.len() {
             let (header, merge) = (regions[i].header, regions[i].merge);
             let parent = (0..i)
                 .filter(|&j| regions[j].blocks[header])
-                .min_by_key(|&j| regions[j].blocks.iter().filter(|x| **x).count());
+                .min_by_key(|&j| sizes[j]);
             let around = parent.and_then(|p| innermost_loop[p]);
             let stop = around
                 .and_then(|l| regions[l].cont)
-                .filter(|&c| !dominates(&sdom, c, header));
+                .filter(|&c| !tree.dominates(c, header));
             let blocks: Vec<bool> = (0..n)
                 .map(|b| {
                     sdom[b].is_some()
-                        && dominates(&sdom, header, b)
-                        && !dominates(&sdom, merge, b)
+                        && tree.dominates(header, b)
+                        && !tree.dominates(merge, b)
                         && parent.is_none_or(|p| regions[p].blocks[b])
-                        && stop.is_none_or(|c| !dominates(&sdom, c, b))
+                        && stop.is_none_or(|c| !tree.dominates(c, b))
                 })
                 .collect();
+            sizes.push(blocks.iter().filter(|x| **x).count());
             regions[i].blocks = blocks;
             innermost_loop.push(if regions[i].kind == RegionKind::Loop {
                 Some(i)
@@ -319,5 +314,64 @@ pub fn dominates(idom: &[Option<usize>], a: usize, mut b: usize) -> bool {
             Some(p) if p != b => b = p,
             _ => return false,
         }
+    }
+}
+
+/// A dominator tree numbered in pre- and postorder, so that whether one block dominates
+/// another is a comparison rather than a walk up the tree.
+struct DomTree {
+    pre: Vec<u32>,
+    post: Vec<u32>,
+    /// How far below the entry each block is (0 for blocks the entry does not reach).
+    depth: Vec<u32>,
+    reached: Vec<bool>,
+}
+
+impl DomTree {
+    fn new(idom: &[Option<usize>]) -> DomTree {
+        let n = idom.len();
+        let mut children = vec![Vec::new(); n];
+        let mut roots = Vec::new();
+        for (b, d) in idom.iter().enumerate() {
+            match *d {
+                Some(p) if p == b => roots.push(b),
+                Some(p) => children[p].push(b),
+                None => {}
+            }
+        }
+        let mut tree = DomTree {
+            pre: vec![0; n],
+            post: vec![0; n],
+            depth: vec![0; n],
+            reached: idom.iter().map(Option::is_some).collect(),
+        };
+        let (mut pre, mut post) = (0, 0);
+        for root in roots {
+            let mut stack = vec![(root, 0usize)];
+            tree.pre[root] = pre;
+            pre += 1;
+            while let Some(&mut (b, ref mut next)) = stack.last_mut() {
+                if let Some(&c) = children[b].get(*next) {
+                    *next += 1;
+                    tree.pre[c] = pre;
+                    pre += 1;
+                    tree.depth[c] = tree.depth[b] + 1;
+                    stack.push((c, 0));
+                } else {
+                    tree.post[b] = post;
+                    post += 1;
+                    stack.pop();
+                }
+            }
+        }
+        tree
+    }
+
+    /// As [`dominates`].
+    fn dominates(&self, a: usize, b: usize) -> bool {
+        self.reached[a]
+            && self.reached[b]
+            && self.pre[a] <= self.pre[b]
+            && self.post[b] <= self.post[a]
     }
 }
