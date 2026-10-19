@@ -8,3 +8,4 @@
 #![cfg(marlin_platform = "windows")]
 
 mod end_to_end;
+mod hud;

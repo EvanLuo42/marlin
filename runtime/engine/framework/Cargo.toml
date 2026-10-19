@@ -14,6 +14,7 @@ marlin-containers.workspace = true
 marlin-diag.workspace = true
 marlin-ecs.workspace = true
 marlin-font.workspace = true
+marlin-ui-render.workspace = true
 marlin-error.workspace = true
 marlin-input.workspace = true
 marlin-io.workspace = true

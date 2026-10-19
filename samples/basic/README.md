@@ -27,7 +27,8 @@ cargo run -p marlin-game -- samples/basic/boot.toml +content.package "" +content
 ```
 
 Right mouse button + mouse, or the right stick: look. WASD or the left stick: move. Q/E or the
-triggers: down/up. Shift: faster. V: vsync. F11 or Alt+Enter: fullscreen. Esc: quit.
+triggers: down/up. Shift: faster. V: vsync. F3: the stats overlay (`+r.stats true` starts with it; `+r.statsLog true` logs
+the same once a second). F11 or Alt+Enter: fullscreen. Esc: quit.
 
 ## Where the binary files come from
 

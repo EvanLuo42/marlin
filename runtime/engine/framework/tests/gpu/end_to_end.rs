@@ -20,7 +20,7 @@ use marlin_rhi::Device;
 use marlin_shader::asset::ShaderLibrary;
 use marlin_test_support::{BackgroundService, TempDir, wait_until};
 
-const LEVEL: &str = "01992d00-0000-7000-8000-000000000001";
+pub(crate) const LEVEL: &str = "01992d00-0000-7000-8000-000000000001";
 const WIDTH: u32 = 160;
 const HEIGHT: u32 = 90;
 
@@ -42,7 +42,7 @@ fn copy_dir(from: &Path, to: &Path) {
 }
 
 /// A copy of the sample, so tests can edit it.
-fn sample(name: &str) -> TempDir {
+pub(crate) fn sample(name: &str) -> TempDir {
     let root = TempDir::new(&format!("e2e-{name}"));
     let sample = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../samples/basic");
     copy_dir(&sample, &root);
@@ -57,7 +57,7 @@ fn project(root: &Path) -> Project {
 
 /// Cooks and packages the project at `root`, the engine's content with it; returns the package
 /// path.
-fn package(root: &Path) -> String {
+pub(crate) fn package(root: &Path) -> String {
     let project = project(root);
     let content = project
         .build_content(&Options {

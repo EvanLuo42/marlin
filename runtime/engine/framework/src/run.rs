@@ -12,7 +12,7 @@ use marlin_app::{App, Event, Surface, WindowDesc};
 use marlin_diag::{FixedBuf, info};
 use marlin_input::{GamepadButton, Input, Key};
 use marlin_jobs::{Config, JobSystem};
-use marlin_profile::{GpuZone, profile_scope};
+use marlin_profile::profile_scope;
 use marlin_render_graph::{FrameContext, FrameContextDesc, GpuTimeline};
 use marlin_rhi::{
     DeviceDesc, Instance, InstanceDesc, PresentMode, PresentStatus, SurfaceHandle, Swapchain,
@@ -20,10 +20,12 @@ use marlin_rhi::{
 };
 use marlin_time::Instant;
 
-use crate::boot::{Boot, R_STATS, R_VSYNC, WINDOW_HEIGHT, WINDOW_WIDTH};
+use crate::boot::{Boot, R_STATS, R_STATS_LOG, R_VSYNC, WINDOW_HEIGHT, WINDOW_WIDTH};
 use crate::delta::{RenderDelta, RenderSide, RenderSideError};
 use crate::engine::{Engine, EngineError};
-use crate::shaders::{ShaderError, load_default_resolve, load_engine_shaders};
+use crate::hud::{Hud, HudInfo, Snapshot};
+use crate::loaders::engine_loaders;
+use crate::shaders::{ShaderError, load_default_resolve, load_engine_shaders, load_ui_font};
 
 #[derive(Debug, marlin_error::Error)]
 pub enum RunError {
@@ -49,7 +51,7 @@ enum Step {
 
 /// Runs the game in a window until it is closed (or Esc / gamepad Start).
 ///
-/// Keys: F11 or Alt+Enter, borderless fullscreen; V, vsync.
+/// Keys: F11 or Alt+Enter, borderless fullscreen; V, vsync; F3, the stats overlay.
 pub fn run(boot: &Boot, title: &str) -> Result<(), RunError> {
     let mut app = App::new()?;
     let window = app.create_window(&WindowDesc {
@@ -115,6 +117,14 @@ pub fn run(boot: &Boot, title: &str) -> Result<(), RunError> {
     )?;
     engine.load_level(boot.level);
 
+    // The stats overlay, made the first time it is shown; its font has an asset server of its
+    // own, since the engine's is the simulation's while a frame renders.
+    let mut show_stats = R_STATS.get();
+    let mut hud: Option<Hud> = None;
+    let mut hud_assets = marlin_asset::AssetServer::new(engine_loaders(&engine.streamer));
+    let mut hud_font = None;
+    let adapter = alloc::string::String::from(device.adapter_info().name());
+
     let mut pending: Option<RenderDelta> = None;
     let minimized = Cell::new(false);
     let mut last = Instant::now();
@@ -151,9 +161,60 @@ pub fn run(boot: &Boot, title: &str) -> Result<(), RunError> {
             vsync = !vsync;
             set_vsync(&mut swapchain, vsync);
         }
+        if state.key_pressed(Key::F3) {
+            show_stats = !show_stats;
+        }
+        if show_stats && hud.is_none() {
+            let made = engine
+                .assets
+                .get(&library)
+                .ok_or(ShaderError::Load(marlin_asset::AssetError::NotFound))
+                .map_err(|e| marlin_diag::warn!("stats overlay: {}", marlin_diag::chain(&e)))
+                .ok()
+                .and_then(|library| {
+                    Hud::new(&device, library, swapchain.format())
+                        .map_err(|e| {
+                            marlin_diag::warn!("stats overlay: {}", marlin_diag::chain(&e))
+                        })
+                        .ok()
+                });
+            let font = load_ui_font(&mut hud_assets, &boot.vfs, Some(&jobs))
+                .map_err(|e| marlin_diag::warn!("stats overlay font: {e:?}"))
+                .ok();
+            match (made, font) {
+                (Some(h), Some(f)) => (hud, hud_font) = (Some(h), Some(f)),
+                // Not to be tried every frame.
+                _ => show_stats = false,
+            }
+        }
         let now = Instant::now();
-        let dt = now.duration_since(last).as_secs_f32().min(0.1);
+        let interval = now.duration_since(last).as_secs_f32();
+        let dt = interval.min(0.1);
         last = now;
+        if let Some(h) = hud.as_mut().filter(|_| show_stats) {
+            h.push_interval(interval);
+        }
+        // The overlay of this frame: its panel, in the font, for the window as it is.
+        let overlay = match (&mut hud, &hud_font) {
+            (Some(h), Some(font)) if show_stats => {
+                let size = window.size();
+                let stats = frames.stats();
+                Some(Overlay {
+                    hud: h,
+                    font: hud_assets.get(font).map(|f| f.view()),
+                    scale: window.scale_factor(),
+                    info: HudInfo {
+                        adapter: &adapter,
+                        width: size.width,
+                        height: size.height,
+                        vsync,
+                        passes: stats.map_or(0, |s| s.passes),
+                        lists: stats.map_or(0, |s| s.lists),
+                    },
+                })
+            }
+            _ => None,
+        };
 
         // Simulate the next frame on a job while this thread renders the last one.
         let mut next = None;
@@ -175,6 +236,7 @@ pub fn run(boot: &Boot, title: &str) -> Result<(), RunError> {
                     &mut swapchain,
                     &mut frames,
                     &delta,
+                    overlay,
                 )
                 .map(Some);
             }
@@ -200,8 +262,14 @@ pub fn run(boot: &Boot, title: &str) -> Result<(), RunError> {
             let fps = fps_window.1 as f32 / elapsed.as_secs_f32();
             let _ = write!(text, "{title}  {fps:.0} fps");
             window.set_title(text.as_str());
-            if R_STATS.get() {
-                log_stats(fps);
+            if R_STATS_LOG.get() || (show_stats && hud.is_some()) {
+                let snapshot = Snapshot::take(fps);
+                if R_STATS_LOG.get() {
+                    snapshot.log();
+                }
+                if let Some(h) = hud.as_mut().filter(|_| show_stats) {
+                    h.set_snapshot(snapshot);
+                }
             }
             fps_window = (now, 0);
         }
@@ -244,6 +312,9 @@ pub fn run(boot: &Boot, title: &str) -> Result<(), RunError> {
     }
     frames.wait_idle()?;
     forget_images(&mut frames, &swapchain);
+    if let Some(h) = &hud {
+        h.forget(&mut frames);
+    }
     marlin_profile::set_gpu_timings(None);
     Ok(())
 }
@@ -262,6 +333,7 @@ fn render_frame(
     swapchain: &mut Swapchain,
     frames: &mut FrameContext,
     delta: &RenderDelta,
+    overlay: Option<Overlay<'_>>,
 ) -> Result<PresentStatus, RunError> {
     profile_scope!("Render");
     {
@@ -277,12 +349,28 @@ fn render_frame(
         swapchain.acquire(None)?
     };
     let texture = swapchain.texture(image);
+    let overlay = match overlay {
+        Some(Overlay {
+            hud,
+            font: Some(font),
+            scale,
+            info,
+        }) => {
+            profile_scope!("Overlay");
+            let frame = hud.frame(device, frames, font, scale, &info, Some(jobs))?;
+            Some((&*hud, frame))
+        }
+        _ => None,
+    };
     // The swapchain image is imported like any texture: the graph remembers it was presented.
     {
         profile_scope!("Execute");
         frames.execute_on(device, Some(jobs), |g, _| {
             let target = g.import_texture("Swapchain", texture);
-            let target = render.add_passes(g, target);
+            let mut target = render.add_passes(g, target);
+            if let Some((hud, frame)) = &overlay {
+                target = hud.add_passes(g, frame, target);
+            }
             g.present(target);
         })?;
     }
@@ -290,52 +378,13 @@ fn render_frame(
     Ok(swapchain.present()?)
 }
 
-/// Logs `fps` and, over the profiler's history, the mean frame, the GPU's span per frame (first
-/// pass start to last pass end) and busy time per queue, and the costliest CPU zones and GPU
-/// passes.
-fn log_stats(fps: f32) {
-    let ms = |d: Duration| d.as_secs_f64() * 1e3;
-    marlin_profile::with_history(|h| {
-        let n = h.frames().len().max(1) as u32;
-        let wall = h.frames().map(|f| f.duration()).sum::<Duration>() / n;
-        let (mut span, mut busy) = (Duration::ZERO, [Duration::ZERO; 3]);
-        for f in h.frames() {
-            let zones = f.gpu_zones();
-            if let (Some(lo), Some(hi)) = (
-                zones.iter().map(|z| z.start).min(),
-                zones.iter().map(|z| z.end).max(),
-            ) {
-                span += GpuZone {
-                    start: lo,
-                    end: hi,
-                    ..zones[0]
-                }
-                .duration();
-            }
-            for z in zones {
-                busy[(z.queue as usize).min(2)] += z.duration();
-            }
-        }
-        info!(
-            "{fps:.0} fps, {:.3} ms/frame; gpu span {:.3} ms, busy {:.3} / {:.3} / {:.3} ms \
-             (graphics / compute / copy)",
-            ms(wall),
-            ms(span / n),
-            ms(busy[0] / n),
-            ms(busy[1] / n),
-            ms(busy[2] / n),
-        );
-        for (label, stats) in [("cpu", h.zone_stats()), ("gpu", h.gpu_zone_stats())] {
-            for s in stats.iter().take(12) {
-                info!(
-                    "  {label} {:>8.3} ms  {:>3}x  {}",
-                    ms(s.per_frame.avg),
-                    s.calls / u64::from(s.frames.max(1)),
-                    s.name
-                );
-            }
-        }
-    });
+/// The stats overlay of a frame: what it shows, in which font, at which scale.
+struct Overlay<'a> {
+    hud: &'a mut Hud,
+    /// `None` while the font is not loaded: nothing is drawn.
+    font: Option<marlin_font::FontView<'a>>,
+    scale: f32,
+    info: HudInfo<'a>,
 }
 
 /// Presents at vertical blank or as soon as a frame is done. Without vsync a frame more may be

@@ -656,6 +656,7 @@ dependencies = [
  "marlin-sync",
  "marlin-test-support",
  "marlin-time",
+ "marlin-ui-render",
 ]
 
 [[package]]

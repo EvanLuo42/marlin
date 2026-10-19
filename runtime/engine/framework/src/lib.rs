@@ -18,6 +18,7 @@ extern crate alloc;
 pub mod boot;
 mod delta;
 mod engine;
+pub mod hud;
 pub mod level;
 pub mod loaders;
 mod offscreen;
