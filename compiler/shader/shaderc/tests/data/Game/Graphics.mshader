@@ -47,6 +47,16 @@ public Dual SolidDual([Push] in SolidArgs a) => Dual { Color0 = a.Color, Color1 
 public uint SolidCoord([Position] float4 position) =>
     (uint)position.x | ((uint)position.y << 16);
 
+/// The pixel's coordinates as `SolidCoord`, but pixels from x = 4 on are dropped (`Discard`): they
+/// write nothing. A dropped pixel goes on as a helper.
+[Pixel]
+public uint DiscardRight([Position] float4 position)
+{
+    if (position.x >= 4)
+        Discard();
+    return IsHelperInvocation() ? 0xFFFFFFFF : (uint)position.x | ((uint)position.y << 16);
+}
+
 // Push word 31 is the per-draw constant of indirect draws.
 public struct ColumnsArgs
 {

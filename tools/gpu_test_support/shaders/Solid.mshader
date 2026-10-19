@@ -49,3 +49,13 @@ public Dual SolidDual([Push] in SolidArgs a) => Dual { Color0 = a.Color, Color1 
 [Pixel]
 public uint SolidCoord([Position] float4 position) =>
     (uint)position.x | ((uint)position.y << 16);
+
+/// `SolidCoord`, but pixels from x = 4 on are dropped (`Discard`): they write nothing; a pixel
+/// that is a helper all the same would write `0xFFFFFFFF`.
+[Pixel]
+public uint DiscardRight([Position] float4 position)
+{
+    if (position.x >= 4)
+        Discard();
+    return IsHelperInvocation() ? 0xFFFFFFFF : (uint)position.x | ((uint)position.y << 16);
+}

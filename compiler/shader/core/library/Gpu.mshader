@@ -63,3 +63,14 @@ public struct Debug
 
 /// `x`, taken as different in every lane (0004 §10.3).
 [Intrinsic("assume.nonuniform")] public T NonUniform<T>(T x);
+
+// ---- pixels (0004 §5) ----
+
+/// Drops this pixel: it writes nothing (no targets, no buffers, no depth) from here on, and goes
+/// on as a helper so its quad's derivatives stay right (SPIR-V's `OpDemoteToHelperInvocation`,
+/// D3D's `discard`). Pixel entries only.
+[Intrinsic("discard")] public void Discard();
+
+/// Whether this pixel is a helper: covering nothing, or dropped by `Discard`. Pixel entries
+/// only.
+[Intrinsic("is_helper")] public bool IsHelperInvocation();

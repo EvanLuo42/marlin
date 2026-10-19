@@ -514,6 +514,7 @@ fn the_core_library_compiles_for_vulkan() {
         "Game.SolidPs",
         "Game.SolidDual",
         "Game.SolidCoord",
+        "Game.DiscardRight",
         "Game.ColumnsVs",
         "Game.ColumnsPs",
         "Game.Instanced",

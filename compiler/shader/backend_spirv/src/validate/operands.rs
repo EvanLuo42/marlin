@@ -176,6 +176,8 @@ pub fn layout(opcode: u32) -> Option<&'static str> {
         op::BranchConditional => "iiil*",
         op::Switch => "iiC*",
         op::Return | op::Unreachable => "",
+        op::DemoteToHelperInvocation => "",
+        op::IsHelperInvocationEXT => "tr",
         op::ReturnValue => "i",
         op::ExecutionModeId => "ili*",
         op::GroupNonUniformElect => "tri",

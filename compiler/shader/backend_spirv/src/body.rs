@@ -825,6 +825,17 @@ impl<'w, 'm> Body<'w, 'm> {
                 }
                 None
             }
+            Op::Discard => {
+                // D3D's `discard`: the pixel writes nothing more and stays a helper, so its quad's
+                // derivatives hold (SPIR-V 1.6 core).
+                self.w.capability(cap::DemoteToHelperInvocation);
+                self.emit(op::DemoteToHelperInvocation, &[]);
+                None
+            }
+            Op::IsHelper => {
+                self.w.capability(cap::DemoteToHelperInvocation);
+                Some(self.value(rt.unwrap_or(0), op::IsHelperInvocationEXT, &[]))
+            }
             Op::Deriv { axis, fine } => {
                 self.w.capability(cap::DerivativeControl);
                 let opcode = match (axis, fine) {

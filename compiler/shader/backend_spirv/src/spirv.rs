@@ -82,6 +82,7 @@ table! {
         RayQueryProceedKHR = 4477, RayQueryGetIntersectionTypeKHR = 4479,
         BufferPointerEXT = 5119, UntypedImageTexelPointerEXT = 5126, ConstantSizeOfEXT = 5129, EmitMeshTasksEXT = 5294,
         SetMeshOutputsEXT = 5295, TypeAccelerationStructureKHR = 5341,
+        DemoteToHelperInvocation = 5380, IsHelperInvocationEXT = 5381,
         RayQueryGetIntersectionTKHR = 6018, RayQueryGetIntersectionInstanceCustomIndexKHR = 6019,
         RayQueryGetIntersectionInstanceIdKHR = 6020, RayQueryGetIntersectionGeometryIndexKHR = 6022,
         RayQueryGetIntersectionPrimitiveIndexKHR = 6023,
@@ -99,7 +100,7 @@ table! {
         GroupNonUniformShuffle = 65, GroupNonUniformClustered = 67, GroupNonUniformQuad = 68,
         DrawParameters = 4427, RayQueryKHR = 4472, ShaderNonUniform = 5301, StorageBuffer16BitAccess = 4433, StoragePushConstant16 = 4435,
         UntypedPointersKHR = 4473, DescriptorHeapEXT = 5128, MeshShadingEXT = 5283,
-        RuntimeDescriptorArray = 5302, Int64ImageEXT = 5016,
+        RuntimeDescriptorArray = 5302, Int64ImageEXT = 5016, DemoteToHelperInvocation = 5379,
     }
 }
 

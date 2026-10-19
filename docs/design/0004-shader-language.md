@@ -409,7 +409,7 @@ extension<T>(Vector<T, 3> v) where T : IArithmetic<T>
 - switch **表达式**一律必须穷尽（通常写 `_ =>`），否则报错：C# 在这里只给警告、运行时抛异常，GPU 上没有异常。switch **语句**只对非 `[Flags]` 的 enum 要求覆盖所有成员（§3.5）。
 - **元组和解构**：`var (wi, pdf) = Sample(...);`
 - **`foreach` 和范围**：`foreach (var i in 0..n)`，也可以对定长数组和实现了枚举接口的类型做 `foreach`。
-- 其他语句（`if`、`for`、`while`、`do`、`switch`、`break`、`continue`、`return`）都和 C# 一样。像素着色器里丢弃像素用内建函数 `Discard()`。
+- 其他语句（`if`、`for`、`while`、`do`、`switch`、`break`、`continue`、`return`）都和 C# 一样。像素着色器里丢弃像素用内建函数 `Discard()`。它的语义是 D3D 的 `discard`：这个像素之后不再写入任何东西，但继续作为 helper 执行，所以同一个 quad 的导数仍然正确（SPIR-V 的 `OpDemoteToHelperInvocation`）。`IsHelperInvocation()` 判断当前像素是不是 helper。两个都只能用在像素入口里。2026-10-19 为 R4e 实现，用户同意加上：masked 材质的 alpha 测试也要用它。
 
 ### 9.2 lambda 与局部函数
 

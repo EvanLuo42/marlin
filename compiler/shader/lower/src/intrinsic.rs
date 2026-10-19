@@ -27,6 +27,8 @@ pub(crate) fn op(name: &str) -> Option<Op> {
         "assume.nonuniform" => Op::AssumeNonUniform,
         "matmul" => Op::MatMul,
         "transpose" => Op::Transpose,
+        "discard" => Op::Discard,
+        "is_helper" => Op::IsHelper,
         "barrier.group" => Op::Barrier {
             exec: Some(Scope::Group),
             mem: Scope::Group,

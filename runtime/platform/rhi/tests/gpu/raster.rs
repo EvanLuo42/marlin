@@ -1,5 +1,5 @@
 //! Rasterization and output-merger features: multisampling and resolves, alpha to coverage,
-//! blend constants, dual-source blending, conservative rasterization, depth bounds,
+//! blend constants, dual-source blending, discarding, conservative rasterization, depth bounds,
 //! variable-rate shading, viewport arrays and primitive restart. Hardware adapter, each barrier
 //! path, validation on. Optional features are skipped where the device lacks them.
 
@@ -275,6 +275,35 @@ fn dual_source_blending_takes_one_target() {
         })
         .unwrap_err();
     assert_eq!(error.kind(), marlin_rhi::ErrorKind::InvalidInput);
+}
+
+#[test]
+fn discarded_pixels_write_nothing() {
+    // `Discard` (the shader language's, SPIR-V's demote to helper): the right half of the target
+    // is dropped and keeps its clear; the left half writes its coordinates (not a helper's mark).
+    let device = support::hardware_device();
+    let pipeline = solid_pipeline(
+        device,
+        "DiscardRight",
+        ColorTargetState::new(Format::R32Uint),
+        |_| {},
+    )
+    .unwrap();
+    let target = ColorTarget::new(device, 8, Format::R32Uint, 1);
+    run(device, |list| {
+        target.begin(list, [0.0; 4]);
+        list.set_graphics_pipeline(&pipeline);
+        list.push_constants(0, &solid_constants(WHITE, 0, 0.5, [0.0; 4]));
+        list.draw(3, 1, 0, 0);
+        target.finish(list);
+    });
+    for y in 0..8 {
+        for x in 0..8 {
+            let expect = if x < 4 { x | (y << 16) } else { 0 };
+            assert_eq!(target.texel(x, y), expect, "pixel ({x}, {y})");
+        }
+    }
+    assert_eq!(device.validation_errors(), 0);
 }
 
 #[test]

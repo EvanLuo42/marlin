@@ -416,6 +416,16 @@ impl Func<'_> {
                     self.error(format!("{name}: derivatives are for fragment entry points"));
                 }
             }
+            op::DemoteToHelperInvocation | op::IsHelperInvocationEXT => {
+                if self
+                    .v
+                    .stage_models()
+                    .iter()
+                    .any(|&m| m != execution_model::Fragment)
+                {
+                    self.error(format!("{name}: for fragment entry points"));
+                }
+            }
             op::SNegate | op::Not | op::FNegate => {
                 if !same(types[0], rt) {
                     self.error(format!("{name}: the operand has the result's type"));
