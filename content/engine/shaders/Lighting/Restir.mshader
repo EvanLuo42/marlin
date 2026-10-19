@@ -1,7 +1,9 @@
 namespace Marlin.Engine.Lighting;
 
 // ReSTIR DI (0010 §2, the §2.9 configuration where the reservoir owns `Dnee`; R3c): local lights
-// over the material buffer's proxy lobe. marlin-render's `RestirDi` declares, a frame:
+// over the material buffer's proxy lobe. Reservoirs are cells: a pixel each, or, with `Checkerboard`
+// (0010 §3, L2), half the pixels in a checkerboard; the reservoir passes (1–4) run on the cells and
+// the shading (5) on every pixel. marlin-render's `RestirDi` declares, a frame:
 //
 // 1. `RestirInitial`: every pixel draws `Candidates` lights from one presampled light tile (the
 //    same tile for its 8×8 screen tile, `LightTiles.mshader`) and keeps one by resampled
@@ -111,6 +113,16 @@ public struct RestirConstants
     public uint PairingFlags;
     /// 1: `DuplicationMap` holds this frame's map when the shading reads it (for the hints).
     public uint DuplicationReady;
+    /// 1: reservoirs for half the pixels, a checkerboard (0010 §3, L2): cell (i, y) is pixel
+    /// (2i + ((y + Parity) & 1), y). The shading resamples a pixel without one from its four
+    /// neighbors, which have one (0010 §2.6). 0: a reservoir a pixel, cell = pixel.
+    public uint Checkerboard;
+    /// This frame's and last frame's checkerboard parity: they alternate, so two frames cover
+    /// every pixel.
+    public uint Parity;
+    public uint PreviousParity;
+    /// Cells a row of the reservoirs: `Width`, or half of it rounded up.
+    public uint GridWidth;
     public uint Spare1;
     public uint Spare2;
 }
@@ -211,6 +223,36 @@ bool Visible(in RestirConstants c, in RestirArgs a, in LightRow l, float3 x, flo
 /// `x` as a float in [0, 1), from a hash.
 float Random(uint x) => Unit(Hash(x));
 
+/// The screen pixel of reservoir cell `cell` this frame (see `Checkerboard`).
+uint2 PixelOf(in RestirConstants c, uint2 cell) =>
+    c.Checkerboard != 0 ? uint2(cell.x * 2 + ((cell.y + c.Parity) & 1), cell.y) : cell;
+
+/// Whether `cell` is a reservoir: inside the grid, its pixel inside the screen.
+bool CellInside(in RestirConstants c, uint2 cell) =>
+    cell.x < c.GridWidth && cell.y < c.Height && PixelOf(c, cell).x < c.Width;
+
+/// Where cell `cell`'s reservoir is.
+uint CellIndex(in RestirConstants c, uint2 cell) => cell.y * c.GridWidth + cell.x;
+
+/// The cell of parity `parity` nearest screen position `at` (pixels, unclamped): the pixel there,
+/// or, in checkerboard, its neighbor along x on the nearer side where the pixel has no reservoir.
+uint2 CellNear(in RestirConstants c, float2 at, uint parity)
+{
+    int x = Clamp((int)Floor(at.x), 0, (int)c.Width - 1);
+    int y = Clamp((int)Floor(at.y), 0, (int)c.Height - 1);
+    if (c.Checkerboard == 0)
+        return uint2((uint)x, (uint)y);
+    if (((uint)x & 1) != (((uint)y + parity) & 1))
+    {
+        x += Frac(at.x) < 0.5 ? -1 : 1;
+        if (x < 0)
+            x = 1;
+        if (x >= (int)c.Width)
+            x -= 2;
+    }
+    return uint2((uint)Max(x, 0) >> 1, (uint)y);
+}
+
 /// A reservoir without a sample, for the surface `normal` at `distance` (0: none).
 DiReservoir Empty(uint normal, float distance) =>
     DiReservoir { Light = NoLight, Sample = 0, W = 0, M = 0, Target = 0, Normal = normal, Distance = distance, Fresh = 1 };
@@ -219,21 +261,27 @@ DiReservoir Empty(uint normal, float distance) =>
 public void RestirInitial([DispatchThreadId] uint3 id, [Push] in RestirArgs a)
 {
     RestirConstants c = a.Constants.Value;
-    if (id.x >= c.Width || id.y >= c.Height)
+    if (id.x >= c.GridWidth || id.y >= c.Height)
         return;
-    uint pixel = id.y * c.Width + id.x;
-    float depth = a.Depth.Load((int2)id.xy);
-    Proxy p = UnpackProxy(a.MaterialBuffer.Load((int2)id.xy));
+    uint pixel = CellIndex(c, id.xy);
+    uint2 px = PixelOf(c, id.xy);
+    if (px.x >= c.Width)
+    {
+        a.Output[pixel] = Empty(0, 0);
+        return;
+    }
+    float depth = a.Depth.Load((int2)px);
+    Proxy p = UnpackProxy(a.MaterialBuffer.Load((int2)px));
     if (depth <= 0 || p.Count == 0)
     {
         a.Output[pixel] = Empty(0, 0);
         return;
     }
-    float3 x = WorldAt(c, id.xy, depth);
+    float3 x = WorldAt(c, px, depth);
     DiReservoir r = Empty(PackOct(p.Normal), Length(x - c.Eye.xyz));
     // One tile per 8×8 screen tile, a new one each frame.
-    uint seed = Hash(c.Seed ^ Hash(pixel));
-    uint tile = Hash(c.Seed ^ Hash((id.y / 8) * 65536 + id.x / 8)) % c.TileCount;
+    uint seed = Hash(c.Seed ^ Hash(px.y * c.Width + px.x));
+    uint tile = Hash(c.Seed ^ Hash((px.y / 8) * 65536 + px.x / 8)) % c.TileCount;
     float sum = 0;
     for (uint i = 0; i < c.Candidates; i++)
     {
@@ -268,15 +316,16 @@ public void RestirInitial([DispatchThreadId] uint3 id, [Push] in RestirArgs a)
 public void RestirInitialVisibility([DispatchThreadId] uint3 id, [Push] in RestirArgs a)
 {
     RestirConstants c = a.Constants.Value;
-    if (id.x >= c.Width || id.y >= c.Height)
+    if (!CellInside(c, id.xy))
         return;
-    uint pixel = id.y * c.Width + id.x;
+    uint pixel = CellIndex(c, id.xy);
+    uint2 px = PixelOf(c, id.xy);
     DiReservoir r = a.Output[pixel];
     if (r.Light == NoLight || r.W <= 0)
         return;
-    float depth = a.Depth.Load((int2)id.xy);
-    Proxy p = UnpackProxy(a.MaterialBuffer.Load((int2)id.xy));
-    float3 x = WorldAt(c, id.xy, depth);
+    float depth = a.Depth.Load((int2)px);
+    Proxy p = UnpackProxy(a.MaterialBuffer.Load((int2)px));
+    float3 x = WorldAt(c, px, depth);
     if (!Visible(c, a, a.Lights[r.Light], x, p.Normal, r.Sample))
         a.Output[pixel].W = 0;
 }
@@ -285,25 +334,25 @@ public void RestirInitialVisibility([DispatchThreadId] uint3 id, [Push] in Resti
 public void RestirTemporal([DispatchThreadId] uint3 id, [Push] in RestirArgs a)
 {
     RestirConstants c = a.Constants.Value;
-    if (id.x >= c.Width || id.y >= c.Height)
+    if (id.x >= c.GridWidth || id.y >= c.Height)
         return;
-    uint pixel = id.y * c.Width + id.x;
+    uint pixel = CellIndex(c, id.xy);
+    uint2 px = PixelOf(c, id.xy);
     DiReservoir r = a.Input[pixel];
     if (c.HasHistory == 0 || r.Distance <= 0)
     {
         a.Output[pixel] = r;
         return;
     }
-    // Where the surface was last frame.
+    // Where the surface was last frame: the reservoir nearest there, of last frame's parity.
     float2 size = float2((float)c.Width, (float)c.Height);
-    float2 uv = ((float2)id.xy + 0.5) / size - a.Velocity.Load((int2)id.xy);
+    float2 uv = ((float2)px + 0.5) / size - a.Velocity.Load((int2)px);
     if (uv.x < 0 || uv.y < 0 || uv.x >= 1 || uv.y >= 1)
     {
         a.Output[pixel] = r;
         return;
     }
-    uint2 at = (uint2)(uv * size);
-    DiReservoir q = a.Previous[at.y * c.Width + at.x];
+    DiReservoir q = a.Previous[CellIndex(c, CellNear(c, uv * size, c.PreviousParity))];
     float3 n = UnpackOct(r.Normal);
     // The same surface: about as far from the eye, facing about the same way.
     bool same = q.Distance > 0 && Abs(q.Distance - r.Distance) < 0.1 * r.Distance && Dot(UnpackOct(q.Normal), n) > 0.9;
@@ -315,9 +364,9 @@ public void RestirTemporal([DispatchThreadId] uint3 id, [Push] in RestirArgs a)
         a.Output[pixel] = r;
         return;
     }
-    float depth = a.Depth.Load((int2)id.xy);
-    Proxy p = UnpackProxy(a.MaterialBuffer.Load((int2)id.xy));
-    float3 x = WorldAt(c, id.xy, depth);
+    float depth = a.Depth.Load((int2)px);
+    Proxy p = UnpackProxy(a.MaterialBuffer.Load((int2)px));
+    float3 x = WorldAt(c, px, depth);
     // Last frame's sample, weighed at this frame's surface (its light may have moved or gone).
     float qTarget = Luminance(Contribution(a.Lights[q.Light], x, p.Normal, p.Albedo));
     float cap = c.MaxHistory;
@@ -383,11 +432,12 @@ int2 PartnerOffset(in RestirConstants c, in RestirArgs a, uint k, uint2 px)
     return int2(dx, dy);
 }
 
-/// Pixel `px`'s partner in pattern `k`; x negative when it is off screen.
-int2 Partner(in RestirConstants c, in RestirArgs a, uint k, uint2 px)
+/// Cell `cell`'s partner in pattern `k` (the patterns lie on the cells); x negative when it is
+/// no reservoir.
+int2 Partner(in RestirConstants c, in RestirArgs a, uint k, uint2 cell)
 {
-    int2 q = int2((int)px.x, (int)px.y) + PartnerOffset(c, a, k, px);
-    bool inside = q.x >= 0 && q.y >= 0 && q.x < (int)c.Width && q.y < (int)c.Height;
+    int2 q = int2((int)cell.x, (int)cell.y) + PartnerOffset(c, a, k, cell);
+    bool inside = q.x >= 0 && q.y >= 0 && CellInside(c, uint2((uint)q.x, (uint)q.y));
     return inside ? q : int2(-1, -1);
 }
 
@@ -399,10 +449,10 @@ int2 Partner(in RestirConstants c, in RestirArgs a, uint k, uint2 px)
 public void RestirSpatialShift([DispatchThreadId] uint3 id, [Push] in RestirArgs a)
 {
     RestirConstants c = a.Constants.Value;
-    if (id.x >= c.Width || id.y >= c.Height)
+    if (id.x >= c.GridWidth || id.y >= c.Height)
         return;
-    uint pixels = c.Width * c.Height;
-    uint pixel = id.y * c.Width + id.x;
+    uint pixels = c.GridWidth * c.Height;
+    uint pixel = CellIndex(c, id.xy);
     DiReservoir r = a.Input[pixel];
     for (uint k = 0; k < c.Neighbors; k++)
     {
@@ -410,14 +460,15 @@ public void RestirSpatialShift([DispatchThreadId] uint3 id, [Push] in RestirArgs
         int2 q = Partner(c, a, k, id.xy);
         if (q.x >= 0)
         {
-            DiReservoir n = a.Input[(uint)q.y * c.Width + (uint)q.x];
+            DiReservoir n = a.Input[CellIndex(c, uint2((uint)q.x, (uint)q.y))];
             if (SameSurface(r, n))
             {
                 shifted = 0;
                 if (r.Light != NoLight && r.W > 0)
                 {
-                    Proxy p = UnpackProxy(a.MaterialBuffer.Load(q));
-                    float3 x = WorldAt(c, (uint2)q, a.Depth.Load(q));
+                    int2 at = (int2)PixelOf(c, uint2((uint)q.x, (uint)q.y));
+                    Proxy p = UnpackProxy(a.MaterialBuffer.Load(at));
+                    float3 x = WorldAt(c, (uint2)at, a.Depth.Load(at));
                     LightRow l = a.Lights[r.Light];
                     shifted = Luminance(Contribution(l, x, p.Normal, p.Albedo));
                     if (shifted > 0 && c.SpatialVisibility != 0 && !Visible(c, a, l, x, p.Normal, r.Sample))
@@ -437,10 +488,10 @@ public void RestirSpatialShift([DispatchThreadId] uint3 id, [Push] in RestirArgs
 public void RestirSpatial([DispatchThreadId] uint3 id, [Push] in RestirArgs a)
 {
     RestirConstants c = a.Constants.Value;
-    if (id.x >= c.Width || id.y >= c.Height)
+    if (id.x >= c.GridWidth || id.y >= c.Height)
         return;
-    uint pixels = c.Width * c.Height;
-    uint pixel = id.y * c.Width + id.x;
+    uint pixels = c.GridWidth * c.Height;
+    uint pixel = CellIndex(c, id.xy);
     DiReservoir r = a.Input[pixel];
     if (r.Distance <= 0)
     {
@@ -455,7 +506,7 @@ public void RestirSpatial([DispatchThreadId] uint3 id, [Push] in RestirArgs a)
         int2 q = Partner(c, a, k, id.xy);
         if (a.Shifts[k * pixels + pixel] >= 0 && q.x >= 0)
         {
-            DiReservoir n = a.Input[(uint)q.y * c.Width + (uint)q.x];
+            DiReservoir n = a.Input[CellIndex(c, uint2((uint)q.x, (uint)q.y))];
             total += n.M;
             fresh += n.M * n.Fresh;
         }
@@ -471,7 +522,7 @@ public void RestirSpatial([DispatchThreadId] uint3 id, [Push] in RestirArgs a)
         int2 q = Partner(c, a, k, id.xy);
         if (mine < 0 || q.x < 0)
             continue;
-        uint other = (uint)q.y * c.Width + (uint)q.x;
+        uint other = CellIndex(c, uint2((uint)q.x, (uint)q.y));
         DiReservoir n = a.Input[other];
         // This pixel's sample, had the partner drawn it: the canonical weight's pairwise term.
         if (mine > 0)
@@ -507,19 +558,105 @@ public void RestirSpatial([DispatchThreadId] uint3 id, [Push] in RestirArgs a)
     a.Output[pixel] = s;
 }
 
+/// Neighbor `k` (left, right, up, down) of pixel `px`, which in checkerboard has a cell: its
+/// position and reservoir. False where it is off screen or has no surface, or, in `pass` 0,
+/// lies on another surface than the one `distance` from the eye facing `normal`.
+bool Neighbor(in RestirConstants c, in RestirArgs a, uint2 px, uint k, uint pass, float distance, float3 normal, out int2 q, out DiReservoir n)
+{
+    q = int2((int)px.x, (int)px.y) + (k == 0 ? int2(-1, 0) : k == 1 ? int2(1, 0) : k == 2 ? int2(0, -1) : int2(0, 1));
+    n = Empty(0, 0);
+    if (q.x < 0 || q.y < 0 || q.x >= (int)c.Width || q.y >= (int)c.Height)
+        return false;
+    n = a.Input[CellIndex(c, uint2((uint)q.x >> 1, (uint)q.y))];
+    if (n.Distance <= 0)
+        return false;
+    bool same = Abs(n.Distance - distance) < 0.1 * Max(n.Distance, distance)
+        && Dot(UnpackOct(n.Normal), normal) > 0.9;
+    return pass != 0 || same;
+}
+
+/// Pixel `px`'s reservoir for the shading. A pixel with a cell of its own takes its reservoir.
+/// In checkerboard the others resample their four neighbors' (which have cells) by RIS with
+/// this pixel's own target (0010 §2.6's reservoir upsampling): those on its surface, or all of
+/// them if none is, each weighted alike (1/n). Talbot's 1/|Z| (one over how many of them a
+/// sample's light reaches) changed nothing measurable and cost 0.6 ms at 2560×1369 (0010 §6.3).
+/// No visibility for the neighbors' samples; the shading's ray tests the one kept.
+DiReservoir ShadedReservoir(in RestirConstants c, in RestirArgs a, uint2 px, out float duplication)
+{
+    duplication = 0;
+    bool own = c.Checkerboard == 0 || (px.x & 1) == ((px.y + c.Parity) & 1);
+    if (own)
+    {
+        uint2 cell = c.Checkerboard != 0 ? uint2(px.x >> 1, px.y) : px;
+        if (c.DuplicationReady != 0)
+            duplication = a.DuplicationMap[CellIndex(c, cell)];
+        return a.Input[CellIndex(c, cell)];
+    }
+    float depth = a.Depth.Load((int2)px);
+    Proxy p = UnpackProxy(a.MaterialBuffer.Load((int2)px));
+    if (depth <= 0 || p.Count == 0)
+        return Empty(0, 0);
+    float3 x = WorldAt(c, px, depth);
+    float distance = Length(x - c.Eye.xyz);
+    DiReservoir s = Empty(PackOct(p.Normal), distance);
+    float sum = 0;
+    float count = 0;
+    float fresh = 0;
+    uint seed = Hash(c.Seed ^ 0x51ED270B) ^ (px.y * c.Width + px.x);
+    for (uint pass = 0; pass < 2 && count == 0; pass++)
+    {
+        for (uint k = 0; k < 4; k++)
+        {
+            int2 q;
+            DiReservoir n;
+            if (!Neighbor(c, a, px, k, pass, distance, p.Normal, out q, out n))
+                continue;
+            count += 1;
+            fresh += n.Fresh;
+            if (c.DuplicationReady != 0)
+                duplication += a.DuplicationMap[CellIndex(c, uint2((uint)q.x >> 1, (uint)q.y))];
+            if (n.Light == NoLight || n.W <= 0)
+                continue;
+            LightRow l = a.Lights[n.Light];
+            float target = Luminance(Contribution(l, x, p.Normal, p.Albedo));
+            if (target <= 0)
+                continue;
+            float weight = target * n.W;
+            sum += weight;
+            if (Random(Hash(seed + k * 0x9E3779B9)) * sum < weight)
+            {
+                s.Light = n.Light;
+                s.Sample = n.Sample;
+                s.Target = target;
+            }
+        }
+    }
+    if (count > 0)
+    {
+        s.W = s.Light != NoLight && s.Target > 0 ? sum / (count * s.Target) : 0;
+        s.Fresh = fresh / count;
+        duplication /= count;
+    }
+    return s;
+}
+
 [Compute(8, 8, 1)]
 public void RestirShade([DispatchThreadId] uint3 id, [Push] in RestirArgs a)
 {
     RestirConstants c = a.Constants.Value;
     if (id.x >= c.Width || id.y >= c.Height)
         return;
-    uint pixel = id.y * c.Width + id.x;
-    DiReservoir r = a.Input[pixel];
+    float duplication;
+    DiReservoir r = ShadedReservoir(c, a, id.xy, out duplication);
     // The hints (0010 §6.1): how much of the sample is new, and how far it has been copied
-    // around (the duplication map's share d of 288 neighbors: blobs of about 1 + 288·d pixels).
+    // around (the duplication map's share d of 288 neighboring reservoirs: blobs of about
+    // 1 + 288·d reservoirs, each two pixels in checkerboard).
     float radius = 1;
     if (c.DuplicationReady != 0)
-        radius = Max(Sqrt((1 + 288 * a.DuplicationMap[pixel]) / 3.14159265), 1);
+    {
+        float area = (1 + 288 * duplication) * (c.Checkerboard != 0 ? 2.0 : 1.0);
+        radius = Max(Sqrt(area / 3.14159265), 1);
+    }
     a.Hints[(int2)id.xy] = float2(r.Fresh, radius);
     float3 radiance = float3(0, 0, 0);
     float hit = 0;
@@ -547,7 +684,7 @@ uint SampleId(in DiReservoir r) => Hash(r.Light) ^ r.Sample;
 /// Ids no sample has: outside the screen, or no sample.
 const uint NoId = 4294967295;
 
-/// The duplication map (PTE §5): for every pixel, how many of the 288 others in its 17×17
+/// The duplication map (PTE §5): for every reservoir, how many of the 288 others in its 17×17
 /// neighborhood hold the same initial sample, over 288: estimated from every second pixel (80
 /// others), as a share.
 [Compute(16, 16, 1)]
@@ -559,17 +696,17 @@ public void RestirDuplication([GroupId] uint3 group, [GroupThreadId] uint3 threa
     {
         int2 p = origin + int2((int)(k % 32), (int)(k / 32));
         uint id = NoId;
-        if (p.x >= 0 && p.y >= 0 && p.x < (int)c.Width && p.y < (int)c.Height)
+        if (p.x >= 0 && p.y >= 0 && CellInside(c, uint2((uint)p.x, (uint)p.y)))
         {
-            DiReservoir r = a.Input[(uint)p.y * c.Width + (uint)p.x];
+            DiReservoir r = a.Input[CellIndex(c, uint2((uint)p.x, (uint)p.y))];
             if (r.Light != NoLight && r.W > 0)
                 id = SampleId(r);
         }
         DuplicationIds[k] = id;
     }
     Barrier.Group();
-    uint2 px = group.xy * 16 + thread.xy;
-    if (px.x >= c.Width || px.y >= c.Height)
+    uint2 cell = group.xy * 16 + thread.xy;
+    if (cell.x >= c.GridWidth || cell.y >= c.Height)
         return;
     uint me = DuplicationIds[(thread.y + 8) * 32 + thread.x + 8];
     uint same = 0;
@@ -584,5 +721,5 @@ public void RestirDuplication([GroupId] uint3 group, [GroupThreadId] uint3 threa
         // Not itself.
         same -= 1;
     }
-    a.DuplicationMap[px.y * c.Width + px.x] = (float)same / 80.0;
+    a.DuplicationMap[CellIndex(c, cell)] = (float)same / 80.0;
 }

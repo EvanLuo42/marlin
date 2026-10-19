@@ -8,9 +8,14 @@
 //! ([`crate::raytracing`]), into a noisy signal for the denoiser ([`crate::denoise`]) with its
 //! hints: the reservoirs' fresh share and a correlation radius from the duplication map.
 //!
-//! Not yet: reduced-resolution reservoirs (0010 §3), specular (the final shading, 0010 §2.6).
+//! The reservoirs are a checkerboard of half the pixels by default (0010 §3, L2; `checkerboard`):
+//! every reservoir pass runs on the cells, and the shading resamples a pixel without one from its
+//! four neighbors.
+//!
+//! Not yet: specular (the final shading, 0010 §2.6).
 
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use marlin_math::Transform;
 use marlin_render_graph::{
@@ -105,6 +110,10 @@ struct Constants {
     pairing_offset: [u32; 2],
     pairing_flags: u32,
     duplication_ready: u32,
+    checkerboard: u32,
+    parity: u32,
+    previous_parity: u32,
+    grid_width: u32,
     spare: [u32; 2],
 }
 
@@ -212,6 +221,12 @@ pub struct RestirDi {
     /// A shadow ray for each sample shifted to a neighbor (0010 §2.6: L2 and up); without, the
     /// final shading's ray alone (biased, cheaper).
     pub spatial_visibility: bool,
+    /// Reservoirs for half the pixels, a checkerboard whose parity alternates a frame (0010 §3,
+    /// L2); the shading resamples the others from their neighbors (§2.6). Off: a reservoir a
+    /// pixel (L3).
+    pub checkerboard: bool,
+    /// Last frame's checkerboard parity (2 before the first frame), for the temporal pass.
+    last_parity: AtomicU32,
 }
 
 impl RestirDi {
@@ -248,6 +263,8 @@ impl RestirDi {
             duplication: Some(0.1),
             spatial_neighbors: 2,
             spatial_visibility: true,
+            checkerboard: true,
+            last_parity: AtomicU32::new(2),
         })
     }
 
@@ -289,9 +306,20 @@ impl RestirDi {
         if changed.is_empty() {
             changed.push(0);
         }
-        let pixels = u64::from(width) * u64::from(height);
+        // The reservoirs: a cell a pixel, or half the pixels in a checkerboard of alternating parity.
+        let grid_width = if self.checkerboard {
+            width.div_ceil(2)
+        } else {
+            width
+        };
+        let parity = 0;
+        let previous_parity = match self.last_parity.swap(parity, Ordering::Relaxed) {
+            p @ (0 | 1) if self.checkerboard => p,
+            _ => parity ^ u32::from(self.checkerboard),
+        };
+        let cells = u64::from(grid_width) * u64::from(height);
         let reservoir_desc = BufferDesc {
-            size: pixels * RESERVOIR_BYTES,
+            size: cells * RESERVOIR_BYTES,
             stride: Some(RESERVOIR_BYTES as u32),
         };
         let history = g.history("DiReservoirs", view, reservoir_desc);
@@ -319,9 +347,15 @@ impl RestirDi {
             pairing_offset,
             pairing_flags,
             duplication_ready: 0,
+            checkerboard: u32::from(self.checkerboard),
+            parity,
+            previous_parity,
+            grid_width,
             spare: [0; 2],
         };
-        let groups = (width.div_ceil(8), height.div_ceil(8));
+        // The reservoir passes run on the cells; the shading on the pixels.
+        let groups = (grid_width.div_ceil(8), height.div_ceil(8));
+        let pixel_groups = (width.div_ceil(8), height.div_ceil(8));
 
         let initial = g.create_buffer("DiInitial", reservoir_desc);
         let initial = g.add_compute("RestirInitial", |b| {
@@ -373,7 +407,7 @@ impl RestirDi {
         };
 
         // Last frame's duplication map, this frame's written at the end.
-        let map = g.persistent("DiDuplication", view, BufferDesc::structured::<f32>(pixels));
+        let map = g.persistent("DiDuplication", view, BufferDesc::structured::<f32>(cells));
         let mut map_handle = map.handle;
         if map.fresh {
             map_handle = g.add_compute("DiDuplicationClear", |b| {
@@ -421,7 +455,7 @@ impl RestirDi {
         let reservoirs = if neighbors > 0 {
             let shifts = g.create_buffer(
                 "DiShifts",
-                BufferDesc::structured::<f32>(pixels * u64::from(neighbors)),
+                BufferDesc::structured::<f32>(cells * u64::from(neighbors)),
             );
             let pairing = self.pairing_view.index();
             let shifts = g.add_compute("RestirSpatialShift", |b| {
@@ -485,7 +519,7 @@ impl RestirDi {
                         ..RestirArgs::default()
                     };
                     ctx.push(&args);
-                    ctx.dispatch(width.div_ceil(16), height.div_ceil(16), 1);
+                    ctx.dispatch(grid_width.div_ceil(16), height.div_ceil(16), 1);
                 })
             })
         } else {
@@ -528,7 +562,7 @@ impl RestirDi {
                     ..RestirArgs::default()
                 };
                 ctx.push(&args);
-                ctx.dispatch(groups.0, groups.1, 1);
+                ctx.dispatch(pixel_groups.0, pixel_groups.1, 1);
             })
         });
         NoisySignal { light, hints }

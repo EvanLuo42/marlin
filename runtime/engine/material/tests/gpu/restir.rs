@@ -238,7 +238,9 @@ fn history_follows_the_camera() {
     }
     // The camera steps 0.4 m right and up: last frame's reservoirs are found through the motion
     // vectors, so the frame is better than a first one; found at the wrong pixels they would
-    // carry other surfaces' weights.
+    // carry other surfaces' weights. In checkerboard (the default) the reservoir found is the
+    // nearest cell, up to a pixel off (measured: 0.056 against 0.090; 0.046 against 0.108 with a
+    // reservoir a pixel).
     let mut moved = scene.clone();
     moved.camera.0.translation += marlin_math::Vec3::new(0.4, 0.3, 0.0);
     h.camera = moved.camera;
@@ -249,7 +251,7 @@ fn history_follows_the_camera() {
     let (first, _) = errors(&fresh.restir_frame(100), &reference, 0.0);
     eprintln!("error after the step {after:.4}, a first frame {first:.4}");
     assert!(
-        after < 0.6 * first,
+        after < 0.7 * first,
         "after the step {after}, a first frame {first}"
     );
 }
