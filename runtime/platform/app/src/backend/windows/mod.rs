@@ -66,9 +66,35 @@ pub(crate) struct Shared {
     suspended: Cell<bool>,
     /// `CONSTRAINED_*` bits; the app is constrained while any is set.
     constrained: Cell<u8>,
+    /// The caller's tick closure, set only while `pump` runs (its lifetime is erased; see `pump`).
+    tick: Cell<Option<*mut dyn FnMut(&[Event])>>,
+    /// The tick closure is running; a nested modal loop it starts must not call it again.
+    ticking: Cell<bool>,
+    /// Events handed to the tick closure.
+    tick_events: RefCell<EventQueue>,
 }
 
 impl Shared {
+    /// Runs the tick closure on the events gathered so far. Called from the window procedure while
+    /// the OS holds `pump` in a modal loop.
+    fn run_tick(&self) {
+        let Some(tick) = self.tick.get() else {
+            return;
+        };
+        if self.ticking.replace(true) {
+            return;
+        }
+        {
+            let mut events = self.tick_events.borrow_mut();
+            events.clear();
+            events.append(&mut self.incoming.borrow_mut());
+            // SAFETY: `pump` set the pointer from a live `&mut` and clears it before returning,
+            // and `ticking` keeps this call from aliasing a running one.
+            unsafe { (*tick)(events.as_slice()) };
+        }
+        self.ticking.set(false);
+    }
+
     fn push(&self, event: Event) {
         self.incoming.borrow_mut().push(event);
     }
@@ -193,6 +219,9 @@ impl crate::contract::App for App {
             next_window_id: Cell::new(1),
             suspended: Cell::new(false),
             constrained: Cell::new(0),
+            tick: Cell::new(None),
+            ticking: Cell::new(false),
+            tick_events: RefCell::new(EventQueue::new()),
         });
         let helper = helper::Helper::new(&shared)?;
         // SAFETY: no preconditions; null on failure, which disables low-memory events.
@@ -211,13 +240,34 @@ impl crate::contract::App for App {
         Window::new(&self.shared, crate::WindowId(id), desc)
     }
 
-    fn pump(&mut self, timeout: Option<Duration>, out: &mut EventQueue) {
+    fn pump(
+        &mut self,
+        timeout: Option<Duration>,
+        out: &mut EventQueue,
+        tick: Option<&mut dyn FnMut(&[Event])>,
+    ) {
         if timeout != Some(Duration::ZERO) {
             let ms = marlin_pal::os::windows::timeout_ms(timeout);
             // SAFETY: no handles; MWMO_INPUTAVAILABLE also returns for messages already queued.
             unsafe {
                 MsgWaitForMultipleObjectsEx(0, ptr::null(), ms, QS_ALLINPUT, MWMO_INPUTAVAILABLE)
             };
+        }
+
+        // Clears the tick pointer on every exit, so it never outlives the borrow it came from.
+        struct ClearTick<'a>(&'a Shared);
+        impl Drop for ClearTick<'_> {
+            fn drop(&mut self) {
+                self.0.tick.set(None);
+            }
+        }
+        let shared = Rc::clone(&self.shared);
+        let _clear = ClearTick(&shared);
+        if let Some(tick) = tick {
+            // SAFETY: only the lifetime is erased. The pointer is used by `run_tick` during this
+            // call and cleared by `_clear` before the borrow ends.
+            let tick: &mut (dyn FnMut(&[Event]) + 'static) = unsafe { core::mem::transmute(tick) };
+            self.shared.tick.set(Some(tick as *mut _));
         }
 
         let mut msg = MaybeUninit::<MSG>::uninit();

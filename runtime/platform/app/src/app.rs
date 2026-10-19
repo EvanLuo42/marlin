@@ -44,6 +44,7 @@ impl App {
     ///
     /// On Windows, dragging a window's border or title bar runs a modal loop inside the OS, and
     /// this call returns only when the drag ends; the resulting resizes coalesce into one event.
+    /// Use [`pump_with`](Self::pump_with) to keep rendering meanwhile.
     #[inline]
     pub fn pump(&mut self) -> &[Event] {
         self.pump_timeout(Some(Duration::ZERO))
@@ -53,7 +54,22 @@ impl App {
     /// (`None` waits forever). For idling while minimized or suspended.
     pub fn pump_timeout(&mut self, timeout: Option<Duration>) -> &[Event] {
         self.frame.clear();
-        self.inner.pump(timeout, &mut self.frame);
+        self.inner.pump(timeout, &mut self.frame, None);
+        self.dropped += self.frame.dropped() as u64;
+        self.frame.as_slice()
+    }
+
+    /// Like [`pump_timeout`](Self::pump_timeout), but `tick` keeps the application running while
+    /// the OS holds the pump in a modal loop (on Windows, dragging or resizing a window): it is
+    /// called every few milliseconds with the events gathered since the last call, and those events
+    /// are then not part of the returned slice. Run a frame in it.
+    pub fn pump_with(
+        &mut self,
+        timeout: Option<Duration>,
+        mut tick: impl FnMut(&[Event]),
+    ) -> &[Event] {
+        self.frame.clear();
+        self.inner.pump(timeout, &mut self.frame, Some(&mut tick));
         self.dropped += self.frame.dropped() as u64;
         self.frame.as_slice()
     }

@@ -7,8 +7,8 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::{
-    CursorGrab, CursorIcon, Display, DisplayId, Error, ErrorKind, EventQueue, Lifecycle, Point,
-    Result, Size, Surface, WindowDesc, WindowId, WindowMode,
+    CursorGrab, CursorIcon, Display, DisplayId, Error, ErrorKind, Event, EventQueue, Lifecycle,
+    Point, Result, Size, Surface, WindowDesc, WindowId, WindowMode,
 };
 
 pub(crate) enum App {}
@@ -25,7 +25,12 @@ impl crate::contract::App for App {
         match *self {}
     }
 
-    fn pump(&mut self, _: Option<Duration>, _: &mut EventQueue) {
+    fn pump(
+        &mut self,
+        _: Option<Duration>,
+        _: &mut EventQueue,
+        _: Option<&mut dyn FnMut(&[Event])>,
+    ) {
         match *self {}
     }
 

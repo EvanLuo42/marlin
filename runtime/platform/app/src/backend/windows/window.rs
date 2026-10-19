@@ -23,16 +23,16 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     GWL_EXSTYLE, GWL_STYLE, GetClientRect, GetCursorPos, GetWindowLongPtrW, GetWindowPlacement,
     GetWindowRect, HTCLIENT, HWND_TOP, IDC_APPSTARTING, IDC_ARROW, IDC_CROSS, IDC_HAND, IDC_IBEAM,
     IDC_NO, IDC_SIZEALL, IDC_SIZENESW, IDC_SIZENS, IDC_SIZENWSE, IDC_SIZEWE, IDC_WAIT,
-    IsWindowVisible, LoadCursorW, MINMAXINFO, MNC_CLOSE, MSGFLT_ALLOW, SC_KEYMENU, SHOW_WINDOW_CMD,
-    SIZE_MINIMIZED, SW_HIDE, SW_SHOW, SW_SHOWMAXIMIZED, SW_SHOWMINIMIZED, SW_SHOWMINNOACTIVE,
-    SW_SHOWNOACTIVATE, SWP_FRAMECHANGED, SWP_HIDEWINDOW, SWP_NOACTIVATE, SWP_NOMOVE,
-    SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SetCursor, SetCursorPos,
-    SetWindowLongPtrW, SetWindowPlacement, SetWindowPos, SetWindowTextW, ShowWindow,
-    WINDOW_EX_STYLE, WINDOW_STYLE, WINDOWPLACEMENT, WINDOWPOS, WM_CLOSE, WM_COPYDATA,
-    WM_DPICHANGED, WM_DROPFILES, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_KILLFOCUS, WM_MENUCHAR,
-    WM_MOVE, WM_SETCURSOR, WM_SETFOCUS, WM_SIZE, WM_SYSCOMMAND, WM_WINDOWPOSCHANGED,
-    WS_EX_APPWINDOW, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_OVERLAPPEDWINDOW, WS_POPUP, WS_SYSMENU,
-    WS_THICKFRAME, WS_VISIBLE, WindowFromPoint,
+    IsWindowVisible, KillTimer, LoadCursorW, MINMAXINFO, MNC_CLOSE, MSGFLT_ALLOW, SC_KEYMENU,
+    SHOW_WINDOW_CMD, SIZE_MINIMIZED, SW_HIDE, SW_SHOW, SW_SHOWMAXIMIZED, SW_SHOWMINIMIZED,
+    SW_SHOWMINNOACTIVE, SW_SHOWNOACTIVATE, SWP_FRAMECHANGED, SWP_HIDEWINDOW, SWP_NOACTIVATE,
+    SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SetCursor,
+    SetCursorPos, SetTimer, SetWindowLongPtrW, SetWindowPlacement, SetWindowPos, SetWindowTextW,
+    ShowWindow, WINDOW_EX_STYLE, WINDOW_STYLE, WINDOWPLACEMENT, WINDOWPOS, WM_CLOSE, WM_COPYDATA,
+    WM_DPICHANGED, WM_DROPFILES, WM_ENTERSIZEMOVE, WM_ERASEBKGND, WM_EXITSIZEMOVE,
+    WM_GETMINMAXINFO, WM_KILLFOCUS, WM_MENUCHAR, WM_MOVE, WM_SETCURSOR, WM_SETFOCUS, WM_SIZE,
+    WM_SYSCOMMAND, WM_TIMER, WM_WINDOWPOSCHANGED, WS_EX_APPWINDOW, WS_MAXIMIZEBOX, WS_MINIMIZEBOX,
+    WS_OVERLAPPEDWINDOW, WS_POPUP, WS_SYSMENU, WS_THICKFRAME, WS_VISIBLE, WindowFromPoint,
 };
 
 use super::{CLASS_NAME, Shared, display};
@@ -42,6 +42,10 @@ use crate::{
     CursorGrab, CursorIcon, Display, DisplayId, Error, ErrorKind, Event, Point, Result, Size,
     Surface, WindowDesc, WindowId, WindowMode,
 };
+
+/// Timer id and period (the system clamps it to its ~10 ms minimum) of the modal-loop tick.
+const MODAL_TICK_TIMER: usize = 1;
+const MODAL_TICK_MS: u32 = 1;
 
 /// `WM_COPYGLOBALDATA`, which drag and drop from a lower-integrity process also needs.
 const WM_COPYGLOBALDATA: u32 = 0x0049;
@@ -178,6 +182,22 @@ impl WindowState {
             WM_SYSCOMMAND if (wparam & 0xFFF0) as u32 == SC_KEYMENU && lparam == 0 => Some(0),
             // Alt+<key> with no menu would beep.
             WM_MENUCHAR => Some((MNC_CLOSE as LRESULT) << 16),
+            // Dragging runs a modal loop inside DefWindowProcW that starves the app's pump, but
+            // timers still fire in it: use one to keep the app's frames going.
+            WM_ENTERSIZEMOVE => {
+                // SAFETY: `hwnd` is this live window.
+                unsafe { SetTimer(hwnd, MODAL_TICK_TIMER, MODAL_TICK_MS, None) };
+                None
+            }
+            WM_EXITSIZEMOVE => {
+                // SAFETY: `hwnd` is this live window.
+                unsafe { KillTimer(hwnd, MODAL_TICK_TIMER) };
+                None
+            }
+            WM_TIMER if wparam == MODAL_TICK_TIMER => {
+                self.shared.run_tick();
+                Some(0)
+            }
             // The swapchain covers the client area; erasing first only flickers.
             WM_ERASEBKGND => Some(1),
             _ => None,

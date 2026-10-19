@@ -7,7 +7,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::{
-    CursorGrab, CursorIcon, Display, DisplayId, EventQueue, Lifecycle, Point, Result, Size,
+    CursorGrab, CursorIcon, Display, DisplayId, Event, EventQueue, Lifecycle, Point, Result, Size,
     Surface, WindowDesc, WindowId, WindowMode,
 };
 
@@ -17,8 +17,15 @@ pub(crate) trait App: Sized {
     fn new() -> Result<Self>;
     fn create_window(&self, desc: &WindowDesc<'_>) -> Result<Self::Window>;
     /// Waits up to `timeout` for a message (`Some(ZERO)`: not at all; `None`: forever), dispatches
-    /// every queued message, then appends the gathered events to `out`.
-    fn pump(&mut self, timeout: Option<Duration>, out: &mut EventQueue);
+    /// every queued message, then appends the gathered events to `out`. While the OS runs a modal
+    /// loop inside the pump (a window drag), `tick` is called periodically with the events gathered
+    /// so far, which it consumes.
+    fn pump(
+        &mut self,
+        timeout: Option<Duration>,
+        out: &mut EventQueue,
+        tick: Option<&mut dyn FnMut(&[Event])>,
+    );
     fn lifecycle(&self) -> Lifecycle;
     /// Appends every connected display to `out`, the primary one first.
     fn displays(&self, out: &mut Vec<Display>);

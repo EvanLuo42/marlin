@@ -4,6 +4,7 @@
 //! thread while a job simulates the next one, so the CPU sides overlap (Game N+1 ∥
 //! Render N, with the GPU on N-1 through two frames in flight).
 
+use core::cell::Cell;
 use core::fmt::Write;
 use core::time::Duration;
 
@@ -35,6 +36,14 @@ pub enum RunError {
     Shaders(#[from] ShaderError),
     #[error("render passes")]
     Render(#[from] RenderSideError),
+}
+
+/// What a turn of the loop asks of its caller.
+enum Step {
+    Continue,
+    Quit,
+    /// The window is hidden behind another: idle a moment before the next turn.
+    Occluded,
 }
 
 /// Runs the game in a window until it is closed (or Esc / gamepad Start).
@@ -108,36 +117,33 @@ pub fn run(boot: &Boot, title: &str) -> Result<(), RunError> {
     engine.load_level(boot.level);
 
     let mut pending: Option<RenderDelta> = None;
-    let mut minimized = false;
+    let minimized = Cell::new(false);
     let mut last = Instant::now();
     let mut fps_window = (Instant::now(), 0u32);
     // 0: loading; 1: the engine is ready (its uploads ride in the next delta); 2: reported.
     let mut reported = 0;
 
-    'main: loop {
-        let timeout = Some(if minimized {
-            Duration::from_millis(100)
-        } else {
-            Duration::ZERO
-        });
-        for &event in app.pump_timeout(timeout) {
+    // One turn of the loop: the events since the last, then simulate and render. Also run from
+    // the platform's tick while the OS holds the pump in a window drag.
+    let mut frame = |events: &[Event]| -> Result<Step, RunError> {
+        for &event in events {
             match event {
-                Event::CloseRequested(_) | Event::Quit => break 'main,
+                Event::CloseRequested(_) | Event::Quit => return Ok(Step::Quit),
                 Event::Resized { size, .. } => {
                     // The images go: the graph forgets them first.
                     frames.wait_idle()?;
                     forget_images(&mut frames, &swapchain);
                     swapchain.resize(size.width, size.height)?;
                 }
-                Event::Minimized(_) => minimized = true,
-                Event::Restored(_) => minimized = false,
+                Event::Minimized(_) => minimized.set(true),
+                Event::Restored(_) => minimized.set(false),
                 _ => {}
             }
         }
         input.update();
         let state = input.state();
         if state.key_pressed(Key::ESCAPE) || state.gamepad(0).pressed(GamepadButton::Start) {
-            break;
+            return Ok(Step::Quit);
         }
         if state.key_pressed(Key::F11) || (state.alt() && state.key_pressed(Key::ENTER)) {
             window.toggle_fullscreen()?;
@@ -162,7 +168,7 @@ pub fn run(boot: &Boot, title: &str) -> Result<(), RunError> {
         jobs.scope(|s| {
             s.spawn(|| next = Some(engine_ref.frame(dt, Some(state), Some(jobs_ref))));
             if let Some(delta) = pending.take()
-                && !minimized
+                && !minimized.get()
             {
                 presented = render_frame(
                     &device,
@@ -175,9 +181,7 @@ pub fn run(boot: &Boot, title: &str) -> Result<(), RunError> {
                 .map(Some);
             }
         });
-        if presented? == Some(PresentStatus::Occluded) {
-            app.pump_timeout(Some(Duration::from_millis(16)));
-        }
+        let occluded = presented? == Some(PresentStatus::Occluded);
         pending = next;
 
         if reported == 1 {
@@ -198,6 +202,42 @@ pub fn run(boot: &Boot, title: &str) -> Result<(), RunError> {
             let _ = write!(text, "{title}  {fps:.0} fps");
             window.set_title(text.as_str());
             fps_window = (now, 0);
+        }
+        Ok(if occluded {
+            Step::Occluded
+        } else {
+            Step::Continue
+        })
+    };
+    let mut tick_step = Step::Continue;
+    loop {
+        let timeout = Some(if minimized.get() {
+            Duration::from_millis(100)
+        } else {
+            Duration::ZERO
+        });
+        let mut tick_error = None;
+        let events = app.pump_with(timeout, |events| {
+            if tick_error.is_none() {
+                match frame(events) {
+                    Ok(Step::Quit) => tick_step = Step::Quit,
+                    Ok(_) => {}
+                    Err(e) => tick_error = Some(e),
+                }
+            }
+        });
+        if let Some(e) = tick_error {
+            return Err(e);
+        }
+        if matches!(tick_step, Step::Quit) {
+            break;
+        }
+        match frame(events)? {
+            Step::Quit => break,
+            Step::Occluded => {
+                app.pump_timeout(Some(Duration::from_millis(16)));
+            }
+            Step::Continue => {}
         }
     }
     frames.wait_idle()?;
