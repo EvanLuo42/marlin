@@ -96,8 +96,12 @@ impl Viewer {
         ids: marlin_render::SceneIds,
     ) -> Self {
         let device = hardware_device();
-        let render =
+        let mut render =
             RenderSide::new(device, library, resolve, pairing, OFFSCREEN_FORMAT, ids).unwrap();
+        // These tests compare pictures across runs whose loading takes different numbers of
+        // frames; TSR's history and jitter phase depend on them, so it is off here (it has tests
+        // of its own, marlin-material's tsr.rs). The resize test keeps it.
+        render.upscale = None;
         let offscreen = Offscreen::new(device, WIDTH, HEIGHT).unwrap();
         Self {
             render,
