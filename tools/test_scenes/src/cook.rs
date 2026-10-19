@@ -75,6 +75,60 @@ pub fn cook(positions: &[[f32; 3]], normals: &[[f32; 3]], indices: &[u32]) -> Co
     cook_with(positions, normals, indices, Mesh::default())
 }
 
+/// Like [`cook`], with one UV set.
+pub fn cook_with_uvs(
+    positions: &[[f32; 3]],
+    normals: &[[f32; 3]],
+    uvs: &[[f32; 2]],
+    indices: &[u32],
+) -> Cooked {
+    let geometry = Geometry {
+        positions: positions.to_vec(),
+        normals: normals.to_vec(),
+        tangents: normals
+            .iter()
+            .map(|&n| {
+                let t = basis(n).0;
+                [t[0], t[1], t[2], 1.0]
+            })
+            .collect(),
+        uvs: vec![uvs.to_vec()],
+        colors: None,
+        influences: None,
+        skin: Vec::new(),
+        section_names: vec!["Default".into()],
+        triangle_sections: vec![0; indices.len() / 3],
+        indices: indices.to_vec(),
+    };
+    let built = marlin_cook_mesh::build(
+        &geometry,
+        &Mesh {
+            max_uv_sets: 1,
+            vertex_colors: false,
+            ..Mesh::default()
+        },
+    )
+    .unwrap();
+    Cooked {
+        payload: built.payload,
+        pages: built.pages,
+    }
+}
+
+/// A unit square in the XY plane, centered on the origin, facing +Z: UV (0, 0) at (−0.5, −0.5)
+/// to (1, 1) at (0.5, 0.5).
+pub fn uv_quad() -> Cooked {
+    let positions = [
+        [-0.5, -0.5, 0.0],
+        [0.5, -0.5, 0.0],
+        [0.5, 0.5, 0.0],
+        [-0.5, 0.5, 0.0],
+    ];
+    let normals = [[0.0, 0.0, 1.0]; 4];
+    let uvs = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+    cook_with_uvs(&positions, &normals, &uvs, &[0, 1, 2, 0, 2, 3])
+}
+
 /// A unit cube centered on the origin with per-face normals: 24 vertices, 36 indices.
 pub fn cube() -> Cooked {
     let (positions, normals, indices) = cube_source();

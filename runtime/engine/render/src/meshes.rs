@@ -312,6 +312,8 @@ pub struct PagePool<'g> {
     pub rt_geometry: BufferHandle<'g>,
     pub blas: BufferHandle<'g>,
     pub blas_table: BufferHandle<'g>,
+    /// Per mesh slot: its RT LOD's place in `rt_geometry` (`RtMeshRow`), after the frame's writes.
+    pub rt_mesh_table: BufferHandle<'g>,
 }
 
 /// The visibility passes' feedback of one frame, read back.
@@ -986,6 +988,14 @@ impl Meshes {
             rt.table_ops,
             rt.table_data,
         );
+        let rt_mesh_table = g.import_buffer("RtMeshTable", &self.rt.mesh_table);
+        let rt_mesh_table = self.add_upload(
+            g,
+            "RtMeshTableUpload",
+            rt_mesh_table,
+            rt.mesh_table_ops,
+            rt.mesh_table_data,
+        );
         let blas = g.import_buffer("BlasPool", &self.rt.blas);
         let blas = self
             .rt
@@ -1013,6 +1023,7 @@ impl Meshes {
             rt_geometry,
             blas,
             blas_table,
+            rt_mesh_table,
         }
     }
 

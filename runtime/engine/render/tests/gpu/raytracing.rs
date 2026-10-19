@@ -1,5 +1,6 @@
 //! The ray tracing scene (R3a): BLASes from the meshes' RT LODs, the TLAS the GPU writes from the
-//! GPU Scene, and rays traced against it hitting the instances they point at, where they are.
+//! GPU Scene, and rays traced against it hitting the instances they point at, where they are; and
+//! what they hit (R4a): position, normals and UV0 from the RT LOD, in world space.
 
 use marlin_math::{Quat, Transform, Vec3};
 use marlin_render::Environment;
@@ -7,7 +8,7 @@ use marlin_render::raytracing::Ray;
 use marlin_render::scene::{InstanceId, InstanceUpdate, flags};
 
 use crate::support::Harness;
-use crate::support::cook::sphere;
+use crate::support::cook::{sphere, uv_quad};
 
 /// A ray straight down from 10 units above (x, z).
 fn down(x: f32, z: f32) -> Ray {
@@ -165,4 +166,124 @@ fn blas_builds_keep_to_the_budget() {
     let rays: Vec<Ray> = (0..4).map(|i| down(2.0 * i as f32, 0.0)).collect();
     let hits = h.trace_frame(&rays);
     assert!(hits.iter().all(Option::is_some), "{hits:?}");
+}
+
+fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+#[test]
+fn hits_give_the_surface_position_and_normals() {
+    let mut h = Harness::new(Environment::default());
+    let (ball, _) = h.upload(&sphere(32, 64));
+    let center = Vec3::new(1.0, 0.0, -2.0);
+    h.add(
+        ball,
+        Transform {
+            translation: center,
+            rotation: Quat::from_euler_yxz(0.7, 0.3, 0.0),
+            scale: Vec3::splat(3.0),
+        },
+        [1.0; 4],
+    );
+    // Rays at the sphere from a ring of directions, aimed a little off its center.
+    let rays: Vec<Ray> = (0..16)
+        .map(|i| {
+            let a = i as f32 * 0.39;
+            let d = Vec3::new(a.cos(), 0.3 * (a * 1.7).sin(), a.sin()).normalize();
+            let o = center - d * 10.0 + Vec3::new(0.0, 0.2, 0.0);
+            Ray {
+                origin: [o.x, o.y, o.z],
+                t_min: 0.0,
+                direction: [d.x, d.y, d.z],
+                t_max: 100.0,
+            }
+        })
+        .collect();
+    let hits = settle(&mut h, &rays);
+    for (ray, hit) in rays.iter().zip(&hits) {
+        let hit = hit.expect("the sphere");
+        let p = Vec3::new(hit.position[0], hit.position[1], hit.position[2]);
+        // On the ray, at its distance.
+        let along = Vec3::from(ray.origin) + Vec3::from(ray.direction) * hit.t;
+        assert!((p - along).length() < 1e-3, "{p:?} against {along:?}");
+        // On the sphere (radius 1.5), its normals the sphere's, facing the ray.
+        let radial = p - center;
+        assert!(
+            (radial.length() - 1.5).abs() < 0.05,
+            "radius {}",
+            radial.length()
+        );
+        let radial = radial.normalize();
+        let r = [radial.x, radial.y, radial.z];
+        assert!(
+            dot(hit.normal, r) > 0.995,
+            "normal {:?} at {r:?}",
+            hit.normal
+        );
+        assert!(
+            dot(hit.geometric_normal, r) > 0.98,
+            "face {:?}",
+            hit.geometric_normal
+        );
+        assert!(dot(hit.normal, ray.direction) < 0.0);
+        assert!((dot(hit.normal, hit.normal) - 1.0).abs() < 1e-4);
+    }
+}
+
+#[test]
+fn a_squashed_cube_keeps_its_face_normals() {
+    // A non-uniform scale tilts normals that are not transformed by the inverse transpose.
+    let mut h = Harness::new(Environment::default());
+    let cube = h.cube;
+    h.add(
+        cube,
+        Transform {
+            translation: Vec3::ZERO,
+            rotation: Quat::from_rotation_z(0.6),
+            scale: Vec3::new(4.0, 0.5, 2.0),
+        },
+        [1.0; 4],
+    );
+    let hits = settle(&mut h, &[down(0.3, 0.2), down(-0.4, -0.5)]);
+    let up = [-(0.6f32).sin(), (0.6f32).cos(), 0.0];
+    for hit in &hits {
+        let hit = hit.expect("the cube");
+        assert!(
+            dot(hit.normal, up) > 0.9999,
+            "{:?} against {up:?}",
+            hit.normal
+        );
+        assert!(dot(hit.geometric_normal, up) > 0.9999);
+    }
+}
+
+#[test]
+fn hits_interpolate_uv0() {
+    let mut h = Harness::new(Environment::default());
+    let (quad, _) = h.upload(&uv_quad());
+    // Lying face up, 4 units wide: UV = (x / 4 + 0.5, 0.5 − z / 4).
+    h.add(
+        quad,
+        Transform {
+            translation: Vec3::ZERO,
+            rotation: Quat::from_rotation_x(-core::f32::consts::FRAC_PI_2),
+            scale: Vec3::splat(4.0),
+        },
+        [1.0; 4],
+    );
+    let points = [(0.0, 0.0), (1.0, 0.5), (-1.5, 1.2), (1.9, -1.9)];
+    let rays: Vec<Ray> = points.iter().map(|&(x, z)| down(x, z)).collect();
+    let hits = settle(&mut h, &rays);
+    for (&(x, z), hit) in points.iter().zip(&hits) {
+        let hit = hit.expect("the quad");
+        let want = [x / 4.0 + 0.5, 0.5 - z / 4.0];
+        // Half precision: a thousandth.
+        assert!(
+            (hit.uv[0] - want[0]).abs() < 2e-3 && (hit.uv[1] - want[1]).abs() < 2e-3,
+            "at ({x}, {z}): {:?} against {want:?}",
+            hit.uv
+        );
+        assert!(dot(hit.normal, [0.0, 1.0, 0.0]) > 0.9999);
+    }
 }

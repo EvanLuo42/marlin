@@ -166,6 +166,8 @@ pub(crate) struct RtUploads {
     pub(crate) geometry_data: Vec<u32>,
     pub(crate) table_ops: Vec<[u32; 4]>,
     pub(crate) table_data: Vec<u32>,
+    pub(crate) mesh_table_ops: Vec<[u32; 4]>,
+    pub(crate) mesh_table_data: Vec<u32>,
     pub(crate) builds: Vec<BlasBuild>,
     /// Scratch bytes the builds need, each at an aligned offset.
     pub(crate) scratch: u64,
@@ -176,6 +178,9 @@ pub(crate) struct RtGeometry {
     pub(crate) geometry: Buffer,
     pub(crate) blas: Buffer,
     pub(crate) table: Buffer,
+    /// Per mesh slot: where its RT LOD lies in `geometry` (`RtMeshRow`, [`RT_MESH_WORDS`] words),
+    /// for ray hits' attributes.
+    pub(crate) mesh_table: Buffer,
     geometry_free: Ranges,
     blas_free: Ranges,
     slots: u32,
@@ -184,6 +189,8 @@ pub(crate) struct RtGeometry {
     geometry_writes: Vec<(u32, u64, Vec<u8>)>,
     /// Slot → BLAS address (0: none).
     table_writes: BTreeMap<u32, u64>,
+    /// Slot → its `RtMeshRow`.
+    mesh_writes: BTreeMap<u32, [u32; RT_MESH_WORDS]>,
     builds: Vec<BlasBuild>,
     pub(crate) triangles_per_frame: u32,
 }
@@ -211,16 +218,24 @@ impl RtGeometry {
             BufferUsage::SHADER_READ | BufferUsage::SHADER_WRITE,
         )?;
         table.set_name("BlasTable");
+        let mesh_table = zeroed_buffer(
+            device,
+            u64::from(slots) * 4 * RT_MESH_WORDS as u64,
+            BufferUsage::SHADER_READ | BufferUsage::SHADER_WRITE,
+        )?;
+        mesh_table.set_name("RtMeshTable");
         Ok(Self {
             geometry_free: Ranges::new(geometry.desc().size),
             blas_free: Ranges::new(blas.desc().size),
             geometry,
             blas,
             table,
+            mesh_table,
             slots,
             meshes: BTreeMap::new(),
             geometry_writes: Vec::new(),
             table_writes: BTreeMap::new(),
+            mesh_writes: BTreeMap::new(),
             builds: Vec::new(),
             triangles_per_frame: desc.triangles_per_frame,
         })
@@ -357,6 +372,20 @@ impl RtGeometry {
             blas_size,
         )?;
         self.table_writes.insert(slot, accel.instance_address());
+        let header = mesh.data.view().header;
+        self.mesh_writes.insert(
+            slot,
+            [
+                at as u32,
+                lod.positions.offset,
+                lod.attributes.offset,
+                lod.indices.offset,
+                lod.attributes.size / lod.vertex_count.max(1),
+                header.uv_sets,
+                lod.vertex_count,
+                lod.triangle_count,
+            ],
+        );
         self.geometry_writes.push((slot, at, bytes));
         self.builds.push(BlasBuild {
             slot,
@@ -392,6 +421,15 @@ impl RtGeometry {
                 .push([slot * 8, out.table_data.len() as u32, 2, 0]);
             out.table_data
                 .extend([address as u32, (address >> 32) as u32]);
+        }
+        for (slot, row) in core::mem::take(&mut self.mesh_writes) {
+            out.mesh_table_ops.push([
+                slot * 4 * RT_MESH_WORDS as u32,
+                out.mesh_table_data.len() as u32,
+                RT_MESH_WORDS as u32,
+                0,
+            ]);
+            out.mesh_table_data.extend(row);
         }
         out.builds = core::mem::take(&mut self.builds);
         out.scratch = out.builds.iter().map(|b| b.scratch).sum();
@@ -480,6 +518,9 @@ enum Placed {
 }
 
 /// Static BLASes: built once, traced often.
+/// Words of an `RtMeshRow` (`Scene/RayTracing.mshader`): a mesh slot's RT LOD in the geometry pool.
+pub const RT_MESH_WORDS: usize = 8;
+
 const BLAS_FLAGS: BuildFlags = BuildFlags::PREFER_FAST_TRACE;
 
 /// A new GPU buffer of `size` zero bytes, cleared before this returns.
@@ -554,6 +595,7 @@ struct TraceArgs {
     rays: u32,
     hits: u32,
     count: u32,
+    sources: HitSources,
 }
 
 /// `Marlin.Ray`: from `origin` along `direction`, hitting between `t_min` and `t_max`.
@@ -574,22 +616,33 @@ pub struct RayHit {
     pub primitive: u32,
     pub t: f32,
     pub front_face: bool,
+    /// What it hit (`SurfaceOfHit`): the world position, the shading and geometric normals (on
+    /// the ray's side), UV0.
+    pub position: [f32; 3],
+    pub normal: [f32; 3],
+    pub geometric_normal: [f32; 3],
+    pub uv: [f32; 2],
 }
 
 impl RayHit {
-    /// The hits of [`Tlas::add_trace`]'s read back buffer: `None` for misses.
+    /// The hits of [`Tlas::add_trace`]'s read back buffer (64 bytes a ray): `None` for misses.
     pub fn read(bytes: &[u8]) -> Vec<Option<Self>> {
         bytes
-            .as_chunks::<16>()
+            .as_chunks::<64>()
             .0
             .iter()
             .map(|c| {
                 let w = |i: usize| u32::from_le_bytes([c[i], c[i + 1], c[i + 2], c[i + 3]]);
+                let f = |i: usize| f32::from_bits(w(i));
                 (w(0) != u32::MAX).then(|| Self {
                     instance: w(0),
                     primitive: w(4),
-                    t: f32::from_bits(w(8)),
+                    t: f(8),
                     front_face: w(12) != 0,
+                    position: [f(16), f(20), f(24)],
+                    normal: [f(32), f(36), f(40)],
+                    geometric_normal: [f(48), f(52), f(56)],
+                    uv: [f(28), f(44)],
                 })
             })
             .collect()
@@ -603,10 +656,50 @@ pub struct RtScene<'g> {
     pub tlas: BufferHandle<'g>,
     /// The BLAS pool, after the frame's builds.
     pub blas: BufferHandle<'g>,
-    /// The RT LOD geometry pool (for hit attributes).
+    /// What a hit's attributes come from ([`read_hits`](Self::read_hits)): the RT LOD geometry
+    /// pool, where each mesh slot's lies in it (`RtMeshRow`), and the GPU Scene's instance,
+    /// mesh and transform tables (a hit's `InstanceIndex` is its instance row).
     pub geometry: BufferHandle<'g>,
+    pub mesh_table: BufferHandle<'g>,
+    pub instances: BufferHandle<'g>,
+    pub meshes: BufferHandle<'g>,
+    pub transforms: BufferHandle<'g>,
     /// The TLAS's bindless index: a shader's `AccelerationStructure`.
     pub index: u32,
+}
+
+/// A pass's views of a hit's attribute sources, as declared by [`RtScene::read_hits`].
+#[derive(Clone, Copy)]
+pub struct HitViews<'g> {
+    geometry: BufferHandle<'g>,
+    mesh_table: BufferHandle<'g>,
+    instances: BufferHandle<'g>,
+    meshes: BufferHandle<'g>,
+    transforms: BufferHandle<'g>,
+}
+
+/// `Marlin.Engine.Scene.HitSources`: a hit's attribute sources in a shader's arguments.
+#[repr(C)]
+#[derive(Pod, Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct HitSources {
+    pub geometry: u32,
+    pub mesh_table: u32,
+    pub instances: u32,
+    pub meshes: u32,
+    pub transforms: u32,
+}
+
+impl<'g> HitViews<'g> {
+    /// The views' bindless indices, for a pass's arguments.
+    pub fn bind(&self, ctx: &PassContext<'_>) -> HitSources {
+        HitSources {
+            geometry: ctx.srv(self.geometry),
+            mesh_table: ctx.srv(self.mesh_table),
+            instances: ctx.srv(self.instances),
+            meshes: ctx.srv(self.meshes),
+            transforms: ctx.srv(self.transforms),
+        }
+    }
 }
 
 impl<'g> RtScene<'g> {
@@ -614,6 +707,17 @@ impl<'g> RtScene<'g> {
     pub fn read(&self, b: &mut PassBuilder<'_, 'g>) {
         b.read_buffer(self.tlas, Access::AccelRead);
         b.read_buffer(self.blas, Access::AccelRead);
+    }
+
+    /// Declares a pass's reads of a hit's attribute sources, besides [`read`](Self::read).
+    pub fn read_hits(&self, b: &mut PassBuilder<'_, 'g>) -> HitViews<'g> {
+        HitViews {
+            geometry: b.read_buffer(self.geometry, Access::ComputeRead),
+            mesh_table: b.read_buffer(self.mesh_table, Access::ComputeRead),
+            instances: b.read_buffer(self.instances, Access::ComputeRead),
+            meshes: b.read_buffer(self.meshes, Access::ComputeRead),
+            transforms: b.read_buffer(self.transforms, Access::ComputeRead),
+        }
     }
 }
 
@@ -799,6 +903,10 @@ impl Tlas {
             tlas,
             blas,
             geometry: pool.rt_geometry,
+            mesh_table: pool.rt_mesh_table,
+            instances: gpu.instance_data,
+            meshes: gpu.meshes,
+            transforms: gpu.instance_transforms,
             index: storage.accel.index(),
         }
     }
@@ -814,12 +922,13 @@ impl Tlas {
         let count = rays.len() as u32;
         let hits = g.create_buffer(
             "RayHits",
-            GraphBufferDesc::structured::<[u32; 4]>(u64::from(count.max(1))),
+            GraphBufferDesc::structured::<[u32; 4]>(4 * u64::from(count.max(1))),
         );
         let pipeline = &self.trace;
         let rt = *rt;
         g.add_compute("TraceRays", |b| {
             rt.read(b);
+            let sources = rt.read_hits(b);
             let hits = b.write_buffer(hits, Access::ComputeWrite);
             (hits, move |ctx: &mut PassContext<'_>| {
                 ctx.set_pipeline(pipeline);
@@ -833,6 +942,7 @@ impl Tlas {
                     rays,
                     hits: ctx.uav(hits),
                     count,
+                    sources: sources.bind(ctx),
                 });
                 ctx.dispatch(count.div_ceil(64).max(1), 1, 1);
             })

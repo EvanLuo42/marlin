@@ -72,14 +72,122 @@ public void WriteTlasInstances([DispatchThreadId] uint3 id, [Push] in TlasArgs a
     };
 }
 
+/// Where a mesh slot's RT LOD lies in the geometry pool (marlin-render's `RtGeometry` writes it
+/// with the BLAS): byte offsets from the pool's start (`Base`) and from the blob's.
+public struct RtMeshRow
+{
+    public uint Base;
+    /// Positions: 3 floats a vertex.
+    public uint Positions;
+    /// Attributes: the tangent frame word, then 2 halves per UV set (then RGBA8 color).
+    public uint Attributes;
+    /// Indices: 3 uints a triangle, the BLAS's primitive order.
+    public uint Indices;
+    public uint Stride;
+    public uint UvSets;
+    public uint VertexCount;
+    public uint TriangleCount;
+}
+
+/// A hit's attribute sources, in a pass's arguments (marlin-render's `HitSources`).
+public struct HitSources
+{
+    public ReadOnlyByteBuffer Geometry;
+    public ReadOnlyBuffer<RtMeshRow> MeshTable;
+    public ReadOnlyBuffer<InstanceData> Instances;
+    public ReadOnlyBuffer<MeshEntry> Meshes;
+    public ReadOnlyBuffer<InstanceTransforms> Transforms;
+}
+
+/// The surface a ray hit, in world space.
+public struct HitSurface
+{
+    public float3 Position;
+    /// The shading normal (interpolated vertex normals) and the triangle's, both normalized and
+    /// on the side the ray came from.
+    public float3 Normal;
+    public float3 GeometricNormal;
+    public float2 Uv0;
+    /// The instance's row in the GPU Scene.
+    public uint Row;
+}
+
+/// A half's bits as a float (normals, denormals, infinities).
+public float HalfToFloat(uint h)
+{
+    uint exponent = (h >> 10) & 31;
+    uint mantissa = h & 1023;
+    float v = 0;
+    if (exponent == 0)
+        v = (float)mantissa * 5.9604645e-8;
+    else if (exponent == 31)
+        v = 65504;
+    else
+        v = AsFloat(((exponent + 112) << 23) | (mantissa << 13));
+    return (h & 0x8000) != 0 ? -v : v;
+}
+
+/// Object-space vertex `v`'s position in the mesh at `m`.
+float3 RtPosition(ReadOnlyByteBuffer pool, in RtMeshRow m, uint v)
+{
+    uint at = m.Base + m.Positions + v * 12;
+    return float3(AsFloat(pool.Load(at)), AsFloat(pool.Load(at + 4)), AsFloat(pool.Load(at + 8)));
+}
+
+/// What `hit` (of `ray`, closest, not a miss) hit: its triangle's attributes from the RT LOD,
+/// interpolated by the barycentrics, into world space by the instance's transform.
+public HitSurface SurfaceOfHit(in RayHit hit, in Ray ray, in HitSources s)
+{
+    uint row = hit.InstanceIndex;
+    InstanceData instance = s.Instances[row];
+    RtMeshRow m = s.MeshTable[s.Meshes[instance.Mesh].Slot];
+    uint at = m.Base + m.Indices + hit.PrimitiveIndex * 12;
+    uint3 v = uint3(s.Geometry.Load(at), s.Geometry.Load(at + 4), s.Geometry.Load(at + 8));
+    float3 w = float3(1 - hit.Barycentrics.x - hit.Barycentrics.y, hit.Barycentrics.x, hit.Barycentrics.y);
+    uint3 attributes = uint3(m.Base + m.Attributes) + v * m.Stride;
+    float3 n = DecodeNormal(s.Geometry.Load(attributes.x)) * w.x
+        + DecodeNormal(s.Geometry.Load(attributes.y)) * w.y
+        + DecodeNormal(s.Geometry.Load(attributes.z)) * w.z;
+    float2 uv = float2(0, 0);
+    if (m.UvSets > 0)
+    {
+        for (uint k = 0; k < 3; k++)
+        {
+            uint packed = s.Geometry.Load(attributes[k] + 4);
+            uv += float2(HalfToFloat(packed & 0xFFFF), HalfToFloat(packed >> 16)) * w[k];
+        }
+    }
+    Rows3x4 transform = s.Transforms[row].Current;
+    float3 p0 = Apply(transform, float4(RtPosition(s.Geometry, m, v.x), 1));
+    float3 p1 = Apply(transform, float4(RtPosition(s.Geometry, m, v.y), 1));
+    float3 p2 = Apply(transform, float4(RtPosition(s.Geometry, m, v.z), 1));
+    float3 geometric = Normalize(Cross(p1 - p0, p2 - p0));
+    if (Dot(geometric, ray.Direction) > 0)
+        geometric = -geometric;
+    float3 normal = Normalize(ApplyNormal(transform, n));
+    if (Dot(normal, geometric) < 0)
+        normal = -normal;
+    return HitSurface
+    {
+        Position = p0 * w.x + p1 * w.y + p2 * w.z,
+        Normal = normal,
+        GeometricNormal = geometric,
+        Uv0 = uv,
+        Row = row,
+    };
+}
+
 public struct TraceArgs
 {
     public AccelerationStructure Tlas;
     public ReadOnlyBuffer<Ray> Rays;
-    /// Per ray: the instance index (`0xFFFFFFFF` for a miss), the primitive, the distance (float
-    /// bits), 1 for the front face.
+    /// Per ray, 4 entries: the instance index (`0xFFFFFFFF` for a miss), the primitive, the
+    /// distance (float bits), 1 for the front face; then what it hit (`SurfaceOfHit`, float bits):
+    /// position and U, normal and V, geometric normal.
     public Buffer<uint4> Hits;
     public uint Count;
+    /// What a hit's attributes come from.
+    public HitSources Sources;
 }
 
 [Compute(64, 1, 1)]
@@ -87,11 +195,16 @@ public void TraceRays([DispatchThreadId] uint3 id, [Push] in TraceArgs a)
 {
     if (id.x >= a.Count)
         return;
-    RayHit hit = a.Tlas.TraceClosest(a.Rays[id.x]);
+    Ray ray = a.Rays[id.x];
+    RayHit hit = a.Tlas.TraceClosest(ray);
     if (hit.Kind == HitKind.None)
     {
-        a.Hits[id.x] = uint4(0xFFFFFFFF, 0, 0, 0);
+        a.Hits[id.x * 4] = uint4(0xFFFFFFFF, 0, 0, 0);
         return;
     }
-    a.Hits[id.x] = uint4(hit.InstanceIndex, hit.PrimitiveIndex, AsUInt(hit.T), hit.FrontFace ? (uint)1 : (uint)0);
+    a.Hits[id.x * 4] = uint4(hit.InstanceIndex, hit.PrimitiveIndex, AsUInt(hit.T), hit.FrontFace ? (uint)1 : (uint)0);
+    HitSurface s = SurfaceOfHit(hit, ray, a.Sources);
+    a.Hits[id.x * 4 + 1] = uint4(AsUInt(s.Position.x), AsUInt(s.Position.y), AsUInt(s.Position.z), AsUInt(s.Uv0.x));
+    a.Hits[id.x * 4 + 2] = uint4(AsUInt(s.Normal.x), AsUInt(s.Normal.y), AsUInt(s.Normal.z), AsUInt(s.Uv0.y));
+    a.Hits[id.x * 4 + 3] = uint4(AsUInt(s.GeometricNormal.x), AsUInt(s.GeometricNormal.y), AsUInt(s.GeometricNormal.z), 0);
 }
