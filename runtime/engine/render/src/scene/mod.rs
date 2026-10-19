@@ -166,6 +166,8 @@ pub struct RenderScene {
     /// appeared, vanished, were hidden or shown, or changed mesh (or their mesh its GPU copy),
     /// at their old places and their new ones.
     shadow_changes: Vec<[f32; 4]>,
+    /// The permutations that draw translucently, a bit each ([`set_translucent`](Self::set_translucent)).
+    translucent: u32,
     /// Light rows added, changed or removed in the last applied frame: what reused samples of
     /// them must not trust (0010 §2.4).
     light_changes: Vec<u32>,
@@ -217,6 +219,7 @@ impl RenderScene {
             moved: Vec::new(),
             moved_last: Vec::new(),
             shadow_changes: Vec::new(),
+            translucent: 0,
             light_changes: Vec::new(),
             simple_materials: Vec::new(),
             simple_instances: Vec::new(),
@@ -593,6 +596,29 @@ impl RenderScene {
         }
         let material = self.instance_material[i];
         self.material_rows.live(material).then_some(material.index)
+    }
+
+    /// Which permutations draw translucently (0009 §8), a bit each (permutations below 32):
+    /// marlin-material's registry says, as it registers them.
+    pub fn set_translucent(&mut self, permutations: u32) {
+        self.translucent = permutations;
+    }
+
+    pub fn translucent(&self) -> u32 {
+        self.translucent
+    }
+
+    /// The drawable instances whose material draws translucently, as (row, world sphere): what
+    /// the forward pass sorts.
+    pub fn translucent_instances(&self) -> Vec<(u32, [f32; 4])> {
+        self.drawable()
+            .filter(|&(row, _, _)| {
+                self.instance_material_row(row)
+                    .and_then(|m| self.material_permutation(m))
+                    .is_some_and(|p| p < 32 && self.translucent & (1 << p) != 0)
+            })
+            .map(|(row, _, _)| (row, self.world_sphere(row as usize)))
+            .collect()
     }
 
     /// Material rows, live or not: the material table's rows in use.

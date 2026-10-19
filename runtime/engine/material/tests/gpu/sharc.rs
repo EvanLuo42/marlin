@@ -152,8 +152,7 @@ fn a_floor_reflects_the_sun_and_the_sky() {
     let (rays, _) = probe_rays(&h, 4);
     let read = h.sharc_frames(16, rays);
     let cos = (-sun.normalize()).y;
-    let expected: [f32; 3] =
-        core::array::from_fn(|i| env.light_color[i] * cos + env.ambient[i]);
+    let expected: [f32; 3] = core::array::from_fn(|i| env.light_color[i] * cos + env.ambient[i]);
     let mut hits = 0;
     for r in read.iter().flatten() {
         hits += 1;

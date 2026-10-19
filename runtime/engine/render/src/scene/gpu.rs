@@ -87,6 +87,9 @@ pub struct GpuScene<'g> {
     pub materials: BufferHandle<'g>,
     /// Each permutation's parameter table, by permutation.
     pub material_params: &'g [BufferHandle<'g>],
+    /// The permutations that draw translucently (0009 §8), a bit each: their instances are not in
+    /// the visibility buffer, the shadow maps or the TLAS, but drawn by the forward pass.
+    pub translucent: u32,
 }
 
 #[repr(C)]
@@ -241,6 +244,7 @@ impl RenderScene {
             lights: handles[LIGHTS],
             materials: handles[MATERIALS],
             material_params: g.arena().alloc_slice_copy(&handles[MATERIALS + 1..]),
+            translucent: self.translucent,
         }
     }
 

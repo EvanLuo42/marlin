@@ -13,4 +13,5 @@ mod scenes;
 mod sharc;
 mod simple;
 mod support;
+mod translucent;
 mod tsr;

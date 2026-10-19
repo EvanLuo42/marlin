@@ -1,0 +1,246 @@
+namespace Marlin.Engine.Material;
+
+// The forward pass of translucent surfaces (0009 §8, R4e): the instances whose material's
+// `Blend` is translucent are not in the visibility buffer; marlin-render's translucent view
+// culls them (`Visibility.mshader`'s `TranslucentView` mode) into a list of visible clusters in
+// no order. marlin-material sorts the instances on the CPU, back to front by their spheres'
+// centers, and gives each a slot in that order (the user's choice: one draw per instance, each
+// with its material type's pipeline, as a draw cannot change pipelines; 0009 §8 had a GPU sort).
+// Here:
+//
+// 1. `TranslucentCount`: each visible cluster counts toward its instance's slot.
+// 2. `TranslucentOffsets` (one thread): the slots' first clusters, a prefix sum, and each
+//    slot's indirect mesh dispatch (the RHI's record: a constant, unused, then x, y, z; the
+//    draw pushes its slot, and the mesh stage reads the slot's first cluster).
+// 3. `TranslucentScatter`: the clusters into their slots.
+// 4. A draw per slot in order: `TranslucentMesh` (one group per cluster, the vertices' world
+//    position and normal) and `ForwardTranslucent<M>`: the material's `Surface` and `Opacity`
+//    lit as the opaque passes light (the sun, shadowed by a ray; the world cache, or the sky
+//    where it has nothing; Lambert and GGX of the proxy lobe), blended premultiplied over the
+//    lit scene: diffuse and emission times the opacity, the specular reflection whole (glass
+//    reflects however clear it is). The opaque depth is tested here (it is not a depth target):
+//    a fragment behind it is dropped (`Discard`).
+//
+// Not yet (R4e2, R4e3): local lights (the clustered grid, 0010 §5.4), refraction.
+
+using Marlin.Substrate;
+using Marlin.Engine.Scene;
+using Marlin.Engine.Lighting;
+
+public struct BinArgs
+{
+    /// The translucent view's visible clusters and its counters (word 3: how many, which may
+    /// pass `Capacity`).
+    public ReadOnlyBuffer<uint2> Clusters;
+    public ReadOnlyBuffer<uint> Counters;
+    public uint Capacity;
+    /// Each instance row's slot, `0xFFFFFFFF` for none; `Slots` slots.
+    public ReadOnlyBuffer<uint> SlotOfRow;
+    public uint Slots;
+    /// Per slot: its clusters (counted, then the scatter's cursor), its first.
+    public Buffer<uint> Counts;
+    public Buffer<uint> Offsets;
+    /// Per slot an indirect dispatch record (4 words).
+    public Buffer<uint> Args;
+    /// The clusters by slot.
+    public Buffer<uint2> Sorted;
+}
+
+/// Groups per row of a dispatch (the smallest maximum every device allows).
+const uint TranslucentGroupsPerRow = 65535;
+
+uint VisibleClusters(in BinArgs a) => Min(a.Counters[3], a.Capacity);
+
+[Compute(64, 1, 1)]
+public void TranslucentCount([DispatchThreadId] uint3 id, [Push] in BinArgs a)
+{
+    if (id.x >= VisibleClusters(a))
+        return;
+    uint slot = a.SlotOfRow[a.Clusters[id.x].x];
+    if (slot < a.Slots)
+        a.Counts.AtomicAdd(slot, 1);
+}
+
+[Compute(1, 1, 1)]
+public void TranslucentOffsets([Push] in BinArgs a)
+{
+    uint first = 0;
+    for (uint slot = 0; slot < a.Slots; slot++)
+    {
+        uint count = a.Counts[slot];
+        a.Offsets[slot] = first;
+        a.Args[slot * 4] = first;
+        a.Args[slot * 4 + 1] = Min(count, TranslucentGroupsPerRow);
+        a.Args[slot * 4 + 2] = (count + TranslucentGroupsPerRow - 1) / TranslucentGroupsPerRow;
+        a.Args[slot * 4 + 3] = 1;
+        a.Counts[slot] = 0;
+        first += count;
+    }
+}
+
+[Compute(64, 1, 1)]
+public void TranslucentScatter([DispatchThreadId] uint3 id, [Push] in BinArgs a)
+{
+    if (id.x >= VisibleClusters(a))
+        return;
+    uint2 entry = a.Clusters[id.x];
+    uint slot = a.SlotOfRow[entry.x];
+    if (slot >= a.Slots)
+        return;
+    a.Sorted[a.Offsets[slot] + a.Counts.AtomicAdd(slot, 1)] = entry;
+}
+
+/// The view the forward pass draws and lights.
+public struct ForwardView
+{
+    /// World to clip, with this frame's jitter. Column-major.
+    public float4x4 ViewProjection;
+    /// xyz: the eye.
+    public float4 Eye;
+    /// xyz: the direction the sun's light travels; w: 1 with a sun.
+    public float4 SunDirection;
+    /// rgb: the sun's illuminance over π.
+    public float4 Sun;
+    /// rgb: the sky's luminance, alike in every direction.
+    public float4 Sky;
+    /// The world cache (its irradiance over π), when `HasCache` is 1.
+    public SharcSources Cache;
+    public uint HasCache;
+    public uint Spare0;
+}
+
+/// `TranslucentMesh`'s arguments, `ForwardArgs<M>`'s for the mesh stage: the same words.
+public struct TranslucentMeshArgs
+{
+    public Uniform<ForwardView> View;
+    public ReadOnlyBuffer<InstanceData> Instances;
+    public ReadOnlyBuffer<InstanceTransforms> Transforms;
+    public ReadOnlyBuffer<MeshEntry> Meshes;
+    public ReadOnlyBuffer<MaterialEntry> Materials;
+    public uint Params;
+    public ReadOnlyBuffer<uint2> Sorted;
+    public Texture2D<float> Depth;
+    public AccelerationStructure Tlas;
+    /// Each slot's first cluster in `Sorted`, and the slot this draw is (the CPU knows it).
+    public ReadOnlyBuffer<uint> Offsets;
+    public uint Slot;
+}
+
+public struct ForwardArgs<M>
+{
+    public Uniform<ForwardView> View;
+    public ReadOnlyBuffer<InstanceData> Instances;
+    public ReadOnlyBuffer<InstanceTransforms> Transforms;
+    public ReadOnlyBuffer<MeshEntry> Meshes;
+    public ReadOnlyBuffer<MaterialEntry> Materials;
+    /// The permutation's parameter table.
+    public ReadOnlyBuffer<M> Params;
+    public ReadOnlyBuffer<uint2> Sorted;
+    /// The opaque depth (`R32Float`, reverse-Z).
+    public Texture2D<float> Depth;
+    public AccelerationStructure Tlas;
+    public ReadOnlyBuffer<uint> Offsets;
+    public uint Slot;
+}
+
+public struct TranslucentVertex
+{
+    [Position] public float4 Pos;
+    public float3 World;
+    public float3 Normal;
+    [Flat] public uint Row;
+}
+
+public struct TranslucentPrimitive
+{
+    [PrimitiveId] public uint Id;
+}
+
+[Mesh(128, 1, 1, MaxVertices = 128, MaxPrimitives = 128, Topology = MeshTopology.Triangle)]
+public void TranslucentMesh(
+    [GroupId] uint3 group,
+    [GroupThreadId] uint3 thread,
+    [Push] in TranslucentMeshArgs a,
+    MeshOutput<TranslucentVertex, TranslucentPrimitive> o)
+{
+    uint2 entry = a.Sorted[a.Offsets[a.Slot] + group.x + group.y * TranslucentGroupsPerRow];
+    uint row = entry.x;
+    MeshEntry mesh = a.Meshes[a.Instances[row].Mesh];
+    ReadOnlyByteBuffer pool = mesh.Pages;
+    Page page = LoadPage(pool, AddressSlot(entry.y));
+    Cluster c = LoadCluster(pool, page, AddressCluster(entry.y));
+    o.SetCounts(c.VertexCount, c.TriangleCount);
+    uint i = thread.x;
+    if (i < c.VertexCount)
+    {
+        InstanceTransforms t = a.Transforms[row];
+        float3 p = DecodePosition(pool, mesh, page, c.VertexOffset + i);
+        float3 world = Apply(t.Current, float4(p, 1));
+        float3 normal = ApplyNormal(t.Current, DecodeVertexNormal(pool, mesh, page, c.VertexOffset + i));
+        o.Vertices[i] = TranslucentVertex
+        {
+            Pos = a.View.Value.ViewProjection * float4(world, 1),
+            World = world,
+            Normal = normal,
+            Row = row,
+        };
+    }
+    if (i < c.TriangleCount)
+    {
+        o.Triangles[i] = LoadTriangle(pool, page, c, i) - c.VertexOffset;
+        o.Primitives[i] = TranslucentPrimitive { Id = i };
+    }
+}
+
+/// A translucent surface of permutation `M`, lit, premultiplied: rgb the light it sends to the
+/// eye (its diffuse and emission times its opacity, its specular whole), a its opacity.
+[Pixel]
+public float4 ForwardTranslucent<M>(in TranslucentVertex i, [Push] in ForwardArgs<M> a)
+    where M : ISurfaceMaterial<M>
+{
+    // Behind the opaque surface there: dropped.
+    if (i.Pos.z < a.Depth.Load((int2)i.Pos.xy))
+        Discard();
+    ForwardView v = a.View.Value;
+    InstanceData instance = a.Instances[i.Row];
+    float3 x = i.World;
+    float3 wo = Normalize(v.Eye.xyz - x);
+    float3 n = Normalize(i.Normal);
+    // Either side: a pane is seen from both.
+    if (Dot(n, wo) < 0)
+        n = -n;
+    SurfaceContext ctx = SurfaceContext
+    {
+        Position = x,
+        Normal = n,
+        GeometricNormal = n,
+        Uv0 = float2(0, 0),
+        InstanceId = i.Row,
+        CustomData = instance.Color,
+    };
+    M m = a.Params[a.Materials[instance.Material].Slot];
+    M.Tree tree = m.Surface(ctx);
+    ClosureWriter w = ClosureWriter.Open();
+    tree.Emit(ref w, float3(1, 1, 1), EmitContext { Normal = n, Wo = wo });
+    Proxy p = UnpackProxy(ClosureWriter.Finish(w));
+    float opacity = Saturate(m.Opacity(ctx));
+
+    // The sun, shadowed by one ray (the shadow maps have no pages where only translucent
+    // surfaces are).
+    Lobes sun = Lobes { Diffuse = float3(0, 0, 0), Specular = float3(0, 0, 0) };
+    float3 toward = -v.SunDirection.xyz;
+    if (v.SunDirection.w > 0 && Dot(p.Normal, toward) > 0
+        && Unoccluded(a.Tlas, Lift(x, p.Normal, v.Eye.xyz), x + toward * 100000))
+        sun = ProxyLobes(p, wo, toward, v.Sun.xyz * 3.14159265, true, MinLightRoughness);
+    // The light around: the world cache's irradiance where it has the voxel, else the sky's.
+    float3 around = v.Sky.xyz;
+    if (v.HasCache != 0)
+    {
+        float4 cached = SharcQuery(v.Cache, x, p.Normal);
+        if (cached.w > 0)
+            around = cached.xyz;
+    }
+    float3 diffuse = sun.Diffuse + p.Albedo * around + w.Emission;
+    float3 specular = sun.Specular + SpecularAlbedo(p.F0, p.Roughness, Saturate(Dot(p.Normal, wo))) * around;
+    return float4(diffuse * opacity + specular, opacity);
+}

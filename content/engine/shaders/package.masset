@@ -18,6 +18,7 @@ ShaderPackage
         `source:shaders/Lighting/Sharc.mshader`,
         `source:shaders/Material/Material.mshader`,
         `source:shaders/Material/Simple.mshader`,
+        `source:shaders/Material/Translucent.mshader`,
         `source:shaders/Post/Post.mshader`,
         `source:shaders/Post/Tsr.mshader`,
         `source:shaders/Scene/Geometry.mshader`,

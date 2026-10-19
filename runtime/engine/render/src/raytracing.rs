@@ -585,6 +585,8 @@ struct TlasArgs {
     records: u32,
     rows: u32,
     capacity: u32,
+    translucent: u32,
+    materials: u32,
 }
 
 /// `Marlin.Engine.Scene.TraceArgs`.
@@ -854,6 +856,8 @@ impl Tlas {
         let records = g.add_compute("WriteTlasInstances", |b| {
             let instances = b.read_buffer(gpu.instance_data, Access::ComputeRead);
             let transforms = b.read_buffer(gpu.instance_transforms, Access::ComputeRead);
+            let materials = b.read_buffer(gpu.materials, Access::ComputeRead);
+            let translucent = gpu.translucent;
             let meshes = b.read_buffer(gpu.meshes, Access::ComputeRead);
             let table = b.read_buffer(table, Access::ComputeRead);
             let records = b.write_buffer(records, Access::ComputeWrite);
@@ -867,6 +871,8 @@ impl Tlas {
                     records: ctx.uav(records),
                     rows,
                     capacity,
+                    translucent,
+                    materials: ctx.srv(materials),
                 });
                 ctx.dispatch(capacity.div_ceil(64), 1, 1);
             })

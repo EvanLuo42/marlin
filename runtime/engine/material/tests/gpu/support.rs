@@ -5,7 +5,8 @@
 use marlin_cook_render::cook_pairing;
 use marlin_gpu_test_support::{Image, Shader, engine_shaders, hardware_device};
 use marlin_material::{
-    BAKE, DefaultMaterial, MaterialDebug, MaterialShaders, Materials, RESOLVE, SimpleSources,
+    BAKE, DefaultMaterial, FORWARD, MaterialDebug, MaterialShaders, Materials, RESOLVE,
+    SimpleSources, TranslucentInputs,
 };
 use marlin_math::{Transform, Vec3};
 use marlin_render::asset::{PairingPattern, PairingPatternView};
@@ -43,6 +44,8 @@ pub const HEIGHT: u32 = 64;
 pub const DEFAULT: u32 = 0;
 pub const STRIPES: u32 = 1;
 pub const GLOW: u32 = 2;
+/// Translucent (R4e).
+pub const GLASS: u32 = 3;
 
 pub struct Harness {
     pub device: &'static Device,
@@ -130,7 +133,18 @@ impl Harness {
         let default = register("Marlin.Engine.DefaultMaterial");
         let stripes = register("Material.Stripes");
         let glow = register("Material.Glow");
-        assert_eq!((default, stripes, glow), (DEFAULT, STRIPES, GLOW));
+        let glass = materials
+            .register_translucent(
+                device,
+                "Material.Glass",
+                permutation(&FORWARD, "Material.Glass"),
+                permutation(&BAKE, "Material.Glass"),
+            )
+            .unwrap();
+        assert_eq!(
+            (default, stripes, glow, glass),
+            (DEFAULT, STRIPES, GLOW, GLASS)
+        );
         let lighting = Lighting::new(device, engine_shaders(&[Lighting::ENTRY])[0]).unwrap();
         let tlas = Tlas::new(
             device,
@@ -215,7 +229,11 @@ impl Harness {
                 &StreamingShaders::from_modules(engine_shaders(&StreamingShaders::ENTRIES)),
             )
             .unwrap(),
-            scene: RenderScene::new(),
+            scene: {
+                let mut scene = RenderScene::new();
+                scene.set_translucent(materials.translucent());
+                scene
+            },
             scatter,
             vis,
             materials,
@@ -641,6 +659,17 @@ impl Harness {
                         height,
                     );
                 }
+                // The translucent surfaces over it (R4e).
+                let clusters = vis.add_translucent_view(g, meshes, scene, gpu, &v, &view);
+                let inputs = TranslucentInputs {
+                    clusters,
+                    depth: v.depth,
+                    rt,
+                    cache,
+                    environment: env,
+                };
+                lit = materials
+                    .add_translucent_passes(g, scene, gpu, lit, inputs, camera, width, height);
                 g.readback_texture(lit)
             })
             .unwrap();

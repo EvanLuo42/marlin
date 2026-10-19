@@ -46,4 +46,4 @@ pub use meshes::{
 };
 pub use post::{HDR_FORMAT, PostOutput, PostProcess, PostSettings, PostShaders};
 pub use scene::{GpuScene, RenderScene, ScatterShader, SceneIds, SceneUpdates};
-pub use visibility::{Visibility, VisibilityOutput, VisibilityShaders};
+pub use visibility::{TranslucentClusters, Visibility, VisibilityOutput, VisibilityShaders};

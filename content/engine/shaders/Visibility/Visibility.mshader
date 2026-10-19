@@ -109,6 +109,9 @@ public struct View
     public uint ShadowDrawnBase;
     /// Entries `ShadowDraws` holds.
     public uint ShadowDrawCapacity;
+    /// The permutations that draw translucently, a bit each: the `TranslucentView` mode culls only
+    /// their instances, every other only the rest (0009 §8).
+    public uint Translucent;
 }
 
 public struct CullArgs
@@ -142,6 +145,7 @@ public struct CullArgs
     public Buffer<uint2> ShadowDraws;
     /// `TestHzb` | `SecondPass`.
     public uint Pass;
+    public ReadOnlyBuffer<MaterialEntry> Materials;
 }
 
 /// `CullArgs.Pass`: test against `Hzb`.
@@ -151,6 +155,8 @@ const uint SecondPass = 2;
 
 /// `View.Mode`: an orthographic shadow view: no perspective, pages instead of a screen.
 const uint Orthographic = 1;
+/// `View.Mode`: the translucent instances of a camera view, for the forward pass (0009 §8).
+const uint TranslucentView = 2;
 
 /// Groups per row of a dispatch (the smallest maximum every device allows); more go to rows.
 const uint GroupsPerRow = 65535;
@@ -294,6 +300,11 @@ public void InstanceCull([DispatchThreadId] uint3 id, [Push] in CullArgs a)
     InstanceData instance = a.Instances[row];
     // Hidden, or removed (the scatter hides removed rows).
     if ((instance.Flags & 1) != 0)
+        return;
+    // The translucent view takes the translucent instances, every other view the rest.
+    uint permutation = instance.Material != 0xFFFFFFFF ? a.Materials[instance.Material].Permutation : 32;
+    bool translucent = permutation < 32 && ((v.Translucent >> permutation) & 1) != 0;
+    if (translucent != ((v.Mode & TranslucentView) != 0))
         return;
     MeshEntry mesh = a.Meshes[instance.Mesh];
     if (mesh.Resident == 0)

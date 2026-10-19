@@ -13,7 +13,9 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use marlin_containers::{HashMap, HashMapExt};
-use marlin_material::{BAKE, DEFAULT_PERMUTATION, MaterialShaders, Materials, RESOLVE};
+use marlin_material::{
+    BAKE, DEFAULT_PERMUTATION, MaterialShaders, Materials, RESOLVE, TranslucentInputs,
+};
 use marlin_math::{Transform, UVec2, Vec2};
 use marlin_render::Environment;
 use marlin_render::asset::PairingPatternView;
@@ -140,6 +142,7 @@ impl RenderSide {
             bind_one(default_bake, &BAKE)?,
         )?;
         debug_assert_eq!(default, DEFAULT_PERMUTATION);
+        let translucent = materials.translucent();
         Ok(Self {
             meshes: Meshes::new(
                 device,
@@ -163,7 +166,11 @@ impl RenderSide {
             },
             sharc_view: false,
             post: PostProcess::new(device, &PostShaders::bind(engine)?, output)?,
-            scene: RenderScene::with_ids(ids),
+            scene: {
+                let mut scene = RenderScene::with_ids(ids);
+                scene.set_translucent(translucent);
+                scene
+            },
             scatter: ScatterShader::new(device, bind_one(engine, &ScatterShader::ENTRY)?)?,
             dt: 0.0,
             camera: None,
@@ -299,9 +306,13 @@ impl RenderSide {
         let seed = *frame as u32;
         let tiles = light_tiles.add_passes(g, scene, seed);
         let scene: &'g RenderScene = scene;
+        // `scene` becomes the HDR picture below.
+        let world = scene;
         let changed_lights = scene.light_changes();
         let visibility: &'g Visibility = visibility;
         let env = *scene.environment();
+        // The opaque visibility, which the translucent view culls against.
+        let mut opaque = None;
         let lit = camera.map(|camera| {
             let view = ViewDesc {
                 id: MAIN_VIEW,
@@ -311,6 +322,7 @@ impl RenderSide {
                 height,
             };
             let vis = visibility.add_passes(g, meshes, scene, gpu, pool, &view);
+            opaque = Some((vis, view));
             let out = materials.add_passes(g, gpu, &vis, camera, *previous, width, height);
             let material = out.material;
             let shadow = vsm.add_passes(
@@ -420,6 +432,21 @@ impl RenderSide {
                 width,
                 height,
             );
+        }
+        // The translucent surfaces over it (0009 §8), if there are any.
+        if let (Some((vis, view)), Some((_, _, depth, _, camera))) = (opaque, lit)
+            && !world.translucent_instances().is_empty()
+        {
+            let clusters = visibility.add_translucent_view(g, meshes, world, gpu, &vis, &view);
+            let inputs = TranslucentInputs {
+                clusters,
+                depth,
+                rt,
+                cache,
+                environment: env,
+            };
+            scene = materials
+                .add_translucent_passes(g, world, gpu, scene, inputs, camera, width, height);
         }
         // The radiance cache's view, in place of the lit scene.
         if let (Some(sharc), Some(cache), true, Some((material, _, depth, _, _))) =

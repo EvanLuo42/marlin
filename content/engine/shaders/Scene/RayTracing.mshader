@@ -37,6 +37,9 @@ public struct TlasArgs
     /// inactive).
     public uint Rows;
     public uint Capacity;
+    /// The permutations that draw translucently, a bit each (0009 §8): not in the TLAS.
+    public uint Translucent;
+    public ReadOnlyBuffer<MaterialEntry> Materials;
 }
 
 [Compute(64, 1, 1)]
@@ -50,8 +53,11 @@ public void WriteTlasInstances([DispatchThreadId] uint3 id, [Push] in TlasArgs a
     {
         InstanceData data = a.Instances[i];
         MeshEntry mesh = a.Meshes[data.Mesh];
-        // A removed row reads as hidden; a mesh not on the GPU has no BLAS either.
-        if ((data.Flags & InstanceHidden) == 0 && mesh.Resident != 0)
+        // A removed row reads as hidden; a mesh not on the GPU has no BLAS either. Translucent
+        // instances are the forward pass's alone (for now nothing they cover is hidden from rays).
+        uint permutation = data.Material != 0xFFFFFFFF ? a.Materials[data.Material].Permutation : 32;
+        bool translucent = permutation < 32 && ((a.Translucent >> permutation) & 1) != 0;
+        if ((data.Flags & InstanceHidden) == 0 && mesh.Resident != 0 && !translucent)
             blas = a.BlasTable[mesh.Slot];
     }
     if (blas.x == 0 && blas.y == 0)

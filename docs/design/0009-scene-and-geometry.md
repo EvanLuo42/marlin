@@ -241,6 +241,45 @@ visbuffer ─▶ "Classify"：每个像素 → 材质 permutation id，统计每
 - **低分辨率半透明**：粒子这类可以画进半分辨率的目标，再按深度感知上采样合成。
 - **TSR 的 reactive mask**：半透明和粒子写进一张反应遮罩，告诉 TSR 少用这些像素的历史。
 
+### 8.1 R4e1 的实现（2026-10-19）
+
+用户的选择：
+- 材质用接口成员声明半透明：`ISurfaceMaterial` 的 `Opacity` 默认方法和 `const BlendMode Blend`（0011 §2.2）；
+- R4e 先做核心部分，OIT 和低分辨率半透明留给粒子（0013 §8）；
+- 排序在 CPU 上、每个实例一个 draw。
+
+R4e1 定下的细节：
+
+- **谁是半透明**：用 `Materials::register_translucent` 注册的材质类型，它的 permutation 进入一个位掩码（`Materials::translucent` → `RenderScene::set_translucent` → `GpuScene::translucent`）。GPU 上按实例的材质表行判断，不经过 CPU 的实例标志。
+  - 不透明的可见性 pass 和 VSM 的阴影视图跳过这些实例；
+  - TLAS 也跳过：现在玻璃不挡光线，不投阴影，也不在 world cache 里。
+- **剔除**：可见性 pass 多了一个 `TranslucentView` 模式（`Visibility::add_translucent_view`），只要半透明实例。
+  - 和相机视图一样做视锥剔除、选 LOD 剪切，再用本帧最终的 HZB 做一遍遮挡剔除；
+  - 全部走硬件光栅，不画，只列出可见的 cluster；
+  - 读过的 slot 记进不透明 pass 的 `used`。半透明实例还不发页请求：网格靠不透明实例或预取流入（待定）。
+- **排序和绘制**（偏离上面"GPU 基数排序"的写法，用户的选择）：一个 draw 里换不了 pipeline，而每种材质类型是一个 pipeline，所以：
+  - CPU 按实例包围球心到相机的距离从远到近排序，每个实例分一个 slot；
+  - GPU 把 cluster 按 slot 分箱（`TranslucentCount` → `TranslucentOffsets` → `TranslucentScatter`）；
+  - CPU 按顺序给每个 slot 发一个间接 mesh draw（`dispatch_mesh_indirect`），用这个实例的材质类型的 pipeline。slot 编号直接 push，没有用间接记录的常量：带常量的间接命令在 Vulkan 上要走 device-generated commands，代价大得多。
+
+  GPU 排序加生成的全类型 switch（0011 §5.4）等材质注册表和代码生成（R5）。
+- **着色**（`ForwardTranslucent<M>`，共用的 mesh 阶段 `TranslucentMesh` 输出世界位置、法线和实例行）：
+  - 求值材质的 `Surface` 和 `Opacity`，合成 proxy lobe；
+  - 太阳：GGX + Lambert，阴影用一条 RT 射线。VSM 只在不透明像素请求过的地方有页，半透明的标页还没做；
+  - 环境光：world cache 在这个体素有项时用它的辐照度 / π（R4e 起 cache 存的就是这个，0010 §4.3），否则用天空；镜面是镜面反照率乘同一个值；
+  - 自发光照加。
+- **混合**：premultiplied，rgb = (漫反射 + 自发光) × 不透明度 + 镜面，a = 不透明度：玻璃不管多透明都照样反射。双面（不剔除背面）。
+- **深度**：不透明深度是计算出来的 `R32Float`，不是深度附件，所以在像素着色器里比较，被挡住的像素 `Discard()`（为此在着色器语言里实现了 `Discard`，0004 §5）。
+- **还没有**：
+  - 局部光源（clustered 光源网格，R4e2）；
+  - 折射和 TSR 的 reactive mask（R4e3）；
+  - UV（不透明的解算也还没有）；
+  - 半透明网格的页请求。
+- **测试**（marlin-material 的 `translucent.rs`，只有均匀天空，没有太阳、光源和 GI，所以每个值都能手算）：
+  - 墙前一块窗：中心像素等于 (色调 × L) × α + 镜面反照率 × L + (1 − α) × 墙；
+  - 两块重叠的窗，红在后、蓝在前：结果等于先红后蓝的合成，反过来的顺序算出来不一样（把排序反过来时这个测试会失败）；
+  - 墙后面的窗：像素保持墙的值。
+
 ## 9. 调试
 
 - 0008 §7 里列出的几何类调试视图：实例、cluster、三角形、LOD、HW/SW 比例、过度绘制。

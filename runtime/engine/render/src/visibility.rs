@@ -164,6 +164,8 @@ const TEST_HZB: u32 = 1;
 const SECOND_PASS: u32 = 2;
 /// `View.Mode`: an orthographic shadow view.
 const ORTHOGRAPHIC: u32 = 1;
+/// `View.Mode`: a camera view's translucent instances (0009 §8).
+const TRANSLUCENT_VIEW: u32 = 2;
 
 /// The HZB history's name.
 const HZB: &str = "VisHzb";
@@ -199,6 +201,7 @@ struct View {
     shadow_drawn_pages: u32,
     shadow_drawn_base: u32,
     shadow_draw_capacity: u32,
+    translucent: u32,
 }
 
 #[repr(C)]
@@ -221,6 +224,7 @@ struct CullArgs {
     occluded_clusters: u32,
     shadow_draws: u32,
     pass: u32,
+    materials: u32,
 }
 
 #[repr(C)]
@@ -291,6 +295,19 @@ pub struct ViewDesc {
     pub previous: Option<(Transform, Camera)>,
     pub width: u32,
     pub height: u32,
+}
+
+/// What [`Visibility::add_translucent_view`] makes: the visible clusters of the translucent
+/// instances, in no order (instance row, `slot << 12 | cluster`), `counters[CLUSTERS_FOUND]` of
+/// them (which may pass `capacity`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct TranslucentClusters<'g> {
+    pub clusters: BufferHandle<'g>,
+    pub counters: BufferHandle<'g>,
+    pub capacity: u32,
+    /// The page pool the clusters are read from, and the used-slot marks after the culling.
+    pub pages: BufferHandle<'g>,
+    pub used: BufferHandle<'g>,
 }
 
 /// What [`Visibility::add_passes`] makes.
@@ -577,6 +594,7 @@ impl Visibility {
             shadow_drawn_pages: 0,
             shadow_drawn_base: 0,
             shadow_draw_capacity: 0,
+            translucent: gpu.translucent,
         };
 
         let structured = |n: u32| BufferDesc::structured::<[u32; 2]>(u64::from(n));
@@ -699,6 +717,134 @@ impl Visibility {
         }
     }
 
+    /// Declares the culling of `desc`'s translucent instances (0009 §8: those whose material's
+    /// permutation is in `gpu.translucent`) for the forward pass: frustum, LOD cut, and, with
+    /// `opaque`'s final HZB, occlusion by what the opaque passes drew (this frame's camera, one
+    /// pass). Nothing is drawn: the visible clusters are listed for the forward pass to bin
+    /// by instance, all for the hardware raster. The slots read are marked in `opaque`'s used
+    /// list. Translucent instances make no page requests yet: their meshes stream as opaque
+    /// ones and prefetches ask.
+    #[allow(clippy::too_many_arguments, reason = "one view's inputs")]
+    pub fn add_translucent_view<'g>(
+        &'g self,
+        g: &mut RenderGraph<'g>,
+        meshes: &Meshes,
+        scene: &RenderScene,
+        gpu: GpuScene<'g>,
+        opaque: &VisibilityOutput<'g>,
+        desc: &ViewDesc,
+    ) -> TranslucentClusters<'g> {
+        let (width, height) = (desc.width, desc.height);
+        let vp = crate::view_projection(desc.camera, width, height);
+        let translucent: Vec<u32> = scene.translucent_instances().iter().map(|t| t.0).collect();
+        let (mut nodes, mut parts, mut clusters, mut levels) = (0u64, 0u64, 0u64, 0u32);
+        for (row, mesh, _) in scene.drawable() {
+            if !translucent.contains(&row) {
+                continue;
+            }
+            let c = meshes.dag_counts(mesh);
+            nodes += u64::from(c.nodes);
+            parts += u64::from(c.parts);
+            clusters += u64::from(c.clusters);
+            levels = levels.max(c.depth);
+        }
+        let levels = levels.max(1);
+        let node_capacity = capacity(nodes, self.max_nodes);
+        let part_capacity = capacity(parts, self.max_parts);
+        let cluster_capacity = capacity(clusters, self.max_clusters.min(MAX_CLUSTERS / 2));
+        let rows = scene.instance_rows();
+        let ([hzb_w, hzb_h], hzb_mips) = hzb_size(width, height);
+        let p = desc.camera.0.translation;
+        let view = View {
+            view_projection: vp.to_cols_array(),
+            previous_view_projection: vp.to_cols_array(),
+            planes: planes(&vp),
+            eye: [
+                p.x,
+                p.y,
+                p.z,
+                height as f32 / (2.0 * marlin_math::scalar::tan(desc.camera.1.fov_y * 0.5)),
+            ],
+            lod_error_pixels: self.lod_error_pixels,
+            instance_rows: rows,
+            node_capacity,
+            part_capacity,
+            cluster_capacity,
+            request_capacity: 0,
+            occluded_capacity: 1,
+            hzb_mips,
+            hzb_size: [hzb_w, hzb_h],
+            // All for the hardware raster: the forward pass blends.
+            sw_edge_pixels: 0.0,
+            width,
+            height,
+            mode: TRANSLUCENT_VIEW,
+            shadow_pages: 0,
+            shadow_pool: 0,
+            shadow_page_base: 0,
+            shadow_pages_per_side: 0,
+            shadow_page_size: 0,
+            shadow_pool_pages_per_row: 0,
+            shadow_page_offset: [0; 2],
+            shadow_drawn_pages: 0,
+            shadow_drawn_base: 0,
+            shadow_draw_capacity: 0,
+            translucent: gpu.translucent,
+        };
+        let structured = |n: u32| BufferDesc::structured::<[u32; 2]>(u64::from(n));
+        let mut lists = Lists {
+            nodes: g.create_buffer("TlNodes", structured(node_capacity)),
+            parts: g.create_buffer("TlParts", structured(part_capacity)),
+            counters: g.create_buffer(
+                "TlCounters",
+                BufferDesc::structured::<u32>(counters::WORDS as u64),
+            ),
+            args: g.create_buffer("TlArgs", BufferDesc::structured::<u32>(24)),
+            clusters: g.create_buffer("TlClusters", structured(cluster_capacity)),
+            requests: g.create_buffer("TlRequests", structured(1)),
+            used: opaque.used,
+            occluded_instances: g
+                .create_buffer("TlOccludedInstances", BufferDesc::structured::<u32>(1)),
+            occluded_clusters: g.create_buffer("TlOccludedClusters", structured(1)),
+            shadow_draws: None,
+        };
+        lists.counters = g.add_compute("TlReset", |b| {
+            let counters = b.write_buffer(lists.counters, Access::ComputeWrite);
+            (counters, move |ctx: &mut PassContext<'_>| {
+                ctx.set_pipeline(&self.reset);
+                ctx.push(&CullArgs {
+                    counters: ctx.uav(counters),
+                    ..CullArgs::default()
+                });
+                ctx.dispatch(1, 1, 1);
+            })
+        });
+        // Against the final HZB, with this frame's camera: what is occluded is dropped.
+        let inputs = PassInputs {
+            gpu,
+            pages: opaque.pages,
+            view,
+            hzb: opaque.hzb,
+            pass: if opaque.hzb.is_some() {
+                TEST_HZB | SECOND_PASS
+            } else {
+                0
+            },
+            shadow_pages: None,
+            shadow_drawn: None,
+        };
+        lists = self.instance_cull(g, lists, inputs, rows);
+        lists = self.traverse(g, lists, inputs, levels);
+        lists = self.cluster_cull(g, lists, inputs);
+        TranslucentClusters {
+            clusters: lists.clusters,
+            counters: lists.counters,
+            capacity: cluster_capacity,
+            pages: opaque.pages,
+            used: lists.used,
+        }
+    }
+
     /// Declares shadow views (`Vsm`'s levels, 0010 §5.3): for each of `views`, the passes cull
     /// the drawable instances of `scene` against its orthographic box, pick their LOD cut at its
     /// texel size and draw the clusters over the pages it draws this frame (`page_table` entries
@@ -777,6 +923,7 @@ impl Visibility {
                 shadow_drawn_pages: 0,
                 shadow_drawn_base: desc.drawn_base,
                 shadow_draw_capacity: draw_capacity,
+                translucent: gpu.translucent,
             };
             lists.push(Lists {
                 nodes: g.create_buffer("ShadowNodes", structured(node_capacity)),
@@ -916,6 +1063,7 @@ impl Visibility {
             occluded_clusters: ctx.uav(l.occluded_clusters),
             shadow_draws: l.shadow_draws.map_or(0, |d| ctx.uav(d)),
             pass: p.pass,
+            materials: ctx.srv(p.gpu.materials),
         }
     }
 
@@ -961,6 +1109,7 @@ impl Visibility {
                 instance_transforms: b.read_buffer(p.gpu.instance_transforms, Access::ComputeRead),
                 instance_bounds: b.read_buffer(p.gpu.instance_bounds, Access::ComputeRead),
                 meshes: b.read_buffer(p.gpu.meshes, Access::ComputeRead),
+                materials: b.read_buffer(p.gpu.materials, Access::ComputeRead),
                 ..p.gpu
             };
             // The clusters are read from the pool through the mesh table's view.

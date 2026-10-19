@@ -12,10 +12,15 @@ use marlin_render::{Camera, GpuScene};
 use marlin_render_graph::{
     Access, BufferDesc, BufferHandle, PassContext, RenderGraph, TextureDesc, TextureHandle,
 };
-use marlin_rhi::{ComputePipeline, ComputePipelineDesc, Device, Format, Result, ShaderModule};
+use marlin_rhi::{
+    BlendState, ColorTargetState, ColorWrites, ComputePipeline, ComputePipelineDesc, CullMode,
+    Device, Format, MeshPipeline, MeshPipelineDesc, MultisampleState, RasterState, Result,
+    ShaderModule,
+};
 use marlin_serial::cooked::Pod;
 use marlin_shader::asset::ShaderLibrary;
 use marlin_shader::bind::{BindError, EntryDesc, bind};
+use marlin_shader::reflect::Stage;
 
 /// The material passes' shaders (`Marlin.Engine.Material`), but for the resolves, which each
 /// material type brings ([`Materials::register`]).
@@ -25,24 +30,52 @@ pub struct MaterialShaders<'a> {
     pub bins: ShaderModule<'a>,
     pub scatter: ShaderModule<'a>,
     pub debug: ShaderModule<'a>,
+    /// The translucent forward pass's binning and its mesh stage (`Material/Translucent.mshader`).
+    pub translucent_count: ShaderModule<'a>,
+    pub translucent_offsets: ShaderModule<'a>,
+    pub translucent_scatter: ShaderModule<'a>,
+    pub translucent_mesh: ShaderModule<'a>,
 }
 
 impl<'a> MaterialShaders<'a> {
     /// The entries, in field order.
-    pub const ENTRIES: [EntryDesc; 4] = [
+    pub const ENTRIES: [EntryDesc; 8] = [
         EntryDesc::compute("Marlin.Engine.Material.Classify").push::<ClassifyArgs>(),
         EntryDesc::compute("Marlin.Engine.Material.Bins").push::<ClassifyArgs>(),
         EntryDesc::compute("Marlin.Engine.Material.Scatter").push::<ClassifyArgs>(),
         EntryDesc::compute("Marlin.Engine.Material.MaterialDebug").push::<DebugArgs>(),
+        EntryDesc::compute("Marlin.Engine.Material.TranslucentCount")
+            .push::<crate::translucency::BinArgs>(),
+        EntryDesc::compute("Marlin.Engine.Material.TranslucentOffsets")
+            .push::<crate::translucency::BinArgs>(),
+        EntryDesc::compute("Marlin.Engine.Material.TranslucentScatter")
+            .push::<crate::translucency::BinArgs>(),
+        EntryDesc::new("Marlin.Engine.Material.TranslucentMesh", Stage::Mesh)
+            .push::<crate::translucency::ForwardArgs>(),
     ];
 
     /// The shaders from `modules`, in [`ENTRIES`](Self::ENTRIES) order.
-    pub fn from_modules([classify, bins, scatter, debug]: [ShaderModule<'a>; 4]) -> Self {
+    pub fn from_modules(
+        [
+            classify,
+            bins,
+            scatter,
+            debug,
+            translucent_count,
+            translucent_offsets,
+            translucent_scatter,
+            translucent_mesh,
+        ]: [ShaderModule<'a>; 8],
+    ) -> Self {
         Self {
             classify,
             bins,
             scatter,
             debug,
+            translucent_count,
+            translucent_offsets,
+            translucent_scatter,
+            translucent_mesh,
         }
     }
 
@@ -57,6 +90,12 @@ impl<'a> MaterialShaders<'a> {
 /// indirect record's constant.
 pub const RESOLVE: EntryDesc =
     EntryDesc::compute("Marlin.Engine.Material.ResolvePixel").push_bytes(128);
+
+/// The forward entry a translucent type instantiates (0009 §8): a pixel stage over
+/// `TranslucentMesh`, the same arguments.
+pub const FORWARD: EntryDesc =
+    EntryDesc::new("Marlin.Engine.Material.ForwardTranslucent", Stage::Pixel)
+        .push::<crate::translucency::ForwardArgs>();
 
 /// The material buffer's format: the dense part, 16 bytes a pixel (0011 §4.1).
 pub const MATERIAL_FORMAT: Format = Format::Rgba32Uint;
@@ -135,10 +174,13 @@ pub enum MaterialDebug {
     Velocity,
 }
 
-/// A material type's resolve permutation.
+/// A material type's permutations: an opaque type's resolve, a translucent one's forward draw
+/// (0009 §8).
 pub struct MaterialType {
     pub name: String,
-    pipeline: ComputePipeline,
+    pipeline: Option<ComputePipeline>,
+    /// Its `ForwardTranslucent` permutation over the shared mesh stage, if it is translucent.
+    pub(crate) forward: Option<MeshPipeline>,
     /// Its `BakeSimple` permutation (`crate::simple`).
     pub(crate) bake: ComputePipeline,
 }
@@ -163,6 +205,11 @@ pub struct Materials {
     bins: ComputePipeline,
     scatter: ComputePipeline,
     debug: ComputePipeline,
+    pub(crate) translucent_count: ComputePipeline,
+    pub(crate) translucent_offsets: ComputePipeline,
+    pub(crate) translucent_scatter: ComputePipeline,
+    /// The translucent mesh stage's code and entry, for each translucent type's pipeline.
+    translucent_mesh: (Vec<u8>, String),
     types: Vec<MaterialType>,
 }
 
@@ -179,6 +226,13 @@ impl Materials {
             bins: compute(shaders.bins)?,
             scatter: compute(shaders.scatter)?,
             debug: compute(shaders.debug)?,
+            translucent_count: compute(shaders.translucent_count)?,
+            translucent_offsets: compute(shaders.translucent_offsets)?,
+            translucent_scatter: compute(shaders.translucent_scatter)?,
+            translucent_mesh: (
+                shaders.translucent_mesh.code.to_vec(),
+                shaders.translucent_mesh.entry.into(),
+            ),
             types: Vec::new(),
         })
     }
@@ -201,13 +255,66 @@ impl Materials {
         })?;
         self.types.push(MaterialType {
             name: name.into(),
-            pipeline,
+            pipeline: Some(pipeline),
+            forward: None,
             bake: device.create_compute_pipeline(&ComputePipelineDesc {
                 shader: bake,
                 cache: None,
             })?,
         });
         Ok(self.types.len() as u32 - 1)
+    }
+
+    /// Adds a translucent material type (its `Blend` translucent, 0009 §8): its forward
+    /// permutation (`Marlin.Engine.Material.ForwardTranslucent` instantiated with the type,
+    /// [`FORWARD`]) over the shared mesh stage, drawn into `HDR_FORMAT` blending premultiplied,
+    /// and its simplified-material bake. Returns the permutation (below 32: the translucent ones
+    /// are a mask, [`Self::translucent`]).
+    pub fn register_translucent(
+        &mut self,
+        device: &Device,
+        name: &str,
+        forward: ShaderModule<'_>,
+        bake: ShaderModule<'_>,
+    ) -> Result<u32> {
+        let (code, entry) = &self.translucent_mesh;
+        let forward = device.create_mesh_pipeline(&MeshPipelineDesc {
+            amplification: None,
+            mesh: ShaderModule { code, entry },
+            pixel: Some(forward),
+            // Either side: a pane is seen from both.
+            raster: RasterState {
+                cull: CullMode::None,
+                ..RasterState::default()
+            },
+            depth: None,
+            color_targets: &[ColorTargetState {
+                format: marlin_render::HDR_FORMAT,
+                blend: Some(BlendState::PREMULTIPLIED),
+                write_mask: ColorWrites::ALL,
+            }],
+            multisample: MultisampleState::NONE,
+            cache: None,
+        })?;
+        self.types.push(MaterialType {
+            name: name.into(),
+            pipeline: None,
+            forward: Some(forward),
+            bake: device.create_compute_pipeline(&ComputePipelineDesc {
+                shader: bake,
+                cache: None,
+            })?,
+        });
+        Ok(self.types.len() as u32 - 1)
+    }
+
+    /// The translucent permutations, a bit each: what `RenderScene::set_translucent` takes.
+    pub fn translucent(&self) -> u32 {
+        self.types
+            .iter()
+            .enumerate()
+            .filter(|(p, t)| *p < 32 && t.forward.is_some())
+            .fold(0, |mask, (p, _)| mask | (1 << p))
     }
 
     pub fn types(&self) -> &[MaterialType] {
@@ -388,7 +495,11 @@ impl Materials {
                         permutation: 0,
                     };
                     for (p, record) in records.iter().enumerate() {
-                        ctx.set_pipeline(&self.types[p].pipeline);
+                        // A translucent type resolves nothing: it is not in the visibility buffer.
+                        let Some(pipeline) = &self.types[p].pipeline else {
+                            continue;
+                        };
+                        ctx.set_pipeline(pipeline);
                         ctx.push(&ResolveArgs {
                             params: ctx.srv(params[p]),
                             permutation: p as u32,
