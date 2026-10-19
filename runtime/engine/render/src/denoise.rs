@@ -110,6 +110,8 @@ struct Constants {
     radius_scale: f32,
     pixel_angle: f32,
     fast_frames: f32,
+    taps: u32,
+    spare: [u32; 3],
 }
 
 /// `Marlin.Engine.Lighting.DenoiseArgs`.
@@ -130,6 +132,9 @@ struct DenoiseArgs {
     variance: u32,
     output: u32,
     fast_out: u32,
+    position_out: u32,
+    position: u32,
+    current_surface: u32,
     surface_out: u32,
     variance_out: u32,
     scene: u32,
@@ -238,6 +243,8 @@ impl Denoiser {
             radius_scale,
             pixel_angle: 2.0 * tan(camera.fov_y * 0.5) / height.max(1) as f32,
             fast_frames: self.fast_frames.max(1.0),
+            taps: 16,
+            spare: [0; 3],
         };
         let groups = (width.div_ceil(8), height.div_ceil(8));
         let texture = |g: &mut RenderGraph<'g>, name, format| {
@@ -246,55 +253,59 @@ impl Denoiser {
         let slow = texture(g, "DnSlow", ACCUMULATION_FORMAT);
         let signal_variance = texture(g, "DnSignalVariance", Format::R16Float);
         let variance = texture(g, "DnVariance", Format::R16Float);
+        let position = texture(g, "DnPosition", Format::Rgba16Float);
 
         let full = constants(1.0);
-        let (slow, fast_cur, signal_variance) = g.add_compute("DenoiseTemporal", |b| {
-            let material = b.read_texture(material, Access::ComputeRead);
-            let depth = b.read_texture(depth, Access::ComputeRead);
-            let velocity = b.read_texture(velocity, Access::ComputeRead);
-            let light = b.read_texture(signal.light, Access::ComputeRead);
-            let hints = b.read_texture(signal.hints, Access::ComputeRead);
-            let previous = previous.map(|(h, f, s)| {
+        let (slow, fast_cur, signal_variance, position, surface_cur) =
+            g.add_compute("DenoiseTemporal", |b| {
+                let material = b.read_texture(material, Access::ComputeRead);
+                let depth = b.read_texture(depth, Access::ComputeRead);
+                let velocity = b.read_texture(velocity, Access::ComputeRead);
+                let light = b.read_texture(signal.light, Access::ComputeRead);
+                let hints = b.read_texture(signal.hints, Access::ComputeRead);
+                let previous = previous.map(|(h, f, s)| {
+                    (
+                        b.read_texture(h, Access::ComputeRead),
+                        b.read_texture(f, Access::ComputeRead),
+                        b.read_texture(s, Access::ComputeRead),
+                    )
+                });
+                let output = b.write_texture(slow, Access::ComputeWrite);
+                let fast_out = b.write_texture(fast.cur, Access::ComputeWrite);
+                let surface_out = b.write_texture(surface.cur, Access::ComputeWrite);
+                let position_out = b.write_texture(position, Access::ComputeWrite);
+                let variance = b.write_texture(signal_variance, Access::ComputeWrite);
                 (
-                    b.read_texture(h, Access::ComputeRead),
-                    b.read_texture(f, Access::ComputeRead),
-                    b.read_texture(s, Access::ComputeRead),
+                    (output, fast_out, variance, position_out, surface_out),
+                    move |ctx: &mut PassContext<'_>| {
+                        ctx.set_pipeline(&self.temporal_pass);
+                        // Without history its textures go unread: the signal stands in.
+                        let (history, previous_fast, previous_surface) = previous.map_or(
+                            (ctx.srv(light), ctx.srv(light), ctx.srv(light)),
+                            |(h, f, s)| (ctx.srv(h), ctx.srv(f), ctx.srv(s)),
+                        );
+                        let args = DenoiseArgs {
+                            constants: ctx.upload(&full),
+                            material: ctx.srv(material),
+                            depth: ctx.srv(depth),
+                            velocity: ctx.srv(velocity),
+                            signal: ctx.srv(light),
+                            hints: ctx.srv(hints),
+                            history,
+                            previous_surface,
+                            previous_fast,
+                            output: ctx.uav(output),
+                            fast_out: ctx.uav(fast_out),
+                            surface_out: ctx.uav(surface_out),
+                            position_out: ctx.uav(position_out),
+                            variance_out: ctx.uav(variance),
+                            ..DenoiseArgs::default()
+                        };
+                        ctx.push(&args);
+                        ctx.dispatch(groups.0, groups.1, 1);
+                    },
                 )
             });
-            let output = b.write_texture(slow, Access::ComputeWrite);
-            let fast_out = b.write_texture(fast.cur, Access::ComputeWrite);
-            let surface_out = b.write_texture(surface.cur, Access::ComputeWrite);
-            let variance = b.write_texture(signal_variance, Access::ComputeWrite);
-            (
-                (output, fast_out, variance),
-                move |ctx: &mut PassContext<'_>| {
-                    ctx.set_pipeline(&self.temporal_pass);
-                    // Without history its textures go unread: the signal stands in.
-                    let (history, previous_fast, previous_surface) = previous.map_or(
-                        (ctx.srv(light), ctx.srv(light), ctx.srv(light)),
-                        |(h, f, s)| (ctx.srv(h), ctx.srv(f), ctx.srv(s)),
-                    );
-                    let args = DenoiseArgs {
-                        constants: ctx.upload(&full),
-                        material: ctx.srv(material),
-                        depth: ctx.srv(depth),
-                        velocity: ctx.srv(velocity),
-                        signal: ctx.srv(light),
-                        hints: ctx.srv(hints),
-                        history,
-                        previous_surface,
-                        previous_fast,
-                        output: ctx.uav(output),
-                        fast_out: ctx.uav(fast_out),
-                        surface_out: ctx.uav(surface_out),
-                        variance_out: ctx.uav(variance),
-                        ..DenoiseArgs::default()
-                    };
-                    ctx.push(&args);
-                    ctx.dispatch(groups.0, groups.1, 1);
-                },
-            )
-        });
 
         let (accumulated, variance) = g.add_compute("DenoiseClamp", |b| {
             let material = b.read_texture(material, Access::ComputeRead);
@@ -325,14 +336,17 @@ impl Denoiser {
         });
 
         let mut blurred = accumulated;
-        for (name, scale) in [("DenoiseBlur", 1.0), ("DenoisePostBlur", 0.5)] {
+        for (name, scale, taps) in [("DenoiseBlur", 1.0, 16), ("DenoisePostBlur", 0.5, 8)] {
             let target =
                 g.create_texture(name, GraphTextureDesc::new_2d(width, height, FAST_FORMAT));
-            let c = constants(scale);
+            let c = Constants {
+                taps,
+                ..constants(scale)
+            };
             let input = blurred;
             blurred = g.add_compute(name, |b| {
-                let material = b.read_texture(material, Access::ComputeRead);
-                let depth = b.read_texture(depth, Access::ComputeRead);
+                let position = b.read_texture(position, Access::ComputeRead);
+                let surface = b.read_texture(surface_cur, Access::ComputeRead);
                 let light = b.read_texture(signal.light, Access::ComputeRead);
                 let hints = b.read_texture(signal.hints, Access::ComputeRead);
                 let input = b.read_texture(input, Access::ComputeRead);
@@ -342,8 +356,8 @@ impl Denoiser {
                     ctx.set_pipeline(&self.blur_pass);
                     let args = DenoiseArgs {
                         constants: ctx.upload(&c),
-                        material: ctx.srv(material),
-                        depth: ctx.srv(depth),
+                        position: ctx.srv(position),
+                        current_surface: ctx.srv(surface),
                         signal: ctx.srv(light),
                         hints: ctx.srv(hints),
                         input: ctx.srv(input),
@@ -386,7 +400,9 @@ impl Denoiser {
             firefly_sigma: 0.0,
             radius_scale: 0.0,
             pixel_angle: 0.0,
-            fast_frames: 4.0,
+            fast_frames: 0.0,
+            taps: 0,
+            spare: [0; 3],
         };
         g.add_compute("DenoiseCompose", |b| {
             let light = b.read_texture(light, Access::ComputeRead);

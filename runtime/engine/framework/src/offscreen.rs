@@ -3,7 +3,7 @@
 
 use alloc::vec::Vec;
 
-use marlin_render_graph::{FrameContext, FrameContextDesc, TextureDesc};
+use marlin_render_graph::{FrameContext, FrameContextDesc, PassTiming, TextureDesc};
 use marlin_rhi::{ClearValue, Device, Format};
 
 use crate::delta::{RenderDelta, RenderSide};
@@ -32,6 +32,11 @@ impl Offscreen {
                 },
             )?,
         })
+    }
+
+    /// The GPU time of each pass of the latest frame whose timings are back (profiling).
+    pub fn gpu_timings(&self) -> &[PassTiming] {
+        self.frame.gpu_timings()
     }
 
     /// Applies `delta`, renders it, waits, and returns the pixels: RGBA8 as little-endian

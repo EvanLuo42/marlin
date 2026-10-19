@@ -57,6 +57,11 @@ public struct DenoiseConstants
     public float PixelAngle;
     /// The real frames the fast accumulation averages (few: it follows changes).
     public float FastFrames;
+    /// Taps of this blur: 16 or 8.
+    public uint Taps;
+    public uint Spare0;
+    public uint Spare1;
+    public uint Spare2;
 }
 
 public struct DenoiseArgs
@@ -82,6 +87,11 @@ public struct DenoiseArgs
     public Texture2D<float> Variance;
     public StorageTexture2D<float4> Output;
     public StorageTexture2D<float4> FastOut;
+    /// This frame's surfaces for the blurs: positions from the eye (w: 1 where a surface is), and
+    /// the normal and distance `SurfaceOut` holds.
+    public StorageTexture2D<float4> PositionOut;
+    public Texture2D<float4> Position;
+    public Texture2D<float4> CurrentSurface;
     public StorageTexture2D<float4> SurfaceOut;
     public StorageTexture2D<float> VarianceOut;
     /// The HDR scene the composition adds to.
@@ -160,12 +170,14 @@ public void DenoiseTemporal([DispatchThreadId] uint3 id, [Push] in DenoiseArgs a
         a.Output[px] = float4(0, 0, 0, 0);
         a.FastOut[px] = float4(0, 0, 0, 0);
         a.SurfaceOut[px] = float4(0, 0, 0, 0);
+        a.PositionOut[px] = float4(0, 0, 0, 0);
         a.VarianceOut[px] = 0;
         return;
     }
     float3 x = DenoiseWorldAt(c, id.xy, depth);
     float distance = Length(x - c.Eye.xyz);
     a.SurfaceOut[px] = float4(p.Normal, distance);
+    a.PositionOut[px] = float4(x - c.Eye.xyz, 1);
     float2 hints = a.Hints.Load(px);
     float novelty = Clamp(hints.x, 0.01, 1);
     float radius = Max(hints.y, 1);
@@ -297,18 +309,21 @@ public void DenoiseBlur([DispatchThreadId] uint3 id, [Push] in DenoiseArgs a)
         return;
     int2 px = (int2)id.xy;
     float4 center = a.Input.Load(px);
-    float depth = a.Depth.Load(px);
-    Proxy p = UnpackProxy(a.MaterialBuffer.Load(px));
-    if (depth <= 0 || p.Count == 0)
+    // The surfaces `DenoiseTemporal` wrote: position from the eye, and normal and distance.
+    float4 here = a.Position.Load(px);
+    float4 surface = a.CurrentSurface.Load(px);
+    if (here.w <= 0)
     {
         a.Output[px] = center;
         return;
     }
-    float3 x = DenoiseWorldAt(c, id.xy, depth);
-    float distance = Length(x - c.Eye.xyz);
+    float3 x = here.xyz;
+    float3 n = surface.xyz;
+    float distance = surface.w;
+    float2 hints = a.Hints.Load(px);
     // The independent frames behind it: frames times the novelty.
-    float frames = center.w * Clamp(a.Hints.Load(px).x, 0.01, 1);
-    float correlation = Max(a.Hints.Load(px).y, 1);
+    float frames = center.w * Clamp(hints.x, 0.01, 1);
+    float correlation = Max(hints.y, 1);
     // Wide while few samples are behind it, never narrower than the noise's blobs then; both
     // shrink as samples gather.
     float radius = Max(c.MaxRadius, correlation) / Sqrt(1 + frames);
@@ -328,21 +343,21 @@ public void DenoiseBlur([DispatchThreadId] uint3 id, [Push] in DenoiseArgs a)
     h = h ^ (h >> 15);
     float angle = (float)(h & 0xFFFF) / 65536.0 * 6.2831853;
     float2 rotation = float2(Cos(angle), Sin(angle));
-    for (uint i = 0; i < 16; i++)
+    // `Taps` of the 16, spread: every one, or every second.
+    uint stride = 16 / Clamp(c.Taps, 1, 16);
+    for (uint i = 0; i < 16; i += stride)
     {
         float2 d = Disk(i);
         float2 r = float2(d.x * rotation.x - d.y * rotation.y, d.x * rotation.y + d.y * rotation.x);
         int2 q = px + int2((int)Round(r.x * radius), (int)Round(r.y * radius));
         if (!Inside(c, q) || (q.x == px.x && q.y == px.y))
             continue;
-        float qDepth = a.Depth.Load(q);
-        Proxy qp = UnpackProxy(a.MaterialBuffer.Load(q));
-        if (qDepth <= 0 || qp.Count == 0)
+        float4 there = a.Position.Load(q);
+        if (there.w <= 0)
             continue;
-        float3 y = DenoiseWorldAt(c, (uint2)q, qDepth);
-        float plane = Abs(Dot(p.Normal, y - x)) / (0.02 * distance);
+        float plane = Abs(Dot(n, there.xyz - x)) / (0.02 * distance);
         float geometry = Saturate(1 - plane);
-        float facing = Pow(Saturate(Dot(p.Normal, qp.Normal)), 16);
+        float facing = Pow(Saturate(Dot(n, a.CurrentSurface.Load(q).xyz)), 16);
         float4 s = a.Input.Load(q);
         float luminance = Exp(-Abs(DenoiseLuminance(s.xyz) - lc) / (4 * deviation + 0.001 * lc + 1e-6));
         float kernel = Exp(-2 * Dot(d, d) * 2);
@@ -350,7 +365,8 @@ public void DenoiseBlur([DispatchThreadId] uint3 id, [Push] in DenoiseArgs a)
         sum += s.xyz * w;
         weights += w;
     }
-    a.Output[px] = float4(sum / weights, frames);
+    // The frames go on as they came: the next blur takes the novelty off itself.
+    a.Output[px] = float4(sum / weights, center.w);
 }
 
 [Compute(8, 8, 1)]

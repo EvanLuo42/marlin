@@ -106,7 +106,9 @@ public struct HistogramArgs
     public float InverseLogLuminanceRange;
 }
 
-/// Counts every pixel of the scene into the bin of its log luminance.
+/// Counts every pixel of the scene into the bin of its log luminance. A wave adds each of its
+/// distinct bins once, with how many of its pixels fall in it: a dark scene puts most pixels in a
+/// few bins, which one global atomic a pixel would fight over.
 [Compute(16, 16, 1)]
 public void Histogram([DispatchThreadId] uint3 id, [Push] in HistogramArgs a)
 {
@@ -120,7 +122,17 @@ public void Histogram([DispatchThreadId] uint3 id, [Push] in HistogramArgs a)
         float t = Saturate((Log2(luminance) - a.MinLogLuminance) * a.InverseLogLuminanceRange);
         bin = (uint)(t * 254) + 1;
     }
-    a.Histogram.AtomicAdd(bin, 1);
+    bool pending = true;
+    while (Wave.AnyTrue(pending))
+    {
+        uint first = Wave.Min(pending ? bin : (uint)0xFFFFFFFF);
+        bool mine = pending && bin == first;
+        uint count = Wave.Sum(mine ? (uint)1 : (uint)0);
+        uint leader = Wave.Min(mine ? Wave.LaneIndex : (uint)0xFFFFFFFF);
+        if (Wave.LaneIndex == leader)
+            a.Histogram.AtomicAdd(first, count);
+        pending = pending && !mine;
+    }
 }
 
 public struct ExposureArgs

@@ -529,7 +529,8 @@ uint SampleId(in DiReservoir r) => Hash(r.Light) ^ r.Sample;
 const uint NoId = 4294967295;
 
 /// The duplication map (PTE §5): for every pixel, how many of the 288 others in its 17×17
-/// neighborhood hold the same initial sample, over 288.
+/// neighborhood hold the same initial sample, over 288: estimated from every second pixel (80
+/// others), as a share.
 [Compute(16, 16, 1)]
 public void RestirDuplication([GroupId] uint3 group, [GroupThreadId] uint3 thread, [Push] in RestirArgs a)
 {
@@ -555,13 +556,14 @@ public void RestirDuplication([GroupId] uint3 group, [GroupThreadId] uint3 threa
     uint same = 0;
     if (me != NoId)
     {
-        for (uint dy = 0; dy < 17; dy++)
+        // Every second pixel of the window, 9 × 9: the same share, a quarter of the work.
+        for (uint dy = 0; dy < 17; dy += 2)
         {
-            for (uint dx = 0; dx < 17; dx++)
+            for (uint dx = 0; dx < 17; dx += 2)
                 same += DuplicationIds[(thread.y + dy) * 32 + thread.x + dx] == me ? (uint)1 : (uint)0;
         }
         // Not itself.
         same -= 1;
     }
-    a.DuplicationMap[px.y * c.Width + px.x] = (float)same / 288.0;
+    a.DuplicationMap[px.y * c.Width + px.x] = (float)same / 80.0;
 }

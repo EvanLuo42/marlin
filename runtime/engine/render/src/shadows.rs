@@ -150,17 +150,21 @@ pub enum VsmFilter {
         steps: u32,
         penumbra_texels: f32,
         dither_texels: f32,
+        /// Stop after the two widest rays where they agree (both lit, both blocked): outside
+        /// any penumbra, which most pixels are (UE's adaptive ray count).
+        adaptive: bool,
     },
 }
 
 impl VsmFilter {
-    /// The desktop default: 8 rays of 8 steps, penumbrae up to 16 texels, starts dithered over
-    /// a texel.
+    /// The desktop default: 8 rays of 8 steps (2 where the widest agree), penumbrae up to 16
+    /// texels, starts dithered over a texel.
     pub const SMRT: Self = Self::Smrt {
         rays: 8,
         steps: 8,
         penumbra_texels: 16.0,
         dither_texels: 1.0,
+        adaptive: true,
     };
 }
 
@@ -247,6 +251,7 @@ struct Constants {
     /// How far from the receiver, in texels, a ray may start.
     dither_texels: f32,
     noise_frame: u32,
+    smrt_adaptive: u32,
 }
 
 #[repr(C)]
@@ -473,12 +478,13 @@ impl Vsm {
         let mut invalidations: Vec<[f32; 4]> = scene.shadow_changes().to_vec();
         invalidations.extend(scene.spheres_of(meshes.changed_meshes()));
         // A sun without size casts hard shadows: PCF.
-        let (smrt_rays, smrt_steps, penumbra_texels, dither_texels) = match s.filter {
+        let (smrt_rays, smrt_steps, penumbra_texels, dither_texels, adaptive) = match s.filter {
             VsmFilter::Smrt {
                 rays,
                 steps,
                 penumbra_texels,
                 dither_texels,
+                adaptive,
             } if env.sun_angular_diameter > 0.0 && rays > 0 && steps > 0 => {
                 // The rays' reach, which marking covers, within half a page.
                 let room = (s.page_size / 2) as f32 - 2.0;
@@ -488,9 +494,10 @@ impl Vsm {
                     steps,
                     penumbra_texels.clamp(0.0, room - dither),
                     dither,
+                    adaptive,
                 )
             }
-            _ => (0, 0, 0.0, 0.0),
+            _ => (0, 0, 0.0, 0.0, false),
         };
         let p = eye.translation;
         let constants = Constants {
@@ -522,6 +529,7 @@ impl Vsm {
             dither_texels,
             tan_sun_radius: marlin_math::scalar::tan(env.sun_angular_diameter * 0.5),
             noise_frame: noise_frame(camera.jitter),
+            smrt_adaptive: u32::from(adaptive),
         };
 
         // Persistent: the pool, the cache table and the tags.

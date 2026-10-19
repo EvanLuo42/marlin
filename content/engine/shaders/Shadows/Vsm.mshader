@@ -91,6 +91,8 @@ public struct VsmConstants
     /// Offsets the noise: a new one a frame under TSR (from the jitter), 0 without, so a still
     /// picture stays still.
     public uint NoiseFrame;
+    /// 1: stop after two rays that agree (adaptive ray count).
+    public uint SmrtAdaptive;
 }
 
 public struct VsmArgs
@@ -402,8 +404,10 @@ float Smrt(in VsmConstants c, in VsmArgs a, uint level, float2 texel, float dept
     float first = Min(texelSize, length);
     float ratio = steps > 1 ? Pow(length / first, 1 / (steps - 1)) : 1;
     float reached = 0;
-    for (uint r = 0; r < c.SmrtRays; r++)
+    for (uint j = 0; j < c.SmrtRays; j++)
     {
+        // Widest first: the outermost rays disagree first where the sun is partly hidden.
+        uint r = c.SmrtRays - 1 - j;
         float radius = Sqrt(((float)r + 0.5) / rays);
         float angle = (noise + (float)r * 0.381966) * 6.2831853;
         float2 disk = float2(Cos(angle), Sin(angle)) * radius;
@@ -428,6 +432,10 @@ float Smrt(in VsmConstants c, in VsmArgs a, uint level, float2 texel, float dept
             }
         }
         reached += lit;
+        // Adaptive: two rays that agree (both lit, both blocked) put the pixel outside any
+        // penumbra; most pixels are, and stop here.
+        if (j == 1 && c.SmrtAdaptive != 0 && (reached == 0 || reached == 2))
+            return reached / 2;
     }
     return reached / rays;
 }
