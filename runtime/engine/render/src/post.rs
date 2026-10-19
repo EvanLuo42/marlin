@@ -7,7 +7,7 @@
 use alloc::vec::Vec;
 
 use marlin_render_graph::{
-    Access, BufferDesc as GraphBufferDesc, BufferHandle, PassContext, RenderGraph,
+    Access, BufferDesc as GraphBufferDesc, BufferHandle, PassContext, Persistent, RenderGraph,
     TextureDesc as GraphTextureDesc, TextureHandle,
 };
 use marlin_rhi::{
@@ -228,16 +228,24 @@ impl PostProcess {
         })
     }
 
+    /// `view`'s exposure: the adapted log2 luminance (f32) and the exposure (f32), a persistent
+    /// buffer that adapts across frames. Declared before the chain, so passes ahead of it read
+    /// last frame's (TSR's Karis weights, [`crate::upscale`]); [`add_passes`](Self::add_passes)
+    /// writes this frame's. Needs a graph with a state table.
+    pub fn exposure<'g>(g: &mut RenderGraph<'g>, view: u64) -> Persistent<BufferHandle<'g>> {
+        g.persistent("Exposure", view, GraphBufferDesc::new(8))
+    }
+
     /// Declares the chain: bloom of `scene` (an [`HDR_FORMAT`] texture), its exposure on the
-    /// compute queue, and the tonemap into `output` (overwritten). `view` keys the exposure that
-    /// adapts across frames; `dt` is the frame's time in seconds (infinite: the exposure takes the
-    /// scene's at once). Needs a graph with a state table (the exposure is a persistent resource).
+    /// compute queue into `exposure` ([`exposure`](Self::exposure)), and the tonemap into
+    /// `output` (overwritten). `dt` is the frame's time in seconds (infinite: the exposure takes
+    /// the scene's at once).
     pub fn add_passes<'g>(
         &'g self,
         g: &mut RenderGraph<'g>,
         scene: TextureHandle<'g>,
         output: TextureHandle<'g>,
-        view: u64,
+        exposure: Persistent<BufferHandle<'g>>,
         dt: f32,
     ) -> PostOutput<'g> {
         let s = self.settings;
@@ -331,7 +339,6 @@ impl PostProcess {
                 ctx.dispatch(width.div_ceil(16), height.div_ceil(16), 1);
             })
         });
-        let exposure = g.persistent("Exposure", view, GraphBufferDesc::new(8));
         let fresh = u32::from(exposure.fresh);
         let adapt = if dt.is_infinite() {
             1.0

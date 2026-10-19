@@ -255,6 +255,61 @@ pub fn light_hall(lights: usize) -> Scene {
     }
 }
 
+/// Sunlight in relative units: a sun whose illuminance over π is 1 (a white Lambert surface
+/// facing it is 1 bright), a dim ambient light and a dark blue background. For pictures read
+/// without exposure.
+pub fn relative_sun() -> Environment {
+    Environment {
+        light_direction: Vec3::new(-0.4, -1.0, -0.3),
+        sun_illuminance: core::f32::consts::PI,
+        ambient: [0.05, 0.05, 0.06],
+        clear_color: [0.02, 0.02, 0.05, 1.0],
+        ..Environment::default()
+    }
+}
+
+/// Edges for anti-aliasing and upscaling: thin bars at slants, cubes and their shadows on a
+/// floor in the sun, seen from above at an angle against a dark background. High contrast
+/// everywhere, features a pixel wide and less.
+pub fn edges() -> Scene {
+    let mut instances = vec![block(
+        Vec3::new(0.0, -0.05, 0.0),
+        Vec3::new(8.0, 0.1, 8.0),
+        0.0,
+        [0.7, 0.7, 0.7],
+    )];
+    // A fan of thin bars, from a few pixels wide to under one.
+    for i in 0..7 {
+        let width = 0.12 * 0.65f32.powi(i);
+        instances.push(block(
+            Vec3::new(-1.8 + 0.6 * i as f32, 0.4, -0.5),
+            Vec3::new(width, 0.8, 2.4),
+            0.25 + 0.12 * i as f32,
+            [0.9, 0.2, 0.15],
+        ));
+    }
+    instances.push(block(
+        Vec3::new(-1.0, 0.35, 1.2),
+        Vec3::splat(0.7),
+        0.5,
+        [0.15, 0.4, 0.9],
+    ));
+    instances.push(block(
+        Vec3::new(1.1, 0.25, 1.4),
+        Vec3::splat(0.5),
+        1.1,
+        [0.9, 0.85, 0.2],
+    ));
+    Scene {
+        name: "Edges",
+        meshes: vec![SceneMesh::cube()],
+        instances,
+        lights: Vec::new(),
+        environment: relative_sun(),
+        camera: camera(Vec3::new(0.0, 3.0, 4.0), -0.6, 50.0),
+    }
+}
+
 fn fract(x: f32) -> f32 {
     x - x.floor()
 }

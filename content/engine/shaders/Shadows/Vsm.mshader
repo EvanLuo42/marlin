@@ -88,6 +88,9 @@ public struct VsmConstants
     public float TanSunRadius;
     /// How far from the receiver, in texels, a ray may start.
     public float DitherTexels;
+    /// Offsets the noise: a new one a frame under TSR (from the jitter), 0 without, so a still
+    /// picture stays still.
+    public uint NoiseFrame;
 }
 
 public struct VsmArgs
@@ -370,9 +373,13 @@ float Stored(in VsmConstants c, in VsmArgs a, uint level, int2 texel)
     return AsFloat(a.Stored.Load(int2((int)at.x, (int)at.y)));
 }
 
-/// Interleaved gradient noise of pixel `px`, in [0, 1). The same every frame until a temporal
-/// filter (TSR) can average frames.
-float Noise(uint2 px) => Frac(52.9829189 * Frac(0.06711056 * (float)px.x + 0.00583715 * (float)px.y));
+/// Interleaved gradient noise of pixel `px` in frame `frame` (Jimenez's offset of 5.588238 pixels
+/// a frame, so TSR averages the frames' noise away), in [0, 1).
+float Noise(uint2 px, uint frame)
+{
+    float2 p = float2((float)px.x, (float)px.y) + 5.588238 * (float)(frame % 64);
+    return Frac(52.9829189 * Frac(0.06711056 * p.x + 0.00583715 * p.y));
+}
 
 /// The fraction of the sun a receiver at `texel` of `level`, light depth `depth` (biased),
 /// sees: `c.SmrtRays` rays toward points of the sun's disk (a Vogel spiral turned by `noise`),
@@ -459,7 +466,7 @@ public void VsmMask([DispatchThreadId] uint3 id, [Push] in VsmArgs a)
     float receiver = light + c.DepthBias * size * c.DepthPerUnit;
     if (c.SmrtRays != 0)
     {
-        a.Mask[px] = Smrt(c, a, level, texel, receiver, Noise(id.xy));
+        a.Mask[px] = Smrt(c, a, level, texel, receiver, Noise(id.xy, c.NoiseFrame));
         return;
     }
     // 3×3 texels around the nearest: lit where nothing nearer the light is stored.

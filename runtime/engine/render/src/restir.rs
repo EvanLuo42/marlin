@@ -12,7 +12,7 @@
 
 use alloc::vec::Vec;
 
-use marlin_math::{Mat4, Transform};
+use marlin_math::Transform;
 use marlin_render_graph::{
     Access, BufferDesc, BufferHandle, PassContext, RenderGraph, TextureDesc as GraphTextureDesc,
     TextureHandle,
@@ -258,9 +258,7 @@ impl RestirDi {
         height: u32,
         seed: u32,
     ) -> NoisySignal<'g> {
-        let aspect = width as f32 / height.max(1) as f32;
-        let view_projection = Mat4::perspective_infinite_rh(camera.fov_y, aspect, camera.near)
-            * eye.to_matrix().inverse_affine();
+        let view_projection = crate::view_projection((eye, camera), width, height);
         let p = eye.translation;
         let RestirInputs {
             view,

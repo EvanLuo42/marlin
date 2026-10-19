@@ -34,12 +34,14 @@ pub mod raytracing;
 pub mod restir;
 pub mod scene;
 pub mod shadows;
+pub mod upscale;
 pub mod visibility;
 
 pub use lighting::Lighting;
 pub use meshes::{
     Camera, Environment, Feedback, MAX_POOL_SLOTS, MeshData, MeshHandle, Meshes, PagePool,
     PagePoolDesc, SUN_ANGULAR_DIAMETER_DEGREES, SUN_ILLUMINANCE, StreamingShaders, Uploads,
+    view_projection,
 };
 pub use post::{HDR_FORMAT, PostOutput, PostProcess, PostSettings, PostShaders};
 pub use scene::{GpuScene, RenderScene, ScatterShader, SceneIds, SceneUpdates};

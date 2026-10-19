@@ -15,6 +15,7 @@ use marlin_render::scene::{
     InstanceDesc, InstanceId, InstanceUpdate, MaterialDesc, MaterialId, MaterialUpdate, MeshId,
     MeshUpdate,
 };
+use marlin_render::upscale::{Tsr, TsrShaders, UpscaleInputs, UpscaleMode, Upscaler};
 use marlin_render::{
     Camera, Environment, Lighting, Meshes, PagePoolDesc, RenderScene, ScatterShader, SceneUpdates,
     StreamingShaders, Visibility, VisibilityShaders,
@@ -53,6 +54,8 @@ pub struct Harness {
     /// Denoises ReSTIR's light when `denoise` is on; off, the frames are the raw signal.
     pub denoiser: Denoiser,
     pub denoise: bool,
+    /// Resolves [`upscaled_frame`](Self::upscaled_frame)'s frames.
+    pub tsr: Tsr,
     /// The lights [`load`](Self::load) added, in the scene's order.
     loaded_lights: Vec<marlin_render::scene::LightId>,
     pub updates: SceneUpdates,
@@ -190,6 +193,11 @@ impl Harness {
             )
             .unwrap(),
             denoise: false,
+            tsr: Tsr::new(
+                device,
+                &TsrShaders::from_modules(engine_shaders(&TsrShaders::ENTRIES)),
+            )
+            .unwrap(),
             loaded_lights: Vec::new(),
             updates: SceneUpdates {
                 environment: Some(relative_environment()),
@@ -648,6 +656,96 @@ impl Harness {
                 };
                 let denoised = denoiser.add_passes(g, signal, inputs, camera, width, height, seed);
                 g.readback_texture(denoised)
+            })
+            .unwrap();
+        let bytes = self.frame.wait_readback(ticket).unwrap();
+        assert_eq!(self.device.validation_errors(), 0);
+        self.previous = Some(self.camera);
+        bytes
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|p| {
+                let h = |i: usize| {
+                    marlin_render::asset::mesh::f16_to_f32(u16::from_le_bytes([p[i], p[i + 1]]))
+                };
+                [h(0), h(2), h(4)]
+            })
+            .collect()
+    }
+}
+
+impl Harness {
+    /// Frame `frame` of the view at the display size `display`, lit by the environment: drawn at
+    /// `mode`'s render size with that frame's jitter and resolved by TSR (its history carried
+    /// from the last call); or, with `mode` `None`, drawn at `display` with the camera's own jitter
+    /// and no resolve. The HDR
+    /// scene's RGB, row-major.
+    pub fn upscaled_frame(
+        &mut self,
+        frame: u64,
+        mode: Option<UpscaleMode>,
+        display: (u32, u32),
+    ) -> Vec<[f32; 3]> {
+        let display = marlin_math::UVec2::new(display.0, display.1);
+        let render = mode.map_or(display, |m| self.tsr.render_size(display, m));
+        let jitter = match mode {
+            Some(_) => self.tsr.jitter(frame, render, display),
+            None => marlin_math::Vec2::new(self.camera.1.jitter[0], self.camera.1.jitter[1]),
+        };
+        self.camera.1.jitter = [jitter.x, jitter.y];
+        let updates = core::mem::take(&mut self.updates);
+        self.scene.apply(&updates);
+        let uploads = self.meshes.take_uploads();
+        let (meshes, scene, scatter, vis, materials, lighting, tsr) = (
+            &self.meshes,
+            &mut self.scene,
+            &self.scatter,
+            &self.vis,
+            &self.materials,
+            &self.lighting,
+            &self.tsr,
+        );
+        let (camera, previous) = (self.camera, self.previous);
+        let (width, height) = (render.x, render.y);
+        let ticket = self
+            .frame
+            .execute(self.device, |g, _| {
+                let pool = meshes.add_passes(g, uploads);
+                let gpu = scene.add_passes(g, scatter);
+                let view = marlin_render::visibility::ViewDesc {
+                    id: 0,
+                    camera,
+                    previous,
+                    width,
+                    height,
+                };
+                let v = vis.add_passes(g, meshes, scene, gpu, pool, &view);
+                let out = materials.add_passes(g, gpu, &v, camera, previous, width, height);
+                let env = *scene.environment();
+                let mut lit = lighting.add_passes(g, Some(out.material), None, &env, width, height);
+                if mode.is_some() {
+                    // No post chain: an exposure of 0, which TSR takes as 1.
+                    let exposure = marlin_render::PostProcess::exposure(g, 0);
+                    let mut e = exposure.handle;
+                    if exposure.fresh {
+                        e = g.add_compute("ExposureClear", |b| {
+                            let e = b.write_buffer(e, Access::Clear);
+                            (e, move |ctx: &mut PassContext<'_>| ctx.fill_buffer(e, 0))
+                        });
+                    }
+                    let inputs = UpscaleInputs {
+                        color: lit,
+                        depth: v.depth,
+                        velocity: out.velocity,
+                        exposure: e,
+                        jitter,
+                        render,
+                        display,
+                    };
+                    lit = tsr.add_passes(g, 0, &inputs);
+                }
+                g.readback_texture(lit)
             })
             .unwrap();
         let bytes = self.frame.wait_readback(ticket).unwrap();

@@ -6,7 +6,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use marlin_math::{Mat4, Transform};
+use marlin_math::Transform;
 use marlin_render::visibility::VisibilityOutput;
 use marlin_render::{Camera, GpuScene};
 use marlin_render_graph::{
@@ -75,6 +75,8 @@ struct View {
     height: u32,
     permutations: u32,
     spare: u32,
+    jitter: [f32; 2],
+    spare2: [f32; 2],
 }
 
 #[repr(C)]
@@ -217,13 +219,11 @@ impl Materials {
         width: u32,
         height: u32,
     ) -> MaterialOutput<'g> {
-        let view_projection = |(eye, cam): (Transform, Camera)| {
-            let aspect = width as f32 / height.max(1) as f32;
-            Mat4::perspective_infinite_rh(cam.fov_y, aspect, cam.near)
-                * eye.to_matrix().inverse_affine()
-        };
-        let current = view_projection(camera);
-        let last = view_projection(previous.unwrap_or(camera));
+        let current = marlin_render::view_projection(camera, width, height);
+        // Motion leaves the jitter out: last frame's matrix without it, this frame's taken off.
+        let (eye, last_camera) = previous.unwrap_or(camera);
+        let last = marlin_render::view_projection((eye, last_camera.unjittered()), width, height);
+        let jitter = camera.1.jitter;
         // A permutation without a parameter table has no material, so no pixels.
         let permutations = (self.types.len()).min(gpu.material_params.len()) as u32;
         let p = camera.0.translation;
@@ -236,6 +236,11 @@ impl Materials {
             height,
             permutations,
             spare: 0,
+            jitter: [
+                2.0 * jitter[0] / width.max(1) as f32,
+                -2.0 * jitter[1] / height.max(1) as f32,
+            ],
+            spare2: [0.0; 2],
         };
         let slots = u64::from(permutations.max(1));
         let counts = g.create_buffer("MaterialCounts", BufferDesc::structured::<u32>(slots));

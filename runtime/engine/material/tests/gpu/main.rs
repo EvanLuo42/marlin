@@ -10,3 +10,4 @@ mod materials;
 mod restir;
 mod scenes;
 mod support;
+mod tsr;

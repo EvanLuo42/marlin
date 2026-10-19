@@ -14,7 +14,7 @@ use alloc::vec::Vec;
 
 use marlin_containers::{HashMap, HashMapExt};
 use marlin_material::{DEFAULT_PERMUTATION, MaterialShaders, Materials, RESOLVE};
-use marlin_math::Transform;
+use marlin_math::{Transform, UVec2, Vec2};
 use marlin_render::asset::PairingPatternView;
 use marlin_render::denoise::{DenoiseInputs, DenoiseShaders, Denoiser};
 use marlin_render::lights::LightTiles;
@@ -22,6 +22,7 @@ use marlin_render::raytracing::{RtShaders, Tlas};
 use marlin_render::restir::{RestirDi, RestirInputs, RestirShaders};
 use marlin_render::scene::{MeshId, MeshUpdate};
 use marlin_render::shadows::{Vsm, VsmSettings, VsmShaders};
+use marlin_render::upscale::{Tsr, TsrShaders, UpscaleInputs, UpscaleMode, Upscaler};
 use marlin_render::visibility::{ViewDesc, counters};
 use marlin_render::{
     Camera, Feedback, Lighting, MeshData, MeshHandle, Meshes, PagePoolDesc, PostProcess,
@@ -81,6 +82,11 @@ pub struct RenderSide {
     /// Denoises ReSTIR's light (0010 §6); `denoise` off composes it as it is.
     pub denoiser: Denoiser,
     pub denoise: bool,
+    /// Resolves the view, drawn at `upscale`'s render size with a jitter a frame, to the target's
+    /// size (0010 §7): TSR, at the native size by default, so it is the anti-aliasing. `None`
+    /// draws at the target's size without jitter or resolve.
+    pub tsr: Tsr,
+    pub upscale: Option<UpscaleMode>,
     /// Tonemaps the [`HDR_FORMAT`](marlin_render::HDR_FORMAT) scene into the output.
     pub post: PostProcess,
     pub scene: RenderScene,
@@ -136,6 +142,8 @@ impl RenderSide {
             restir: RestirDi::new(device, &RestirShaders::bind(engine)?, pairing)?,
             denoiser: Denoiser::new(device, &DenoiseShaders::bind(engine)?)?,
             denoise: true,
+            tsr: Tsr::new(device, &TsrShaders::bind(engine)?)?,
+            upscale: Some(UpscaleMode::Native),
             post: PostProcess::new(device, &PostShaders::bind(engine)?, output)?,
             scene: RenderScene::with_ids(ids),
             scatter: ScatterShader::new(device, bind_one(engine, &ScatterShader::ENTRY)?)?,
@@ -212,16 +220,29 @@ impl RenderSide {
     }
 
     /// Declares the last applied delta's frame into `g` (0008 §3): the GPU Scene's scatter, the
-    /// visibility buffer and the material buffer of the camera's view, direct lighting into an
-    /// [`HDR_FORMAT`](marlin_render::HDR_FORMAT) scene the size of `target`, then the post chain into `target`. Without a
-    /// camera the scene is the clear color. Needs a graph with a state table.
+    /// visibility buffer and the material buffer of the camera's view at the upscaler's render
+    /// size, jittered; direct lighting and the denoised local lights into an
+    /// [`HDR_FORMAT`](marlin_render::HDR_FORMAT) scene; TSR to the size of `target`; then the post
+    /// chain into `target`. Without a camera the scene is the clear color. Needs a graph with a
+    /// state table.
     pub fn add_passes<'g>(
         &'g mut self,
         g: &mut RenderGraph<'g>,
         target: TextureHandle<'g>,
     ) -> TextureHandle<'g> {
         let size = *g.texture_desc(target);
-        let (width, height) = (size.width, size.height);
+        let display = UVec2::new(size.width, size.height);
+        // The render size and this frame's jitter, which goes into the camera (and so into last
+        // frame's camera next frame).
+        let render = match (self.upscale, self.camera) {
+            (Some(mode), Some(_)) => self.tsr.render_size(display, mode),
+            _ => display,
+        };
+        if let (Some(_), Some((_, camera))) = (self.upscale, self.camera.as_mut()) {
+            let jitter = self.tsr.jitter(self.frame, render, display);
+            camera.jitter = [jitter.x, jitter.y];
+        }
+        let (width, height) = (render.x, render.y);
         if !self.loaded && !self.uploaded.is_empty() && self.meshes.streaming_idle() {
             self.loaded = true;
         }
@@ -239,6 +260,8 @@ impl RenderSide {
             restir,
             denoiser,
             denoise,
+            tsr,
+            upscale,
             frame,
             scene,
             scatter,
@@ -323,7 +346,20 @@ impl RenderSide {
             };
             scene = denoiser.add_compose(g, scene, light, material, depth, width, height);
         }
-        post.add_passes(g, scene, target, MAIN_VIEW, dt).output
+        let exposure = PostProcess::exposure(g, MAIN_VIEW);
+        if let (Some(_), Some((_, _, depth, velocity, camera))) = (*upscale, lit) {
+            let inputs = UpscaleInputs {
+                color: scene,
+                depth,
+                velocity,
+                exposure: exposure.handle,
+                jitter: Vec2::new(camera.1.jitter[0], camera.1.jitter[1]),
+                render,
+                display,
+            };
+            scene = tsr.add_passes(g, MAIN_VIEW, &inputs);
+        }
+        post.add_passes(g, scene, target, exposure, dt).output
     }
 
     /// Takes the streaming feedback of the frames `frames` has finished (every frame's readbacks

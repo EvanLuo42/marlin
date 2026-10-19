@@ -31,7 +31,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use marlin_containers::{Handle, SlotMap};
-use marlin_math::Vec3;
+use marlin_math::{Mat4, Transform, Vec3};
 use marlin_render_graph::{
     Access, BufferDesc as GraphBufferDesc, BufferHandle, PassContext, RenderGraph,
 };
@@ -58,6 +58,10 @@ pub struct Camera {
     pub fov_y: f32,
     /// Near plane distance; the far plane is at infinity (reverse-Z).
     pub near: f32,
+    /// This frame's subpixel offset of the projection, in pixels of the view it draws (x right,
+    /// y down, within ±0.5): the upscaler's jitter (0010 §7.1, [`crate::upscale`]). Zero without
+    /// one.
+    pub jitter: [f32; 2],
 }
 
 impl Default for Camera {
@@ -65,8 +69,34 @@ impl Default for Camera {
         Self {
             fov_y: core::f32::consts::FRAC_PI_3,
             near: 0.1,
+            jitter: [0.0; 2],
         }
     }
+}
+
+impl Camera {
+    /// The camera without its jitter: for motion vectors, which leave the jitter out.
+    pub fn unjittered(self) -> Self {
+        Self {
+            jitter: [0.0; 2],
+            ..self
+        }
+    }
+}
+
+/// `camera`'s view-projection for a `width` × `height` view, jittered by its
+/// [`Camera::jitter`]: what the view is drawn with, and what turns its pixels back into world
+/// positions. Every pass of a view builds its matrix here, so they agree.
+pub fn view_projection((eye, camera): (Transform, Camera), width: u32, height: u32) -> Mat4 {
+    let (width, height) = (width.max(1) as f32, height.max(1) as f32);
+    let projection = Mat4::perspective_infinite_rh(camera.fov_y, width / height, camera.near);
+    // A clip-space offset of 2·jitter/size in NDC (y up), scaled by w.
+    let jitter = Mat4::from_translation(Vec3::new(
+        2.0 * camera.jitter[0] / width,
+        -2.0 * camera.jitter[1] / height,
+        0.0,
+    ));
+    jitter * projection * eye.to_matrix().inverse_affine()
 }
 
 /// A mesh uploaded with [`Meshes::upload_mesh`]. Generational: once the mesh is released the

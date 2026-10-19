@@ -42,7 +42,8 @@ fn frame_of(frame: &mut FrameContext, luminance: f32, dt: f32) -> u8 {
                 "Output",
                 TextureDesc::new_2d(SIZE, SIZE, Format::Rgba8Unorm),
             );
-            let out = post.add_passes(g, scene, output, VIEW, dt);
+            let exposure = PostProcess::exposure(g, VIEW);
+            let out = post.add_passes(g, scene, output, exposure, dt);
             g.readback_texture(out.output)
         })
         .unwrap();

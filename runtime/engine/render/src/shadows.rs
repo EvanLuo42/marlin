@@ -246,6 +246,7 @@ struct Constants {
     tan_sun_radius: f32,
     /// How far from the receiver, in texels, a ray may start.
     dither_texels: f32,
+    noise_frame: u32,
 }
 
 #[repr(C)]
@@ -453,9 +454,7 @@ impl Vsm {
         let n = s.pages_per_side();
         let virtual_pages = s.virtual_pages();
         let pool_pages = s.physical_pages();
-        let aspect = width as f32 / height.max(1) as f32;
-        let view_projection = Mat4::perspective_infinite_rh(camera.fov_y, aspect, camera.near)
-            * eye.to_matrix().inverse_affine();
+        let view_projection = crate::view_projection((eye, camera), width, height);
         let (generation, depth_center) =
             self.generation(view, eye.translation, env.light_direction);
         let levels = levels(&s, eye.translation, env.light_direction, depth_center);
@@ -522,6 +521,7 @@ impl Vsm {
             penumbra_texels,
             dither_texels,
             tan_sun_radius: marlin_math::scalar::tan(env.sun_angular_diameter * 0.5),
+            noise_frame: noise_frame(camera.jitter),
         };
 
         // Persistent: the pool, the cache table and the tags.
@@ -797,4 +797,16 @@ impl Vsm {
             counters,
         }
     }
+}
+
+/// The SMRT noise's frame offset (`VsmConstants::NoiseFrame`): one per jitter, so it changes
+/// every frame under TSR (and repeats with the jitter's phases); 0 without jitter.
+fn noise_frame(jitter: [f32; 2]) -> u32 {
+    if jitter == [0.0; 2] {
+        return 0;
+    }
+    let mut h = jitter[0].to_bits() ^ jitter[1].to_bits().rotate_left(16);
+    h = (h ^ (h >> 16)).wrapping_mul(0x7FEB_352D);
+    h ^= h >> 15;
+    h % 63 + 1
 }

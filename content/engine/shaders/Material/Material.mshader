@@ -20,7 +20,9 @@ using Marlin.Substrate;
 
 public struct MaterialView
 {
-    /// Matrices are column-major; `M * v` is the column-vector product.
+    /// Matrices are column-major; `M * v` is the column-vector product. The view's matrices are
+    /// jittered (they drew the visibility buffer); last frame's is not: motion vectors leave the
+    /// jitter out.
     public float4x4 ViewProjection;
     public float4x4 PreviousViewProjection;
     public float4x4 InverseViewProjection;
@@ -31,6 +33,9 @@ public struct MaterialView
     /// Permutations the bins hold.
     public uint Permutations;
     public uint Spare;
+    /// This frame's jitter in NDC (y up), taken off a pixel's position for its motion.
+    public float2 Jitter;
+    public float2 Spare2;
 }
 
 public struct ClassifyArgs
@@ -94,7 +99,7 @@ public void Classify([DispatchThreadId] uint3 id, [Push] in ClassifyArgs a)
     float2 ndc = Ndc(id.xy, v);
     float4 direction = v.InverseViewProjection * float4(ndc, 0, 1);
     float4 previous = v.PreviousViewProjection * float4(direction.xyz, 0);
-    float2 motion = previous.w > 0 ? Motion(ndc, previous.xy / previous.w) : float2(0, 0);
+    float2 motion = previous.w > 0 ? Motion(ndc - v.Jitter, previous.xy / previous.w) : float2(0, 0);
     a.Velocity[px] = motion;
 }
 
@@ -224,7 +229,7 @@ public void ResolvePixel<M>([DispatchThreadId] uint3 id, [Push] in ResolveArgs<M
     a.MaterialBuffer[px] = ClosureWriter.Finish(w);
 
     float4 before = v.PreviousViewProjection * float4(last, 1);
-    a.Velocity[px] = Motion(ndc, before.xy / before.w);
+    a.Velocity[px] = Motion(ndc - v.Jitter, before.xy / before.w);
 }
 
 public struct DebugArgs

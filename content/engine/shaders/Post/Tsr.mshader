@@ -1,0 +1,181 @@
+namespace Marlin.Engine.Post;
+
+// Temporal super resolution (0010 §7.1): the view drawn at its render size with a subpixel
+// jitter a frame (Halton 2, 3), resolved into an accumulation at the display size. At the
+// native size it is the anti-aliasing. marlin-render's `Tsr` declares one pass a frame:
+//
+// `TsrResolve`, for every display pixel:
+// 1. This frame's samples: the 3×3 render pixels around it, each weighted by a Gaussian
+//    (Blackman-Harris-like) of the distance from where its sample landed (the jitter moves it)
+//    to the display pixel's center. Their neighborhood (mean and deviation in YCoCg) bounds the
+//    history.
+// 2. The motion of the nearest surface among them (the largest reverse-Z depth): edges move
+//    with the object in front, which keeps them from trailing.
+// 3. Last frame's accumulation there, by a 5-tap Catmull-Rom (sharp, unlike bilinear), clipped
+//    toward the neighborhood's mean where it falls outside `ClipSigma` deviations: disocclusion
+//    and change are clipped away, not tracked.
+// 4. The blend: the accumulation keeps a weight (the samples behind it, up to `MaxWeight`);
+//    this frame's samples add theirs, so a display pixel far from any sample (upscaling) leans
+//    on its history. Colors blend weighted by `1 / (1 + exposed luminance)` (Karis), so a
+//    firefly does not stay as a smear; the exposure is last frame's.
+//
+// The reactive mask (0009 §8: translucency, particles) and sharpening come later.
+
+public struct TsrConstants
+{
+    /// The render and display sizes.
+    public uint2 RenderSize;
+    public uint2 DisplaySize;
+    /// This frame's jitter, in render pixels (x right, y down).
+    public float2 Jitter;
+    /// 1: last frame's accumulation is there (and of this size).
+    public uint HasHistory;
+    /// The most samples' weight the accumulation keeps.
+    public float MaxWeight;
+    /// How far, in deviations of the neighborhood, the history may be from its mean.
+    public float ClipSigma;
+    /// The reconstruction filter's falloff: `exp(-Sharpness · d²)`, d in render pixels.
+    public float Sharpness;
+    /// How fast the history's weight falls with motion: `MaxWeight / (1 + MotionFalloff · speed)`.
+    public float MotionFalloff;
+    public uint Spare1;
+}
+
+public struct TsrArgs
+{
+    public Uniform<TsrConstants> Constants;
+    /// This frame's HDR color, depth (reverse-Z) and motion (UV units, current minus last, the
+    /// jitter left out), at the render size.
+    public Texture2D<float4> Color;
+    public Texture2D<float> Depth;
+    public Texture2D<float2> Velocity;
+    /// Last frame's accumulation at the display size: color, and the weight behind it.
+    public Texture2D<float4> History;
+    /// The post chain's exposure (`Post.mshader`): word 1 is last frame's.
+    public ReadOnlyByteBuffer Exposure;
+    public Sampler Linear;
+    public StorageTexture2D<float4> Output;
+}
+
+float TsrLuminance(float3 c) => Dot(c, float3(0.2126, 0.7152, 0.0722));
+
+float3 ToYCoCg(float3 c) => float3(
+    0.25 * c.x + 0.5 * c.y + 0.25 * c.z,
+    0.5 * c.x - 0.5 * c.z,
+    -0.25 * c.x + 0.5 * c.y - 0.25 * c.z);
+
+float3 FromYCoCg(float3 c) => float3(c.x + c.y - c.z, c.x + c.z, c.x - c.y - c.z);
+
+/// Last frame's accumulation at `uv`: a Catmull-Rom over 4×4 texels in 5 bilinear taps (the
+/// corners left out).
+float4 HistoryAt(in TsrArgs a, float2 uv, float2 size)
+{
+    float2 position = uv * size;
+    float2 center = Floor(position - 0.5) + 0.5;
+    float2 f = position - center;
+    float2 w0 = f * (-0.5 + f * (1 - 0.5 * f));
+    float2 w1 = 1 + f * f * (-2.5 + 1.5 * f);
+    float2 w2 = f * (0.5 + f * (2 - 1.5 * f));
+    float2 w3 = f * f * (-0.5 + 0.5 * f);
+    float2 w12 = w1 + w2;
+    float2 texel = 1 / size;
+    float2 t0 = (center - 1) * texel;
+    float2 t3 = (center + 2) * texel;
+    float2 t12 = (center + w2 / w12) * texel;
+    float4 sum = a.History.Sample(a.Linear, float2(t12.x, t0.y), lod: 0) * (w12.x * w0.y)
+        + a.History.Sample(a.Linear, float2(t0.x, t12.y), lod: 0) * (w0.x * w12.y)
+        + a.History.Sample(a.Linear, float2(t12.x, t12.y), lod: 0) * (w12.x * w12.y)
+        + a.History.Sample(a.Linear, float2(t3.x, t12.y), lod: 0) * (w3.x * w12.y)
+        + a.History.Sample(a.Linear, float2(t12.x, t3.y), lod: 0) * (w12.x * w3.y);
+    float weight = w12.x * w0.y + w0.x * w12.y + w12.x * w12.y + w3.x * w12.y + w12.x * w3.y;
+    // Catmull-Rom rings below zero next to a bright edge.
+    return Max(sum / weight, float4(0, 0, 0, 0));
+}
+
+[Compute(8, 8, 1)]
+public void TsrResolve([DispatchThreadId] uint3 id, [Push] in TsrArgs a)
+{
+    TsrConstants c = a.Constants.Value;
+    if (id.x >= c.DisplaySize.x || id.y >= c.DisplaySize.y)
+        return;
+    float2 render = float2((float)c.RenderSize.x, (float)c.RenderSize.y);
+    float2 display = float2((float)c.DisplaySize.x, (float)c.DisplaySize.y);
+    float2 uv = ((float2)id.xy + 0.5) / display;
+    float exposure = AsFloat(a.Exposure.Load(4));
+    if (!(exposure > 0) || exposure > 1e30)
+        exposure = 1;
+
+    // Where this pixel lies among the render pixels, the jitter taken off: render pixel k's
+    // sample is at k + 0.5 - jitter.
+    float2 p = uv * render;
+    int2 k0 = int2((int)Floor(p.x + c.Jitter.x), (int)Floor(p.y + c.Jitter.y));
+    float3 sum = float3(0, 0, 0);
+    float weights = 0;
+    float raw = 0;
+    float ratio = display.y / render.y;
+    float3 m1 = float3(0, 0, 0);
+    float3 m2 = float3(0, 0, 0);
+    float nearest = -1;
+    int2 front = k0;
+    for (int dy = -1; dy <= 1; dy++)
+    {
+        for (int dx = -1; dx <= 1; dx++)
+        {
+            int2 k = int2(Clamp(k0.x + dx, 0, (int)c.RenderSize.x - 1), Clamp(k0.y + dy, 0, (int)c.RenderSize.y - 1));
+            float3 color = a.Color.Load(k).xyz;
+            // In display pixels: the filter is the display pixel's, so upscaling leaves a display
+            // pixel far from this frame's samples to its history.
+            float2 d = (float2((float)k.x + 0.5 - c.Jitter.x, (float)k.y + 0.5 - c.Jitter.y) - p) * ratio;
+            float kernel = Exp(-c.Sharpness * Dot(d, d));
+            float w = kernel / (1 + TsrLuminance(color) * exposure);
+            raw += kernel;
+            sum += color * w;
+            weights += w;
+            float3 y = ToYCoCg(color);
+            m1 += y;
+            m2 += y * y;
+            float depth = a.Depth.Load(k);
+            if (depth > nearest)
+            {
+                nearest = depth;
+                front = k;
+            }
+        }
+    }
+    float3 current = sum / Max(weights, 1e-12);
+    // This frame's say in the pixel: its samples' weight, without the Karis factor (1 where one
+    // lands on the pixel's center).
+    float sampleWeight = Min(raw, 1);
+    m1 /= 9;
+    float3 sigma = Sqrt(Max(m2 / 9 - m1 * m1, float3(0, 0, 0)));
+
+    float2 last = uv - a.Velocity.Load(front);
+    float4 history = float4(0, 0, 0, 0);
+    if (c.HasHistory != 0 && last.x >= 0 && last.y >= 0 && last.x < 1 && last.y < 1)
+        history = HistoryAt(a, last, display);
+    // Each frame's resampling of a moving history softens it a little: the faster the motion
+    // (display pixels a frame), the fewer frames it keeps.
+    float speed = Length(a.Velocity.Load(front) * display);
+    float cap = Max(c.MaxWeight / (1 + c.MotionFalloff * speed), 1);
+    float historyWeight = Min(history.w, cap);
+    if (historyWeight > 0)
+    {
+        // Clipped toward the mean, along the line between them, into the box.
+        float3 y = ToYCoCg(history.xyz);
+        float3 extent = c.ClipSigma * sigma + 1e-6;
+        float3 offset = y - m1;
+        float3 units = Abs(offset / extent);
+        float most = Max(units.x, Max(units.y, units.z));
+        if (most > 1)
+        {
+            y = m1 + offset / most;
+            // A clip is a sign the history is someone else's: trust it less.
+            historyWeight *= Saturate(2 - most);
+        }
+        history = float4(Max(FromYCoCg(y), float3(0, 0, 0)), history.w);
+    }
+    float wc = sampleWeight / (1 + TsrLuminance(current) * exposure);
+    float wh = historyWeight / (1 + TsrLuminance(history.xyz) * exposure);
+    float3 resolved = (current * wc + history.xyz * wh) / Max(wc + wh, 1e-12);
+    a.Output[(int2)id.xy] = float4(resolved, Min(historyWeight + sampleWeight, cap));
+}

@@ -293,6 +293,7 @@ impl<'v> Engine<'v> {
                             } else {
                                 Camera::default().near
                             },
+                            ..Camera::default()
                         };
                         self.world.insert(entity, camera);
                     }

@@ -396,13 +396,6 @@ pub(crate) fn planes(view_projection: &Mat4) -> [[f32; 4]; 6] {
     })
 }
 
-/// `camera`'s view-projection for a `width` × `height` view.
-fn view_projection((eye, camera): (Transform, Camera), width: u32, height: u32) -> Mat4 {
-    let aspect = width as f32 / height.max(1) as f32;
-    Mat4::perspective_infinite_rh(camera.fov_y, aspect, camera.near)
-        * eye.to_matrix().inverse_affine()
-}
-
 /// `needed` rounded up to a power of two within [`MIN_CAPACITY`] and `max`.
 fn capacity(needed: u64, max: u32) -> u32 {
     let max = max.max(MIN_CAPACITY);
@@ -527,10 +520,10 @@ impl Visibility {
         desc: &ViewDesc,
     ) -> VisibilityOutput<'g> {
         let (width, height) = (desc.width, desc.height);
-        let vp = view_projection(desc.camera, width, height);
+        let vp = crate::view_projection(desc.camera, width, height);
         let previous = desc
             .previous
-            .map_or(vp, |p| view_projection(p, width, height));
+            .map_or(vp, |p| crate::view_projection(p, width, height));
         let (mut nodes, mut parts, mut clusters, mut levels) = (0u64, 0u64, 0u64, 0u32);
         let mut instances = 0u64;
         for (_, mesh, _) in scene.drawable() {

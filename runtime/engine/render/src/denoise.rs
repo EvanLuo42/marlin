@@ -14,8 +14,8 @@
 //!
 //! Diffuse only for now; the specular signal joins with the final shading's specular.
 
+use marlin_math::Transform;
 use marlin_math::scalar::tan;
-use marlin_math::{Mat4, Transform};
 use marlin_render_graph::{
     Access, PassContext, RenderGraph, TextureDesc as GraphTextureDesc, TextureHandle,
 };
@@ -195,9 +195,7 @@ impl Denoiser {
         height: u32,
         seed: u32,
     ) -> TextureHandle<'g> {
-        let aspect = width as f32 / height.max(1) as f32;
-        let view_projection = Mat4::perspective_infinite_rh(camera.fov_y, aspect, camera.near)
-            * eye.to_matrix().inverse_affine();
+        let view_projection = crate::view_projection((eye, camera), width, height);
         let p = eye.translation;
         let DenoiseInputs {
             view,
