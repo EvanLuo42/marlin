@@ -442,3 +442,36 @@ fn cursor_grab_clips_while_focused() {
     window.set_cursor_visible(true);
     window.set_cursor_position(Point::new(5, 5)).unwrap();
 }
+
+#[test]
+fn moving_and_sizing_run_the_modal_tick() {
+    // A drag's modal loop starves WM_TIMER while the mouse keeps moving; the WM_MOVING and
+    // WM_SIZING it sends with each move run the tick instead. Another thread sends them, as the
+    // OS would, while this one pumps.
+    let mut app = App::new().unwrap();
+    let window = app.create_window(&hidden("modal tick")).unwrap();
+    let hwnd = window.hwnd() as isize;
+    let sender = std::thread::spawn(move || {
+        for msg in [
+            windows_sys::Win32::UI::WindowsAndMessaging::WM_MOVING,
+            windows_sys::Win32::UI::WindowsAndMessaging::WM_SIZING,
+        ] {
+            let mut rect = RECT {
+                left: 0,
+                top: 0,
+                right: 320,
+                bottom: 200,
+            };
+            // SAFETY: the window lives until this thread is joined; `rect` outlives the call,
+            // which blocks until the window's thread has handled it.
+            unsafe { SendMessageW(hwnd as HWND, msg, 0, &mut rect as *mut RECT as LPARAM) };
+        }
+    });
+    let mut ticks = 0;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while ticks < 2 && std::time::Instant::now() < deadline {
+        app.pump_with(Some(std::time::Duration::from_millis(10)), |_| ticks += 1);
+    }
+    sender.join().unwrap();
+    assert_eq!(ticks, 2, "a tick for WM_MOVING and one for WM_SIZING");
+}

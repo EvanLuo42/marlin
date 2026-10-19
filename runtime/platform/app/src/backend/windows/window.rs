@@ -30,9 +30,10 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     SetCursorPos, SetTimer, SetWindowLongPtrW, SetWindowPlacement, SetWindowPos, SetWindowTextW,
     ShowWindow, WINDOW_EX_STYLE, WINDOW_STYLE, WINDOWPLACEMENT, WINDOWPOS, WM_CLOSE, WM_COPYDATA,
     WM_DPICHANGED, WM_DROPFILES, WM_ENTERSIZEMOVE, WM_ERASEBKGND, WM_EXITSIZEMOVE,
-    WM_GETMINMAXINFO, WM_KILLFOCUS, WM_MENUCHAR, WM_MOVE, WM_SETCURSOR, WM_SETFOCUS, WM_SIZE,
-    WM_SYSCOMMAND, WM_TIMER, WM_WINDOWPOSCHANGED, WS_EX_APPWINDOW, WS_MAXIMIZEBOX, WS_MINIMIZEBOX,
-    WS_OVERLAPPEDWINDOW, WS_POPUP, WS_SYSMENU, WS_THICKFRAME, WS_VISIBLE, WindowFromPoint,
+    WM_GETMINMAXINFO, WM_KILLFOCUS, WM_MENUCHAR, WM_MOVE, WM_MOVING, WM_SETCURSOR, WM_SETFOCUS,
+    WM_SIZE, WM_SIZING, WM_SYSCOMMAND, WM_TIMER, WM_WINDOWPOSCHANGED, WS_EX_APPWINDOW,
+    WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_OVERLAPPEDWINDOW, WS_POPUP, WS_SYSMENU, WS_THICKFRAME,
+    WS_VISIBLE, WindowFromPoint,
 };
 
 use super::{CLASS_NAME, Shared, display};
@@ -197,6 +198,14 @@ impl WindowState {
             WM_TIMER if wparam == MODAL_TICK_TIMER => {
                 self.shared.run_tick();
                 Some(0)
+            }
+            // The timer alone is not enough: WM_TIMER is only made when the queue is empty, and
+            // a moving mouse never leaves it empty, so a drag that keeps moving would get almost
+            // no frames. Each move of the drag also runs a frame; the timer covers a mouse held
+            // still. (The modal loop sends these only while it runs.)
+            WM_MOVING | WM_SIZING => {
+                self.shared.run_tick();
+                None
             }
             // The swapchain covers the client area; erasing first only flickers.
             WM_ERASEBKGND => Some(1),
