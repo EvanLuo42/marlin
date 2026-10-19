@@ -573,7 +573,13 @@ bulk        GPU 数据（顶点、纹理 mip），对齐到 4 KiB，直接上传
     - 调试信息单独存放。
   - cook：MikkTSpace 逐位一致的切线（现在是 Lengyel 加按角度加权，与 MikkTSpace 很接近，但拆分处不完全一致）、morph target、主机纹理 tiling 单元、cluster DAG（格式里已经预留了字段）、DDC 的 LRU 淘汰。
   - 加载：
-    - 按 blob 流送，带优先级和内存预算（包格式与 `Package::read_blob` 已经支持）；
+    - 按 blob 流送：网格的 cluster 页已经做了（R2c，见下面的记录和 0009 §13）；纹理 mip 的流送随纹理上传一起做；
     - unbuffered IO 与 DirectStorage；
-    - 纹理上传到 GPU、网格按页上传（随 visbuffer 渲染器一起做；目前 P6 的网格走 CPU 解码加前向路径）；
+    - 纹理上传到 GPU（网格按页上传和流送已经随 visbuffer 渲染器做了，0009 §13）；
     - 关卡组件扩展到脚本（随 VM 集成），以及世界流送（多关卡 / cell）。
+
+**按 blob 流送**（2026-10-18，渲染 R2c 的一部分，0009 §13）：
+- **格式**：cooked 单元的 bulk 表每项的保留字成了 `flags`，`BULK_STREAMED` 表示"这个 blob 单独读，不随单元加载"；cooker 用 `CookContext::add_streamed_bulk` 加这种 blob。单元的字节可以在流送 blob 之前就结束：`UnitView::new` 只要求非流送的 blob 在字节范围内，`bulk_present` 说一个 blob 在不在，不在的 `bulk_bytes` 是空的。旧单元的保留字是 0，读出来都不是流送的。包格式升到版本 3：`BlobRecord` 多了 `flags`（加 4 字节保留，32 字节一条）。
+- **加载**：`Package` 读一个单元只读单元头和非流送 blob 所在的 chunk（`PackageIndex::unit_resident_read`：到最后一个不属于流送 blob 的 chunk 为止，解出来的单元在那里截断；夹在中间的流送 blob 顺带读进来）。`UnitSource` 加了 `begin_blob`/`finish_blob`，一个 blob 是一段整 chunk 的文件范围；`Package` 实现它们，`read_blob` 改成用它们。`MemorySource::insert_streamed` 让内存源像包一样加载（测试用）；其他源整单元加载，流送 blob 也在，不需要单独读。`LoadContext` 多了 `blobs`（每个 blob 在单元 bulk 表里的下标、大小、是否流送、在不在）和 `unit_id`。
+- **`BlobStreamer`**（`marlin_asset::stream`）：任何线程都可以按（单元 id，blob 下标）`request`，拿到一个 `BlobRequest`，读到以后从它 `take`；拥有 IO 的线程每帧调用 `update(vfs, io)`，在流送器自己的 `IoQueue` 上发读、收完成、在本线程解码（一页最多 128 KiB 的 chunk 解压）。发读之前请求方已经丢掉 `BlobRequest` 的请求直接跳过。`update_blocking` 给工具和加载画面同步读。
+- **引擎**：`Engine` 持有 `Arc<BlobStreamer>` 和第二个 `IoQueue`（和 `AssetServer` 的分开，完成事件不会互相吞掉），每帧在资产更新之后调用 `update`。`engine_loaders(&streamer)` 把流送器交给网格加载器。

@@ -91,8 +91,13 @@ pub struct LoadContext<'a> {
     pub encoding: Encoding,
     /// Aligned for in-place use.
     pub payload: &'a [u8],
-    /// The object's bulk blobs, in order.
+    /// The object's bulk blobs, in order. A streamed blob the unit was loaded without has no
+    /// bytes here: `blobs` says so, and a [`BlobStreamer`](crate::BlobStreamer) reads it.
     pub bulk: &'a [(BulkKind, &'a [u8])],
+    /// What each of `bulk`'s blobs is.
+    pub blobs: &'a [BlobInfo],
+    /// The unit's id, which streamed blobs are requested by.
+    pub unit_id: u64,
     unit: &'a Arc<UnitBytes>,
     table: &'a mut ObjectTable,
 }
@@ -118,6 +123,20 @@ impl LoadContext<'_> {
     pub fn unit_bytes(&self) -> Arc<UnitBytes> {
         self.unit.clone()
     }
+}
+
+/// One of an object's bulk blobs, as its [`LoadContext`] sees it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct BlobInfo {
+    /// Its index in the unit's bulk table: what [`BlobStreamer::request`] takes.
+    ///
+    /// [`BlobStreamer::request`]: crate::BlobStreamer::request
+    pub index: u32,
+    pub size: u64,
+    /// Marked `BULK_STREAMED`.
+    pub streamed: bool,
+    /// Its bytes are in the unit (a streamed blob may be absent).
+    pub present: bool,
 }
 
 type Loaded = Box<dyn Any + Send + Sync>;
@@ -865,6 +884,16 @@ impl AssetServer {
                 .object_bulk(&entry)
                 .map(|b| (b.kind, view.bulk_bytes(&b)))
                 .collect();
+            let blobs: Vec<BlobInfo> = view
+                .object_bulk(&entry)
+                .enumerate()
+                .map(|(i, b)| BlobInfo {
+                    index: entry.bulk_first + i as u32,
+                    size: b.size,
+                    streamed: b.flags & crate::cooked::BULK_STREAMED != 0,
+                    present: view.bulk_present(&b),
+                })
+                .collect();
             let result = match self.loaders.by_type.get(&entry.type_id) {
                 None => Err(AssetError::NoLoader {
                     type_id: entry.type_id,
@@ -876,6 +905,8 @@ impl AssetServer {
                         encoding: entry.encoding,
                         payload: view.payload(&entry),
                         bulk: &bulk,
+                        blobs: &blobs,
+                        unit_id: unit,
                         unit: &bytes,
                         table: &mut self.table,
                     };

@@ -324,7 +324,7 @@ struct CookedObject {
     entry_type: u64,
     encoding: marlin_asset::cooked::Encoding,
     payload: Vec<u8>,
-    bulk: Vec<(marlin_asset::cooked::BulkKind, Vec<u8>)>,
+    bulk: Vec<marlin_asset::cooked::write::UnitBulk>,
 }
 
 /// Lays out a unit (see `marlin_asset::cooked`).

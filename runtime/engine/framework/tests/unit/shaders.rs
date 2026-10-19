@@ -85,7 +85,7 @@ fn content(library: &ShaderLibrary, name: Option<&str>) -> Vfs {
 #[test]
 fn the_library_loads_by_package_name() {
     let vfs = content(&lighting(), Some(ENGINE_SHADERS));
-    let mut assets = AssetServer::new(engine_loaders());
+    let mut assets = AssetServer::new(loaders());
     let handle = load_engine_shaders(&mut assets, &vfs, None).unwrap();
     let lib = assets.get(&handle).unwrap();
     assert_eq!(lib, &lighting());
@@ -97,7 +97,7 @@ fn the_library_loads_by_package_name() {
 #[test]
 fn content_without_the_package_says_so() {
     let vfs = content(&lighting(), None);
-    let mut assets = AssetServer::new(engine_loaders());
+    let mut assets = AssetServer::new(loaders());
     let e = load_engine_shaders(&mut assets, &vfs, None).unwrap_err();
     assert!(matches!(e, ShaderError::NotMounted), "{e}");
     assert!(e.to_string().contains("content/engine"), "{e}");
@@ -121,7 +121,7 @@ fn entries_must_have_the_stage_and_push_constants_the_engine_uses() {
 fn the_default_resolve_loads_by_name() {
     let permutation = library(vec![entry(RESOLVE, Stage::Compute, RESOLVE_PUSH_BYTES)]);
     let vfs = content(&permutation, Some(DEFAULT_RESOLVE));
-    let mut assets = AssetServer::new(engine_loaders());
+    let mut assets = AssetServer::new(loaders());
     let handle = load_default_resolve(&mut assets, &vfs, None).unwrap();
     assert!(resolve_shader(assets.get(&handle).unwrap()).is_ok());
     let short = library(vec![entry(RESOLVE, Stage::Compute, 64)]);
@@ -165,4 +165,9 @@ fn the_streaming_passes_are_compute_shaders_with_the_pools_push() {
         streaming_shaders(&wrong_push),
         Err(ShaderError::Mismatch { .. })
     ));
+}
+
+/// The engine's loaders, with a streamer nothing drives (these assets stream nothing).
+fn loaders() -> marlin_asset::Loaders {
+    engine_loaders(&std::sync::Arc::new(marlin_asset::BlobStreamer::new()))
 }

@@ -205,3 +205,137 @@ fn least_recently_used_pages_make_room() {
     check_residency(&h, ha, &ball);
     check_residency(&h, hb, &ball);
 }
+
+/// A cooked mesh as a package loads it: the root pages in memory, every other page read when
+/// requested and handed over a call to `take` later (like a read on its way), the reads counted.
+/// `broken` pages fail to read.
+struct FromDisk {
+    cooked: Cooked,
+    resident: usize,
+    broken: Vec<usize>,
+    /// Per blob: 0 not requested, 1 being read, 2 read.
+    state: std::sync::Mutex<Vec<u8>>,
+    reads: std::sync::atomic::AtomicUsize,
+}
+
+impl FromDisk {
+    fn new(cooked: &Cooked, broken: Vec<usize>) -> std::sync::Arc<Self> {
+        let resident = cooked.view().cluster_dag.header.root_page_count as usize;
+        std::sync::Arc::new(Self {
+            cooked: cooked.clone(),
+            resident,
+            broken,
+            state: std::sync::Mutex::new(vec![0; cooked.pages.len()]),
+            reads: std::sync::atomic::AtomicUsize::new(0),
+        })
+    }
+
+    fn reads(&self) -> usize {
+        self.reads.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+impl marlin_render::MeshData for FromDisk {
+    fn view(&self) -> marlin_render::asset::mesh::MeshView<'_> {
+        self.cooked.view()
+    }
+
+    fn bulk(&self, index: usize) -> Option<&[u8]> {
+        (index < self.resident).then(|| self.cooked.pages[index].as_slice())
+    }
+
+    fn request(&self, index: usize) {
+        let mut state = self.state.lock().unwrap();
+        assert!(index >= self.resident, "a resident page requested");
+        if state[index] == 0 {
+            state[index] = 1;
+            self.reads
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    fn take(&self, index: usize) -> Option<Result<Vec<u8>, ()>> {
+        let mut state = self.state.lock().unwrap();
+        match state[index] {
+            1 => {
+                state[index] = 2;
+                None
+            }
+            2 => {
+                state[index] = 0;
+                Some(if self.broken.contains(&index) {
+                    Err(())
+                } else {
+                    Ok(self.cooked.pages[index].clone())
+                })
+            }
+            _ => None,
+        }
+    }
+}
+
+#[test]
+fn pages_not_in_memory_are_read_then_loaded() {
+    let mut h = Harness::new(Environment::default());
+    h.vis.lod_error_pixels = 0.0;
+    let ball = sphere(128, 256);
+    let (pages, roots) = page_counts(&ball);
+    let disk = FromDisk::new(&ball, Vec::new());
+    let (id, handle) = h.upload_from(&ball, disk.clone());
+    h.camera_at(0.0);
+    h.add(
+        id,
+        Transform::from_translation(Vec3::new(0.0, 0.0, -1.5)),
+        [1.0; 4],
+    );
+    // Every frame on the way is the cut of what is resident; a page is read once.
+    let last = settle(&mut h);
+    assert_eq!(h.meshes.resident_pages(handle), pages);
+    assert_eq!(disk.reads(), pages - roots);
+    check_residency(&h, handle, &ball);
+
+    // The same picture as a mesh with every page in memory.
+    let mut all = Harness::new(Environment::default());
+    all.vis.lod_error_pixels = 0.0;
+    let (id, _) = all.upload(&ball);
+    all.camera_at(0.0);
+    all.add(
+        id,
+        Transform::from_translation(Vec3::new(0.0, 0.0, -1.5)),
+        [1.0; 4],
+    );
+    let full = settle(&mut all);
+    assert_eq!(full.vis_depth, last.vis_depth);
+}
+
+#[test]
+fn a_page_that_fails_to_read_leaves_its_surface_coarser() {
+    let mut h = Harness::new(Environment::default());
+    h.vis.lod_error_pixels = 0.0;
+    let ball = sphere(128, 256);
+    let (pages, roots) = page_counts(&ball);
+    // The last page: the finest level, nothing depends on it.
+    let disk = FromDisk::new(&ball, vec![pages - 1]);
+    let (id, handle) = h.upload_from(&ball, disk.clone());
+    h.camera_at(0.0);
+    h.add(
+        id,
+        Transform::from_translation(Vec3::new(0.0, 0.0, -1.5)),
+        [1.0; 4],
+    );
+    settle(&mut h);
+    let resident = h.meshes.resident_pages(handle);
+    assert!(
+        resident > roots && resident < pages,
+        "{resident} of {pages}"
+    );
+    assert!(h.meshes.page_slot(handle, pages - 1).is_none());
+    check_residency(&h, handle, &ball);
+    // It is not read again.
+    let reads = disk.reads();
+    for _ in 0..4 {
+        let f = h.visibility_frame();
+        check_against_reference(&h, &f);
+    }
+    assert_eq!(disk.reads(), reads);
+}

@@ -103,8 +103,9 @@ pub fn write_package(
 
     // Cut every unit into chunk jobs: the head, then each blob.
     let mut jobs: Vec<Job<'_>> = Vec::new();
-    // Per unit: the blob ranges (unit offset, size) and the index of the first job of each.
-    let mut blob_ranges: Vec<Vec<(u64, u64)>> = Vec::with_capacity(order.len());
+    // Per unit: the blob ranges (unit offset, size, bulk flags) and the index of the first job of
+    // each.
+    let mut blob_ranges: Vec<Vec<(u64, u64, u32)>> = Vec::with_capacity(order.len());
     for (i, data) in bytes.iter().enumerate() {
         let view = UnitView::new(data).map_err(|_| PackageWriteError::Damaged {
             path: order[i].path.clone(),
@@ -127,7 +128,7 @@ pub fn write_package(
             })?;
             let start = (h.bulk_offset + entry.offset) as usize;
             let end = start + entry.size as usize;
-            ranges.push((start as u64, entry.size));
+            ranges.push((start as u64, entry.size, entry.flags));
             for (k, at) in (start..end).step_by(chunk_size).enumerate() {
                 jobs.push(Job {
                     unit: i,
@@ -218,7 +219,7 @@ pub fn write_package(
         let chunk_count = chunks_per_unit[i];
         let first_blob = blobs.len() as u32;
         let ranges = &blob_ranges[i];
-        for (b, &(unit_offset, size)) in ranges.iter().enumerate() {
+        for (b, &(unit_offset, size, flags)) in ranges.iter().enumerate() {
             let first = blob_first_chunks[i][b];
             let end = blob_first_chunks[i]
                 .get(b + 1)
@@ -229,6 +230,7 @@ pub fn write_package(
                 size,
                 first_chunk: first,
                 chunk_count: end - first,
+                flags,
             });
         }
         units.push(UnitRecord {

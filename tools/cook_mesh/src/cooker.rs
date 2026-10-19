@@ -43,7 +43,7 @@ pub struct MeshCooker;
 
 impl Cooker for MeshCooker {
     fn version(&self) -> u32 {
-        4
+        5
     }
 
     fn cook(&self, object: &SourceObject<'_>, ctx: &mut CookContext<'_>) -> Result<Cooked, String> {
@@ -68,8 +68,13 @@ impl Cooker for MeshCooker {
             ctx.warn("the mesh is skinned but `Skeleton` is not set; it will not find its joints at runtime");
         }
         let built = build(&geometry, mesh)?;
-        for page in built.pages {
-            ctx.add_bulk(BulkKind::Vertices, page);
+        // The root pages load with the mesh; every other page, and the RT LOD, streams.
+        for (i, page) in built.pages.into_iter().enumerate() {
+            if i < built.resident_pages {
+                ctx.add_bulk(BulkKind::Vertices, page);
+            } else {
+                ctx.add_streamed_bulk(BulkKind::Vertices, page);
+            }
         }
         Ok(Cooked {
             type_id: type_info::<Mesh>().id,

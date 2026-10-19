@@ -16,7 +16,9 @@
 //!    page's last use; the requests, highest priority first, each with its sibling pages and
 //!    every page they depend on (every page of their groups' parent groups), take free slots
 //!    or evict the least recently used pages (each with the resident pages that depend on
-//!    it), up to [`Meshes::max_page_uploads`] a frame.
+//!    it), up to [`Meshes::max_page_uploads`] a frame. Pages whose bytes are not in memory
+//!    (streamed blobs) are read first ([`MeshData::request`]); their request loads in a later
+//!    frame, once every page of it has arrived.
 //! 3. The next frame's [`Meshes::add_passes`] copies the new pages into their slots and writes
 //!    the page table, before the visibility passes read either.
 //!
@@ -96,8 +98,20 @@ impl Default for Environment {
 pub trait MeshData: Send + Sync {
     /// The checked payload.
     fn view(&self) -> MeshView<'_>;
-    /// Bulk blob `index` (as `ClusterPage::bulk` counts them), or `None` if it is not loaded.
+    /// Bulk blob `index` (as `ClusterPage::bulk` counts them) if its bytes are in memory: loaded
+    /// with the mesh, or every blob for data that has them all.
     fn bulk(&self, index: usize) -> Option<&[u8]>;
+
+    /// Starts reading bulk blob `index`, which [`bulk`](Self::bulk) does not have, from where
+    /// it is stored; a no-op while a read of it is on its way.
+    fn request(&self, _index: usize) {}
+
+    /// A blob [`request`](Self::request) read since, handed over (the data keeps no copy):
+    /// `Some(Err(()))` if it could not be read, `None` while it is on its way or was not
+    /// requested.
+    fn take(&self, _index: usize) -> Option<core::result::Result<Vec<u8>, ()>> {
+        None
+    }
 }
 
 /// How big the page pool is.
@@ -146,8 +160,10 @@ struct PageState {
     last_used: u64,
     /// A root page: never evicted.
     pinned: bool,
-    /// Failed its check: never loaded.
+    /// Failed its check or its read: never loaded.
     failed: bool,
+    /// Its bytes are being read ([`MeshData::request`]).
+    loading: bool,
 }
 
 struct Mesh {
@@ -166,16 +182,21 @@ struct Mesh {
     siblings: Vec<Vec<u32>>,
     counts: DagCounts,
     resident: ResidentMesh,
+    /// Streamed pages read but not in a slot yet (waiting for the rest of their request), with
+    /// the frame they arrived.
+    arrived: BTreeMap<u32, (Vec<u8>, u64)>,
 }
 
 /// A write the next frame's upload pass makes into the pool.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 enum Write {
-    /// A page's bytes into its slot.
+    /// A page's bytes into its slot: bytes streamed in, or `None` to take them from the mesh's
+    /// data.
     Page {
         mesh: MeshHandle,
         page: u32,
         slot: u32,
+        bytes: Option<Vec<u8>>,
     },
     /// A page table entry.
     Entry {
@@ -187,8 +208,8 @@ enum Write {
 
 impl Write {
     fn mesh(&self) -> MeshHandle {
-        match *self {
-            Self::Page { mesh, .. } | Self::Entry { mesh, .. } => mesh,
+        match self {
+            Self::Page { mesh, .. } | Self::Entry { mesh, .. } => *mesh,
         }
     }
 }
@@ -274,6 +295,8 @@ pub struct Meshes {
     seen: u64,
     /// Pages the last feedback asked for that are still missing.
     wanted: usize,
+    /// Pages being read.
+    loading: Vec<(MeshHandle, u32)>,
     /// Most pages loaded a frame (each up to 128 KiB of upload).
     pub max_page_uploads: u32,
 }
@@ -315,6 +338,7 @@ impl Meshes {
             frame: 1,
             seen: 0,
             wanted: 0,
+            loading: Vec::new(),
             max_page_uploads: 64,
         })
     }
@@ -440,6 +464,7 @@ impl Meshes {
                 last_used: self.frame,
                 pinned: false,
                 failed: false,
+                loading: false,
             })
             .collect();
         for (&page, &slot) in pinned.iter().zip(&slots) {
@@ -458,6 +483,7 @@ impl Meshes {
             counts,
             resident,
             pages,
+            arrived: BTreeMap::new(),
         }));
         let Some(mesh) = self.meshes.get_mut(handle.0) else {
             unreachable!("just inserted");
@@ -470,6 +496,7 @@ impl Meshes {
                 mesh: handle,
                 page,
                 slot,
+                bytes: None,
             });
         }
         for (page, state) in mesh.pages.iter().enumerate() {
@@ -546,10 +573,14 @@ impl Meshes {
         false
     }
 
-    /// Applies one frame's feedback (see the module docs): refreshes used pages and loads
-    /// requested ones, evicting for them, up to [`max_page_uploads`](Self::max_page_uploads).
+    /// Applies one frame's feedback (see the module docs): takes the pages read since, refreshes
+    /// used pages and loads requested ones, evicting for them, up to
+    /// [`max_page_uploads`](Self::max_page_uploads). A requested page whose bytes are not in
+    /// memory is read first ([`MeshData::request`]); its request loads once all of its pages
+    /// have arrived.
     pub fn apply_feedback(&mut self, feedback: &Feedback<'_>) {
         self.seen = self.seen.max(feedback.frame);
+        self.take_arrivals();
         for (slot, w) in feedback.used.as_chunks::<4>().0.iter().enumerate() {
             if u32::from_le_bytes(*w) == 0 {
                 continue;
@@ -600,20 +631,87 @@ impl Meshes {
             if closure.is_empty() {
                 continue;
             }
-            if closure.iter().any(|&q| mesh.pages[q as usize].failed)
-                // A closure larger than the budget still loads, alone in its frame.
-                || (!loaded.is_empty()
-                    && loaded.len() + closure.len() > self.max_page_uploads as usize)
+            // A page that failed its read or check never loads: coarser clusters stand in.
+            if closure.iter().any(|&q| mesh.pages[q as usize].failed) {
+                continue;
+            }
+            // Bytes first: read what is not in memory; the request loads once it has arrived.
+            if !self.read_missing(m, &closure) {
+                missing += 1;
+                continue;
+            }
+            // A closure larger than the budget still loads, alone in its frame.
+            if (!loaded.is_empty() && loaded.len() + closure.len() > self.max_page_uploads as usize)
                 || !self.load(m, &closure, &mut loaded)
             {
                 missing += 1;
             }
         }
         self.wanted = missing;
+        self.prune_arrivals();
+    }
+
+    /// Takes the pages read since the last call into their meshes' arrivals.
+    fn take_arrivals(&mut self) {
+        let frame = self.frame;
+        let loading = core::mem::take(&mut self.loading);
+        for (m, p) in loading {
+            let Some(mesh) = self.meshes.get_mut(m.0) else {
+                continue;
+            };
+            match mesh.data.take(mesh.bulk[p as usize] as usize) {
+                None => self.loading.push((m, p)),
+                Some(Ok(bytes)) => {
+                    mesh.pages[p as usize].loading = false;
+                    mesh.arrived.insert(p, (bytes, frame));
+                }
+                Some(Err(())) => {
+                    let state = &mut mesh.pages[p as usize];
+                    state.loading = false;
+                    state.failed = true;
+                }
+            }
+        }
+    }
+
+    /// Drops arrived pages nothing has loaded for a while (the camera moved on before the rest
+    /// of their request arrived): they are read again if wanted again.
+    fn prune_arrivals(&mut self) {
+        /// Frames an arrived page waits for the rest of its request.
+        const KEEP_FRAMES: u64 = 120;
+        let frame = self.frame;
+        for (_, mesh) in self.meshes.iter_mut() {
+            mesh.arrived
+                .retain(|_, (_, at)| frame.saturating_sub(*at) <= KEEP_FRAMES);
+        }
+    }
+
+    /// Whether every page of `pages` of mesh `m` has its bytes in memory; reads the ones that
+    /// do not.
+    fn read_missing(&mut self, m: MeshHandle, pages: &[u32]) -> bool {
+        let Some(mesh) = self.meshes.get_mut(m.0) else {
+            return false;
+        };
+        let mut all = true;
+        for &q in pages {
+            let b = mesh.bulk[q as usize] as usize;
+            if mesh.arrived.contains_key(&q) || mesh.data.bulk(b).is_some() {
+                continue;
+            }
+            all = false;
+            let state = &mut mesh.pages[q as usize];
+            if !state.loading {
+                state.loading = true;
+                mesh.data.request(b);
+                self.loading.push((m, q));
+            }
+        }
+        all
     }
 
     /// Loads `pages` of mesh `m` together, or none of them: their checks, then slots (evicting
-    /// for them, but none of `loaded` or `pages`).
+    /// for them, but none of `loaded` or `pages`). Their bytes are in memory
+    /// ([`read_missing`](Self::read_missing)).
     fn load(&mut self, m: MeshHandle, pages: &[u32], loaded: &mut Vec<(MeshHandle, u32)>) -> bool {
         let Some(data) = self.meshes.get(m.0).map(|mesh| mesh.data.clone()) else {
             return false;
@@ -627,9 +725,11 @@ impl Meshes {
                 .iter()
                 .copied()
                 .filter(|&q| {
-                    !data
-                        .bulk(mesh.bulk[q as usize] as usize)
-                        .is_some_and(|b| geometry::check_page(&view.cluster_dag, q as usize, b))
+                    let bytes = match mesh.arrived.get(&q) {
+                        Some((b, _)) => Some(b.as_slice()),
+                        None => data.bulk(mesh.bulk[q as usize] as usize),
+                    };
+                    !bytes.is_some_and(|b| geometry::check_page(&view.cluster_dag, q as usize, b))
                 })
                 .collect()
         };
@@ -637,6 +737,7 @@ impl Meshes {
             if let Some(mesh) = self.meshes.get_mut(m.0) {
                 for q in bad {
                     mesh.pages[q as usize].failed = true;
+                    mesh.arrived.remove(&q);
                 }
             }
             return false;
@@ -668,6 +769,7 @@ impl Meshes {
                 mesh: m,
                 page: q,
                 slot,
+                bytes: mesh.arrived.remove(&q).map(|(b, _)| b),
             });
             self.writes.push(Write::Entry {
                 mesh: m,
@@ -681,7 +783,9 @@ impl Meshes {
 
     /// Loads every page of `mesh` with the next frame's uploads, evicting for them if it must
     /// (a level's loading screen, a cinematic's close-up, tools): all of them, or none if they
-    /// do not fit or one fails its check. Not bounded by
+    /// do not fit or one fails its check. Pages not in memory are read first: until they have
+    /// all arrived this loads nothing and returns `false`; call it again (after
+    /// [`poll_reads`](Self::poll_reads)). Not bounded by
     /// [`max_page_uploads`](Self::max_page_uploads).
     pub fn prefetch(&mut self, mesh: MeshHandle) -> bool {
         let Some(m) = self.meshes.get(mesh.0) else {
@@ -690,13 +794,20 @@ impl Meshes {
         let missing: Vec<u32> = (0..m.pages.len() as u32)
             .filter(|&p| m.pages[p as usize].slot == NOT_RESIDENT)
             .collect();
-        missing.is_empty() || self.load(mesh, &missing, &mut Vec::new())
+        missing.is_empty()
+            || (self.read_missing(mesh, &missing) && self.load(mesh, &missing, &mut Vec::new()))
     }
 
-    /// Whether streaming has caught up: no writes pending, and the last feedback asked for no
-    /// page it could not load.
+    /// Takes the pages read since the last call (what [`apply_feedback`](Self::apply_feedback)
+    /// does first), for [`prefetch`](Self::prefetch) without feedback.
+    pub fn poll_reads(&mut self) {
+        self.take_arrivals();
+    }
+
+    /// Whether streaming has caught up: no writes pending, no page being read, and the last
+    /// feedback asked for no page it could not load.
     pub fn streaming_idle(&self) -> bool {
-        self.writes.is_empty() && self.wanted == 0
+        self.writes.is_empty() && self.loading.is_empty() && self.wanted == 0
     }
 
     /// Takes the writes for this frame's upload pass (call once a frame, before
@@ -704,12 +815,17 @@ impl Meshes {
     pub fn take_uploads(&mut self) -> Uploads {
         let frame = self.frame;
         self.frame += 1;
-        let mut pages: BTreeMap<u32, (MeshHandle, u32)> = BTreeMap::new();
+        let mut pages: BTreeMap<u32, (MeshHandle, u32, Option<Vec<u8>>)> = BTreeMap::new();
         let mut entries: BTreeMap<u32, u32> = BTreeMap::new();
         for w in core::mem::take(&mut self.writes) {
             match w {
-                Write::Page { mesh, page, slot } => {
-                    pages.insert(slot, (mesh, page));
+                Write::Page {
+                    mesh,
+                    page,
+                    slot,
+                    bytes,
+                } => {
+                    pages.insert(slot, (mesh, page, bytes));
                 }
                 Write::Entry { entry, value, .. } => {
                     entries.insert(entry, value);
@@ -718,12 +834,16 @@ impl Meshes {
         }
         let mut ops = Vec::new();
         let mut data: Vec<u32> = Vec::new();
-        for (slot, (m, page)) in pages {
+        for (slot, (m, page, streamed)) in pages {
             let Some(mesh) = self.meshes.get(m.0) else {
                 continue;
             };
-            let Some(bytes) = mesh.data.bulk(mesh.bulk[page as usize] as usize) else {
-                continue;
+            let bytes = match &streamed {
+                Some(b) => b.as_slice(),
+                None => match mesh.data.bulk(mesh.bulk[page as usize] as usize) {
+                    Some(b) => b,
+                    None => continue,
+                },
             };
             let first = data.len() as u32;
             data.extend(bytes.chunks(4).map(|c| {
@@ -802,6 +922,7 @@ impl Meshes {
             }
         }
         self.writes.retain(|w| w.mesh() != mesh);
+        self.loading.retain(|&(m, _)| m != mesh);
         self.tables.remove(&m.table);
         self.free_table(m.table, m.pages.len() as u32);
     }

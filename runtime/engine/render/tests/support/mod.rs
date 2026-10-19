@@ -18,7 +18,7 @@ use marlin_render::scene::{
 };
 use marlin_render::visibility::counters;
 use marlin_render::{
-    Camera, Environment, Feedback, GpuScene, MeshHandle, Meshes, PagePool, PagePoolDesc,
+    Camera, Environment, Feedback, GpuScene, MeshData, MeshHandle, Meshes, PagePool, PagePoolDesc,
     RenderScene, ScatterShader, SceneUpdates, StreamingShaders, Visibility, VisibilityShaders,
 };
 use marlin_render_graph::{
@@ -115,6 +115,7 @@ impl Harness {
             &scene,
             &mut updates,
             &cook::cube(),
+            Arc::new(cook::cube()),
         );
         let material = scene.ids().materials.reserve();
         updates
@@ -138,6 +139,11 @@ impl Harness {
 
     /// Uploads `mesh` and adds it to the scene, resident.
     pub fn upload(&mut self, mesh: &Cooked) -> (MeshId, MeshHandle) {
+        self.upload_from(mesh, Arc::new(mesh.clone()))
+    }
+
+    /// Uploads `mesh` with its pages coming from `data`.
+    pub fn upload_from(&mut self, mesh: &Cooked, data: Arc<dyn MeshData>) -> (MeshId, MeshHandle) {
         upload(
             self.device,
             &mut self.meshes,
@@ -145,6 +151,7 @@ impl Harness {
             &self.scene,
             &mut self.updates,
             mesh,
+            data,
         )
     }
 
@@ -444,8 +451,9 @@ fn upload(
     scene: &RenderScene,
     updates: &mut SceneUpdates,
     mesh: &Cooked,
+    data: Arc<dyn MeshData>,
 ) -> (MeshId, MeshHandle) {
-    let handle = meshes.upload_mesh(device, Arc::new(mesh.clone())).unwrap();
+    let handle = meshes.upload_mesh(device, data).unwrap();
     cooked.insert(handle, mesh.clone());
     let id = scene.ids().meshes.reserve();
     updates.meshes.push(id, MeshUpdate::Add);

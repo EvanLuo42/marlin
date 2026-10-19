@@ -6,6 +6,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use marlin_asset::Uuid;
+use marlin_asset::cooked::write::UnitBulk;
 use marlin_asset::cooked::{BulkKind, Encoding};
 use marlin_asset_db::{Content, ContentObject};
 use marlin_hash::{xxh3_64, xxh3_128};
@@ -60,7 +61,7 @@ pub struct CookContext<'a> {
     /// key was computed from.
     pub(crate) sources: &'a HashMap<String, (PathBuf, u128)>,
     pub(crate) build: BuildInputs<'a>,
-    pub(crate) bulk: Vec<(BulkKind, Vec<u8>)>,
+    pub(crate) bulk: Vec<UnitBulk>,
     pub(crate) warnings: Vec<String>,
 }
 
@@ -199,7 +200,18 @@ impl<'a> CookContext<'a> {
 
     /// Adds a bulk blob (GPU data); returns its index among this object's blobs.
     pub fn add_bulk(&mut self, kind: BulkKind, data: Vec<u8>) -> u32 {
-        self.bulk.push((kind, data));
+        self.bulk.push((kind, data).into());
+        self.bulk.len() as u32 - 1
+    }
+
+    /// Adds a streamed bulk blob: read on its own when the runtime wants it, not with the unit
+    /// (a mesh's finer cluster pages); returns its index among this object's blobs.
+    pub fn add_streamed_bulk(&mut self, kind: BulkKind, data: Vec<u8>) -> u32 {
+        self.bulk.push(UnitBulk {
+            kind,
+            streamed: true,
+            data,
+        });
         self.bulk.len() as u32 - 1
     }
 

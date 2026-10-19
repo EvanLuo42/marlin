@@ -13,6 +13,10 @@
 //! All integers little-endian, offsets relative to the start of the unit. Readers check every
 //! range, so a damaged unit is an error, never undefined behavior. Cooked data is
 //! platform-specific: a unit is cooked for one platform.
+//!
+//! A blob marked [`BULK_STREAMED`] is read on its own when wanted (a mesh's finer cluster pages):
+//! sources that can read blobs alone load a unit without them, so the unit's bytes may end
+//! before them. [`UnitView::bulk_present`] says whether a blob's bytes are there.
 
 use core::mem::size_of;
 
@@ -110,7 +114,12 @@ pub struct BulkEntry {
     pub offset: u64,
     pub size: u64,
     pub kind: BulkKind,
+    /// [`BULK_STREAMED`] or 0.
+    pub flags: u32,
 }
+
+/// [`BulkEntry::flags`]: the blob is read on its own when wanted, not with its unit.
+pub const BULK_STREAMED: u32 = 1;
 
 impl BulkEntry {
     pub const SIZE: usize = 24;
@@ -165,9 +174,10 @@ impl<'a> UnitView<'a> {
             view.bulk_table_offset() as u64 + u64::from(header.bulk_count) * BulkEntry::SIZE as u64;
         let len = bytes.len() as u64;
         let in_range = |offset: u64, size: u64| offset.checked_add(size).is_some_and(|e| e <= len);
+        // The bulk region may run past the bytes: streamed blobs at its end can be absent.
         if tables_end > len
             || !in_range(header.payload_offset, header.payload_size)
-            || !in_range(header.bulk_offset, header.bulk_size)
+            || header.bulk_offset.checked_add(header.bulk_size).is_none()
         {
             return Err(UnitError::Truncated);
         }
@@ -190,10 +200,9 @@ impl<'a> UnitView<'a> {
         }
         for i in 0..header.bulk_count as usize {
             let bulk = view.bulk(i)?;
-            if bulk
-                .offset
-                .checked_add(bulk.size)
-                .is_none_or(|e| e > header.bulk_size)
+            let end = bulk.offset.checked_add(bulk.size);
+            if end.is_none_or(|e| e > header.bulk_size)
+                || (bulk.flags & BULK_STREAMED == 0 && !view.bulk_present(&bulk))
             {
                 return Err(UnitError::Truncated);
             }
@@ -304,6 +313,7 @@ impl<'a> UnitView<'a> {
             offset: u64_at(b, 0),
             size: u64_at(b, 8),
             kind,
+            flags: u32_at(b, 20),
         })
     }
 
@@ -313,8 +323,21 @@ impl<'a> UnitView<'a> {
         &self.bytes[start..start + entry.payload_size as usize]
     }
 
-    /// The bytes of bulk blob `entry`.
+    /// Whether bulk blob `entry`'s bytes are in the unit (a streamed blob may be absent).
+    pub fn bulk_present(&self, entry: &BulkEntry) -> bool {
+        self.header
+            .bulk_offset
+            .checked_add(entry.offset)
+            .and_then(|s| s.checked_add(entry.size))
+            .is_some_and(|e| e <= self.bytes.len() as u64)
+    }
+
+    /// The bytes of bulk blob `entry`; empty if it is a streamed blob the unit was loaded
+    /// without.
     pub fn bulk_bytes(&self, entry: &BulkEntry) -> &'a [u8] {
+        if !self.bulk_present(entry) {
+            return &[];
+        }
         let start = (self.header.bulk_offset + entry.offset) as usize;
         &self.bytes[start..start + entry.size as usize]
     }
@@ -374,7 +397,7 @@ pub mod write {
         out.extend_from_slice(&e.offset.to_le_bytes());
         out.extend_from_slice(&e.size.to_le_bytes());
         out.extend_from_slice(&(e.kind as u32).to_le_bytes());
-        out.extend_from_slice(&[0; 4]);
+        out.extend_from_slice(&e.flags.to_le_bytes());
     }
 
     const _: () = assert!(size_of::<u128>() + 8 + 4 + 4 + 8 + 8 + 4 + 4 + 8 == ObjectEntry::SIZE);
@@ -386,7 +409,26 @@ pub mod write {
         pub type_id: u64,
         pub encoding: Encoding,
         pub payload: Vec<u8>,
-        pub bulk: Vec<(BulkKind, Vec<u8>)>,
+        pub bulk: Vec<UnitBulk>,
+    }
+
+    /// A bulk blob of an object to assemble.
+    #[derive(Clone, PartialEq, Eq, Debug)]
+    pub struct UnitBulk {
+        pub kind: BulkKind,
+        /// Read on its own when wanted ([`BULK_STREAMED`]).
+        pub streamed: bool,
+        pub data: Vec<u8>,
+    }
+
+    impl From<(BulkKind, Vec<u8>)> for UnitBulk {
+        fn from((kind, data): (BulkKind, Vec<u8>)) -> Self {
+            Self {
+                kind,
+                streamed: false,
+                data,
+            }
+        }
     }
 
     fn pad(out: &mut Vec<u8>, align: u64) {
@@ -422,14 +464,15 @@ pub mod write {
             let payload_start = payload.len() as u64;
             payload.extend_from_slice(&o.payload);
             let bulk_first = bulk_entries.len() as u32;
-            for (kind, data) in &o.bulk {
+            for b in &o.bulk {
                 pad(&mut bulk, BULK_ALIGN);
                 bulk_entries.push(BulkEntry {
                     offset: bulk.len() as u64,
-                    size: data.len() as u64,
-                    kind: *kind,
+                    size: b.data.len() as u64,
+                    kind: b.kind,
+                    flags: if b.streamed { BULK_STREAMED } else { 0 },
                 });
-                bulk.extend_from_slice(data);
+                bulk.extend_from_slice(&b.data);
             }
             entries.push(ObjectEntry {
                 uuid: o.uuid,

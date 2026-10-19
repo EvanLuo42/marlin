@@ -88,6 +88,18 @@ pub trait UnitSource: Send + Sync {
     /// thread).
     fn finish(&self, unit: u64, read: &[u8]) -> Result<UnitBytes, SourceError>;
 
+    /// How bulk blob `blob` of `unit` (its index in the unit's bulk table) is read on its own,
+    /// for streamed blobs a unit was loaded without. Sources that load whole units never leave
+    /// a blob out and need not read one alone.
+    fn begin_blob(&self, _unit: u64, _blob: u32) -> Result<Read<'_>, SourceError> {
+        Err(SourceError::NotFound)
+    }
+
+    /// Turns the bytes read for a blob's [`Read::File`] into the blob.
+    fn finish_blob(&self, _unit: u64, _blob: u32, _read: &[u8]) -> Result<UnitBytes, SourceError> {
+        Err(SourceError::NotFound)
+    }
+
     /// A unit [`begin`](Self::begin) left [`Read::Pending`], once it has arrived.
     fn poll(&self, _unit: u64) -> Option<Result<UnitBytes, SourceError>> {
         None
@@ -142,26 +154,27 @@ impl Package {
         self.finish(unit, &stored)
     }
 
-    /// Reads one bulk blob of `unit` (blob `blob` of the unit's bulk table), for streaming.
+    /// Reads one bulk blob of `unit` (blob `blob` of the unit's bulk table) now.
     pub fn read_blob(&self, unit: u64, blob: u32) -> Result<CookedBuffer, SourceError> {
+        let (_, range) = self.blob_read(unit, blob)?;
+        let mut stored = alloc::vec![0u8; (range.end - range.start) as usize];
+        self.file.read_exact_at(&mut stored, range.start)?;
+        self.finish_blob(unit, blob, &stored)
+    }
+
+    /// Blob `blob` of `unit`: its record and the file range of its chunks.
+    fn blob_read(
+        &self,
+        unit: u64,
+        blob: u32,
+    ) -> Result<(crate::package::BlobRecord, core::ops::Range<u64>), SourceError> {
         let record = self.index.unit(unit).ok_or(SourceError::NotFound)?;
         if blob >= record.blob_count {
             return Err(SourceError::NotFound);
         }
         let b = self.index.blobs[(record.first_blob + blob) as usize];
         let chunks = b.first_chunk as usize..(b.first_chunk + b.chunk_count) as usize;
-        let range = self.index.file_range(chunks.clone());
-        let mut stored = alloc::vec![0u8; (range.end - range.start) as usize];
-        self.file.read_exact_at(&mut stored, range.start)?;
-        let mut out = CookedBuffer::zeroed(b.size as usize, UNIT_ALIGN);
-        self.index.decode(
-            chunks,
-            &stored,
-            range.start,
-            out.as_mut_slice(),
-            b.unit_offset,
-        )?;
-        Ok(out)
+        Ok((b, self.index.file_range(chunks)))
     }
 }
 
@@ -178,9 +191,10 @@ impl UnitSource for Package {
         self.index.named(name)
     }
 
+    /// Reads the unit without its streamed blobs (see [`PackageIndex::unit_resident_read`]).
     fn begin(&self, unit: u64) -> Result<Read<'_>, SourceError> {
         let record = self.index.unit(unit).ok_or(SourceError::NotFound)?;
-        let (_, range) = self.index.unit_read(record);
+        let (_, range, _) = self.index.unit_resident_read(record);
         Ok(Read::File {
             file: &self.file,
             offset: range.start,
@@ -190,10 +204,28 @@ impl UnitSource for Package {
 
     fn finish(&self, unit: u64, read: &[u8]) -> Result<UnitBytes, SourceError> {
         let record = self.index.unit(unit).ok_or(SourceError::NotFound)?;
-        let (chunks, range) = self.index.unit_read(record);
-        let mut out = CookedBuffer::zeroed(record.size as usize, UNIT_ALIGN);
+        let (chunks, range, size) = self.index.unit_resident_read(record);
+        let mut out = CookedBuffer::zeroed(size as usize, UNIT_ALIGN);
         self.index
             .decode(chunks, read, range.start, out.as_mut_slice(), 0)?;
+        Ok(out)
+    }
+
+    fn begin_blob(&self, unit: u64, blob: u32) -> Result<Read<'_>, SourceError> {
+        let (_, range) = self.blob_read(unit, blob)?;
+        Ok(Read::File {
+            file: &self.file,
+            offset: range.start,
+            len: (range.end - range.start) as usize,
+        })
+    }
+
+    fn finish_blob(&self, unit: u64, blob: u32, read: &[u8]) -> Result<CookedBuffer, SourceError> {
+        let (b, range) = self.blob_read(unit, blob)?;
+        let chunks = b.first_chunk as usize..(b.first_chunk + b.chunk_count) as usize;
+        let mut out = CookedBuffer::zeroed(b.size as usize, UNIT_ALIGN);
+        self.index
+            .decode(chunks, read, range.start, out.as_mut_slice(), b.unit_offset)?;
         Ok(out)
     }
 }
@@ -202,6 +234,9 @@ impl UnitSource for Package {
 #[derive(Default)]
 pub struct MemorySource {
     units: HashMap<u64, Vec<u8>>,
+    /// Units whose streamed blobs load on their own (as from a package): the bytes up to the
+    /// end of the last blob that is not streamed.
+    resident: HashMap<u64, usize>,
     objects: HashMap<Uuid, u64>,
     names: HashMap<u64, Uuid>,
 }
@@ -226,6 +261,23 @@ impl MemorySource {
         self.units.insert(unit, bytes);
         Ok(unit)
     }
+
+    /// Adds a cooked unit that loads like a package's: without its trailing streamed blobs,
+    /// which are read one by one ([`UnitSource::begin_blob`]).
+    pub fn insert_streamed(&mut self, bytes: Vec<u8>) -> Result<u64, crate::cooked::UnitError> {
+        let view = UnitView::new(&bytes)?;
+        let h = *view.header();
+        let mut resident = (h.payload_offset + h.payload_size) as usize;
+        for i in 0..view.bulk_count() {
+            let b = view.bulk(i)?;
+            if b.flags & crate::cooked::BULK_STREAMED == 0 {
+                resident = resident.max((h.bulk_offset + b.offset + b.size) as usize);
+            }
+        }
+        let unit = self.insert(bytes)?;
+        self.resident.insert(unit, resident);
+        Ok(unit)
+    }
 }
 
 impl UnitSource for MemorySource {
@@ -243,11 +295,27 @@ impl UnitSource for MemorySource {
 
     fn begin(&self, unit: u64) -> Result<Read<'_>, SourceError> {
         let bytes = self.units.get(&unit).ok_or(SourceError::NotFound)?;
-        Ok(Read::Ready(CookedBuffer::copy_from(bytes, UNIT_ALIGN)))
+        let len = self.resident.get(&unit).map_or(bytes.len(), |&r| r);
+        Ok(Read::Ready(CookedBuffer::copy_from(
+            &bytes[..len],
+            UNIT_ALIGN,
+        )))
     }
 
     fn finish(&self, _unit: u64, _read: &[u8]) -> Result<UnitBytes, SourceError> {
         Err(SourceError::NotFound)
+    }
+
+    fn begin_blob(&self, unit: u64, blob: u32) -> Result<Read<'_>, SourceError> {
+        let bytes = self.units.get(&unit).ok_or(SourceError::NotFound)?;
+        let view = UnitView::new(bytes).map_err(|_| SourceError::NotFound)?;
+        let b = view
+            .bulk(blob as usize)
+            .map_err(|_| SourceError::NotFound)?;
+        Ok(Read::Ready(CookedBuffer::copy_from(
+            view.bulk_bytes(&b),
+            UNIT_ALIGN,
+        )))
     }
 }
 

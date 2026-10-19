@@ -2,8 +2,8 @@
 //!
 //! - [`Level`]: as authored (marlin-serial).
 //! - `ShaderLibrary` (a cooked `ShaderPackage`): as cooked (marlin-serial); see [`crate::shaders`].
-//! - `Mesh` → [`LoadedMesh`]: the cooked mesh in place, shared with the render side (which uploads
-//!   its LOD pages as they are) through an `Arc`.
+//! - `Mesh` → [`LoadedMesh`]: the cooked mesh in place with its root pages, shared with the
+//!   render side through an `Arc`; its other pages stream from disk when the renderer wants them.
 //! - `Texture`, `Skeleton`, `AnimationClip`, `Font` → [`InPlace`]: the cooked layout checked once and
 //!   kept in the unit's bytes, read through its view without copying. Texture upload arrives
 //!   with the renderer that samples textures.
@@ -14,27 +14,82 @@ use core::marker::PhantomData;
 use core::ops::Range;
 
 use marlin_anim::asset::{AnimationClip, AnimationView, Skeleton, SkeletonView};
-use marlin_asset::{LoadContext, Loaders, UnitBytes};
+use marlin_asset::{BlobInfo, BlobRequest, BlobStreamer, LoadContext, Loaders, UnitBytes};
 use marlin_font::{Font, FontView};
 use marlin_reflect::type_info;
+use marlin_render::MeshData;
 use marlin_render::asset::mesh::MeshView;
 use marlin_render::asset::texture::TextureView;
 use marlin_render::asset::{Mesh, Texture};
 use marlin_shader::asset::ShaderLibrary;
+use marlin_sync::Mutex;
 
 use crate::level::Level;
 
-/// A loaded `Mesh`: its cooked payload and pages, checked but for the pages' contents (the
-/// renderer checks those when it uploads them).
+/// A loaded `Mesh`: its cooked payload and resident pages, checked but for the pages' contents
+/// (the renderer checks those when it uploads them), and its streamed pages, read through the
+/// engine's [`BlobStreamer`] when the renderer asks for them.
 #[derive(Clone)]
-pub struct LoadedMesh(pub Arc<InPlace<Mesh>>);
+pub struct LoadedMesh(pub Arc<StreamedMesh>);
 
 impl core::fmt::Debug for LoadedMesh {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("LoadedMesh")
-            .field("payload", &self.0.payload().len())
-            .field("pages", &self.0.bulk_count())
+            .field("payload", &self.0.cooked.payload().len())
+            .field("pages", &self.0.blobs.len())
             .finish()
+    }
+}
+
+/// A mesh whose streamed pages are read on request (see [`MeshData`]).
+pub struct StreamedMesh {
+    /// The payload and the blobs loaded with it.
+    pub cooked: InPlace<Mesh>,
+    unit: u64,
+    blobs: Vec<BlobInfo>,
+    streamer: Arc<BlobStreamer>,
+    /// The read on its way of each blob.
+    reads: Mutex<Vec<Option<BlobRequest>>>,
+}
+
+impl StreamedMesh {
+    pub fn view(&self) -> MeshView<'_> {
+        let sizes: Vec<u64> = self.blobs.iter().map(|b| b.size).collect();
+        MeshView::new(self.cooked.payload(), &sizes).expect("checked at load")
+    }
+}
+
+impl MeshData for StreamedMesh {
+    fn view(&self) -> MeshView<'_> {
+        StreamedMesh::view(self)
+    }
+
+    fn bulk(&self, index: usize) -> Option<&[u8]> {
+        self.blobs
+            .get(index)
+            .is_some_and(|b| b.present)
+            .then(|| self.cooked.bulk(index))
+    }
+
+    fn request(&self, index: usize) {
+        let Some(blob) = self.blobs.get(index) else {
+            return;
+        };
+        let mut reads = self.reads.lock();
+        if reads[index].is_none() {
+            reads[index] = Some(self.streamer.request(self.unit, blob.index));
+        }
+    }
+
+    fn take(&self, index: usize) -> Option<Result<Vec<u8>, ()>> {
+        let mut reads = self.reads.lock();
+        let result = reads.get(index)?.as_ref()?.take()?;
+        reads[index] = None;
+        Some(
+            result
+                .map(|bytes| bytes.as_slice().to_vec())
+                .map_err(|e| marlin_diag::warn!("a streamed mesh page did not load: {e}")),
+        )
     }
 }
 
@@ -51,6 +106,10 @@ impl<T> InPlace<T> {
         let unit = ctx.unit_bytes();
         let base = unit.as_slice().as_ptr() as usize;
         let range = |s: &[u8]| {
+            // A streamed blob the unit was loaded without has no bytes, and none in the unit.
+            if s.is_empty() {
+                return 0..0;
+            }
             let start = s.as_ptr() as usize - base;
             start..start + s.len()
         };
@@ -86,31 +145,9 @@ impl InPlace<Texture> {
     }
 }
 
-impl InPlace<Mesh> {
-    pub fn view(&self) -> MeshView<'_> {
-        MeshView::new(self.payload(), &self.bulk_sizes()).expect("checked at load")
-    }
-
-    /// The bulk blobs, indexed as `ClusterPage::bulk` and `RtLod::bulk` count them.
-    pub fn pages(&self) -> Vec<&[u8]> {
-        (0..self.bulk_count()).map(|i| self.bulk(i)).collect()
-    }
-}
-
 impl InPlace<Font> {
     pub fn view(&self) -> FontView<'_> {
         FontView::new(self.payload()).expect("checked at load")
-    }
-}
-
-/// What the renderer streams pages from: the unit's bytes, all of its blobs loaded.
-impl marlin_render::MeshData for InPlace<Mesh> {
-    fn view(&self) -> MeshView<'_> {
-        InPlace::<Mesh>::view(self)
-    }
-
-    fn bulk(&self, index: usize) -> Option<&[u8]> {
-        (index < self.bulk_count()).then(|| InPlace::bulk(self, index))
     }
 }
 
@@ -126,18 +163,32 @@ impl InPlace<AnimationClip> {
     }
 }
 
-fn load_mesh(ctx: &mut LoadContext<'_>) -> Result<LoadedMesh, alloc::string::String> {
-    let sizes: Vec<u64> = ctx.bulk.iter().map(|(_, b)| b.len() as u64).collect();
+fn load_mesh(
+    ctx: &mut LoadContext<'_>,
+    streamer: &Arc<BlobStreamer>,
+) -> Result<LoadedMesh, alloc::string::String> {
+    // The blobs' sizes as cooked: streamed ones are not in the unit.
+    let sizes: Vec<u64> = ctx.blobs.iter().map(|b| b.size).collect();
     MeshView::new(ctx.payload, &sizes).map_err(|e| alloc::format!("{e:?}"))?;
-    Ok(LoadedMesh(Arc::new(InPlace::new(ctx))))
+    Ok(LoadedMesh(Arc::new(StreamedMesh {
+        cooked: InPlace::new(ctx),
+        unit: ctx.unit_id,
+        blobs: ctx.blobs.to_vec(),
+        streamer: streamer.clone(),
+        reads: Mutex::new((0..ctx.blobs.len()).map(|_| None).collect()),
+    })))
 }
 
-/// Every engine asset type's loader.
-pub fn engine_loaders() -> Loaders {
+/// Every engine asset type's loader. Meshes read their streamed pages through `streamer`, which
+/// whoever owns the IO drives ([`BlobStreamer::update`]).
+pub fn engine_loaders(streamer: &Arc<BlobStreamer>) -> Loaders {
+    let streamer = streamer.clone();
     let mut l = Loaders::new();
     l.register_serial::<Level>();
     l.register_serial::<ShaderLibrary>();
-    l.register::<LoadedMesh>(type_info::<Mesh>().id.0, load_mesh);
+    l.register::<LoadedMesh>(type_info::<Mesh>().id.0, move |ctx| {
+        load_mesh(ctx, &streamer)
+    });
     l.register::<InPlace<Texture>>(type_info::<Texture>().id.0, |ctx| {
         let sizes: Vec<u64> = ctx.bulk.iter().map(|(_, b)| b.len() as u64).collect();
         TextureView::new(ctx.payload, &sizes).map_err(|e| alloc::format!("{e:?}"))?;

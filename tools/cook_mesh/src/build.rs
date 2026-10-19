@@ -21,6 +21,9 @@ use crate::{dag, page, quantize, rt};
 pub struct Built {
     pub payload: Vec<u8>,
     pub pages: Vec<Vec<u8>>,
+    /// The blobs loaded with the mesh: the root pages, which stay resident; the other pages and
+    /// the RT LOD stream.
+    pub resident_pages: usize,
     /// Cluster DAG levels and clusters.
     pub dag_levels: u32,
     pub dag_clusters: usize,
@@ -405,6 +408,7 @@ pub fn build(geometry: &Geometry, settings: &Mesh) -> Result<Built, String> {
     Ok(Built {
         payload: b.bytes().to_vec(),
         pages,
+        resident_pages: packed.root_page_count as usize,
         dag_levels: dag.levels,
         dag_clusters: dag.clusters.len(),
     })

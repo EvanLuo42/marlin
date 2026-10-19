@@ -99,16 +99,21 @@ fn content(name: Option<&str>) -> Vfs {
 #[test]
 fn the_ui_font_loads_by_name() {
     let vfs = content(Some(UI_FONT));
-    let mut assets = AssetServer::new(engine_loaders());
+    let mut assets = AssetServer::new(loaders());
     let handle = load_ui_font(&mut assets, &vfs, None).unwrap();
     let font = assets.get(&handle).unwrap().view();
     assert_eq!(font.header.units_per_em, 2048);
     assert!(font.glyph_of('A').is_some());
 
     let vfs = content(None);
-    let mut assets = AssetServer::new(engine_loaders());
+    let mut assets = AssetServer::new(loaders());
     assert!(matches!(
         load_ui_font(&mut assets, &vfs, None),
         Err(AssetError::NotFound)
     ));
+}
+
+/// The engine's loaders, with a streamer nothing drives (these assets stream nothing).
+fn loaders() -> marlin_asset::Loaders {
+    engine_loaders(&std::sync::Arc::new(marlin_asset::BlobStreamer::new()))
 }

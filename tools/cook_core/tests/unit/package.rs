@@ -395,3 +395,148 @@ fn named_objects_are_found_by_name_in_the_package() {
     // Things are not a named type.
     assert_eq!(vfs.named("A"), None);
 }
+
+/// An asset with a small blob that loads with it and a big one that streams.
+#[derive(Clone, PartialEq, Debug, Default, Reflect)]
+struct Paged {
+    source: SourceFile,
+}
+
+#[derive(Clone, PartialEq, Debug, Default, Reflect)]
+struct PagedHeader {
+    bytes: u64,
+}
+
+struct PagedCooker;
+
+impl Cooker for PagedCooker {
+    fn version(&self) -> u32 {
+        1
+    }
+
+    fn cook(&self, object: &SourceObject<'_>, ctx: &mut CookContext<'_>) -> Result<Cooked, String> {
+        let paged: &Paged = object.value.as_ref().downcast().ok_or("not Paged")?;
+        let data = ctx.read_source(&paged.source.path)?;
+        ctx.add_bulk(BulkKind::Raw, b"resident".to_vec());
+        ctx.add_streamed_bulk(BulkKind::Texture, data.clone());
+        Ok(Cooked {
+            type_id: type_info::<PagedHeader>().id,
+            encoding: Encoding::Serial,
+            payload: marlin_serial::to_bytes(&PagedHeader {
+                bytes: data.len() as u64,
+            })
+            .map_err(|e| format!("{e:?}"))?,
+        })
+    }
+}
+
+/// A loaded `Paged`: what it saw of its blobs, and where to stream the big one from.
+struct LoadedPaged {
+    resident: Vec<u8>,
+    streamed: marlin_asset::BlobInfo,
+    unit: u64,
+}
+
+fn paged_loaders() -> Loaders {
+    let mut l = Loaders::new();
+    l.register::<LoadedPaged>(type_info::<PagedHeader>().id.0, |ctx| {
+        let h: PagedHeader =
+            marlin_serial::from_bytes(ctx.payload).map_err(|e| format!("{e:?}"))?;
+        let [(BulkKind::Raw, resident), (BulkKind::Texture, streamed)] = ctx.bulk else {
+            return Err("expected a resident and a streamed blob".into());
+        };
+        let info = ctx.blobs[1];
+        if info.size != h.bytes || info.present != !streamed.is_empty() {
+            return Err("blob info disagrees".into());
+        }
+        Ok(LoadedPaged {
+            resident: resident.to_vec(),
+            streamed: info,
+            unit: ctx.unit_id,
+        })
+    });
+    l
+}
+
+const PAGED: Uuid = uuid(0xba);
+
+#[test]
+fn streamed_blobs_load_on_their_own() {
+    let p = Project::new("streamed");
+    p.write(
+        "paged.masset",
+        format!("!Version 1\nPaged {{ !Uuid = \"{PAGED}\" !Name = \"Paged\" Source = `source:pic.bin` }}\n"),
+    );
+    p.write("pic.bin", pattern());
+    let db = p.content();
+    let mut cookers = Cookers::new();
+    cookers.register::<Paged>(PagedCooker).unwrap();
+    let ddc = p.ddc("ddc");
+    let (report, manifest) = cook_all(&db, &cookers, &ddc, &CookOptions::default());
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let out = p.root.join("game.mpak");
+    write_package(&manifest, &ddc, &PackageOptions::default(), &out).unwrap();
+    let unit = unit_id("/Game/paged");
+
+    // The package reads the unit without the streamed blob: a shorter range, a shorter unit.
+    let package = Package::open(out.to_str().unwrap()).unwrap();
+    let record = *package.index().unit(unit).unwrap();
+    let (_, whole) = package.index().unit_read(&record);
+    let (_, resident, size) = package.index().unit_resident_read(&record);
+    assert!(resident.end - resident.start < (whole.end - whole.start) / 4);
+    assert!(size < record.size / 4, "{size} of {}", record.size);
+    assert_eq!(
+        package.index().blobs[record.first_blob as usize + 1].flags,
+        marlin_asset::cooked::BULK_STREAMED
+    );
+
+    // Loaded through the IO queue: the resident blob is there, the streamed one is not.
+    let mut vfs = Vfs::new();
+    vfs.mount("game", package);
+    let jobs = JobSystem::new(Config::default()).unwrap();
+    let mut assets = AssetServer::new(paged_loaders());
+    let handle = assets.load::<LoadedPaged>(PAGED);
+    wait_loaded(&mut assets, &vfs, &jobs);
+    let loaded = assets.get(&handle).unwrap();
+    assert_eq!(loaded.resident, b"resident");
+    assert!(loaded.streamed.streamed && !loaded.streamed.present);
+    assert_eq!(loaded.unit, unit);
+
+    // The streamer reads it on request, through its own queue.
+    let streamer = marlin_asset::BlobStreamer::new();
+    let request = streamer.request(unit, loaded.streamed.index);
+    assert!(request.take().is_none());
+    let mut io = IoQueue::new(8).unwrap();
+    let mut started = 0;
+    let mut bytes = None;
+    wait_until(Duration::from_secs(10), "the streamed blob", || {
+        started += streamer.update(&vfs, &mut io).reads_started;
+        bytes = request.take();
+        bytes.is_some()
+    });
+    assert_eq!(bytes.unwrap().unwrap().as_slice(), pattern());
+    assert_eq!(started, 1);
+    assert_eq!(streamer.in_flight(), 0);
+    // A request dropped before its read starts reads nothing.
+    drop(streamer.request(unit, loaded.streamed.index));
+    assert_eq!(streamer.update(&vfs, &mut io).reads_started, 0);
+    // Blocking, for tools.
+    let request = streamer.request(unit, loaded.streamed.index);
+    streamer.update_blocking(&vfs);
+    assert_eq!(request.take().unwrap().unwrap().as_slice(), pattern());
+
+    // A memory source can serve the same unit the same way.
+    let bytes = ddc.get(manifest.unit_key(unit).unwrap()).unwrap().unwrap();
+    let mut memory = MemorySource::new();
+    memory.insert_streamed(bytes.to_vec()).unwrap();
+    let mut vfs = Vfs::new();
+    vfs.mount("memory", memory);
+    let mut assets = AssetServer::new(paged_loaders());
+    let handle = assets.load::<LoadedPaged>(PAGED);
+    assets.update_blocking(&vfs, None);
+    let loaded = assets.get(&handle).unwrap();
+    assert!(!loaded.streamed.present);
+    let request = streamer.request(unit, loaded.streamed.index);
+    streamer.update_blocking(&vfs);
+    assert_eq!(request.take().unwrap().unwrap().as_slice(), pattern());
+}

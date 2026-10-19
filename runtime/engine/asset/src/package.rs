@@ -28,7 +28,7 @@ use crate::cooked::BULK_ALIGN;
 use crate::le::{u16_at, u32_at, u64_at, u128_at};
 
 pub const PACKAGE_MAGIC: [u8; 4] = *b"MPK1";
-pub const PACKAGE_VERSION: u16 = 2;
+pub const PACKAGE_VERSION: u16 = 3;
 /// Largest raw chunk: big enough for good ratios and few IO requests, small enough that a
 /// texture mip or mesh page decodes in parallel pieces.
 pub const MAX_CHUNK: u32 = 256 << 10;
@@ -81,10 +81,12 @@ pub struct BlobRecord {
     pub size: u64,
     pub first_chunk: u32,
     pub chunk_count: u32,
+    /// The unit's bulk entry flags (`BULK_STREAMED`): a streamed blob is not read with its unit.
+    pub flags: u32,
 }
 
 impl BlobRecord {
-    pub const SIZE: usize = 24;
+    pub const SIZE: usize = 32;
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -245,6 +247,7 @@ impl PackageIndex {
                 size: u64_at(body, at + 8),
                 first_chunk: u32_at(body, at + 16),
                 chunk_count: u32_at(body, at + 20),
+                flags: u32_at(body, at + 24),
             });
             at += BlobRecord::SIZE;
         }
@@ -402,6 +405,37 @@ impl PackageIndex {
         (chunks, range)
     }
 
+    /// What loading `unit` without its streamed blobs reads: its chunks up to the last one that
+    /// is not a streamed blob's, the file range they occupy, and the bytes they decode to (the
+    /// unit cut after them). Streamed blobs between resident ones are read along.
+    pub fn unit_resident_read(&self, unit: &UnitRecord) -> (Range<usize>, Range<u64>, u64) {
+        let first = unit.first_chunk as usize;
+        let all = first..first + unit.chunk_count as usize;
+        let blobs_end = (unit.first_blob + unit.blob_count) as usize;
+        let streamed = |chunk: usize| {
+            self.blobs[unit.first_blob as usize..blobs_end]
+                .iter()
+                .any(|b| {
+                    b.flags & crate::cooked::BULK_STREAMED != 0
+                        && (b.first_chunk as usize..(b.first_chunk + b.chunk_count) as usize)
+                            .contains(&chunk)
+                })
+        };
+        let end = all
+            .clone()
+            .rev()
+            .find(|&c| !streamed(c))
+            .map_or(first, |c| c + 1);
+        let chunks = first..end;
+        let size = self.chunks[chunks.clone()]
+            .iter()
+            .map(|c| c.unit_offset + u64::from(c.raw_size))
+            .max()
+            .unwrap_or(0);
+        let range = self.file_range(chunks.clone());
+        (chunks, range, size)
+    }
+
     /// Decodes `chunks`, whose stored bytes are `stored` (read from `file_start` on), into `out`
     /// at each chunk's unit offset minus `out_base`. Bytes no chunk covers (alignment padding)
     /// are left as they are; pass zeroed `out`.
@@ -489,6 +523,8 @@ pub mod write {
         out.extend_from_slice(&b.size.to_le_bytes());
         out.extend_from_slice(&b.first_chunk.to_le_bytes());
         out.extend_from_slice(&b.chunk_count.to_le_bytes());
+        out.extend_from_slice(&b.flags.to_le_bytes());
+        out.extend_from_slice(&[0; 4]);
     }
 
     pub fn chunk(out: &mut Vec<u8>, c: &ChunkRecord) {

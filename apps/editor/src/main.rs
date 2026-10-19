@@ -132,7 +132,9 @@ fn run(project_dir: &str, max_frames: Option<u64>) -> Result<(), String> {
 
     // The engine's shaders and UI font, cooked from content/engine.
     info!("cooking the engine's shaders and UI font");
-    let mut assets = AssetServer::new(engine_loaders());
+    // Nothing here streams: the streamer is never driven.
+    let streamer = std::sync::Arc::new(marlin_asset::BlobStreamer::new());
+    let mut assets = AssetServer::new(engine_loaders(&streamer));
     let library = load_engine_shaders(&mut assets, &boot.vfs, Some(&jobs))
         .map_err(|e| format!("engine shaders: {e}"))?;
     let font = load_ui_font(&mut assets, &boot.vfs, Some(&jobs))

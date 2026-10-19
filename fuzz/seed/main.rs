@@ -320,7 +320,10 @@ fn asset(out: &mut Corpus) {
             type_id: 22,
             encoding: Encoding::Cooked,
             payload: vec![1, 2, 3, 4],
-            bulk: vec![(BulkKind::Texture, vec![9; 300]), (BulkKind::Raw, vec![])],
+            bulk: vec![
+                (BulkKind::Texture, vec![9; 300]).into(),
+                (BulkKind::Raw, vec![]).into(),
+            ],
         },
     ];
     let unit = marlin_asset::cooked::write::unit(
@@ -419,6 +422,7 @@ fn package_of(units: &[(u64, &Vec<u8>)]) -> Vec<u8> {
                 size: (bytes.len() - bulk_offset) as u64,
                 first_chunk: first as u32,
                 chunk_count: (chunks.len() - first) as u32,
+                flags: 0,
             });
         }
         unit_records.push(UnitRecord {
@@ -437,7 +441,7 @@ fn package_of(units: &[(u64, &Vec<u8>)]) -> Vec<u8> {
         }
     }
     objects.sort_by_key(|o| o.uuid);
-    let index = package::write::index(&unit_records, &blob_records, &chunks, &objects);
+    let index = package::write::index(&unit_records, &blob_records, &chunks, &objects, &[]);
     let index_offset = file.len().next_multiple_of(16);
     file.resize(index_offset, 0);
     file.extend_from_slice(&index);
@@ -447,6 +451,7 @@ fn package_of(units: &[(u64, &Vec<u8>)]) -> Vec<u8> {
         blob_count: blob_records.len() as u32,
         chunk_count: chunks.len() as u32,
         object_count: objects.len() as u32,
+        name_count: 0,
         build: 0x5eed,
         index_offset: index_offset as u64,
         index_size: index.len() as u64,

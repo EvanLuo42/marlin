@@ -201,6 +201,15 @@ fn start_cookd(root: &Path) -> BackgroundService {
 fn the_sample_cooks_packages_and_renders_the_same_from_cookd() {
     let root = sample("package");
     let package = package(&root);
+    // The meshes' finer pages are streamed blobs: read from the package when the renderer asks.
+    let streamed = marlin_asset::Package::open(&package)
+        .unwrap()
+        .index()
+        .blobs
+        .iter()
+        .filter(|b| b.flags & marlin_asset::cooked::BULK_STREAMED != 0)
+        .count();
+    assert!(streamed > 0, "no streamed blobs in the package");
     let level: Uuid = LEVEL.parse().unwrap();
 
     let boot = mount(&ContentSettings {

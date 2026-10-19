@@ -1,9 +1,10 @@
 //! The simulation side of a running game: assets, the world, the entry level and the engine's
 //! systems. Each [`Engine::frame`] advances it and returns the frame's [`RenderDelta`].
 
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use marlin_asset::{AssetServer, Handle, LoadState, Uuid, Vfs};
+use marlin_asset::{AssetServer, BlobStreamer, Handle, LoadState, Uuid, Vfs};
 use marlin_containers::{HashMap, HashMapExt};
 use marlin_ecs::{Changed, Entity, With, World};
 use marlin_input::{InputState, Key, MouseButton};
@@ -51,6 +52,9 @@ pub struct Engine<'v> {
     vfs: &'v Vfs,
     io: IoQueue<'v>,
     pub assets: AssetServer,
+    /// Reads the streamed blobs (mesh pages) the render side asks for, on its own queue.
+    pub streamer: Arc<BlobStreamer>,
+    stream_io: IoQueue<'v>,
     pub world: World,
     level: Option<Handle<Level>>,
     /// The level version whose entities are in the world.
@@ -83,10 +87,13 @@ impl<'v> Engine<'v> {
             default_material,
             MaterialUpdate::Add(DefaultMaterial::default().desc()),
         );
+        let streamer = Arc::new(BlobStreamer::new());
         Ok(Self {
             vfs,
             io: IoQueue::new(64)?,
-            assets: AssetServer::new(engine_loaders()),
+            assets: AssetServer::new(engine_loaders(&streamer)),
+            streamer,
+            stream_io: IoQueue::new(64)?,
             world: World::new(),
             level: None,
             spawned: None,
@@ -136,6 +143,7 @@ impl<'v> Engine<'v> {
         self.frame += 1;
         self.time += dt;
         self.assets.update(self.vfs, &mut self.io, jobs);
+        self.streamer.update(self.vfs, &mut self.stream_io);
 
         // The level: spawn once loaded, again when it reloads.
         if let Some(level) = &self.level {

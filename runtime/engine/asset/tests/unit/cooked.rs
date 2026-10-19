@@ -63,6 +63,7 @@ fn unit() -> Vec<u8> {
             offset: 0,
             size: 5,
             kind: BulkKind::Vertices,
+            flags: 0,
         },
     );
     out.resize(payload_offset as usize, 0);
@@ -136,4 +137,46 @@ fn damage_is_an_error_never_a_panic() {
             }
         }
     }
+}
+
+#[test]
+fn a_streamed_blob_may_be_absent_a_resident_one_may_not() {
+    let unit = write::unit(
+        unit_id("/Game/paged"),
+        1,
+        vec![write::UnitObject {
+            uuid: Uuid::from_u128(1),
+            type_id: 7,
+            encoding: Encoding::Cooked,
+            payload: vec![1, 2, 3],
+            bulk: vec![
+                (BulkKind::Raw, vec![5; 100]).into(),
+                write::UnitBulk {
+                    kind: BulkKind::Vertices,
+                    streamed: true,
+                    data: vec![6; 10_000],
+                },
+            ],
+        }],
+        &[],
+    );
+    let view = UnitView::new(&unit).unwrap();
+    let (resident, streamed) = (view.bulk(0).unwrap(), view.bulk(1).unwrap());
+    assert_eq!(resident.flags, 0);
+    assert_eq!(streamed.flags, marlin_asset::cooked::BULK_STREAMED);
+    assert_eq!(view.bulk_bytes(&streamed), &[6; 10_000][..]);
+
+    // Cut after the resident blob: the streamed one is absent, the unit still reads.
+    let h = *view.header();
+    let cut = (h.bulk_offset + resident.offset + resident.size) as usize;
+    let view = UnitView::new(&unit[..cut]).unwrap();
+    assert!(view.bulk_present(&view.bulk(0).unwrap()));
+    assert!(!view.bulk_present(&view.bulk(1).unwrap()));
+    assert!(view.bulk_bytes(&view.bulk(1).unwrap()).is_empty());
+    assert_eq!(view.bulk_bytes(&view.bulk(0).unwrap()), &[5; 100][..]);
+    // Into the resident blob: an error.
+    assert_eq!(
+        UnitView::new(&unit[..cut - 1]).err(),
+        Some(UnitError::Truncated)
+    );
 }
