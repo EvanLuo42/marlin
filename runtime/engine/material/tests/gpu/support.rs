@@ -17,6 +17,7 @@ use marlin_render::scene::{
     InstanceDesc, InstanceId, InstanceUpdate, MaterialDesc, MaterialId, MaterialUpdate, MeshId,
     MeshUpdate,
 };
+use marlin_render::sharc::{Sharc, SharcInputs, SharcShaders, SharcSources};
 use marlin_render::upscale::{Tsr, TsrShaders, UpscaleInputs, UpscaleMode, Upscaler};
 use marlin_render::{
     Camera, Environment, Lighting, Meshes, PagePoolDesc, RenderScene, ScatterShader, SceneUpdates,
@@ -40,6 +41,7 @@ pub const HEIGHT: u32 = 64;
 /// The permutations the harness registers.
 pub const DEFAULT: u32 = 0;
 pub const STRIPES: u32 = 1;
+pub const GLOW: u32 = 2;
 
 pub struct Harness {
     pub device: &'static Device,
@@ -52,6 +54,9 @@ pub struct Harness {
     unorm: &'static ComputePipeline,
     signal: &'static ComputePipeline,
     probe: &'static ComputePipeline,
+    sharc_probe: &'static ComputePipeline,
+    /// The world radiance cache.
+    pub sharc: Sharc,
     /// The ray tracing scene, the light tiles and ReSTIR DI.
     pub tlas: Tlas,
     light_tiles: LightTiles,
@@ -123,7 +128,8 @@ impl Harness {
         };
         let default = register("Marlin.Engine.DefaultMaterial");
         let stripes = register("Material.Stripes");
-        assert_eq!((default, stripes), (DEFAULT, STRIPES));
+        let glow = register("Material.Glow");
+        assert_eq!((default, stripes, glow), (DEFAULT, STRIPES, GLOW));
         let lighting = Lighting::new(device, engine_shaders(&[Lighting::ENTRY])[0]).unwrap();
         let tlas = Tlas::new(
             device,
@@ -148,6 +154,16 @@ impl Harness {
             PairingPatternView::new(pairing).unwrap(),
         )
         .unwrap();
+        let sharc_probe = Box::leak(Box::new(
+            device
+                .create_compute_pipeline(&ComputePipelineDesc {
+                    shader: Shader::new("Material.ProbeSharc")
+                        .in_crate(env!("CARGO_MANIFEST_DIR"))
+                        .module(),
+                    cache: None,
+                })
+                .unwrap(),
+        ));
         let probe = Box::leak(Box::new(
             device
                 .create_compute_pipeline(&ComputePipelineDesc {
@@ -203,6 +219,12 @@ impl Harness {
             unorm,
             signal,
             probe,
+            sharc_probe,
+            sharc: Sharc::new(
+                device,
+                &SharcShaders::from_modules(engine_shaders(&SharcShaders::ENTRIES)),
+            )
+            .unwrap(),
             tlas,
             light_tiles,
             restir,
@@ -879,5 +901,120 @@ impl Harness {
                 })
             })
             .collect()
+    }
+}
+
+/// `Material.SharcProbeArgs`.
+#[repr(C)]
+#[derive(Pod, Clone, Copy)]
+struct SharcProbeArgs {
+    tlas: u32,
+    rays: u32,
+    out: u32,
+    count: u32,
+    sources: HitSources,
+    cache: SharcSources,
+}
+
+impl Harness {
+    /// Applies the pending updates and draws `frames` frames, each updating the radiance cache
+    /// from the camera's view (seeded by the frame), without moving; then reads the cache where
+    /// `rays` hit: its radiance and samples (`SharcQuery`), `None` for misses.
+    pub fn sharc_frames(&mut self, frames: u32, rays: Vec<Ray>) -> Vec<Option<[f32; 4]>> {
+        let mut out = Vec::new();
+        for frame in 0..frames {
+            let probe = (frame + 1 == frames).then(|| rays.clone());
+            if let Some(read) = self.sharc_frame(frame, probe) {
+                out = read;
+            }
+        }
+        out
+    }
+
+    fn sharc_frame(&mut self, seed: u32, rays: Option<Vec<Ray>>) -> Option<Vec<Option<[f32; 4]>>> {
+        let (width, height) = (WIDTH, HEIGHT);
+        let updates = core::mem::take(&mut self.updates);
+        self.scene.apply(&updates);
+        self.meshes.prepare_rt(self.device).unwrap();
+        let rows = self.scene.instance_rows();
+        self.tlas.prepare(self.device, rows).unwrap();
+        self.tlas.release(&mut self.frame);
+        let uploads = self.meshes.take_uploads();
+        let (meshes, scene, scatter, vis, materials) = (
+            &self.meshes,
+            &mut self.scene,
+            &self.scatter,
+            &self.vis,
+            &self.materials,
+        );
+        let (tlas, tiles, sharc, probe) =
+            (&self.tlas, &self.light_tiles, &self.sharc, self.sharc_probe);
+        let (camera, previous) = (self.camera, self.previous);
+        let ticket = self
+            .frame
+            .execute(self.device, |g, _| {
+                let pool = meshes.add_passes(g, uploads);
+                let gpu = scene.add_passes(g, scatter);
+                let simple = materials.add_simple_passes(g, scene, gpu);
+                let rt = tlas.add_passes(g, gpu, &pool, rows);
+                let drawn = tiles.add_passes(g, scene, seed);
+                let view = marlin_render::visibility::ViewDesc {
+                    id: 0,
+                    camera,
+                    previous,
+                    width,
+                    height,
+                };
+                let v = vis.add_passes(g, meshes, scene, gpu, pool, &view);
+                let out = materials.add_passes(g, gpu, &v, camera, previous, width, height);
+                let inputs = SharcInputs {
+                    material: out.material,
+                    depth: v.depth,
+                    rt,
+                    simple,
+                    lights: gpu.lights,
+                    tiles: drawn,
+                };
+                let env = *scene.environment();
+                let cache = sharc.add_passes(g, inputs, &env, camera, width, height, seed);
+                let rays = rays?;
+                let count = rays.len() as u32;
+                let result = g.create_buffer(
+                    "SharcProbeOut",
+                    BufferDesc::structured::<[f32; 4]>(u64::from(count)),
+                );
+                let result = g.add_compute("ProbeSharc", |b| {
+                    rt.read(b);
+                    let sources = rt.read_hits(b);
+                    let cache = cache.read(b);
+                    let result = b.write_buffer(result, Access::ComputeWrite);
+                    (result, move |ctx: &mut PassContext<'_>| {
+                        ctx.set_pipeline(probe);
+                        let args = SharcProbeArgs {
+                            tlas: rt.index,
+                            rays: ctx.upload_slice(&rays),
+                            out: ctx.uav(result),
+                            count,
+                            sources: sources.bind(ctx),
+                            cache: cache.bind(ctx),
+                        };
+                        ctx.push(&args);
+                        ctx.dispatch(count.div_ceil(64), 1, 1);
+                    })
+                });
+                Some(g.readback(result))
+            })
+            .unwrap();
+        self.previous = Some(self.camera);
+        let bytes = self.frame.wait_readback(ticket?).unwrap();
+        assert_eq!(self.device.validation_errors(), 0);
+        let f: Vec<f32> = words(&bytes).into_iter().map(f32::from_bits).collect();
+        Some(
+            f.as_chunks::<4>()
+                .0
+                .iter()
+                .map(|p| (p[3] >= 0.0).then_some(*p))
+                .collect(),
+        )
     }
 }

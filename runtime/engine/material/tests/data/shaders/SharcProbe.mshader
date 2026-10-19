@@ -1,0 +1,34 @@
+namespace Material;
+
+// The radiance cache where given rays hit: what paths ending there will read, for the tests to
+// hold against the reference.
+
+using Marlin.Engine.Scene;
+using Marlin.Engine.Lighting;
+
+public struct SharcProbeArgs
+{
+    public AccelerationStructure Tlas;
+    public ReadOnlyBuffer<Ray> Rays;
+    /// Per ray: the cache's radiance and samples there (w); w −1 for a miss.
+    public Buffer<float4> Out;
+    public uint Count;
+    public HitSources Sources;
+    public SharcSources Cache;
+}
+
+[Compute(64, 1, 1)]
+public void ProbeSharc([DispatchThreadId] uint3 id, [Push] in SharcProbeArgs a)
+{
+    if (id.x >= a.Count)
+        return;
+    Ray ray = a.Rays[id.x];
+    RayHit hit = a.Tlas.TraceClosest(ray);
+    if (hit.Kind == HitKind.None)
+    {
+        a.Out[id.x] = float4(0, 0, 0, -1);
+        return;
+    }
+    HitSurface s = SurfaceOfHit(hit, ray, a.Sources);
+    a.Out[id.x] = SharcQuery(a.Cache, s.Position, s.Normal);
+}

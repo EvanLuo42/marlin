@@ -34,6 +34,7 @@ pub mod raytracing;
 pub mod restir;
 pub mod scene;
 pub mod shadows;
+pub mod sharc;
 pub mod upscale;
 pub mod visibility;
 

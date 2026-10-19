@@ -22,6 +22,7 @@ use marlin_render::raytracing::{RtShaders, Tlas};
 use marlin_render::restir::{RestirDi, RestirInputs, RestirShaders};
 use marlin_render::scene::{MeshId, MeshUpdate};
 use marlin_render::shadows::{Vsm, VsmSettings, VsmShaders};
+use marlin_render::sharc::{Sharc, SharcInputs, SharcShaders};
 use marlin_render::upscale::{Tsr, TsrShaders, UpscaleInputs, UpscaleMode, Upscaler};
 use marlin_render::visibility::{ViewDesc, counters};
 use marlin_render::{
@@ -87,6 +88,11 @@ pub struct RenderSide {
     /// draws at the target's size without jitter or resolve.
     pub tsr: Tsr,
     pub upscale: Option<UpscaleMode>,
+    /// The world radiance cache (0010 §4.1), where the GPU has 64-bit atomics. Until the
+    /// reservoirs read it (R4c), it runs only for its view: `sharc_view` (`r.sharc.view`) draws
+    /// the radiance it holds in place of the lit scene.
+    pub sharc: Option<Sharc>,
+    pub sharc_view: bool,
     /// Tonemaps the [`HDR_FORMAT`](marlin_render::HDR_FORMAT) scene into the output.
     pub post: PostProcess,
     pub scene: RenderScene,
@@ -147,6 +153,11 @@ impl RenderSide {
             denoise: true,
             tsr: Tsr::new(device, &TsrShaders::bind(engine)?)?,
             upscale: Some(UpscaleMode::Native),
+            sharc: match device.features().atomic_int64 {
+                true => Some(Sharc::new(device, &SharcShaders::bind(engine)?)?),
+                false => None,
+            },
+            sharc_view: false,
             post: PostProcess::new(device, &PostShaders::bind(engine)?, output)?,
             scene: RenderScene::with_ids(ids),
             scatter: ScatterShader::new(device, bind_one(engine, &ScatterShader::ENTRY)?)?,
@@ -265,6 +276,8 @@ impl RenderSide {
             denoise,
             tsr,
             upscale,
+            sharc,
+            sharc_view,
             frame,
             scene,
             scatter,
@@ -276,7 +289,7 @@ impl RenderSide {
         let meshes: &'g Meshes = meshes;
         let pool = meshes.add_passes(g, uploads);
         let gpu = scene.add_passes(g, scatter);
-        let _simple = materials.add_simple_passes(g, scene, gpu);
+        let simple = materials.add_simple_passes(g, scene, gpu);
         let rows = scene.instance_rows();
         let rt = tlas.add_passes(g, gpu, &pool, rows);
         let seed = *frame as u32;
@@ -349,6 +362,22 @@ impl RenderSide {
                 signal.light
             };
             scene = denoiser.add_compose(g, scene, light, material, depth, width, height);
+        }
+        // The radiance cache's view, in place of the lit scene.
+        let sharc: &'g Option<Sharc> = sharc;
+        if let (Some(sharc), true, Some((material, _, depth, _, camera))) =
+            (sharc.as_ref(), *sharc_view, lit)
+        {
+            let inputs = SharcInputs {
+                material,
+                depth,
+                rt,
+                simple,
+                lights: gpu.lights,
+                tiles,
+            };
+            let cache = sharc.add_passes(g, inputs, &env, camera, width, height, seed);
+            scene = sharc.add_view(g, &cache, material, depth);
         }
         let exposure = PostProcess::exposure(g, MAIN_VIEW);
         if let (Some(_), Some((_, _, depth, velocity, camera))) = (*upscale, lit) {

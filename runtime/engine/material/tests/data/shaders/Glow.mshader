@@ -1,0 +1,17 @@
+namespace Material;
+
+using Marlin.Substrate;
+
+/// A third material type for the tests: a diffuse surface that also glows, alike everywhere.
+/// The radiance cache's furnace test lines a closed box with it.
+public struct Glow : ISurfaceMaterial<Glow>
+{
+    public float3 Albedo = 0.5;
+    /// Emitted luminance, nits.
+    public float3 Emission = 1;
+
+    public type Tree = Slab;
+
+    public Slab Surface(in SurfaceContext ctx) =>
+        Slab.Default with { DiffuseAlbedo = Albedo, Roughness = 1, Emissive = Emission };
+}

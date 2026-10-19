@@ -13,6 +13,7 @@
 //! | `game.platform`   | the platform cookd cooks for; defaults to the build's platform*  |
 //! | `r.vsync`, `window.width`, `window.height` | presentation                            |
 //! | `r.stats`         | the stats overlay (F3 toggles it)*                               |
+//! | `r.sharc.view`    | draw the world radiance cache in place of the lit scene*        |
 //!
 //! Those marked * are development tools: not in shipping builds (`marlin_build = "shipping"`),
 //! where these cvars do not exist and the cook service cannot be mounted (0001 §8).
@@ -57,6 +58,12 @@ pub static R_STATS: CvarBool = CvarBool::new(
     false,
     "Show the stats overlay: frame rate, CPU and GPU times, the costliest passes (F3 toggles).",
 );
+#[cfg(not(marlin_build = "shipping"))]
+pub static R_SHARC_VIEW: CvarBool = CvarBool::new(
+    "r.sharc.view",
+    false,
+    "Draw the world radiance cache (the radiance each surface's voxel holds) in place of the lit scene.",
+);
 pub static WINDOW_WIDTH: CvarI64 =
     CvarI64::new("window.width", 1280, "Window width.").range(64, 16384);
 pub static WINDOW_HEIGHT: CvarI64 =
@@ -76,7 +83,8 @@ pub fn register_cvars() {
         ]);
         // The development tools'.
         #[cfg(not(marlin_build = "shipping"))]
-        let _ = marlin_config::register_all(&[&CONTENT_COOKD, &GAME_PLATFORM, &R_STATS]);
+        let _ =
+            marlin_config::register_all(&[&CONTENT_COOKD, &GAME_PLATFORM, &R_STATS, &R_SHARC_VIEW]);
     });
 }
 

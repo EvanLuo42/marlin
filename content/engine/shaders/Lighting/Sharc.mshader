@@ -1,0 +1,433 @@
+namespace Marlin.Engine.Lighting;
+
+// The world radiance cache (0010 §4.1, after NVIDIA's SHaRC): a hash grid of voxels in world
+// space, each with the radiance its surfaces reflect, averaged over its samples. Paths that end
+// at `x2` or deeper read it there (R4c on), instead of tracing on. marlin-render's `Sharc`
+// declares, a frame:
+//
+// 1. `SharcUpdate`: one screen pixel of every `Stride`² block (a new one each frame) starts a
+//    path at its surface `x1` and traces up to `MaxVertices` − 1 diffuse bounces, shading each
+//    hit with its simplified material (0011 §9) and next-event estimation (the sun, one local
+//    light from the light tiles; the sky is what a bounce that misses sees). A hit whose voxel
+//    already has `TerminateSamples` samples ends the path there with the cache's radiance, so
+//    light bounces on through the cache from frame to frame. Walking the path back, each
+//    vertex adds the radiance it reflects to its voxel (64-bit fixed-point atomics).
+// 2. `SharcResolve`: each entry folds the frame's samples into its average, which holds at most
+//    `MaxFrames` frames' worth at this frame's rate (an exponential average over frames, as
+//    SHaRC's: a voxel few paths reach forgets as fast as one many do), and ages; an entry not
+//    updated for `StaleFrames` frames is freed.
+//
+// A voxel's key is its position quantized at a size that grows with the distance to the eye
+// (powers of two, about `VoxelAngle` × the distance), its level, and the dominant axis of the
+// surface's normal (the two sides of a wall are two voxels). The table is open addressing in
+// buckets of 16: an entry holds a 32-bit checksum of the key (0: free), found by a scan of the
+// key's bucket.
+//
+// The radiance is what a surface reflects, Lambert: the light it emits is not in it (the hit's
+// own simplified material has that), nor its specular reflection (0010 §2.9: `I` reads
+// reflected light only).
+
+using Marlin.Substrate;
+using Marlin.Engine.Scene;
+using Marlin.Engine.Material;
+
+public struct SharcConstants
+{
+    /// The camera's clip space to world. Column-major.
+    public float4x4 InverseViewProjection;
+    /// xyz: the eye, which the voxel sizes follow.
+    public float4 Eye;
+    /// xyz: the direction the sun's light travels; w: 1 with a sun.
+    public float4 SunDirection;
+    /// rgb: the sun's illuminance over π (what a white Lambert surface facing it reflects).
+    public float4 Sun;
+    /// rgb: the sky's luminance, alike in every direction.
+    public float4 Sky;
+    public uint Width;
+    public uint Height;
+    /// Entries in the table: a power of two, at least 16.
+    public uint Capacity;
+    /// A new one each frame.
+    public uint Seed;
+    /// A path per `Stride` × `Stride` pixels.
+    public uint Stride;
+    /// Vertices of a path, `x1` included: at most `SharcMaxVertices`.
+    public uint MaxVertices;
+    /// A voxel's size over its distance to the eye (rounded to a power of two).
+    public float VoxelAngle;
+    /// Frames' worth of samples an entry's average holds at most.
+    public float MaxFrames;
+    /// Samples an entry needs for a path to end at it.
+    public float TerminateSamples;
+    /// Frames an entry lives without an update.
+    public uint StaleFrames;
+    public uint TileCount;
+    public uint TileSize;
+    /// 1: there are local lights (the tiles hold them).
+    public uint HasLights;
+    /// Lights a vertex draws from its tile, keeping one.
+    public uint Candidates;
+    public uint Spare1;
+    public uint Spare2;
+}
+
+/// The cache, for a pass that reads it (marlin-render's `SharcSources`).
+public struct SharcSources
+{
+    /// A checksum an entry (0: free).
+    public ReadOnlyBuffer<uint> Keys;
+    /// An entry's reflected radiance (rgb) and its samples (w).
+    public ReadOnlyBuffer<float4> Radiance;
+    public uint Capacity;
+    public float VoxelAngle;
+    public uint Spare0;
+    public uint Spare1;
+    /// xyz: the eye the voxel sizes follow.
+    public float4 Eye;
+}
+
+public struct SharcArgs
+{
+    public Uniform<SharcConstants> Constants;
+    public Texture2D<uint4> MaterialBuffer;
+    /// The camera's depth (`R32Float`, reverse-Z, 0 where nothing is).
+    public Texture2D<float> Depth;
+    public AccelerationStructure Tlas;
+    public HitSources Hits;
+    public SimpleSources Simple;
+    public ReadOnlyBuffer<LightRow> Lights;
+    /// Presampled light tiles: per entry the light's row and its probability (float bits).
+    public ReadOnlyBuffer<uint2> Tiles;
+    public Buffer<uint> Keys;
+    /// Four an entry: this frame's sums of red, green and blue (fixed point, `SharcScale`) and
+    /// its samples.
+    public Buffer<ulong> Accumulation;
+    public Buffer<float4> Radiance;
+    /// Frames since an entry's last update.
+    public Buffer<uint> Ages;
+    /// The cache, as `SharcView` reads it, and its output.
+    public SharcSources Cache;
+    public StorageTexture2D<float4> Output;
+}
+
+/// Path vertices at most.
+const uint SharcMaxVertices = 5;
+/// Radiance in the sums, in units of 2⁻²⁰ nits: a sun-lit white wall (~3·10⁴ nits) adds
+/// ~3·10¹⁰ a sample, so 64 bits hold hundreds of millions of samples.
+const float SharcScale = 1048576.0;
+/// No entry.
+const uint SharcNone = 4294967295;
+/// Slots a bucket.
+const uint SharcBucket = 16;
+
+/// A voxel's key: its quantized position (17 bits an axis), level (5 bits) and normal axis (3).
+uint2 SharcKey(float3 p, float3 n, float3 eye, float angle)
+{
+    float d = Max(Length(p - eye), 0.001);
+    // Level l is a size of 2^(l − 16) m: from 15 µm to 32 km.
+    int level = Clamp((int)Floor(Log2(d * angle)) + 16, 0, 31);
+    float size = Exp2((float)(level - 16));
+    int3 c = (int3)Floor(p / size);
+    float3 a = Abs(n);
+    uint axis = a.x >= a.y && a.x >= a.z ? (n.x >= 0 ? 0u : 1u) : (a.y >= a.z ? (n.y >= 0 ? 2u : 3u) : (n.z >= 0 ? 4u : 5u));
+    uint x = (uint)c.x & 0x1FFFF;
+    uint y = (uint)c.y & 0x1FFFF;
+    uint z = (uint)c.z & 0x1FFFF;
+    return uint2(x | (y << 17), (y >> 15) | (z << 2) | ((uint)level << 19) | (axis << 24));
+}
+
+/// The first slot of `key`'s bucket.
+uint SharcBucketOf(uint2 key, uint capacity) => (Hash(key.x ^ Hash(key.y)) & (capacity - 1)) & ~(SharcBucket - 1);
+
+/// `key`'s checksum: never 0, which marks a free slot.
+uint SharcChecksum(uint2 key) => Hash(key.y ^ Hash(key.x + 0x9E3779B9)) | 1;
+
+/// `key`'s entry, claiming a free slot of its bucket if it has none; `SharcNone` if the bucket
+/// is full.
+uint SharcInsert(Buffer<uint> keys, uint capacity, uint2 key)
+{
+    uint first = SharcBucketOf(key, capacity);
+    uint check = SharcChecksum(key);
+    for (uint i = 0; i < SharcBucket; i++)
+    {
+        uint before = keys.AtomicCompareExchange(first + i, 0, check);
+        if (before == 0 || before == check)
+            return first + i;
+    }
+    return SharcNone;
+}
+
+/// `key`'s entry, or `SharcNone`.
+uint SharcFind(ReadOnlyBuffer<uint> keys, uint capacity, uint2 key)
+{
+    uint first = SharcBucketOf(key, capacity);
+    uint check = SharcChecksum(key);
+    for (uint i = 0; i < SharcBucket; i++)
+    {
+        if (keys[first + i] == check)
+            return first + i;
+    }
+    return SharcNone;
+}
+
+/// `SharcFind` in the table the update writes.
+uint SharcFind(Buffer<uint> keys, uint capacity, uint2 key)
+{
+    uint first = SharcBucketOf(key, capacity);
+    uint check = SharcChecksum(key);
+    for (uint i = 0; i < SharcBucket; i++)
+    {
+        if (keys[first + i] == check)
+            return first + i;
+    }
+    return SharcNone;
+}
+
+/// The radiance the surface at `p` facing `n` reflects, from the cache: rgb, and its samples
+/// in w (0: none there).
+public float4 SharcQuery(in SharcSources s, float3 p, float3 n)
+{
+    uint e = SharcFind(s.Keys, s.Capacity, SharcKey(p, n, s.Eye.xyz, s.VoxelAngle));
+    return e == SharcNone ? float4(0, 0, 0, 0) : s.Radiance[e];
+}
+
+/// `x` as a float in [0, 1), from a hash.
+float SharcRandom(ref uint state)
+{
+    state = Hash(state + 0x9E3779B9);
+    return Unit(state);
+}
+
+/// A direction about `n`, cosine-distributed.
+float3 CosineDirection(float3 n, float u, float v)
+{
+    float r = Sqrt(u);
+    float phi = v * 6.2831853;
+    float3 t = Normalize(Cross(Abs(n.y) < 0.99 ? float3(0, 1, 0) : float3(1, 0, 0), n));
+    float3 b = Cross(n, t);
+    return Normalize(t * (r * Cos(phi)) + b * (r * Sin(phi)) + n * Sqrt(Max(1 - u, 0)));
+}
+
+/// Whether nothing is between `origin` and `target`.
+bool Unoccluded(AccelerationStructure tlas, float3 origin, float3 target)
+{
+    float3 d = target - origin;
+    float dist = Length(d);
+    Ray ray = Ray { Origin = origin, TMin = 0, Direction = d / Max(dist, 0.0001), TMax = dist * 0.999 };
+    return !tlas.TraceAny(ray);
+}
+
+/// The light the Lambert surface at `x` (facing `n`, lifted to `origin` for shadow rays,
+/// albedo `albedo`) reflects from the sun and from one local light resampled from a tile: an
+/// unbiased estimate, shadowed.
+float3 SharcDirect(in SharcConstants c, in SharcArgs a, float3 x, float3 origin, float3 n, float3 albedo, ref uint state)
+{
+    float3 sum = float3(0, 0, 0);
+    if (c.SunDirection.w > 0)
+    {
+        float3 toward = -c.SunDirection.xyz;
+        float cosine = Dot(n, toward);
+        if (cosine > 0 && Unoccluded(a.Tlas, origin, origin + toward * 100000))
+            sum += albedo * c.Sun.xyz * cosine;
+    }
+    if (c.HasLights != 0)
+    {
+        // `Candidates` lights from one tile, one kept by RIS on its unshadowed contribution here
+        // (as `RestirInitial` draws): with many lights, one drawn by power alone is mostly out
+        // of reach, and a voxel's few samples would be a few lights' colors.
+        uint tile = Min((uint)(SharcRandom(ref state) * (float)c.TileCount), c.TileCount - 1);
+        uint kept = NoLight;
+        float keptTarget = 0;
+        float total = 0;
+        for (uint i = 0; i < c.Candidates; i++)
+        {
+            uint pick = Min((uint)(SharcRandom(ref state) * (float)c.TileSize), c.TileSize - 1);
+            uint2 entry = a.Tiles[tile * c.TileSize + pick];
+            float source = AsFloat(entry.y);
+            if (source <= 0)
+                continue;
+            float target = Luminance(Contribution(a.Lights[entry.x], x, n, albedo));
+            float weight = target / source;
+            total += weight;
+            if (weight > 0 && SharcRandom(ref state) * total < weight)
+            {
+                kept = entry.x;
+                keptTarget = target;
+            }
+        }
+        if (kept != NoLight)
+        {
+            LightRow l = a.Lights[kept];
+            float3 f = Contribution(l, x, n, albedo) * (total / ((float)c.Candidates * keptTarget));
+            {
+                // A point of the light's sphere, on the half facing `x`.
+                float u = SharcRandom(ref state);
+                float v = SharcRandom(ref state);
+                float3 away = Normalize(x - l.Position);
+                float ring = Sqrt(Max(1 - u * u, 0));
+                float phi = v * 6.2831853;
+                float3 t = Normalize(Cross(Abs(away.y) < 0.99 ? float3(0, 1, 0) : float3(1, 0, 0), away));
+                float3 b = Cross(away, t);
+                float3 point = l.Position + l.Radius * (away * u + t * (ring * Cos(phi)) + b * (ring * Sin(phi)));
+                if (Unoccluded(a.Tlas, origin, point))
+                    sum += f;
+            }
+        }
+    }
+    return sum;
+}
+
+/// Adds `radiance` to entry `e`'s sums, as one sample.
+void SharcAdd(Buffer<ulong> sums, uint e, float3 radiance)
+{
+    float3 r = Max(radiance, float3(0, 0, 0));
+    sums.AtomicAdd(e * 4, (ulong)(r.x * SharcScale));
+    sums.AtomicAdd(e * 4 + 1, (ulong)(r.y * SharcScale));
+    sums.AtomicAdd(e * 4 + 2, (ulong)(r.z * SharcScale));
+    sums.AtomicAdd(e * 4 + 3, 1);
+}
+
+/// A shadow ray's origin off the surface at `x` (facing `n`), scaled with its distance to the
+/// eye.
+float3 Lift(float3 x, float3 n, float3 eye) => x + n * (0.001 + 0.0005 * Length(x - eye));
+
+[Compute(8, 8, 1)]
+public void SharcUpdate([DispatchThreadId] uint3 id, [Push] in SharcArgs a)
+{
+    SharcConstants c = a.Constants.Value;
+    uint blocksX = (c.Width + c.Stride - 1) / c.Stride;
+    if (id.x >= blocksX || id.y * c.Stride >= c.Height)
+        return;
+    uint state = Hash(c.Seed ^ Hash(id.y * 65536 + id.x));
+    uint inBlock = Hash(state) % (c.Stride * c.Stride);
+    uint2 px = id.xy * c.Stride + uint2(inBlock % c.Stride, inBlock / c.Stride);
+    if (px.x >= c.Width || px.y >= c.Height)
+        return;
+    float depth = a.Depth.Load((int2)px);
+    Proxy p = UnpackProxy(a.MaterialBuffer.Load((int2)px));
+    if (depth <= 0 || p.Count == 0)
+        return;
+    float2 ndc = float2(((float)px.x + 0.5) / (float)c.Width * 2 - 1, 1 - ((float)px.y + 0.5) / (float)c.Height * 2);
+    float4 h = c.InverseViewProjection * float4(ndc, depth, 1);
+    float3 eye = c.Eye.xyz;
+
+    // The path: per vertex its entry, the light it reflects straight from the lights, its
+    // albedo and the light it emits.
+    uint[SharcMaxVertices] entries = default;
+    float3[SharcMaxVertices] direct = default;
+    float3[SharcMaxVertices] albedo = default;
+    float3[SharcMaxVertices] emitted = default;
+    uint count = 0;
+    // What reaches the last vertex from beyond it.
+    float3 tail = float3(0, 0, 0);
+    float3 x = h.xyz / h.w;
+    float3 n = p.Normal;
+    float3 rho = p.Albedo;
+    float3 glow = float3(0, 0, 0);
+    uint vertices = Min(c.MaxVertices, SharcMaxVertices);
+    for (uint k = 0; k < vertices; k++)
+    {
+        float3 origin = Lift(x, n, eye);
+        entries[k] = SharcInsert(a.Keys, c.Capacity, SharcKey(x, n, eye, c.VoxelAngle));
+        direct[k] = SharcDirect(c, a, x, origin, n, rho, ref state);
+        albedo[k] = rho;
+        emitted[k] = glow;
+        count = k + 1;
+        float u = SharcRandom(ref state);
+        float v = SharcRandom(ref state);
+        Ray ray = Ray { Origin = origin, TMin = 0, Direction = CosineDirection(n, u, v), TMax = 100000 };
+        RayHit hit = a.Tlas.TraceClosest(ray);
+        if (hit.Kind == HitKind.None)
+        {
+            tail = c.Sky.xyz;
+            break;
+        }
+        // Inside a closed mesh: nothing.
+        if (!hit.FrontFace)
+            break;
+        HitSurface s = SurfaceOfHit(hit, ray, a.Hits);
+        SimpleMaterial m = SimpleOfHit(s, a.Hits, a.Simple);
+        // The last vertex's bounce, or one into a voxel well sampled already, ends at the cache.
+        bool last = k + 1 == vertices;
+        if (last || k >= 1)
+        {
+            uint e = SharcFind(a.Keys, c.Capacity, SharcKey(s.Position, s.Normal, eye, c.VoxelAngle));
+            float4 cached = e == SharcNone ? float4(0, 0, 0, 0) : a.Radiance[e];
+            if (last || cached.w >= c.TerminateSamples)
+            {
+                tail = m.Emission + cached.xyz;
+                break;
+            }
+        }
+        x = s.Position;
+        n = s.Normal;
+        rho = m.Albedo;
+        glow = m.Emission;
+    }
+    // Back along the path: each vertex reflects its direct light and, cosine-sampled, its
+    // albedo times what reaches it from the next.
+    float3 incoming = tail;
+    for (uint i = count; i > 0; i--)
+    {
+        uint j = i - 1;
+        float3 reflected = direct[j] + albedo[j] * incoming;
+        if (entries[j] != SharcNone)
+            SharcAdd(a.Accumulation, entries[j], reflected);
+        incoming = emitted[j] + reflected;
+    }
+}
+
+[Compute(64, 1, 1)]
+public void SharcResolve([DispatchThreadId] uint3 id, [Push] in SharcArgs a)
+{
+    SharcConstants c = a.Constants.Value;
+    uint e = id.x;
+    if (e >= c.Capacity || a.Keys[e] == 0)
+        return;
+    ulong samples = a.Accumulation[e * 4 + 3];
+    if (samples == 0)
+    {
+        uint age = a.Ages[e] + 1;
+        if (age > c.StaleFrames)
+        {
+            a.Keys[e] = 0;
+            a.Radiance[e] = float4(0, 0, 0, 0);
+            age = 0;
+        }
+        a.Ages[e] = age;
+        return;
+    }
+    float n = (float)samples;
+    float3 sum = float3((float)a.Accumulation[e * 4], (float)a.Accumulation[e * 4 + 1], (float)a.Accumulation[e * 4 + 2]) / SharcScale;
+    float4 old = a.Radiance[e];
+    // The history, at most `MaxFrames` − 1 frames of this frame's samples.
+    float history = Min(old.w, n * (c.MaxFrames - 1));
+    float total = history + n;
+    a.Radiance[e] = float4((old.xyz * history + sum) / total, total);
+    a.Ages[e] = 0;
+    a.Accumulation[e * 4] = 0;
+    a.Accumulation[e * 4 + 1] = 0;
+    a.Accumulation[e * 4 + 2] = 0;
+    a.Accumulation[e * 4 + 3] = 0;
+}
+
+/// The cache's view (`r.sharc.view`): each pixel the radiance its surface's voxel holds, as
+/// though the cache lit the scene; black where it has no entry, the sky where nothing is.
+[Compute(8, 8, 1)]
+public void SharcView([DispatchThreadId] uint3 id, [Push] in SharcArgs a)
+{
+    SharcConstants c = a.Constants.Value;
+    if (id.x >= c.Width || id.y >= c.Height)
+        return;
+    int2 px = (int2)id.xy;
+    float depth = a.Depth.Load(px);
+    Proxy p = UnpackProxy(a.MaterialBuffer.Load(px));
+    if (depth <= 0 || p.Count == 0)
+    {
+        a.Output[px] = float4(c.Sky.xyz, 1);
+        return;
+    }
+    float2 ndc = float2(((float)px.x + 0.5) / (float)c.Width * 2 - 1, 1 - ((float)px.y + 0.5) / (float)c.Height * 2);
+    float4 h = c.InverseViewProjection * float4(ndc, depth, 1);
+    a.Output[px] = float4(SharcQuery(a.Cache, h.xyz / h.w, p.Normal).xyz, 1);
+}

@@ -295,6 +295,10 @@ fn render_frame(
     {
         profile_scope!("Apply");
         render.apply(device, delta)?;
+        #[cfg(not(marlin_build = "shipping"))]
+        {
+            render.sharc_view = crate::boot::R_SHARC_VIEW.get();
+        }
     }
     let image = {
         profile_scope!("Acquire");

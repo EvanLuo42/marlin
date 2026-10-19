@@ -31,7 +31,7 @@ use alloc::vec::Vec;
 
 use marlin_render_graph::{
     Access, BufferDesc as GraphBufferDesc, BufferHandle, FRAMES_IN_FLIGHT, FrameContext,
-    PassBuilder, PassContext, RenderGraph,
+    PassBuilder, PassContext, RenderGraph, TextureHandle,
 };
 use marlin_rhi::{
     ACCELERATION_STRUCTURE_ALIGNMENT, AccelerationStructure, AccelerationStructureGeometry,
@@ -952,3 +952,57 @@ impl Tlas {
 
 /// Rebuilt every frame from few instances: a fast trace is worth its build.
 const TLAS_FLAGS: BuildFlags = BuildFlags::PREFER_FAST_TRACE;
+
+/// The simplified materials ray hits read (0011 §9.1–9.2), as marlin-material's bakes write
+/// them: the atlases and the per-instance factors.
+/// `Marlin.Engine.Material.SimpleSources`: the simplified materials in a pass's arguments.
+#[repr(C)]
+#[derive(Pod, Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct SimpleSources {
+    pub albedo: u32,
+    pub specular: u32,
+    pub emission: u32,
+    pub factors: u32,
+}
+
+/// The frame's simplified materials, after its bakes (marlin-material's `add_simple_passes`).
+#[derive(Clone, Copy)]
+pub struct SimpleOutput<'g> {
+    pub albedo: TextureHandle<'g>,
+    pub specular: TextureHandle<'g>,
+    pub emission: TextureHandle<'g>,
+    pub factors: BufferHandle<'g>,
+}
+
+/// A pass's views of the simplified materials ([`SimpleOutput::read`]).
+#[derive(Clone, Copy)]
+pub struct SimpleViews<'g> {
+    albedo: TextureHandle<'g>,
+    specular: TextureHandle<'g>,
+    emission: TextureHandle<'g>,
+    factors: BufferHandle<'g>,
+}
+
+impl<'g> SimpleOutput<'g> {
+    /// Declares a pass's reads of them.
+    pub fn read(&self, b: &mut PassBuilder<'_, 'g>) -> SimpleViews<'g> {
+        SimpleViews {
+            albedo: b.read_texture(self.albedo, Access::ComputeRead),
+            specular: b.read_texture(self.specular, Access::ComputeRead),
+            emission: b.read_texture(self.emission, Access::ComputeRead),
+            factors: b.read_buffer(self.factors, Access::ComputeRead),
+        }
+    }
+}
+
+impl SimpleViews<'_> {
+    /// Their bindless indices, for a pass's arguments.
+    pub fn bind(&self, ctx: &PassContext<'_>) -> SimpleSources {
+        SimpleSources {
+            albedo: ctx.srv(self.albedo),
+            specular: ctx.srv(self.specular),
+            emission: ctx.srv(self.emission),
+            factors: ctx.srv(self.factors),
+        }
+    }
+}
