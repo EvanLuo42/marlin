@@ -542,6 +542,11 @@ impl RenderScene {
     }
 
     /// Live lights, as (row in the light table, description).
+    /// Rows of the light table, live or not.
+    pub fn light_rows(&self) -> u32 {
+        self.light_rows.len() as u32
+    }
+
     pub fn lights(&self) -> impl Iterator<Item = (u32, LightDesc)> + '_ {
         (0..self.light_rows.len())
             .filter(move |&row| self.light_rows.alive[row])

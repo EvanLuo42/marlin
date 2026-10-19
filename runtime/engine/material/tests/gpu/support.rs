@@ -64,6 +64,7 @@ pub struct Harness {
     /// The ray tracing scene, the light tiles and ReSTIR DI.
     pub tlas: Tlas,
     light_tiles: LightTiles,
+    light_grid: marlin_render::light_grid::LightGrid,
     pub restir: RestirDi,
     /// Denoises ReSTIR's light when `denoise` is on; off, the frames are the raw signal.
     pub denoiser: Denoiser,
@@ -249,6 +250,11 @@ impl Harness {
             .unwrap(),
             tlas,
             light_tiles,
+            light_grid: marlin_render::light_grid::LightGrid::new(
+                device,
+                engine_shaders(&[marlin_render::light_grid::LightGrid::ENTRY])[0],
+            )
+            .unwrap(),
             restir,
             denoiser: Denoiser::new(
                 device,
@@ -569,6 +575,7 @@ impl Harness {
         );
         let (tlas, tiles, restir, sharc) =
             (&self.tlas, &self.light_tiles, &self.restir, &self.sharc);
+        let light_grid = &self.light_grid;
         let (denoiser, denoise) = (&self.denoiser, self.denoise);
         let (camera, previous) = (self.camera, self.previous);
         let ticket = self
@@ -661,11 +668,14 @@ impl Harness {
                 }
                 // The translucent surfaces over it (R4e).
                 let clusters = vis.add_translucent_view(g, meshes, scene, gpu, &v, &view);
+                let grid = (scene.light_rows() > 0)
+                    .then(|| light_grid.add_passes(g, scene, gpu.lights, camera, width, height));
                 let inputs = TranslucentInputs {
                     clusters,
                     depth: v.depth,
                     rt,
                     cache,
+                    grid,
                     environment: env,
                 };
                 lit = materials

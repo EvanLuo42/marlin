@@ -132,3 +132,45 @@ fn a_pane_behind_the_wall_is_not_drawn() {
     let want = [wall_light(); 3];
     assert!(close(got, want), "{got:?} against {want:?}");
 }
+
+#[test]
+fn local_lights_light_a_pane_through_the_grid() {
+    // A pane in the dark lit by two point lights, unshadowed (0010 §5.4): at the center pixel's
+    // point, what the CPU reference's formulas give its diffuse lobe (times the opacity) and its
+    // GGX lobe.
+    use marlin_test_scenes::reference::{light_contribution, light_specular, pixel_ray};
+    use marlin_test_scenes::scenes::point_light;
+    let mut h = Harness::new();
+    let (tint, opacity) = ([0.7, 0.5, 0.3], 0.6);
+    pane(&mut h, tint, opacity, 0.0);
+    h.updates.environment = Some(Environment {
+        sun_illuminance: 0.0,
+        ambient: [0.0; 3],
+        clear_color: [0.0, 0.0, 0.0, 1.0],
+        ..Environment::default()
+    });
+    let lights = [
+        point_light(Vec3::new(0.5, 0.3, 1.0), 10.0, [1.0, 0.9, 0.8], 0.0, 10.0),
+        point_light(Vec3::new(-0.4, -0.2, 0.7), 5.0, [0.6, 0.8, 1.0], 0.0, 10.0),
+    ];
+    for light in lights {
+        let id = h.scene.ids().lights.reserve();
+        h.updates
+            .lights
+            .push(id, marlin_render::scene::LightUpdate::Add(light));
+    }
+    let got = center(&h.restir_frame(1));
+    let (origin, dir) = pixel_ray(h.camera, WIDTH, HEIGHT, WIDTH / 2, HEIGHT / 2);
+    let x = origin + dir * (-origin.z / dir.z);
+    let (n, v) = (Vec3::Z, -dir);
+    let albedo = tint.map(encoded);
+    let mut want = [0.0f32; 3];
+    for light in &lights {
+        let d = light_contribution(light, x, n, albedo);
+        let s = light_specular(light, x, n, v, 0.05, [0.04; 3]);
+        for i in 0..3 {
+            want[i] += d[i] * opacity + s[i];
+        }
+    }
+    assert!(close(got, want), "{got:?} against {want:?}");
+}

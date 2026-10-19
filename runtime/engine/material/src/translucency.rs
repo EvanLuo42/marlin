@@ -12,6 +12,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use marlin_math::Transform;
+use marlin_render::light_grid::{LightGridConstants, LightGridOutput, LightGridSources};
 use marlin_render::raytracing::RtScene;
 use marlin_render::sharc::{SharcOutput, SharcSources};
 use marlin_render::{Camera, Environment, GpuScene, RenderScene, TranslucentClusters};
@@ -47,7 +48,11 @@ struct ForwardView {
     sky: [f32; 4],
     cache: SharcSources,
     has_cache: u32,
-    spare: u32,
+    has_grid: u32,
+    width: u32,
+    height: u32,
+    spare: [u32; 2],
+    grid: LightGridConstants,
 }
 
 /// `Marlin.Engine.Material.ForwardArgs<M>` (and `TranslucentMeshArgs`).
@@ -65,6 +70,7 @@ pub(crate) struct ForwardArgs {
     tlas: u32,
     offsets: u32,
     slot: u32,
+    lights: LightGridSources,
 }
 
 /// What [`Materials::add_translucent_passes`] reads of the frame.
@@ -78,6 +84,8 @@ pub struct TranslucentInputs<'g> {
     pub rt: RtScene<'g>,
     /// The world cache, the light around a translucent surface; without it, the sky's.
     pub cache: Option<SharcOutput<'g>>,
+    /// The clustered light grid, the local lights; without it, none.
+    pub grid: Option<LightGridOutput<'g>>,
     pub environment: Environment,
 }
 
@@ -222,7 +230,13 @@ impl Materials {
             sky: [ar, ag, ab, 0.0],
             cache: SharcSources::default(),
             has_cache: u32::from(inputs.cache.is_some()),
-            spare: 0,
+            has_grid: u32::from(inputs.grid.is_some()),
+            width,
+            height,
+            spare: [0; 2],
+            grid: inputs
+                .grid
+                .map_or_else(LightGridConstants::default, |g| g.constants),
         };
         let draws = &*g.arena().alloc_slice_copy(
             &order
@@ -232,6 +246,7 @@ impl Materials {
         );
         let rt = inputs.rt;
         let cache = inputs.cache;
+        let grid = inputs.grid;
         let depth = inputs.depth;
         g.add_raster("Translucent", |b| {
             let color = b.color(color, LoadOp::Load, StoreOp::Store);
@@ -251,6 +266,7 @@ impl Materials {
             let depth = b.read_texture(depth, Access::PixelRead);
             rt.read(b);
             let cache = cache.map(|c| c.read(b));
+            let grid = grid.map(|l| l.read(b));
             let records: Vec<_> = (0..slots)
                 .map(|slot| b.read_buffer(args.range(u64::from(slot) * 16, 16), Access::Indirect))
                 .collect();
@@ -272,6 +288,7 @@ impl Materials {
                     tlas: rt.index,
                     offsets: ctx.srv(offsets),
                     slot: 0,
+                    lights: grid.map_or_else(LightGridSources::default, |l| l.bind(ctx)),
                 };
                 for (slot, &permutation) in draws.iter().enumerate() {
                     let p = permutation as usize;

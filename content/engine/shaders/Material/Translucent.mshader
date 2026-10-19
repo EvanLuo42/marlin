@@ -15,13 +15,14 @@ namespace Marlin.Engine.Material;
 // 3. `TranslucentScatter`: the clusters into their slots.
 // 4. A draw per slot in order: `TranslucentMesh` (one group per cluster, the vertices' world
 //    position and normal) and `ForwardTranslucent<M>`: the material's `Surface` and `Opacity`
-//    lit as the opaque passes light (the sun, shadowed by a ray; the world cache, or the sky
+//    lit as the opaque passes light (the sun, shadowed by a ray; the local lights of its cell; the world cache, or the sky
 //    where it has nothing; Lambert and GGX of the proxy lobe), blended premultiplied over the
 //    lit scene: diffuse and emission times the opacity, the specular reflection whole (glass
 //    reflects however clear it is). The opaque depth is tested here (it is not a depth target):
 //    a fragment behind it is dropped (`Discard`).
 //
-// Not yet (R4e2, R4e3): local lights (the clustered grid, 0010 §5.4), refraction.
+// The local lights come from the clustered light grid (`LightGrid.mshader`, R4e2), unshadowed.
+// Not yet (R4e3): refraction.
 
 using Marlin.Substrate;
 using Marlin.Engine.Scene;
@@ -106,7 +107,13 @@ public struct ForwardView
     /// The world cache (its irradiance over π), when `HasCache` is 1.
     public SharcSources Cache;
     public uint HasCache;
+    /// 1: the clustered light grid (`Grid`, the arguments' `Lights`) lights the surfaces.
+    public uint HasGrid;
+    public uint Width;
+    public uint Height;
     public uint Spare0;
+    public uint Spare1;
+    public LightGridConstants Grid;
 }
 
 /// `TranslucentMesh`'s arguments, `ForwardArgs<M>`'s for the mesh stage: the same words.
@@ -124,6 +131,7 @@ public struct TranslucentMeshArgs
     /// Each slot's first cluster in `Sorted`, and the slot this draw is (the CPU knows it).
     public ReadOnlyBuffer<uint> Offsets;
     public uint Slot;
+    public LightGridSources Lights;
 }
 
 public struct ForwardArgs<M>
@@ -141,6 +149,7 @@ public struct ForwardArgs<M>
     public AccelerationStructure Tlas;
     public ReadOnlyBuffer<uint> Offsets;
     public uint Slot;
+    public LightGridSources Lights;
 }
 
 public struct TranslucentVertex
@@ -239,6 +248,14 @@ public float4 ForwardTranslucent<M>(in TranslucentVertex i, [Push] in ForwardArg
         float4 cached = SharcQuery(v.Cache, x, p.Normal);
         if (cached.w > 0)
             around = cached.xyz;
+    }
+    // The local lights, from the clustered grid, unshadowed (0010 §5.4).
+    if (v.HasGrid != 0)
+    {
+        uint cell = CellOf(v.Grid, x, i.Pos.xy / float2((float)v.Width, (float)v.Height));
+        Lobes local = GridLights(a.Lights, v.Grid, cell, x, wo, p);
+        sun.Diffuse += local.Diffuse;
+        sun.Specular += local.Specular;
     }
     float3 diffuse = sun.Diffuse + p.Albedo * around + w.Emission;
     float3 specular = sun.Specular + SpecularAlbedo(p.F0, p.Roughness, Saturate(Dot(p.Normal, wo))) * around;

@@ -1,0 +1,132 @@
+namespace Marlin.Engine.Lighting;
+
+// The clustered light grid (0010 §5.4, R4e2): a grid aligned with the view's frustum, `GridX` ×
+// `GridY` screen tiles by `GridZ` depth slices spaced exponentially from `Near` to `Far`, each
+// cell listing the local lights whose range reaches it (at most `CellLights`). The opaque
+// surfaces do not use it (ReSTIR draws their lights); the paths that cannot afford reservoirs
+// do: translucent surfaces (0009 §8), later fog, particles and hair. marlin-render's
+// `LightGrid` builds it each frame: `BuildLightGrid`, a thread a cell testing every light's
+// range sphere against the cell's box in view space.
+
+using Marlin.Substrate;
+
+public struct LightGridConstants
+{
+    /// World to view: the camera looks down −Z, x right, y up. Column-major.
+    public float4x4 View;
+    /// Cells a side and slices.
+    public uint GridX;
+    public uint GridY;
+    public uint GridZ;
+    /// Lights a cell lists at most.
+    public uint CellLights;
+    /// The slices' depth range (distance along −Z): exponential from `Near` to `Far`.
+    public float Near;
+    public float Far;
+    /// tan of half the field of view, vertically and horizontally.
+    public float TanY;
+    public float TanX;
+    /// Rows of the light table.
+    public uint LightRows;
+    public uint Spare0;
+    public uint Spare1;
+    public uint Spare2;
+}
+
+/// The grid, for a pass that reads it.
+public struct LightGridSources
+{
+    public ReadOnlyBuffer<LightRow> Lights;
+    /// Per cell: how many lights it lists, and the lists (`CellLights` slots a cell).
+    public ReadOnlyBuffer<uint> Counts;
+    public ReadOnlyBuffer<uint> Indices;
+}
+
+public struct LightGridArgs
+{
+    public Uniform<LightGridConstants> Constants;
+    public ReadOnlyBuffer<LightRow> Lights;
+    public Buffer<uint> Counts;
+    public Buffer<uint> Indices;
+}
+
+/// The depth (along −Z) slice `z` starts at.
+float SliceDepth(in LightGridConstants c, float z) => c.Near * Pow(c.Far / c.Near, z / (float)c.GridZ);
+
+/// The slice of view depth `depth`, clamped to the grid.
+public uint SliceOf(in LightGridConstants c, float depth)
+{
+    float s = Log2(Max(depth, c.Near) / c.Near) / Log2(c.Far / c.Near) * (float)c.GridZ;
+    return Min((uint)Max(s, 0), c.GridZ - 1);
+}
+
+/// The cell of a world point `x` seen at screen position `uv` (0–1, y down).
+public uint CellOf(in LightGridConstants c, float3 x, float2 uv)
+{
+    float4 v = c.View * float4(x, 1);
+    uint cx = Min((uint)(Saturate(uv.x) * (float)c.GridX), c.GridX - 1);
+    uint cy = Min((uint)(Saturate(uv.y) * (float)c.GridY), c.GridY - 1);
+    return (SliceOf(c, -v.z) * c.GridY + cy) * c.GridX + cx;
+}
+
+[Compute(64, 1, 1)]
+public void BuildLightGrid([DispatchThreadId] uint3 id, [Push] in LightGridArgs a)
+{
+    LightGridConstants c = a.Constants.Value;
+    uint cells = c.GridX * c.GridY * c.GridZ;
+    uint cell = id.x;
+    if (cell >= cells)
+        return;
+    uint cx = cell % c.GridX;
+    uint cy = (cell / c.GridX) % c.GridY;
+    uint cz = cell / (c.GridX * c.GridY);
+    // The cell's box in view space: its tile's frustum slab between two slice depths.
+    float z0 = SliceDepth(c, (float)cz);
+    float z1 = SliceDepth(c, (float)(cz + 1));
+    // Tile edges in NDC (y up; tile rows run down the screen).
+    float x0 = (float)cx / (float)c.GridX * 2 - 1;
+    float x1 = (float)(cx + 1) / (float)c.GridX * 2 - 1;
+    float y0 = 1 - (float)(cy + 1) / (float)c.GridY * 2;
+    float y1 = 1 - (float)cy / (float)c.GridY * 2;
+    float3 lo = float3(1e30, 1e30, -z1);
+    float3 hi = float3(-1e30, -1e30, -z0);
+    for (uint k = 0; k < 2; k++)
+    {
+        float z = k == 0 ? z0 : z1;
+        lo.x = Min(lo.x, Min(x0, x1) * c.TanX * z);
+        hi.x = Max(hi.x, Max(x0, x1) * c.TanX * z);
+        lo.y = Min(lo.y, Min(y0, y1) * c.TanY * z);
+        hi.y = Max(hi.y, Max(y0, y1) * c.TanY * z);
+    }
+    uint count = 0;
+    for (uint row = 0; row < c.LightRows; row++)
+    {
+        LightRow l = a.Lights[row];
+        if (l.Kind == 0)
+            continue;
+        float3 p = (c.View * float4(l.Position, 1)).xyz;
+        // The sphere against the box: the distance from its center to the box's nearest point.
+        float3 d = Max(Max(lo - p, p - hi), float3(0, 0, 0));
+        if (Dot(d, d) > l.Range * l.Range)
+            continue;
+        if (count < c.CellLights)
+            a.Indices[cell * c.CellLights + count] = row;
+        count++;
+    }
+    a.Counts[cell] = Min(count, c.CellLights);
+}
+
+/// What the local lights in `cell` give the proxy lobe `p` at `x` seen along `wo`, unshadowed
+/// (0010 §5.4: the paths that read the grid shadow no local light below L3).
+public Lobes GridLights(in LightGridSources g, in LightGridConstants c, uint cell, float3 x, float3 wo, in Proxy p)
+{
+    Lobes sum = Lobes { Diffuse = float3(0, 0, 0), Specular = float3(0, 0, 0) };
+    uint count = g.Counts[cell];
+    for (uint i = 0; i < count; i++)
+    {
+        Lobes o = LightLobes(g.Lights[g.Indices[cell * c.CellLights + i]], x, wo, p);
+        sum.Diffuse += o.Diffuse;
+        sum.Specular += o.Specular;
+    }
+    return sum;
+}

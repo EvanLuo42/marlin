@@ -20,6 +20,7 @@ use marlin_math::{Transform, UVec2, Vec2};
 use marlin_render::Environment;
 use marlin_render::asset::PairingPatternView;
 use marlin_render::denoise::{DenoiseInputs, DenoiseShaders, Denoiser, NoisySignal};
+use marlin_render::light_grid::LightGrid;
 use marlin_render::lighting::LitView;
 use marlin_render::lights::LightTiles;
 use marlin_render::raytracing::{RtShaders, Tlas};
@@ -84,6 +85,8 @@ pub struct RenderSide {
     pub tlas: Tlas,
     /// The frame's presampled light tiles (0010 §2.8).
     pub light_tiles: LightTiles,
+    /// The clustered light grid: the local lights of translucent surfaces (0010 §5.4).
+    pub light_grid: LightGrid,
     /// ReSTIR (0010 §2): local lights and GI.
     pub restir: RestirDi,
     /// Denoises ReSTIR's light (0010 §6); `denoise` off composes it as it is.
@@ -155,6 +158,7 @@ impl RenderSide {
             vsm: Vsm::new(device, &VsmShaders::bind(engine)?, VsmSettings::DEFAULT)?,
             tlas: Tlas::new(device, &RtShaders::bind(engine)?)?,
             light_tiles: LightTiles::new(device, bind_one(engine, &LightTiles::ENTRY)?)?,
+            light_grid: LightGrid::new(device, bind_one(engine, &LightGrid::ENTRY)?)?,
             restir: RestirDi::new(device, &RestirShaders::bind(engine)?, pairing)?,
             denoiser: Denoiser::new(device, &DenoiseShaders::bind(engine)?)?,
             denoise: true,
@@ -282,6 +286,7 @@ impl RenderSide {
             post,
             tlas,
             light_tiles,
+            light_grid,
             restir,
             denoiser,
             denoise,
@@ -438,11 +443,15 @@ impl RenderSide {
             && !world.translucent_instances().is_empty()
         {
             let clusters = visibility.add_translucent_view(g, meshes, world, gpu, &vis, &view);
+            let light_grid: &'g LightGrid = light_grid;
+            let grid = (world.light_rows() > 0)
+                .then(|| light_grid.add_passes(g, world, gpu.lights, camera, width, height));
             let inputs = TranslucentInputs {
                 clusters,
                 depth,
                 rt,
                 cache,
+                grid,
                 environment: env,
             };
             scene = materials
