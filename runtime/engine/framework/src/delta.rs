@@ -16,7 +16,7 @@ use marlin_containers::{HashMap, HashMapExt};
 use marlin_material::{DEFAULT_PERMUTATION, Materials};
 use marlin_math::Transform;
 use marlin_render::scene::{MeshId, MeshUpdate};
-use marlin_render::visibility::counters;
+use marlin_render::visibility::{ViewDesc, counters};
 use marlin_render::{
     Camera, Feedback, Lighting, MeshData, MeshHandle, Meshes, PagePoolDesc, PostProcess,
     RenderScene, ScatterShader, SceneIds, SceneUpdates, Visibility,
@@ -209,7 +209,14 @@ impl RenderSide {
         let gpu = scene.add_passes(g, scatter);
         let scene: &'g RenderScene = scene;
         let material = camera.map(|camera| {
-            let vis = visibility.add_passes(g, meshes, scene, gpu, pool, camera, width, height);
+            let view = ViewDesc {
+                id: MAIN_VIEW,
+                camera,
+                previous: *previous,
+                width,
+                height,
+            };
+            let vis = visibility.add_passes(g, meshes, scene, gpu, pool, &view);
             feedback.push_back((
                 pool.frame,
                 [

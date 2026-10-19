@@ -1,0 +1,50 @@
+namespace Marlin.Engine.Visibility;
+
+// The hierarchical depth buffer (0009 §4.2): every texel holds the farthest depth (reverse-Z:
+// the smallest) of the screen it covers. Mip 0 is a power of two per axis, at least half the
+// screen, so a texel covers at most 2 (at most 3 at a fractional edge) pixels per axis;
+// `HzbFirst` takes the minimum over them. Each further mip (`HzbDown`) is the minimum of the
+// 2×2 texels under it.
+
+public struct HzbArgs
+{
+    /// The depth (`HzbFirst`) or the mip below (`HzbDown`).
+    public Texture2D<float> Source;
+    public StorageTexture2D<float> Output;
+    public uint SourceWidth;
+    public uint SourceHeight;
+    public uint Width;
+    public uint Height;
+}
+
+[Compute(8, 8, 1)]
+public void HzbFirst([DispatchThreadId] uint3 id, [Push] in HzbArgs a)
+{
+    if (id.x >= a.Width || id.y >= a.Height)
+        return;
+    // The pixels of the texel: [x * W / w, (x + 1) * W / w), rounded out.
+    uint x0 = id.x * a.SourceWidth / a.Width;
+    uint y0 = id.y * a.SourceHeight / a.Height;
+    uint x1 = Min(((id.x + 1) * a.SourceWidth + a.Width - 1) / a.Width, a.SourceWidth);
+    uint y1 = Min(((id.y + 1) * a.SourceHeight + a.Height - 1) / a.Height, a.SourceHeight);
+    float farthest = 1;
+    for (uint y = y0; y < y1; y++)
+    {
+        for (uint x = x0; x < x1; x++)
+            farthest = Min(farthest, a.Source.Load(int2((int)x, (int)y)));
+    }
+    a.Output[(int2)id.xy] = farthest;
+}
+
+[Compute(8, 8, 1)]
+public void HzbDown([DispatchThreadId] uint3 id, [Push] in HzbArgs a)
+{
+    if (id.x >= a.Width || id.y >= a.Height)
+        return;
+    int2 below = int2((int)a.SourceWidth - 1, (int)a.SourceHeight - 1);
+    int2 p = Min(int2((int)id.x * 2, (int)id.y * 2), below);
+    int2 q = Min(p + 1, below);
+    a.Output[(int2)id.xy] = Min(
+        Min(a.Source.Load(p), a.Source.Load(int2(q.x, p.y))),
+        Min(a.Source.Load(int2(p.x, q.y)), a.Source.Load(q)));
+}

@@ -194,26 +194,43 @@ pub fn streaming_shaders(library: &ShaderLibrary) -> Result<StreamingShaders<'_>
     })
 }
 
-/// The visibility pipeline's entries (`Marlin.Engine.Visibility`).
-pub const VISIBILITY: [&str; 11] = [
+/// The visibility pipeline's entries (`Marlin.Engine.Visibility`), in
+/// `VisibilityShaders::ENTRIES` order.
+pub const VISIBILITY: [&str; 17] = [
     "Marlin.Engine.Visibility.Reset",
     "Marlin.Engine.Visibility.InstanceCull",
+    "Marlin.Engine.Visibility.InstanceRetestArgs",
+    "Marlin.Engine.Visibility.InstanceRetest",
     "Marlin.Engine.Visibility.NodeArgs",
     "Marlin.Engine.Visibility.NodeCull",
     "Marlin.Engine.Visibility.PartArgs",
     "Marlin.Engine.Visibility.ClusterCull",
+    "Marlin.Engine.Visibility.ClusterRetestArgs",
+    "Marlin.Engine.Visibility.ClusterRetest",
     "Marlin.Engine.Visibility.FinishArgs",
     "Marlin.Engine.Visibility.VisMesh",
     "Marlin.Engine.Visibility.VisPs",
     "Marlin.Engine.Visibility.VisClear",
     "Marlin.Engine.Visibility.VisDepth",
+    "Marlin.Engine.Visibility.HzbFirst",
+    "Marlin.Engine.Visibility.HzbDown",
 ];
 
 /// The visibility pipeline's shaders from the engine's library, checked for their stages and
 /// the push constants marlin-render's visibility passes set.
 pub fn visibility_shaders(library: &ShaderLibrary) -> Result<VisibilityShaders<'_>, ShaderError> {
-    use marlin_render::visibility::{CULL_PUSH_BYTES, RASTER_PUSH_BYTES, TARGET_PUSH_BYTES};
-    let get = |name: &'static str, stage: Stage, push: u32| {
+    use marlin_render::visibility::{
+        CULL_PUSH_BYTES, HZB_PUSH_BYTES, RASTER_PUSH_BYTES, TARGET_PUSH_BYTES,
+    };
+    let get = |name: &'static str| {
+        let short = name.rsplit('.').next().unwrap_or(name);
+        let (stage, push) = match short {
+            "VisMesh" => (Stage::Mesh, RASTER_PUSH_BYTES),
+            "VisPs" => (Stage::Pixel, RASTER_PUSH_BYTES),
+            "VisClear" | "VisDepth" => (Stage::Compute, TARGET_PUSH_BYTES),
+            "HzbFirst" | "HzbDown" => (Stage::Compute, HZB_PUSH_BYTES),
+            _ => (Stage::Compute, CULL_PUSH_BYTES),
+        };
         let e = library.entry(name).ok_or(ShaderError::MissingEntry(name))?;
         let mismatch = |problem| ShaderError::Mismatch {
             entry: name,
@@ -229,20 +246,14 @@ pub fn visibility_shaders(library: &ShaderLibrary) -> Result<VisibilityShaders<'
         }
         Ok(module(e))
     };
-    let v = &VISIBILITY;
-    Ok(VisibilityShaders {
-        reset: get(v[0], Stage::Compute, CULL_PUSH_BYTES)?,
-        instance_cull: get(v[1], Stage::Compute, CULL_PUSH_BYTES)?,
-        node_args: get(v[2], Stage::Compute, CULL_PUSH_BYTES)?,
-        node_cull: get(v[3], Stage::Compute, CULL_PUSH_BYTES)?,
-        part_args: get(v[4], Stage::Compute, CULL_PUSH_BYTES)?,
-        cluster_cull: get(v[5], Stage::Compute, CULL_PUSH_BYTES)?,
-        finish_args: get(v[6], Stage::Compute, CULL_PUSH_BYTES)?,
-        mesh: get(v[7], Stage::Mesh, RASTER_PUSH_BYTES)?,
-        pixel: get(v[8], Stage::Pixel, RASTER_PUSH_BYTES)?,
-        clear: get(v[9], Stage::Compute, TARGET_PUSH_BYTES)?,
-        depth: get(v[10], Stage::Compute, TARGET_PUSH_BYTES)?,
-    })
+    let mut modules = alloc::vec::Vec::with_capacity(VISIBILITY.len());
+    for name in VISIBILITY {
+        modules.push(get(name)?);
+    }
+    let mut next = modules.into_iter();
+    Ok(VisibilityShaders::from_fn(|_| {
+        next.next().expect("one module an entry")
+    }))
 }
 
 /// The material passes' entries (`Marlin.Engine.Material`).

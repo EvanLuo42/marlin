@@ -16,7 +16,7 @@ use marlin_render::scene::{
     InstanceDesc, InstanceId, InstanceUpdate, MaterialDesc, MaterialId, MaterialUpdate, MeshId,
     MeshUpdate,
 };
-use marlin_render::visibility::counters;
+use marlin_render::visibility::{ViewDesc, counters};
 use marlin_render::{
     Camera, Environment, Feedback, GpuScene, MeshData, MeshHandle, Meshes, PagePool, PagePoolDesc,
     RenderScene, ScatterShader, SceneUpdates, StreamingShaders, Visibility, VisibilityShaders,
@@ -55,6 +55,8 @@ pub struct Harness {
     /// Applied with the next frame.
     pub updates: SceneUpdates,
     pub camera: Option<(Transform, Camera)>,
+    /// The last visibility frame's camera: its HZB is the next frame's first pass's.
+    pub previous: Option<(Transform, Camera)>,
     frame: FrameContext,
 }
 
@@ -133,6 +135,7 @@ impl Harness {
             material,
             updates,
             camera: None,
+            previous: None,
             frame,
         }
     }
@@ -293,14 +296,22 @@ impl Harness {
             &self.reference,
         );
         let camera = self.camera.expect("a camera");
+        let view = ViewDesc {
+            id: 0,
+            camera,
+            previous: self.previous,
+            width: SIZE,
+            height: SIZE,
+        };
+        self.previous = Some(camera);
         let list = cut.clone();
-        let (tickets, capacity, levels, frame) = self
+        let (tickets, capacity, levels, frame, hzb_tickets, two_pass) = self
             .frame
             .execute(self.device, |g, _| {
                 let pool = meshes.add_passes(g, uploads);
                 let gpu = scene.add_passes(g, scatter);
                 let (color, depth) = reference_pass(g, reference, list, gpu, pool, camera);
-                let out = vis.add_passes(g, meshes, scene, gpu, pool, camera, SIZE, SIZE);
+                let out = vis.add_passes(g, meshes, scene, gpu, pool, &view);
                 (
                     [
                         g.readback_texture(color),
@@ -315,6 +326,13 @@ impl Harness {
                     out.capacity,
                     out.levels,
                     pool.frame,
+                    out.hzb.map(|h| {
+                        let (_, mips) = marlin_render::visibility::hzb_size(SIZE, SIZE);
+                        (0..mips)
+                            .map(|m| g.readback_texture(h.mip(m)))
+                            .collect::<Vec<_>>()
+                    }),
+                    out.two_pass,
                 )
             })
             .unwrap();
@@ -328,6 +346,16 @@ impl Harness {
             requests,
             used,
         ] = tickets.map(|t| self.frame.wait_readback(t).unwrap());
+        let hzb: Vec<Vec<f32>> = hzb_tickets
+            .unwrap_or_default()
+            .into_iter()
+            .map(|t| {
+                words(&self.frame.wait_readback(t).unwrap())
+                    .into_iter()
+                    .map(f32::from_bits)
+                    .collect()
+            })
+            .collect();
         assert_eq!(self.device.validation_errors(), 0);
         let floats = |b: &[u8]| words(b).into_iter().map(f32::from_bits).collect::<Vec<_>>();
         let clusters = words(&clusters);
@@ -356,6 +384,11 @@ impl Harness {
             nodes: c[counters::NODES],
             parts: c[counters::PARTS],
             requests: c[counters::REQUESTS],
+            occluded_instances: c[counters::OCCLUDED_INSTANCES],
+            occluded_clusters: c[counters::OCCLUDED_CLUSTERS],
+            pass_first_cluster: c[counters::PASS_FIRST_CLUSTER],
+            two_pass,
+            hzb,
             clusters: clusters.as_chunks::<2>().0.to_vec(),
             capacity,
             levels,
@@ -476,6 +509,14 @@ pub struct VisFrame {
     pub nodes: u32,
     pub parts: u32,
     pub requests: u32,
+    /// What pass 1 found occluded (pass 2 tested it again), the first cluster pass 2 drew, and
+    /// whether there was a pass 2.
+    pub occluded_instances: u32,
+    pub occluded_clusters: u32,
+    pub pass_first_cluster: u32,
+    pub two_pass: bool,
+    /// The final HZB's mips, row-major (empty without occlusion culling).
+    pub hzb: Vec<Vec<f32>>,
     /// Instance row, `slot << 12 | cluster`, for each of the buffer's entries.
     pub clusters: Vec<[u32; 2]>,
     pub capacity: u32,

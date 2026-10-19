@@ -1,38 +1,51 @@
 namespace Marlin.Engine.Visibility;
 
-// The visibility pipeline of one view (0009 §4.1, §4.3), one pass, hardware raster only:
+// The visibility pipeline of one view (0009 §4.1–§4.3): two passes against a hierarchical
+// depth buffer (HZB), hardware raster only.
 //
-// 1. `Reset` zeroes the counters.
-// 2. `InstanceCull`: one thread per instance row; frustum test of its world sphere. Visible
-//    instances append their hierarchy's root node to `Nodes`.
+// Pass 1 tests against the HZB of the last frame (its view-projection), pass 2 against one
+// built from what pass 1 drew. Each pass:
+//
+// 1. `Reset` (pass 1) zeroes the counters.
+// 2. Instances: pass 1's `InstanceCull`, one thread per instance row: frustum test of its world
+//    sphere, then the occlusion test; occluded instances are kept in `OccludedInstances` for
+//    pass 2, the others append their hierarchy's root node to `Nodes`. Pass 2's
+//    `InstanceRetest` tests the occluded ones again; those now visible append their root node.
 // 3. The DAG traversal, one `NodeArgs` + `NodeCull` pair per level of hierarchy nodes:
-//    `NodeArgs` takes the nodes the last level appended as this level's, `NodeCull` tests each
-//    of their children (8 threads a node): frustum, then the largest error below projected
+//    `NodeArgs` takes the nodes appended since the last level as this level's, `NodeCull` tests
+//    each of their children (8 threads a node): frustum, then the largest error below projected
 //    against the budget (within it, nothing below is drawn). Passing children append to
 //    `Nodes`, or to `Parts` for a leaf (a group's clusters in one page) whose group is whole:
 //    every page of it resident. A leaf whose group is not appends its missing pages to
 //    `Requests` instead, for marlin-render's streaming.
-// 4. `PartArgs` + `ClusterCull`: one group per part. A part whose group's projected error is
-//    within the budget draws nothing (the group is good enough, so a coarser one is drawn);
-//    otherwise each of its clusters whose own LOD error projects within the budget, or whose
-//    finer source group is not resident, is drawn once it passes the frustum and normal-cone
-//    tests: it is appended to `Clusters`, whose index is the cluster id the visibility buffer
-//    stores. Every slot a part is read from is marked in `Used`.
-// 5. `FinishArgs` turns the cluster count into the mesh dispatch.
-// 6. `VisMesh` + `VisPs`: one mesh group per visible cluster; each pixel keeps the nearest
+// 4. `PartArgs` + `ClusterCull`: one group per part appended this pass. A part whose group's
+//    projected error is within the budget draws nothing (the group is good enough, so a coarser
+//    one is drawn); otherwise each of its clusters whose own LOD error projects within the
+//    budget, or whose finer source group is not resident, is drawn once it passes the frustum,
+//    normal-cone and occlusion tests: it is appended to `Clusters`, whose index is the cluster
+//    id the visibility buffer stores. Pass 1 keeps occluded clusters in `OccludedClusters`;
+//    pass 2's `ClusterRetest` tests them again. Every slot a part is read from is marked in
+//    `Used`.
+// 5. `FinishArgs` turns the clusters appended this pass into the mesh dispatch.
+// 6. `VisMesh` + `VisPs`: one mesh group per cluster of the pass; each pixel keeps the nearest
 //    `depth << 32 | cluster << 7 | triangle` with a 64-bit atomic max (no attachments).
-// 7. `VisDepth` splits the depth out into an `R32Float` texture.
+// 7. `VisDepth` splits the depth out into an `R32Float` texture, and `Hzb.mshader` builds the
+//    HZB from it.
 //
-// The cut is the DAG's (0009 §3): the errors and spheres grow from children to parents and every
-// test projects them with `ProjectedError`, so the cut is watertight.
+// Pass 1 only culls what the last frame's HZB hides; anything it culls wrongly (it moved, the
+// camera did) pass 2 draws, so the picture is the one a single pass without occlusion culling
+// would draw. The cut is the DAG's (0009 §3): the errors and spheres grow from children to
+// parents and every test projects them with `ProjectedError`, so the cut is watertight.
 //
 // `Counters` words (atomics): 0 the visible instances, 1 the nodes appended, 2 the parts
 // appended, 3 the visible clusters appended (each may pass its capacity), 4 the clusters drawn;
 // 5 where the next level's nodes start, 6 and 7 the current level's range, 8 the page requests
-// (may pass their capacity). `Args` (indirect
-// arguments, a pass never both counts into and dispatches from one buffer) holds three records
-// of the RHI's indirect dispatches: a constant (push word 31, unused here), then x, y, z. Words
-// 0–3 are the node level's, 4–7 the cluster cull's, 8–11 the mesh dispatch.
+// (may pass their capacity), 9 the occluded instances, 10 the pass's first cluster, 11 the
+// occluded clusters, 12 where the next pass's parts start, 13 and 14 the pass's part range.
+// `Args` (indirect arguments, a pass never both counts into and dispatches from one buffer)
+// holds five records of the RHI's indirect dispatches: a constant (push word 31, unused here),
+// then x, y, z. Words 0–3 are the node level's, 4–7 the cluster cull's, 8–11 the mesh
+// dispatch, 12–15 the instance retest's, 16–19 the cluster retest's.
 
 using Marlin.Engine.Scene;
 
@@ -41,6 +54,8 @@ public struct View
 {
     /// Matrices are column-major; `M * v` is the column-vector product.
     public float4x4 ViewProjection;
+    /// The last frame's, which its HZB was drawn with.
+    public float4x4 PreviousViewProjection;
     /// World-space frustum planes (left, right, bottom, top, near): a point p is inside a plane
     /// when `Dot(plane.xyz, p) + plane.w >= 0`. The far plane is at infinity.
     public float4[5] Planes;
@@ -55,7 +70,12 @@ public struct View
     public uint ClusterCapacity;
     /// Entries `Requests` holds.
     public uint RequestCapacity;
-    public uint[2] Spare;
+    /// Entries `OccludedInstances` and `OccludedClusters` hold.
+    public uint OccludedCapacity;
+    /// The HZB's mip count; its mip 0 is `HzbSize`.
+    public uint HzbMips;
+    public uint2 HzbSize;
+    public uint2 Spare;
 }
 
 public struct CullArgs
@@ -79,7 +99,19 @@ public struct CullArgs
     public Buffer<uint2> Requests;
     /// A word per pool slot: set once a slot is read.
     public Buffer<uint> Used;
+    /// The HZB the pass tests against: all mips.
+    public Texture2D<float> Hzb;
+    /// What pass 1 found occluded: instance rows, and clusters (row, `slot << 12 | cluster`).
+    public Buffer<uint> OccludedInstances;
+    public Buffer<uint2> OccludedClusters;
+    /// `TestHzb` | `SecondPass`.
+    public uint Pass;
 }
+
+/// `CullArgs.Pass`: test against `Hzb`.
+const uint TestHzb = 1;
+/// `CullArgs.Pass`: the second pass: the current view, what is occluded is dropped.
+const uint SecondPass = 2;
 
 /// Groups per row of a dispatch (the smallest maximum every device allows); more go to rows.
 const uint GroupsPerRow = 65535;
@@ -103,7 +135,7 @@ void WriteDispatch(in CullArgs a, uint at, uint groups)
 [Compute(1, 1, 1)]
 public void Reset([Push] in CullArgs a)
 {
-    for (uint i = 0; i < 12; i++)
+    for (uint i = 0; i < 16; i++)
         a.Counters[i] = 0;
 }
 
@@ -116,6 +148,59 @@ bool InFrustum(in View v, float3 center, float radius)
             return false;
     }
     return true;
+}
+
+/// Whether the world sphere (`center`, `radius`), seen through `viewProjection`, is behind
+/// what `hzb` holds: its nearest depth is farther than the farthest depth of every texel its
+/// screen rectangle covers. The rectangle is the projection of the sphere's bounding box,
+/// tested at the coarsest mip where it covers at most 2×2 texels. A box reaching behind the
+/// camera is never occluded.
+bool Occluded(in View v, float4x4 viewProjection, Texture2D<float> hzb, float3 center, float radius)
+{
+    float2 lo = float2(1, 1);
+    float2 hi = float2(-1, -1);
+    float nearest = 0;
+    for (uint i = 0; i < 8; i++)
+    {
+        float3 corner = center + float3(
+            (i & 1) != 0 ? radius : -radius,
+            (i & 2) != 0 ? radius : -radius,
+            (i & 4) != 0 ? radius : -radius);
+        float4 clip = viewProjection * float4(corner, 1);
+        if (clip.w <= 0.000001)
+            return false;
+        float3 ndc = clip.xyz / clip.w;
+        lo = Min(lo, ndc.xy);
+        hi = Max(hi, ndc.xy);
+        // Reverse-Z: the nearest depth is the largest.
+        nearest = Max(nearest, ndc.z);
+    }
+    if (nearest >= 1)
+        return false;
+    // Mip-0 texels, y down; a texel covers the same share of the screen at every size.
+    float2 size = float2((float)v.HzbSize.x, (float)v.HzbSize.y);
+    float2 from = Clamp(float2(lo.x * 0.5 + 0.5, 0.5 - hi.y * 0.5) * size, float2(0, 0), size - 1);
+    float2 to = Clamp(float2(hi.x * 0.5 + 0.5, 0.5 - lo.y * 0.5) * size, float2(0, 0), size - 1);
+    uint2 a = uint2((uint)from.x, (uint)from.y);
+    uint2 b = uint2((uint)to.x, (uint)to.y);
+    uint level = 0;
+    while (level + 1 < v.HzbMips && ((b.x >> level) - (a.x >> level) > 1 || (b.y >> level) - (a.y >> level) > 1))
+        level++;
+    int2 p = int2((int)(a.x >> level), (int)(a.y >> level));
+    int2 q = int2((int)(b.x >> level), (int)(b.y >> level));
+    float farthest = Min(
+        Min(hzb.Load(p, mip: (int)level), hzb.Load(int2(q.x, p.y), mip: (int)level)),
+        Min(hzb.Load(int2(p.x, q.y), mip: (int)level), hzb.Load(q, mip: (int)level)));
+    return nearest < farthest;
+}
+
+/// Whether the pass culls the world sphere as occluded.
+bool PassOccludes(in CullArgs a, in View v, float3 center, float radius)
+{
+    if ((a.Pass & TestHzb) == 0)
+        return false;
+    float4x4 viewProjection = (a.Pass & SecondPass) != 0 ? v.ViewProjection : v.PreviousViewProjection;
+    return Occluded(v, viewProjection, a.Hzb, center, radius);
 }
 
 /// The largest scale of a transform: its longest column.
@@ -148,6 +233,15 @@ float ProjectedError(in View v, in Rows3x4 t, float scale, float4 sphere, float 
     return error * scale * v.Eye.w / distance;
 }
 
+/// Appends instance `row`'s root node: its traversal starts.
+void Visible(in CullArgs a, in View v, uint row)
+{
+    a.Counters.AtomicAdd(0, 1);
+    uint slot = a.Counters.AtomicAdd(1, 1);
+    if (slot < v.NodeCapacity)
+        a.Nodes[slot] = uint2(row, 0);
+}
+
 [Compute(64, 1, 1)]
 public void InstanceCull([DispatchThreadId] uint3 id, [Push] in CullArgs a)
 {
@@ -165,10 +259,36 @@ public void InstanceCull([DispatchThreadId] uint3 id, [Push] in CullArgs a)
     float4 sphere = a.Bounds[row];
     if (!InFrustum(v, sphere.xyz, sphere.w))
         return;
-    a.Counters.AtomicAdd(0, 1);
-    uint slot = a.Counters.AtomicAdd(1, 1);
-    if (slot < v.NodeCapacity)
-        a.Nodes[slot] = uint2(row, 0);
+    if (PassOccludes(a, v, sphere.xyz, sphere.w))
+    {
+        uint at = a.Counters.AtomicAdd(9, 1);
+        if (at < v.OccludedCapacity)
+            a.OccludedInstances[at] = row;
+        else
+            Visible(a, v, row);
+        return;
+    }
+    Visible(a, v, row);
+}
+
+[Compute(1, 1, 1)]
+public void InstanceRetestArgs([Push] in CullArgs a)
+{
+    WriteDispatch(a, 12, (Min(a.Counters[9], a.View.Value.OccludedCapacity) + 63) / 64);
+}
+
+/// Pass 2: the instances pass 1 found occluded, against the new HZB.
+[Compute(64, 1, 1)]
+public void InstanceRetest([GroupId] uint3 group, [GroupThreadId] uint3 thread, [Push] in CullArgs a)
+{
+    View v = a.View.Value;
+    uint index = GroupIndex(group) * 64 + thread.x;
+    if (index >= Min(a.Counters[9], v.OccludedCapacity))
+        return;
+    uint row = a.OccludedInstances[index];
+    float4 sphere = a.Bounds[row];
+    if (!PassOccludes(a, v, sphere.xyz, sphere.w))
+        Visible(a, v, row);
 }
 
 /// The nodes appended since the last level become this level's.
@@ -237,10 +357,16 @@ public void NodeCull([GroupId] uint3 group, [GroupThreadId] uint3 thread, [Push]
     }
 }
 
+/// The parts appended since the last pass become this pass's.
 [Compute(1, 1, 1)]
 public void PartArgs([Push] in CullArgs a)
 {
-    WriteDispatch(a, 4, Min(a.Counters[2], a.View.Value.PartCapacity));
+    uint start = a.Counters[12];
+    uint end = Min(a.Counters[2], a.View.Value.PartCapacity);
+    a.Counters[13] = start;
+    a.Counters[14] = end;
+    a.Counters[12] = end;
+    WriteDispatch(a, 4, end - start);
 }
 
 /// A snorm8 in bits `shift` to `shift + 7` of `w`.
@@ -252,12 +378,20 @@ float Snorm8(uint w, uint shift)
     return Max((float)b / 127, -1);
 }
 
+/// Appends a visible cluster.
+void Draw(in CullArgs a, in View v, uint row, uint address)
+{
+    uint at = a.Counters.AtomicAdd(3, 1);
+    if (at < v.ClusterCapacity)
+        a.Clusters[at] = uint2(row, address);
+}
+
 [Compute(32, 1, 1)]
 public void ClusterCull([GroupId] uint3 group, [GroupThreadId] uint3 thread, [Push] in CullArgs a)
 {
     View v = a.View.Value;
-    uint index = GroupIndex(group);
-    if (index >= Min(a.Counters[2], v.PartCapacity))
+    uint index = a.Counters[13] + GroupIndex(group);
+    if (index >= a.Counters[14])
         return;
     uint2 item = a.Parts[index];
     uint row = item.x;
@@ -297,18 +431,58 @@ public void ClusterCull([GroupId] uint3 group, [GroupThreadId] uint3 thread, [Pu
             if (Dot(d, axis) >= cutoff * Length(d) + radius)
                 continue;
         }
-        uint at = a.Counters.AtomicAdd(3, 1);
-        if (at < v.ClusterCapacity)
-            a.Clusters[at] = uint2(row, (slot << 12) | cluster);
+        uint address = (slot << 12) | cluster;
+        if (PassOccludes(a, v, center, radius))
+        {
+            // Pass 1: pass 2 decides.
+            if ((a.Pass & SecondPass) == 0)
+            {
+                uint at = a.Counters.AtomicAdd(11, 1);
+                if (at < v.OccludedCapacity)
+                    a.OccludedClusters[at] = uint2(row, address);
+                else
+                    Draw(a, v, row, address);
+            }
+            continue;
+        }
+        Draw(a, v, row, address);
     }
 }
 
 [Compute(1, 1, 1)]
+public void ClusterRetestArgs([Push] in CullArgs a)
+{
+    WriteDispatch(a, 16, (Min(a.Counters[11], a.View.Value.OccludedCapacity) + 63) / 64);
+}
+
+/// Pass 2: the clusters pass 1 found occluded, against the new HZB.
+[Compute(64, 1, 1)]
+public void ClusterRetest([GroupId] uint3 group, [GroupThreadId] uint3 thread, [Push] in CullArgs a)
+{
+    View v = a.View.Value;
+    uint index = GroupIndex(group) * 64 + thread.x;
+    if (index >= Min(a.Counters[11], v.OccludedCapacity))
+        return;
+    uint2 item = a.OccludedClusters[index];
+    uint row = item.x;
+    MeshEntry mesh = a.Meshes[a.Instances[row].Mesh];
+    Page page = LoadPage(mesh.Pages, AddressSlot(item.y));
+    Cluster c = LoadCluster(mesh.Pages, page, AddressCluster(item.y));
+    Rows3x4 t = a.Transforms[row].Current;
+    float3 center = Apply(t, float4(c.Sphere.xyz, 1));
+    if (!PassOccludes(a, v, center, c.Sphere.w * MaxScale(t)))
+        Draw(a, v, row, item.y);
+}
+
+/// The clusters appended this pass become its mesh dispatch.
+[Compute(1, 1, 1)]
 public void FinishArgs([Push] in CullArgs a)
 {
+    uint first = a.Counters[4];
     uint count = Min(a.Counters[3], a.View.Value.ClusterCapacity);
+    a.Counters[10] = first;
     a.Counters[4] = count;
-    WriteDispatch(a, 8, count);
+    WriteDispatch(a, 8, count - first);
 }
 
 public struct RasterArgs
@@ -340,7 +514,8 @@ public void VisMesh(
     [Push] in RasterArgs a,
     MeshOutput<VisVertex, VisPrimitive> o)
 {
-    uint cluster = GroupIndex(group);
+    // This pass's clusters follow the last pass's.
+    uint cluster = a.Counters[10] + GroupIndex(group);
     if (cluster >= a.Counters[4])
     {
         o.SetCounts(0, 0);

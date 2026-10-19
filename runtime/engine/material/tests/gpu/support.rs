@@ -207,7 +207,14 @@ impl Harness {
             .execute(self.device, |g, _| {
                 let pool = meshes.add_passes(g, uploads);
                 let gpu = scene.add_passes(g, scatter);
-                let v = vis.add_passes(g, meshes, scene, gpu, pool, camera, WIDTH, HEIGHT);
+                let view = marlin_render::visibility::ViewDesc {
+                    id: 0,
+                    camera,
+                    previous,
+                    width: WIDTH,
+                    height: HEIGHT,
+                };
+                let v = vis.add_passes(g, meshes, scene, gpu, pool, &view);
                 let out = materials.add_passes(g, gpu, &v, camera, previous, WIDTH, HEIGHT);
                 let debug = debug.map(|mode| {
                     let view = materials.add_debug_pass(g, &out, mode);
@@ -311,7 +318,14 @@ impl Harness {
             .execute(self.device, |g, _| {
                 let pool = meshes.add_passes(g, uploads);
                 let gpu = scene.add_passes(g, scatter);
-                let v = vis.add_passes(g, meshes, scene, gpu, pool, camera, width, height);
+                let view = marlin_render::visibility::ViewDesc {
+                    id: 0,
+                    camera,
+                    previous,
+                    width,
+                    height,
+                };
+                let v = vis.add_passes(g, meshes, scene, gpu, pool, &view);
                 let out = materials.add_passes(g, gpu, &v, camera, previous, width, height);
                 let env = *scene.environment();
                 let lit = lighting.add_passes(g, Some(out.material), &env, width, height);

@@ -1,14 +1,22 @@
-//! The visibility pipeline of one view (0009 §4.1, §4.3): instance culling, the traversal of
+//! The visibility pipeline of one view (0009 §4.1–§4.3): instance culling, the traversal of
 //! every visible instance's cluster DAG hierarchy that picks its LOD cut, cluster culling, a
 //! mesh shader drawing the visible clusters into a 64-bit visibility buffer with atomic max,
-//! and the depth split out of it. The passes are `Marlin.Engine.Visibility`'s; its file comment
-//! describes them and their buffers.
+//! and the depth split out of it; twice, with two-pass occlusion culling against a
+//! hierarchical depth buffer (HZB). The passes are `Marlin.Engine.Visibility`'s; its file
+//! comment describes them and their buffers.
 //!
 //! The visibility buffer (`R64Uint`) holds, per pixel, the nearest
 //! `depth << 32 | cluster << 7 | triangle`: the depth's float bits (reverse-Z, so larger is
 //! nearer and 0 is empty), the index of the visible cluster in [`VisibilityOutput::clusters`]
 //! (instance row, `slot << 12 | cluster`: the cluster's page slot in the page pool and its
 //! index in the page) and the triangle in the cluster.
+//!
+//! **Occlusion** (§4.2): pass 1 culls against the HZB the last frame left in the view's history
+//! (with the last frame's view-projection) and keeps what it culls; an HZB is built from what
+//! pass 1 drew; pass 2 tests what pass 1 culled against it and draws what is visible after all;
+//! the final HZB, built from both, is the next frame's. Without a last frame (the first frame,
+//! a resize, a camera cut: no previous camera) pass 1 culls nothing by occlusion and there is no
+//! pass 2.
 //!
 //! The traversal is level by level: one indirect dispatch per level of hierarchy nodes, as
 //! many as the deepest hierarchy of the drawn meshes has, rather than persistent threads
@@ -35,31 +43,43 @@ use crate::scene::{GpuScene, RenderScene};
 pub struct VisibilityShaders<'a> {
     pub reset: ShaderModule<'a>,
     pub instance_cull: ShaderModule<'a>,
+    pub instance_retest_args: ShaderModule<'a>,
+    pub instance_retest: ShaderModule<'a>,
     pub node_args: ShaderModule<'a>,
     pub node_cull: ShaderModule<'a>,
     pub part_args: ShaderModule<'a>,
     pub cluster_cull: ShaderModule<'a>,
+    pub cluster_retest_args: ShaderModule<'a>,
+    pub cluster_retest: ShaderModule<'a>,
     pub finish_args: ShaderModule<'a>,
     pub mesh: ShaderModule<'a>,
     pub pixel: ShaderModule<'a>,
     pub clear: ShaderModule<'a>,
     pub depth: ShaderModule<'a>,
+    pub hzb_first: ShaderModule<'a>,
+    pub hzb_down: ShaderModule<'a>,
 }
 
 impl<'a> VisibilityShaders<'a> {
     /// The entries' names in `Marlin.Engine.Visibility`, in field order.
-    pub const ENTRIES: [&'static str; 11] = [
+    pub const ENTRIES: [&'static str; 17] = [
         "Reset",
         "InstanceCull",
+        "InstanceRetestArgs",
+        "InstanceRetest",
         "NodeArgs",
         "NodeCull",
         "PartArgs",
         "ClusterCull",
+        "ClusterRetestArgs",
+        "ClusterRetest",
         "FinishArgs",
         "VisMesh",
         "VisPs",
         "VisClear",
         "VisDepth",
+        "HzbFirst",
+        "HzbDown",
     ];
 
     /// The shaders `module` gives for each of [`ENTRIES`](Self::ENTRIES).
@@ -67,49 +87,70 @@ impl<'a> VisibilityShaders<'a> {
         let [
             reset,
             instance_cull,
+            instance_retest_args,
+            instance_retest,
             node_args,
             node_cull,
             part_args,
             cluster_cull,
+            cluster_retest_args,
+            cluster_retest,
             finish_args,
             mesh,
             pixel,
             clear,
             depth,
+            hzb_first,
+            hzb_down,
         ] = Self::ENTRIES.map(&mut module);
         Self {
             reset,
             instance_cull,
+            instance_retest_args,
+            instance_retest,
             node_args,
             node_cull,
             part_args,
             cluster_cull,
+            cluster_retest_args,
+            cluster_retest,
             finish_args,
             mesh,
             pixel,
             clear,
             depth,
+            hzb_first,
+            hzb_down,
         }
     }
 }
 
-/// Bytes of push constants the cull passes set (twelve 32-bit words), the raster pass (seven)
-/// and the target passes (four).
-pub const CULL_PUSH_BYTES: u32 = 48;
+/// Bytes of push constants the cull passes set (sixteen 32-bit words), the raster pass (seven),
+/// the target passes (four) and the HZB passes (six).
+pub const CULL_PUSH_BYTES: u32 = 64;
 pub const RASTER_PUSH_BYTES: u32 = 28;
 pub const TARGET_PUSH_BYTES: u32 = 16;
+pub const HZB_PUSH_BYTES: u32 = 24;
 
-/// Fewest entries the node, part and visible-cluster buffers have: capacities round up to
-/// powers of two from here, so a scene that changes a little keeps its graph plan.
+/// Fewest entries the node, part, occluded and visible-cluster buffers have: capacities round
+/// up to powers of two from here, so a scene that changes a little keeps its graph plan.
 const MIN_CAPACITY: u32 = 1024;
 /// Most visible clusters a frame can address: the visibility buffer's 25 bits of cluster index.
 pub const MAX_CLUSTERS: u32 = 1 << 25;
+
+/// `CullArgs.Pass`: test against the HZB; the second pass.
+const TEST_HZB: u32 = 1;
+const SECOND_PASS: u32 = 2;
+
+/// The HZB history's name.
+const HZB: &str = "VisHzb";
 
 /// `Marlin.Engine.Visibility.View`.
 #[repr(C)]
 #[derive(Pod, Clone, Copy)]
 struct View {
     view_projection: [f32; 16],
+    previous_view_projection: [f32; 16],
     planes: [[f32; 4]; 5],
     eye: [f32; 4],
     lod_error_pixels: f32,
@@ -118,6 +159,9 @@ struct View {
     part_capacity: u32,
     cluster_capacity: u32,
     request_capacity: u32,
+    occluded_capacity: u32,
+    hzb_mips: u32,
+    hzb_size: [u32; 2],
     spare: [u32; 2],
 }
 
@@ -136,6 +180,10 @@ struct CullArgs {
     clusters: u32,
     requests: u32,
     used: u32,
+    hzb: u32,
+    occluded_instances: u32,
+    occluded_clusters: u32,
+    pass: u32,
 }
 
 #[repr(C)]
@@ -159,6 +207,17 @@ struct TargetArgs {
     height: u32,
 }
 
+#[repr(C)]
+#[derive(Pod, Clone, Copy)]
+struct HzbArgs {
+    source: u32,
+    output: u32,
+    source_width: u32,
+    source_height: u32,
+    width: u32,
+    height: u32,
+}
+
 /// The counters' words (see `Marlin.Engine.Visibility`).
 pub mod counters {
     pub const INSTANCES: usize = 0;
@@ -169,8 +228,26 @@ pub mod counters {
     pub const CLUSTERS_DRAWN: usize = 4;
     /// Page requests made: may pass the capacity.
     pub const REQUESTS: usize = 8;
+    /// Instances and clusters pass 1 found occluded.
+    pub const OCCLUDED_INSTANCES: usize = 9;
+    /// The first cluster of the last pass: pass 1 drew the clusters before it.
+    pub const PASS_FIRST_CLUSTER: usize = 10;
+    pub const OCCLUDED_CLUSTERS: usize = 11;
     /// Words in the counters buffer.
-    pub const WORDS: usize = 12;
+    pub const WORDS: usize = 16;
+}
+
+/// One view the visibility passes draw.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct ViewDesc {
+    /// Which view: its HZB is kept in the graph's history under it.
+    pub id: u64,
+    pub camera: (Transform, Camera),
+    /// The last frame's camera of the view, whose HZB this frame's first pass tests against;
+    /// `None` after a camera cut (or on the first frame).
+    pub previous: Option<(Transform, Camera)>,
+    pub width: u32,
+    pub height: u32,
 }
 
 /// What [`Visibility::add_passes`] makes.
@@ -197,6 +274,10 @@ pub struct VisibilityOutput<'g> {
     pub used: BufferHandle<'g>,
     /// Entries `requests` holds.
     pub request_capacity: u32,
+    /// The final HZB (`R32Float`, all mips; the next frame's), if occlusion culling is on.
+    pub hzb: Option<TextureHandle<'g>>,
+    /// Whether pass 1 tested against the last frame's HZB (and pass 2 ran).
+    pub two_pass: bool,
 }
 
 /// The visibility pipeline's GPU state: its pipelines and budgets. Needs mesh shaders and
@@ -204,23 +285,32 @@ pub struct VisibilityOutput<'g> {
 pub struct Visibility {
     reset: ComputePipeline,
     instance_cull: ComputePipeline,
+    instance_retest_args: ComputePipeline,
+    instance_retest: ComputePipeline,
     node_args: ComputePipeline,
     node_cull: ComputePipeline,
     part_args: ComputePipeline,
     cluster_cull: ComputePipeline,
+    cluster_retest_args: ComputePipeline,
+    cluster_retest: ComputePipeline,
     finish_args: ComputePipeline,
     raster: MeshPipeline,
     clear: ComputePipeline,
     depth: ComputePipeline,
+    hzb_first: ComputePipeline,
+    hzb_down: ComputePipeline,
     /// The screen-space error, in pixels, the LOD cut may have: every instance draws the
     /// coarsest clusters whose error, projected at their distance, stays within it.
     pub lod_error_pixels: f32,
-    /// Most hierarchy nodes, group parts and visible clusters a view tests and draws: the
-    /// buffers are sized for the scene up to these, and what passes them is dropped (the
-    /// counters still count it).
+    /// Two-pass occlusion culling (on by default).
+    pub occlusion: bool,
+    /// Most hierarchy nodes, group parts, visible clusters and occluded instances or clusters
+    /// a view tests and draws: the buffers are sized for the scene up to these, and what passes
+    /// them is dropped (the counters still count it; occluded ones that do not fit are drawn).
     pub max_nodes: u32,
     pub max_parts: u32,
     pub max_clusters: u32,
+    pub max_occluded: u32,
     /// Most page requests a view makes a frame.
     pub max_requests: u32,
 }
@@ -246,6 +336,13 @@ fn planes(view_projection: &Mat4) -> [[f32; 4]; 5] {
     })
 }
 
+/// `camera`'s view-projection for a `width` × `height` view.
+fn view_projection((eye, camera): (Transform, Camera), width: u32, height: u32) -> Mat4 {
+    let aspect = width as f32 / height.max(1) as f32;
+    Mat4::perspective_infinite_rh(camera.fov_y, aspect, camera.near)
+        * eye.to_matrix().inverse_affine()
+}
+
 /// `needed` rounded up to a power of two within [`MIN_CAPACITY`] and `max`.
 fn capacity(needed: u64, max: u32) -> u32 {
     let max = max.max(MIN_CAPACITY);
@@ -253,6 +350,38 @@ fn capacity(needed: u64, max: u32) -> u32 {
         .max(MIN_CAPACITY)
         .next_power_of_two()
         .min(max.next_power_of_two())
+}
+
+/// The HZB's mip-0 size for a `width` × `height` view: a power of two per axis, at least half
+/// the view; and its mip count.
+pub fn hzb_size(width: u32, height: u32) -> ([u32; 2], u32) {
+    let w = (width.max(1).next_power_of_two() / 2).max(1);
+    let h = (height.max(1).next_power_of_two() / 2).max(1);
+    ([w, h], w.max(h).ilog2() + 1)
+}
+
+/// The buffers the cull passes thread through, at their latest versions.
+#[derive(Clone, Copy)]
+struct Lists<'g> {
+    nodes: BufferHandle<'g>,
+    parts: BufferHandle<'g>,
+    counters: BufferHandle<'g>,
+    args: BufferHandle<'g>,
+    clusters: BufferHandle<'g>,
+    requests: BufferHandle<'g>,
+    used: BufferHandle<'g>,
+    occluded_instances: BufferHandle<'g>,
+    occluded_clusters: BufferHandle<'g>,
+}
+
+/// What every cull pass reads: the GPU Scene, the pool, the view, the pass's HZB and flags.
+#[derive(Clone, Copy)]
+struct PassInputs<'g> {
+    gpu: GpuScene<'g>,
+    pages: BufferHandle<'g>,
+    view: View,
+    hzb: Option<TextureHandle<'g>>,
+    pass: u32,
 }
 
 impl Visibility {
@@ -270,10 +399,14 @@ impl Visibility {
         Ok(Self {
             reset: compute(shaders.reset)?,
             instance_cull: compute(shaders.instance_cull)?,
+            instance_retest_args: compute(shaders.instance_retest_args)?,
+            instance_retest: compute(shaders.instance_retest)?,
             node_args: compute(shaders.node_args)?,
             node_cull: compute(shaders.node_cull)?,
             part_args: compute(shaders.part_args)?,
             cluster_cull: compute(shaders.cluster_cull)?,
+            cluster_retest_args: compute(shaders.cluster_retest_args)?,
+            cluster_retest: compute(shaders.cluster_retest)?,
             finish_args: compute(shaders.finish_args)?,
             raster: device.create_mesh_pipeline(&MeshPipelineDesc {
                 amplification: None,
@@ -287,18 +420,22 @@ impl Visibility {
             })?,
             clear: compute(shaders.clear)?,
             depth: compute(shaders.depth)?,
+            hzb_first: compute(shaders.hzb_first)?,
+            hzb_down: compute(shaders.hzb_down)?,
             lod_error_pixels: 1.0,
+            occlusion: true,
             max_nodes: 1 << 21,
             max_parts: 1 << 21,
             max_clusters: 1 << 22,
+            max_occluded: 1 << 20,
             max_requests: 4096,
         })
     }
 
-    /// Declares the visibility passes of `scene` seen from `camera` into a `width` × `height`
-    /// visibility buffer, reading the GPU Scene `gpu` (after its scatter). `meshes` holds the
-    /// meshes: the buffers are sized for every drawable instance's whole DAG, within the budgets.
-    #[allow(clippy::too_many_arguments, reason = "one view's inputs")]
+    /// Declares the visibility passes of `scene` seen from `view`, reading the GPU Scene `gpu`
+    /// (after its scatter) and the page pool `pool` (after its uploads). `meshes` holds the
+    /// meshes: the buffers are sized for every drawable instance's whole DAG, within the
+    /// budgets.
     pub fn add_passes<'g>(
         &'g self,
         g: &mut RenderGraph<'g>,
@@ -306,38 +443,42 @@ impl Visibility {
         scene: &RenderScene,
         gpu: GpuScene<'g>,
         pool: PagePool<'g>,
-        camera: (Transform, Camera),
-        width: u32,
-        height: u32,
+        desc: &ViewDesc,
     ) -> VisibilityOutput<'g> {
-        let (eye, cam) = camera;
-        let aspect = width as f32 / height.max(1) as f32;
-        let view_projection = Mat4::perspective_infinite_rh(cam.fov_y, aspect, cam.near)
-            * eye.to_matrix().inverse_affine();
+        let (width, height) = (desc.width, desc.height);
+        let vp = view_projection(desc.camera, width, height);
+        let previous = desc
+            .previous
+            .map_or(vp, |p| view_projection(p, width, height));
         let (mut nodes, mut parts, mut clusters, mut levels) = (0u64, 0u64, 0u64, 0u32);
+        let mut instances = 0u64;
         for (_, mesh, _) in scene.drawable() {
             let c = meshes.dag_counts(mesh);
             nodes += u64::from(c.nodes);
             parts += u64::from(c.parts);
             clusters += u64::from(c.clusters);
             levels = levels.max(c.depth);
+            instances += 1;
         }
         // At least one level, so the part list is written even when nothing is drawn.
         let levels = levels.max(1);
         let node_capacity = capacity(nodes, self.max_nodes);
         let part_capacity = capacity(parts, self.max_parts);
         let cluster_capacity = capacity(clusters, self.max_clusters.min(MAX_CLUSTERS));
+        let occluded_capacity = capacity(clusters.max(instances), self.max_occluded);
         let request_capacity = self.max_requests.max(1);
         let rows = scene.instance_rows();
-        let p = eye.translation;
+        let ([hzb_w, hzb_h], hzb_mips) = hzb_size(width, height);
+        let p = desc.camera.0.translation;
         let view = View {
-            view_projection: view_projection.to_cols_array(),
-            planes: planes(&view_projection),
+            view_projection: vp.to_cols_array(),
+            previous_view_projection: previous.to_cols_array(),
+            planes: planes(&vp),
             eye: [
                 p.x,
                 p.y,
                 p.z,
-                height as f32 / (2.0 * marlin_math::scalar::tan(cam.fov_y * 0.5)),
+                height as f32 / (2.0 * marlin_math::scalar::tan(desc.camera.1.fov_y * 0.5)),
             ],
             lod_error_pixels: self.lod_error_pixels,
             instance_rows: rows,
@@ -345,30 +486,31 @@ impl Visibility {
             part_capacity,
             cluster_capacity,
             request_capacity,
+            occluded_capacity,
+            hzb_mips,
+            hzb_size: [hzb_w, hzb_h],
             spare: [0; 2],
         };
 
-        let node_list = g.create_buffer(
-            "VisNodes",
-            BufferDesc::structured::<[u32; 2]>(u64::from(node_capacity)),
-        );
-        let part_list = g.create_buffer(
-            "VisParts",
-            BufferDesc::structured::<[u32; 2]>(u64::from(part_capacity)),
-        );
-        let counters = g.create_buffer(
-            "VisCounters",
-            BufferDesc::structured::<u32>(counters::WORDS as u64),
-        );
-        let args = g.create_buffer("VisArgs", BufferDesc::structured::<u32>(12));
-        let cluster_list = g.create_buffer(
-            "VisibleClusters",
-            BufferDesc::structured::<[u32; 2]>(u64::from(cluster_capacity)),
-        );
-        let mut request_list = g.create_buffer(
-            "VisPageRequests",
-            BufferDesc::structured::<[u32; 2]>(u64::from(request_capacity)),
-        );
+        let structured = |n: u32| BufferDesc::structured::<[u32; 2]>(u64::from(n));
+        let mut lists = Lists {
+            nodes: g.create_buffer("VisNodes", structured(node_capacity)),
+            parts: g.create_buffer("VisParts", structured(part_capacity)),
+            counters: g.create_buffer(
+                "VisCounters",
+                BufferDesc::structured::<u32>(counters::WORDS as u64),
+            ),
+            args: g.create_buffer("VisArgs", BufferDesc::structured::<u32>(20)),
+            clusters: g.create_buffer("VisibleClusters", structured(cluster_capacity)),
+            requests: g.create_buffer("VisPageRequests", structured(request_capacity)),
+            used: pool.used,
+            occluded_instances: g.create_buffer(
+                "VisOccludedInstances",
+                BufferDesc::structured::<u32>(u64::from(occluded_capacity)),
+            ),
+            occluded_clusters: g
+                .create_buffer("VisOccludedClusters", structured(occluded_capacity)),
+        };
         let vis = g.create_texture(
             "VisBuffer",
             TextureDesc::new_2d(width, height, Format::R64Uint),
@@ -377,6 +519,16 @@ impl Visibility {
             "VisDepth",
             TextureDesc::new_2d(width, height, Format::R32Float),
         );
+        let hzb = self.occlusion.then(|| {
+            g.history(
+                HZB,
+                desc.id,
+                TextureDesc::new_2d(hzb_w, hzb_h, Format::R32Float).with_mips(hzb_mips),
+            )
+        });
+        // Pass 1 tests against the last frame's HZB, when there is one for this camera.
+        let previous_hzb = hzb.and_then(|h| h.prev).filter(|_| desc.previous.is_some());
+        let two_pass = previous_hzb.is_some();
         let groups = (width.div_ceil(8), height.div_ceil(8));
 
         let vis = g.add_compute("VisClear", |b| {
@@ -392,8 +544,8 @@ impl Visibility {
                 ctx.dispatch(groups.0, groups.1, 1);
             })
         });
-        let mut counters = g.add_compute("VisReset", |b| {
-            let counters = b.write_buffer(counters, Access::ComputeWrite);
+        lists.counters = g.add_compute("VisReset", |b| {
+            let counters = b.write_buffer(lists.counters, Access::ComputeWrite);
             (counters, move |ctx: &mut PassContext<'_>| {
                 ctx.set_pipeline(&self.reset);
                 ctx.push(&CullArgs {
@@ -403,151 +555,261 @@ impl Visibility {
                 ctx.dispatch(1, 1, 1);
             })
         });
-        let mut node_list = node_list;
-        (node_list, counters) = g.add_compute("InstanceCull", |b| {
-            let instances = b.read_buffer(gpu.instance_data, Access::ComputeRead);
-            let bounds = b.read_buffer(gpu.instance_bounds, Access::ComputeRead);
-            let meshes = b.read_buffer(gpu.meshes, Access::ComputeRead);
-            let nodes = b.write_buffer(node_list, Access::ComputeWrite);
-            let counters = b.write_buffer(counters, Access::ComputeWrite);
-            ((nodes, counters), move |ctx: &mut PassContext<'_>| {
-                let view = ctx.upload(&view);
-                ctx.set_pipeline(&self.instance_cull);
-                ctx.push(&CullArgs {
-                    view,
-                    instances: ctx.srv(instances),
-                    bounds: ctx.srv(bounds),
-                    meshes: ctx.srv(meshes),
-                    nodes: ctx.uav(nodes),
-                    counters: ctx.uav(counters),
-                    ..CullArgs::default()
-                });
-                ctx.dispatch(rows.div_ceil(64), 1, 1);
-            })
-        });
 
-        let mut args = args;
-        let mut part_list = part_list;
-        for _ in 0..levels {
-            (args, counters) = g.add_compute("VisNodeArgs", |b| {
-                let counters = b.write_buffer(counters, Access::ComputeWrite);
-                let args = b.write_buffer(args, Access::ComputeWrite);
-                ((args, counters), move |ctx: &mut PassContext<'_>| {
-                    let view = ctx.upload(&view);
-                    ctx.set_pipeline(&self.node_args);
-                    ctx.push(&CullArgs {
-                        view,
-                        counters: ctx.uav(counters),
-                        args: ctx.uav(args),
-                        ..CullArgs::default()
-                    });
-                    ctx.dispatch(1, 1, 1);
-                })
-            });
-            (node_list, part_list, request_list, counters) = g.add_compute("NodeCull", |b| {
-                let dispatch = b.read_buffer(args.range(0, 16), Access::Indirect);
-                let instances = b.read_buffer(gpu.instance_data, Access::ComputeRead);
-                let transforms = b.read_buffer(gpu.instance_transforms, Access::ComputeRead);
-                let meshes = b.read_buffer(gpu.meshes, Access::ComputeRead);
-                // The clusters are read from the pool through the mesh table's view.
-                b.read_buffer(pool.pages, Access::ComputeRead);
-                let nodes = b.write_buffer(node_list, Access::ComputeWrite);
-                let parts = b.write_buffer(part_list, Access::ComputeWrite);
-                let requests = b.write_buffer(request_list, Access::ComputeWrite);
-                let counters = b.write_buffer(counters, Access::ComputeWrite);
-                (
-                    (nodes, parts, requests, counters),
-                    move |ctx: &mut PassContext<'_>| {
-                        let view = ctx.upload(&view);
-                        ctx.set_pipeline(&self.node_cull);
-                        ctx.push(&CullArgs {
-                            view,
-                            instances: ctx.srv(instances),
-                            transforms: ctx.srv(transforms),
-                            meshes: ctx.srv(meshes),
-                            nodes: ctx.uav(nodes),
-                            parts: ctx.uav(parts),
-                            counters: ctx.uav(counters),
-                            requests: ctx.uav(requests),
-                            ..CullArgs::default()
-                        });
-                        ctx.dispatch_indirect(dispatch, 1, None);
-                    },
-                )
-            });
+        // Pass 1.
+        let first = PassInputs {
+            gpu,
+            pages: pool.pages,
+            view,
+            hzb: previous_hzb,
+            pass: if two_pass { TEST_HZB } else { 0 },
+        };
+        lists = self.instance_cull(g, lists, first, rows);
+        lists = self.traverse(g, lists, first, levels);
+        lists = self.cluster_cull(g, lists, first);
+        let (mut lists, vis) = self.raster(g, lists, first, vis, width, height);
+        let (mut vis, mut depth) = self.split_depth(g, vis, depth, width, height);
+
+        let mut final_hzb = None;
+        if let Some(h) = hzb {
+            let mut cur = h.cur;
+            if two_pass {
+                // Pass 2: what pass 1 culled, against an HZB of what it drew.
+                cur = self.build_hzb(g, depth, cur, (width, height), [hzb_w, hzb_h], hzb_mips);
+                let second = PassInputs {
+                    hzb: Some(cur),
+                    pass: TEST_HZB | SECOND_PASS,
+                    ..first
+                };
+                lists = self.instance_retest(g, lists, second);
+                lists = self.traverse(g, lists, second, levels);
+                lists = self.cluster_cull(g, lists, second);
+                lists = self.cluster_retest(g, lists, second);
+                let (l, v) = self.raster(g, lists, second, vis, width, height);
+                lists = l;
+                (vis, depth) = self.split_depth(g, v, depth, width, height);
+            }
+            final_hzb =
+                Some(self.build_hzb(g, depth, cur, (width, height), [hzb_w, hzb_h], hzb_mips));
         }
+        VisibilityOutput {
+            visbuffer: vis,
+            depth,
+            clusters: lists.clusters,
+            counters: lists.counters,
+            capacity: cluster_capacity,
+            levels,
+            pages: pool.pages,
+            requests: lists.requests,
+            used: lists.used,
+            request_capacity,
+            hzb: final_hzb,
+            two_pass,
+        }
+    }
 
-        let args = g.add_compute("VisPartArgs", |b| {
-            let counters = b.read_buffer(counters, Access::ComputeRead);
-            let args = b.write_buffer(args, Access::ComputeWrite);
-            (args, move |ctx: &mut PassContext<'_>| {
-                let view = ctx.upload(&view);
-                ctx.set_pipeline(&self.part_args);
-                ctx.push(&CullArgs {
-                    view,
-                    counters: ctx.srv(counters),
-                    args: ctx.uav(args),
-                    ..CullArgs::default()
-                });
-                ctx.dispatch(1, 1, 1);
-            })
-        });
-        let (cluster_list, used, counters) = g.add_compute("ClusterCull", |b| {
+    /// The `CullArgs` of a pass, from the views the pass context made of the declared handles.
+    /// An indirect pass reads its record from the arguments and does not see them.
+    fn args(
+        ctx: &PassContext<'_>,
+        view: u32,
+        l: &Lists<'_>,
+        p: &PassInputs<'_>,
+        indirect: bool,
+    ) -> CullArgs {
+        CullArgs {
+            view,
+            instances: ctx.srv(p.gpu.instance_data),
+            transforms: ctx.srv(p.gpu.instance_transforms),
+            bounds: ctx.srv(p.gpu.instance_bounds),
+            meshes: ctx.srv(p.gpu.meshes),
+            nodes: ctx.uav(l.nodes),
+            parts: ctx.uav(l.parts),
+            counters: ctx.uav(l.counters),
+            args: if indirect { 0 } else { ctx.uav(l.args) },
+            clusters: ctx.uav(l.clusters),
+            requests: ctx.uav(l.requests),
+            used: ctx.uav(l.used),
+            hzb: p.hzb.map_or(0, |h| ctx.srv(h)),
+            occluded_instances: ctx.uav(l.occluded_instances),
+            occluded_clusters: ctx.uav(l.occluded_clusters),
+            pass: p.pass,
+        }
+    }
+
+    /// A cull pass reading everything and writing every list (the passes touch a few of each;
+    /// declaring them all keeps the passes in order, as they are anyway). `dispatch` is
+    /// `Some(word)` for an indirect dispatch from that word of the arguments.
+    #[allow(clippy::too_many_arguments, reason = "one pass's shape")]
+    fn cull_pass<'g>(
+        &'g self,
+        g: &mut RenderGraph<'g>,
+        name: &str,
+        pipeline: &'g ComputePipeline,
+        lists: Lists<'g>,
+        p: PassInputs<'g>,
+        indirect: Option<u64>,
+        groups: u32,
+    ) -> Lists<'g> {
+        g.add_compute(name, |b| {
+            let dispatch =
+                indirect.map(|at| b.read_buffer(lists.args.range(at * 4, 16), Access::Indirect));
+            let gpu = GpuScene {
+                instance_data: b.read_buffer(p.gpu.instance_data, Access::ComputeRead),
+                instance_transforms: b.read_buffer(p.gpu.instance_transforms, Access::ComputeRead),
+                instance_bounds: b.read_buffer(p.gpu.instance_bounds, Access::ComputeRead),
+                meshes: b.read_buffer(p.gpu.meshes, Access::ComputeRead),
+                ..p.gpu
+            };
             // The clusters are read from the pool through the mesh table's view.
-            b.read_buffer(pool.pages, Access::ComputeRead);
-            let used = b.write_buffer(pool.used, Access::ComputeWrite);
-            let dispatch = b.read_buffer(args.range(16, 16), Access::Indirect);
-            let instances = b.read_buffer(gpu.instance_data, Access::ComputeRead);
-            let transforms = b.read_buffer(gpu.instance_transforms, Access::ComputeRead);
-            let meshes = b.read_buffer(gpu.meshes, Access::ComputeRead);
-            let parts = b.read_buffer(part_list, Access::ComputeRead);
-            let counters = b.write_buffer(counters, Access::ComputeWrite);
-            let clusters = b.write_buffer(cluster_list, Access::ComputeWrite);
-            (
-                (clusters, used, counters),
-                move |ctx: &mut PassContext<'_>| {
-                    let view = ctx.upload(&view);
-                    ctx.set_pipeline(&self.cluster_cull);
-                    ctx.push(&CullArgs {
-                        view,
-                        instances: ctx.srv(instances),
-                        transforms: ctx.srv(transforms),
-                        meshes: ctx.srv(meshes),
-                        parts: ctx.srv(parts),
-                        counters: ctx.uav(counters),
-                        clusters: ctx.uav(clusters),
-                        used: ctx.uav(used),
-                        ..CullArgs::default()
-                    });
-                    ctx.dispatch_indirect(dispatch, 1, None);
+            b.read_buffer(p.pages, Access::ComputeRead);
+            let hzb = p.hzb.map(|h| b.read_texture(h, Access::ComputeRead));
+            let l = Lists {
+                nodes: b.write_buffer(lists.nodes, Access::ComputeWrite),
+                parts: b.write_buffer(lists.parts, Access::ComputeWrite),
+                counters: b.write_buffer(lists.counters, Access::ComputeWrite),
+                // An indirect pass reads its record: the args are written by the args passes.
+                args: if indirect.is_some() {
+                    lists.args
+                } else {
+                    b.write_buffer(lists.args, Access::ComputeWrite)
                 },
-            )
-        });
-        let (args, counters) = g.add_compute("VisMeshArgs", |b| {
-            let counters = b.write_buffer(counters, Access::ComputeWrite);
-            let args = b.write_buffer(args, Access::ComputeWrite);
-            ((args, counters), move |ctx: &mut PassContext<'_>| {
-                let view = ctx.upload(&view);
-                ctx.set_pipeline(&self.finish_args);
-                ctx.push(&CullArgs {
-                    view,
-                    counters: ctx.uav(counters),
-                    args: ctx.uav(args),
-                    ..CullArgs::default()
-                });
-                ctx.dispatch(1, 1, 1);
+                clusters: b.write_buffer(lists.clusters, Access::ComputeWrite),
+                requests: b.write_buffer(lists.requests, Access::ComputeWrite),
+                used: b.write_buffer(lists.used, Access::ComputeWrite),
+                occluded_instances: b.write_buffer(lists.occluded_instances, Access::ComputeWrite),
+                occluded_clusters: b.write_buffer(lists.occluded_clusters, Access::ComputeWrite),
+            };
+            let inputs = PassInputs { gpu, hzb, ..p };
+            (l, move |ctx: &mut PassContext<'_>| {
+                let view = ctx.upload(&inputs.view);
+                ctx.set_pipeline(pipeline);
+                let args = Self::args(ctx, view, &l, &inputs, dispatch.is_some());
+                ctx.push(&args);
+                match dispatch {
+                    Some(d) => ctx.dispatch_indirect(d, 1, None),
+                    None => ctx.dispatch(groups, 1, 1),
+                }
             })
-        });
+        })
+    }
+
+    fn instance_cull<'g>(
+        &'g self,
+        g: &mut RenderGraph<'g>,
+        lists: Lists<'g>,
+        p: PassInputs<'g>,
+        rows: u32,
+    ) -> Lists<'g> {
+        self.cull_pass(
+            g,
+            "InstanceCull",
+            &self.instance_cull,
+            lists,
+            p,
+            None,
+            rows.div_ceil(64),
+        )
+    }
+
+    fn instance_retest<'g>(
+        &'g self,
+        g: &mut RenderGraph<'g>,
+        lists: Lists<'g>,
+        p: PassInputs<'g>,
+    ) -> Lists<'g> {
+        let lists = self.cull_pass(
+            g,
+            "VisInstanceRetestArgs",
+            &self.instance_retest_args,
+            lists,
+            p,
+            None,
+            1,
+        );
+        self.cull_pass(
+            g,
+            "InstanceRetest",
+            &self.instance_retest,
+            lists,
+            p,
+            Some(12),
+            0,
+        )
+    }
+
+    fn traverse<'g>(
+        &'g self,
+        g: &mut RenderGraph<'g>,
+        mut lists: Lists<'g>,
+        p: PassInputs<'g>,
+        levels: u32,
+    ) -> Lists<'g> {
+        for _ in 0..levels {
+            lists = self.cull_pass(g, "VisNodeArgs", &self.node_args, lists, p, None, 1);
+            lists = self.cull_pass(g, "NodeCull", &self.node_cull, lists, p, Some(0), 0);
+        }
+        lists
+    }
+
+    fn cluster_cull<'g>(
+        &'g self,
+        g: &mut RenderGraph<'g>,
+        lists: Lists<'g>,
+        p: PassInputs<'g>,
+    ) -> Lists<'g> {
+        let lists = self.cull_pass(g, "VisPartArgs", &self.part_args, lists, p, None, 1);
+        self.cull_pass(g, "ClusterCull", &self.cluster_cull, lists, p, Some(4), 0)
+    }
+
+    fn cluster_retest<'g>(
+        &'g self,
+        g: &mut RenderGraph<'g>,
+        lists: Lists<'g>,
+        p: PassInputs<'g>,
+    ) -> Lists<'g> {
+        let lists = self.cull_pass(
+            g,
+            "VisClusterRetestArgs",
+            &self.cluster_retest_args,
+            lists,
+            p,
+            None,
+            1,
+        );
+        self.cull_pass(
+            g,
+            "ClusterRetest",
+            &self.cluster_retest,
+            lists,
+            p,
+            Some(16),
+            0,
+        )
+    }
+
+    /// The pass's mesh dispatch and its draw into `vis`.
+    fn raster<'g>(
+        &'g self,
+        g: &mut RenderGraph<'g>,
+        lists: Lists<'g>,
+        p: PassInputs<'g>,
+        vis: TextureHandle<'g>,
+        width: u32,
+        height: u32,
+    ) -> (Lists<'g>, TextureHandle<'g>) {
+        let lists = self.cull_pass(g, "VisMeshArgs", &self.finish_args, lists, p, None, 1);
+        let view = p.view;
         let vis = g.add_raster("VisRaster", |b| {
             b.area(width, height);
-            let dispatch = b.read_buffer(args.range(32, 16), Access::Indirect);
-            let instances = b.read_buffer(gpu.instance_data, Access::MeshRead);
-            let transforms = b.read_buffer(gpu.instance_transforms, Access::MeshRead);
-            let meshes = b.read_buffer(gpu.meshes, Access::MeshRead);
-            let clusters = b.read_buffer(cluster_list, Access::MeshRead);
-            let counters = b.read_buffer(counters, Access::MeshRead);
+            let dispatch = b.read_buffer(lists.args.range(32, 16), Access::Indirect);
+            let instances = b.read_buffer(p.gpu.instance_data, Access::MeshRead);
+            let transforms = b.read_buffer(p.gpu.instance_transforms, Access::MeshRead);
+            let meshes = b.read_buffer(p.gpu.meshes, Access::MeshRead);
+            let clusters = b.read_buffer(lists.clusters, Access::MeshRead);
+            let counters = b.read_buffer(lists.counters, Access::MeshRead);
             // The clusters are read from the pool through the mesh table's view.
-            b.read_buffer(pool.pages, Access::MeshRead);
+            b.read_buffer(p.pages, Access::MeshRead);
             let vis = b.write_texture(vis, Access::PixelWrite);
             (vis, move |ctx: &mut PassContext<'_>| {
                 let view = ctx.upload(&view);
@@ -564,7 +826,19 @@ impl Visibility {
                 ctx.dispatch_mesh_indirect(dispatch, 1, None);
             })
         });
-        let (vis, depth) = g.add_compute("VisDepth", |b| {
+        (lists, vis)
+    }
+
+    /// The depth half of `vis` into `depth`.
+    fn split_depth<'g>(
+        &'g self,
+        g: &mut RenderGraph<'g>,
+        vis: TextureHandle<'g>,
+        depth: TextureHandle<'g>,
+        width: u32,
+        height: u32,
+    ) -> (TextureHandle<'g>, TextureHandle<'g>) {
+        g.add_compute("VisDepth", |b| {
             let vis = b.write_texture(vis, Access::ComputeWrite);
             let depth = b.write_texture(depth, Access::ComputeWrite);
             ((vis, depth), move |ctx: &mut PassContext<'_>| {
@@ -575,20 +849,52 @@ impl Visibility {
                     width,
                     height,
                 });
-                ctx.dispatch(groups.0, groups.1, 1);
+                ctx.dispatch(width.div_ceil(8), height.div_ceil(8), 1);
             })
-        });
-        VisibilityOutput {
-            visbuffer: vis,
-            depth,
-            clusters: cluster_list,
-            counters,
-            capacity: cluster_capacity,
-            levels,
-            pages: pool.pages,
-            requests: request_list,
-            used,
-            request_capacity,
+        })
+    }
+
+    /// The HZB of `depth` (a `screen`-sized view) into `hzb` (mip 0 `size`, `mips` mips).
+    fn build_hzb<'g>(
+        &'g self,
+        g: &mut RenderGraph<'g>,
+        depth: TextureHandle<'g>,
+        mut hzb: TextureHandle<'g>,
+        screen: (u32, u32),
+        size: [u32; 2],
+        mips: u32,
+    ) -> TextureHandle<'g> {
+        let mut source = (screen.0, screen.1);
+        for mip in 0..mips {
+            let (w, h) = ((size[0] >> mip).max(1), (size[1] >> mip).max(1));
+            let (pipeline, name) = if mip == 0 {
+                (&self.hzb_first, "HzbFirst")
+            } else {
+                (&self.hzb_down, "HzbDown")
+            };
+            let from = source;
+            hzb = g.add_compute(name, |b| {
+                let input = if mip == 0 {
+                    b.read_texture(depth, Access::ComputeRead)
+                } else {
+                    b.read_texture(hzb.mip(mip - 1), Access::ComputeRead)
+                };
+                let out = b.write_texture(hzb.mip(mip), Access::ComputeWrite);
+                (out, move |ctx: &mut PassContext<'_>| {
+                    ctx.set_pipeline(pipeline);
+                    ctx.push(&HzbArgs {
+                        source: ctx.srv(input),
+                        output: ctx.uav(out.mip(mip)),
+                        source_width: from.0,
+                        source_height: from.1,
+                        width: w,
+                        height: h,
+                    });
+                    ctx.dispatch(w.div_ceil(8), h.div_ceil(8), 1);
+                })
+            });
+            source = (w, h);
         }
+        hzb
     }
 }
