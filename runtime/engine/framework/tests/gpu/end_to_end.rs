@@ -15,6 +15,7 @@ use marlin_framework::{
     load_engine_shaders, mount,
 };
 use marlin_gpu_test_support::{Image, assert_image, hardware_device};
+use marlin_render_graph::{FrameContext, FrameContextDesc, TextureDesc};
 use marlin_rhi::Device;
 use marlin_shader::asset::ShaderLibrary;
 use marlin_test_support::{BackgroundService, TempDir, wait_until};
@@ -337,4 +338,67 @@ fn the_exposure_holds_steady_from_the_first_frame() {
         .fold((f32::MAX, f32::MIN), |(lo, hi), &m| (lo.min(m), hi.max(m)));
     assert!(hi - lo < 8.0, "means from {lo} to {hi}");
     drop(engine);
+}
+
+/// A window dragged from landscape to portrait: a new size every frame (each a new graph plan,
+/// the cache evicting old ones), the frames in flight in between as in the game loop. Nothing
+/// is destroyed while a frame using its memory runs; the validation layer stays quiet.
+#[test]
+fn resizing_with_frames_in_flight_keeps_validation_quiet() {
+    let root = sample("resize");
+    let package = package(&root);
+    let level: Uuid = LEVEL.parse().unwrap();
+    let boot = mount(&ContentSettings {
+        packages: vec![package],
+        cookd: None,
+        platform: marlin_rt::PLATFORM.into(),
+        level,
+    })
+    .unwrap();
+    let device = hardware_device();
+    let mut engine = Engine::new(&boot.vfs).unwrap();
+    let library = load_engine_shaders(&mut engine.assets, &boot.vfs, None).unwrap();
+    let resolve = load_default_resolve(&mut engine.assets, &boot.vfs, None).unwrap();
+    let mut render = RenderSide::new(
+        device,
+        engine.assets.get(&library).unwrap(),
+        engine.assets.get(&resolve).unwrap(),
+        OFFSCREEN_FORMAT,
+        engine.scene_ids(),
+    )
+    .unwrap();
+    engine.load_level(boot.level);
+    let mut frames = FrameContext::new(device, &FrameContextDesc::default()).unwrap();
+    let before = device.validation_errors();
+    let mut frame = |size: (u32, u32), engine: &mut Engine<'_>, frames: &mut FrameContext| {
+        let delta = engine.frame(1.0 / 60.0, None, None);
+        render.collect_feedback(frames);
+        render.apply(device, &delta).unwrap();
+        frames
+            .execute(device, |g, _| {
+                let target = g.create_texture(
+                    "Target",
+                    TextureDesc::new_2d(size.0, size.1, OFFSCREEN_FORMAT),
+                );
+                render.add_passes(g, target);
+            })
+            .unwrap();
+    };
+    wait_until(Duration::from_secs(60), "the level to load", || {
+        frame((320, 180), &mut engine, &mut frames);
+        engine.is_ready()
+    });
+    for _ in 0..8 {
+        frame((320, 180), &mut engine, &mut frames);
+    }
+    // As the game loop's resize: wait for the GPU, then the new size.
+    for i in 0..24u32 {
+        frames.wait_idle().unwrap();
+        frame((320 - 6 * i, 180 + 10 * i), &mut engine, &mut frames);
+    }
+    for _ in 0..6 {
+        frame((176, 420), &mut engine, &mut frames);
+    }
+    frames.wait_idle().unwrap();
+    assert_eq!(device.validation_errors(), before);
 }

@@ -158,12 +158,14 @@ impl Upload {
 /// A plan's resources in one frame slot: placed transients and their views.
 struct Physical {
     key: u64,
-    textures: Vec<Option<Texture>>,
-    buffers: Vec<Option<Buffer>>,
+    // Fields drop in order: the views go before the resources they describe, so no descriptor
+    // in the heap the GPU may still be reading names a destroyed resource.
     /// By access index in the graph.
     views: Vec<Option<ShaderView>>,
     rtvs: Vec<Option<RenderTargetView>>,
     dsvs: Vec<Option<DepthStencilView>>,
+    textures: Vec<Option<Texture>>,
+    buffers: Vec<Option<Buffer>>,
 }
 
 struct Slot {
@@ -400,15 +402,23 @@ impl FrameContext {
         let (plan_index, lookup) = cache.ensure(&g, device)?;
         let plan = cache.get(plan_index);
 
-        // Plans the cache let go: their resources go once their slot's GPU work is done.
-        for slot in slots.iter_mut() {
+        // Plans the cache let go: their resources go once their slot's GPU work is done. This
+        // slot's go after this frame: it places its resources in the same heap memory, and a
+        // resource is not destroyed while a frame reading that memory runs (the validation
+        // layer, which tracks buffers by address, would see it in use).
+        let mut evicted_here: Vec<Physical> = Vec::new();
+        for (s, slot) in slots.iter_mut().enumerate() {
             let mut i = 0;
             while i < slot.physical.len() {
                 if cache.contains(slot.physical[i].key) {
                     i += 1;
                 } else {
                     let p = slot.physical.swap_remove(i);
-                    retired.push((slot.value, Box::new(p)));
+                    if s == slot_index {
+                        evicted_here.push(p);
+                    } else {
+                        retired.push((slot.value, Box::new(p)));
+                    }
                 }
             }
         }
@@ -878,6 +888,9 @@ impl FrameContext {
         }
         for object in retire_now.into_inner() {
             retired.push((value, object));
+        }
+        for p in evicted_here {
+            retired.push((value, Box::new(p)));
         }
 
         *stats = Some(FrameStats {
