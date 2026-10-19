@@ -64,6 +64,7 @@ fn the_shell_draws_like_the_reference_and_its_golden() {
             size: Vec2::new(w as f32 / scale, h as f32 / scale),
             cursor: Some(Vec2::new(75.0, 14.0)),
             status: "Ready  ·  60 fps",
+            viewport: None,
         },
     );
     let surface = UiSurface::new(hardware_device(), &UiSurfaceDesc::new(1)).unwrap();

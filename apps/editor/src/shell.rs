@@ -6,7 +6,8 @@
 use marlin_font::{FontId, FontView, TextLayout};
 use marlin_math::Vec2;
 use marlin_ui_render::{
-    Color, Corners, Dash, LineCap, Painter, Rect, RectStyle, ShapeStyle, Stroke, StrokeStyle,
+    Color, Corners, Dash, ExternalImageId, ImageColor, ImageSource, ImageStyle, LineCap, Painter,
+    Rect, RectStyle, ShapeStyle, Stroke, StrokeStyle,
 };
 
 const BACKGROUND: Color = Color::rgb(30, 31, 34);
@@ -33,6 +34,36 @@ pub struct ShellState<'a> {
     /// The cursor in logical pixels, if it is over the window.
     pub cursor: Option<Vec2>,
     pub status: &'a str,
+    /// The scene view, as an external image of the frame (§7): drawn in the viewport's
+    /// rectangle ([`layout`]); `None` shows where it goes.
+    pub viewport: Option<ExternalImageId>,
+}
+
+/// Where the shell puts things, in logical pixels.
+pub struct ShellLayout {
+    pub viewport: Rect,
+    outliner: Rect,
+    details: Rect,
+    content: Rect,
+    /// left, right, the content browser's top, and the panels' top and bottom.
+    splits: [f32; 5],
+}
+
+/// The shell's layout for a window of `size` logical pixels.
+pub fn layout(size: Vec2) -> ShellLayout {
+    let (w, h) = (size.x, size.y);
+    let top = MENU_HEIGHT + TOOLBAR_HEIGHT + 1.0;
+    let bottom = h - STATUS_HEIGHT;
+    let left = LEFT_WIDTH.min(w * 0.3);
+    let right = w - RIGHT_WIDTH.min(w * 0.3);
+    let split = (bottom - BOTTOM_HEIGHT).max(top + 80.0);
+    ShellLayout {
+        viewport: Rect::new(left + 1.0, top, right - 1.0, split - 1.0),
+        outliner: Rect::new(0.0, top, left, bottom),
+        details: Rect::new(right, top, w, bottom),
+        content: Rect::new(left + 1.0, split, right - 1.0, bottom),
+        splits: [left, right, split, top, bottom],
+    }
 }
 
 fn contains(r: Rect, p: Option<Vec2>) -> bool {
@@ -407,8 +438,29 @@ impl Shell<'_, '_> {
         }
     }
 
-    fn viewport(&mut self, r: Rect) {
+    fn viewport(&mut self, r: Rect, image: Option<ExternalImageId>) {
+        self.p.push_clip(r, Corners::ZERO);
         self.p.rect(r, &RectStyle::fill(Color::rgb(22, 23, 26)));
+        if let Some(id) = image {
+            let (w, h) = (r.width() as u32, r.height() as u32);
+            self.p.image(
+                r,
+                ImageSource::External {
+                    id,
+                    width: w.max(1),
+                    height: h.max(1),
+                    color: ImageColor::LinearStraight,
+                },
+                &ImageStyle::default(),
+            );
+        } else {
+            self.placeholder(r);
+        }
+        self.viewport_overlay(r);
+        self.p.pop_clip();
+    }
+
+    fn placeholder(&mut self, r: Rect) {
         // A ground grid in perspective, with the horizon.
         let horizon = r.min.y + (r.max.y - r.min.y) * 0.42;
         let cx = (r.min.x + r.max.x) * 0.5;
@@ -443,6 +495,12 @@ impl Shell<'_, '_> {
                 }),
             },
         );
+        let msg = "No level: start the editor with --level <uuid>";
+        let w = TextLayout::new(&self.font, FontId(0), 14.0, msg).width;
+        self.text(msg, Vec2::new(cx - w * 0.5, horizon - 30.0), 14.0, DIM);
+    }
+
+    fn viewport_overlay(&mut self, r: Rect) {
         // The viewport's own toolbar, floating over it.
         let bar = Rect::new(
             r.min.x + 10.0,
@@ -458,9 +516,6 @@ impl Shell<'_, '_> {
             12.0,
             TEXT,
         );
-        let msg = "The scene view lands here with U2";
-        let w = TextLayout::new(&self.font, FontId(0), 14.0, msg).width;
-        self.text(msg, Vec2::new(cx - w * 0.5, horizon - 30.0), 14.0, DIM);
         // The axis gizmo in the corner.
         let o = Vec2::new(r.min.x + 40.0, r.max.y - 40.0);
         for (d, color) in [
@@ -494,17 +549,19 @@ pub fn draw(p: &mut Painter<'_>, font: FontView<'_>, state: &ShellState<'_>) {
     };
     s.menu(w);
     s.toolbar(w);
-    let top = MENU_HEIGHT + TOOLBAR_HEIGHT + 1.0;
-    let bottom = h - STATUS_HEIGHT;
-    let left = LEFT_WIDTH.min(w * 0.3);
-    let right = w - RIGHT_WIDTH.min(w * 0.3);
-    let split = (bottom - BOTTOM_HEIGHT).max(top + 80.0);
-    // The viewport first: its grid runs past its sides, and with no clipping before U2 the
-    // opaque panels drawn after it cover that (and drop it from their tiles).
-    s.viewport(Rect::new(left + 1.0, top, right - 1.0, split - 1.0));
-    s.outliner(Rect::new(0.0, top, left, bottom));
-    s.details(Rect::new(right, top, w, bottom));
-    s.content_browser(Rect::new(left + 1.0, split, right - 1.0, bottom));
+    let l = layout(state.size);
+    let [left, right, split, top, bottom] = l.splits;
+    // Each panel draws inside its own rectangle.
+    for (r, panel) in [(l.outliner, 0), (l.details, 1), (l.content, 2)] {
+        s.p.push_clip(r, Corners::ZERO);
+        match panel {
+            0 => s.outliner(r),
+            1 => s.details(r),
+            _ => s.content_browser(r),
+        }
+        s.p.pop_clip();
+    }
+    s.viewport(l.viewport, state.viewport);
     // Splitters between the panels.
     let line = StrokeStyle::new(1.0, BORDER);
     s.p.line(

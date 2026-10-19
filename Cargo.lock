@@ -567,6 +567,7 @@ dependencies = [
  "marlin-rhi",
  "marlin-rt",
  "marlin-ui-render",
+ "png",
 ]
 
 [[package]]

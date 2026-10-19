@@ -1,10 +1,12 @@
 //! The Marlin editor.
 //!
-//! `marlin-editor <project directory> [--frames N]`: opens the project, runs its cook service in-process (the
-//! engine's content with the project's, cooked on demand and reloaded live), and opens the
-//! editor's window, drawn by the UI renderer (docs/design/0012-ui-renderer.md, U1). The window
-//! shell is [`shell`]; panels, widgets and the viewport come with the editor UI framework and U2.
-//! `--frames N` quits after N frames (smoke tests).
+//! `marlin-editor <project directory> [--level <uuid>] [--frames N]`: opens the project, runs
+//! its cook service in-process (the engine's content with the project's, cooked on demand and
+//! reloaded live), and opens the editor's window, drawn by the UI renderer
+//! (docs/design/0012-ui-renderer.md). The window shell is [`shell`]; its viewport shows `--level`
+//! through the game's renderer, drawn into a texture the UI shows as an external image (0008
+//! §6.1). Panels, widgets and docking come with the editor UI framework. `--frames N` quits after
+//! N frames (smoke tests); `--screenshot <png>` saves the last of them.
 
 use marlin_editor::shell;
 
@@ -21,14 +23,20 @@ use marlin_cookd::{Cookd, CookdOptions, bind};
 use marlin_cooker::{engine_cookers, open_ddc};
 use marlin_diag::{error, info};
 use marlin_framework::loaders::engine_loaders;
-use marlin_framework::{ContentSettings, load_engine_shaders, load_ui_font, mount, ui_shaders};
+use marlin_framework::{
+    ContentSettings, Engine, RenderSide, load_default_resolve, load_engine_shaders, load_ui_font,
+    mount, ui_shaders,
+};
 use marlin_jobs::{Config, JobSystem};
 use marlin_math::Vec2;
-use marlin_render_graph::FrameContext;
+use marlin_render_graph::{FrameContext, TextureDesc};
 use marlin_rhi::{
-    DeviceDesc, Instance, InstanceDesc, PresentStatus, SurfaceHandle, Swapchain, SwapchainDesc,
+    DeviceDesc, Format, Instance, InstanceDesc, PresentStatus, SurfaceHandle, Swapchain,
+    SwapchainDesc,
 };
-use marlin_ui_render::{Color, UiDrawList, UiRenderer, UiRendererDesc, UiSurface, UiSurfaceDesc};
+use marlin_ui_render::{
+    Color, ExternalImageId, UiDrawList, UiRenderer, UiRendererDesc, UiSurface, UiSurfaceDesc,
+};
 
 // Link the whole runtime and every editor library.
 use marlin as _;
@@ -54,15 +62,19 @@ fn main() {
         marlin_rt::hosted::report_panic(&message, info.location());
     }));
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let (project, frames) = match args.as_slice() {
-        [p] => (p, None),
-        [p, flag, n] if flag == "--frames" => match n.parse::<u64>() {
-            Ok(n) => (p, Some(n)),
-            Err(_) => usage(),
-        },
-        _ => usage(),
-    };
-    if let Err(e) = run(project, frames) {
+    let Some(project) = args.first() else { usage() };
+    let (mut level, mut frames, mut screenshot) = (None, None, None);
+    let mut rest = args[1..].iter();
+    while let Some(flag) = rest.next() {
+        let value = rest.next().unwrap_or_else(|| usage());
+        match flag.as_str() {
+            "--level" => level = Some(value.parse::<Uuid>().unwrap_or_else(|_| usage())),
+            "--frames" => frames = Some(value.parse::<u64>().unwrap_or_else(|_| usage())),
+            "--screenshot" => screenshot = Some(value.clone()),
+            _ => usage(),
+        }
+    }
+    if let Err(e) = run(project, level, frames, screenshot.as_deref()) {
         error!("{e}");
         std::process::exit(1);
     }
@@ -114,32 +126,49 @@ impl Drop for CookService {
 }
 
 fn usage() -> ! {
-    eprintln!("usage: marlin-editor <project directory> [--frames N]");
+    eprintln!(
+        "usage: marlin-editor <project directory> [--level <uuid>] [--frames N [--screenshot <png>]]"
+    );
     std::process::exit(2);
 }
 
-fn run(project_dir: &str, max_frames: Option<u64>) -> Result<(), String> {
+/// The external image the viewport's scene is drawn as.
+const VIEWPORT: ExternalImageId = ExternalImageId(1);
+/// The viewport's scene: display-referred, sRGB, as the post chain writes a window.
+const VIEWPORT_FORMAT: Format = Format::Rgba8UnormSrgb;
+
+fn run(
+    project_dir: &str,
+    level: Option<Uuid>,
+    max_frames: Option<u64>,
+    screenshot: Option<&str>,
+) -> Result<(), String> {
     let project = Project::open(project_dir).map_err(|e| format!("{project_dir}: {e}"))?;
     let cookd = CookService::start(&project)?;
     let boot = mount(&ContentSettings {
         packages: Vec::new(),
         cookd: Some(cookd.addr),
         platform: marlin_rt::PLATFORM.into(),
-        level: Uuid::default(),
+        level: level.unwrap_or_default(),
     })
     .map_err(|e| format!("mounting the cook service: {e}"))?;
     let jobs = JobSystem::new(Config::default()).map_err(|e| format!("jobs: {e:?}"))?;
 
-    // The engine's shaders and UI font, cooked from content/engine.
+    // The engine's shaders, default material and UI font, cooked from content/engine.
     info!("cooking the engine's shaders and UI font");
     // Nothing here streams: the streamer is never driven.
     let streamer = std::sync::Arc::new(marlin_asset::BlobStreamer::new());
     let mut assets = AssetServer::new(engine_loaders(&streamer));
     let library = load_engine_shaders(&mut assets, &boot.vfs, Some(&jobs))
         .map_err(|e| format!("engine shaders: {e}"))?;
+    let resolve = load_default_resolve(&mut assets, &boot.vfs, Some(&jobs))
+        .map_err(|e| format!("the default material: {e}"))?;
     let font = load_ui_font(&mut assets, &boot.vfs, Some(&jobs))
         .map_err(|e| format!("the UI font: {e:?}"))?;
     let library = assets.get(&library).ok_or("engine shaders: not loaded")?;
+    let resolve = assets
+        .get(&resolve)
+        .ok_or("the default material: not loaded")?;
     let font = assets.get(&font).ok_or("the UI font: not loaded")?.view();
 
     let mut app = App::new().map_err(|e| format!("{e}"))?;
@@ -187,12 +216,33 @@ fn run(project_dir: &str, max_frames: Option<u64>) -> Result<(), String> {
     let window_ui = UiSurface::new(&device, &UiSurfaceDesc::new(1))
         .map_err(|e| format!("the window's UI surface: {e}"))?;
 
+    // The viewport's scene: the game's renderer, into a texture the UI draws (0008 §6.1).
+    let mut engine = Engine::new(&boot.vfs).map_err(|e| format!("the engine: {e}"))?;
+    let mut scene = match level {
+        Some(level) => {
+            engine.load_level(level);
+            Some(
+                RenderSide::new(
+                    &device,
+                    library,
+                    resolve,
+                    VIEWPORT_FORMAT,
+                    engine.scene_ids(),
+                )
+                .map_err(|e| format!("the scene renderer: {e}"))?,
+            )
+        }
+        None => None,
+    };
+    let mut viewport_version = 0u64;
+
     let mut minimized = false;
     // The last frame drew nothing new (§5.5): wait for events instead of spinning.
     let mut idle = false;
     let mut frame = 0u64;
     let mut status = String::from("Ready");
     let (mut fps_start, mut fps_frames) = (Instant::now(), 0u32);
+    let mut last = Instant::now();
     'main: loop {
         let timeout = if minimized {
             Duration::from_millis(100)
@@ -225,32 +275,67 @@ fn run(project_dir: &str, max_frames: Option<u64>) -> Result<(), String> {
             break;
         }
         frame += 1;
+        let now = Instant::now();
+        let dt = now.duration_since(last).as_secs_f32().min(0.1);
+        last = now;
         let scale = window.scale_factor();
         let size = window.size();
+        let logical = Vec2::new(size.width as f32 / scale, size.height as f32 / scale);
         let cursor = input
             .state()
             .mouse()
             .position()
             .map(|[x, y]| Vec2::new(x / scale, y / scale));
+        let view = shell::layout(logical).viewport;
+        let (vw, vh) = (
+            ((view.width() * scale) as u32).max(1),
+            ((view.height() * scale) as u32).max(1),
+        );
+
+        // The scene: its fly camera follows the input while the cursor is over the viewport.
+        if let Some(scene) = &mut scene {
+            let over = cursor.is_some_and(|c| {
+                c.x >= view.min.x && c.x < view.max.x && c.y >= view.min.y && c.y < view.max.y
+            });
+            let delta = engine.frame(dt, over.then(|| input.state()), Some(&jobs));
+            scene.collect_feedback(&mut frames);
+            scene.apply(&device, &delta).map_err(|e| format!("{e}"))?;
+            viewport_version += 1;
+        }
+
         let mut list = UiDrawList::new(scale);
         shell::draw(
             &mut list.painter(&ui.glyph_cache().ids),
             font,
             &shell::ShellState {
-                size: Vec2::new(size.width as f32 / scale, size.height as f32 / scale),
+                size: logical,
                 cursor,
                 status: &status,
+                viewport: scene.is_some().then_some(VIEWPORT),
             },
         );
-        let prepared = ui.prepare(&[&list], &[], &[font], Some(&jobs));
+        let externals = [(VIEWPORT, viewport_version)];
+        let prepared = ui.prepare(&[&list], &externals, &[font], Some(&jobs));
         let data = &prepared.surfaces[0];
         idle = !window_ui.needs_redraw(data, size.width, size.height, Color::BLACK);
+        let last_frame = max_frames == Some(frame);
+        if last_frame && screenshot.is_some() {
+            window_ui.invalidate();
+            idle = false;
+        }
         if !idle {
             let image = swapchain.acquire(None).map_err(|e| format!("{e}"))?;
             let texture = swapchain.texture(image);
-            frames
+            let shot = frames
                 .execute_on(&device, Some(&jobs), |g, _| {
                     let target = g.import_texture("Swapchain", texture);
+                    let viewport = scene.as_mut().map(|scene| {
+                        let t = g.create_texture(
+                            "Viewport",
+                            TextureDesc::new_2d(vw, vh, VIEWPORT_FORMAT),
+                        );
+                        (VIEWPORT, scene.add_passes(g, t))
+                    });
                     let pages = ui.begin(g, &prepared);
                     let out = ui.add_passes(
                         g,
@@ -260,16 +345,24 @@ fn run(project_dir: &str, max_frames: Option<u64>) -> Result<(), String> {
                         size.width,
                         size.height,
                         Color::BLACK,
-                        &[],
+                        viewport.as_slice(),
                     );
+                    let shot = (last_frame && screenshot.is_some())
+                        .then(|| g.readback_texture(out.target));
                     let target = ui.encode(g, out.target, target);
                     g.present(target);
+                    shot
                 })
                 .map_err(|e| format!("{e}"))?;
             if swapchain.present().map_err(|e| format!("{e}"))? == PresentStatus::Occluded {
                 app.pump_timeout(Some(Duration::from_millis(16)));
             }
             fps_frames += 1;
+            if let (Some(ticket), Some(path)) = (shot, screenshot) {
+                let pixels = frames.wait_readback(ticket).map_err(|e| format!("{e}"))?;
+                save_png(path, size.width, size.height, &pixels)?;
+                info!("screenshot: {path}");
+            }
         }
         let elapsed = fps_start.elapsed();
         if elapsed >= Duration::from_secs(1) {
@@ -289,6 +382,7 @@ fn run(project_dir: &str, max_frames: Option<u64>) -> Result<(), String> {
     forget_images(&mut frames, &swapchain);
     ui.forget(&mut frames);
     window_ui.forget(&mut frames);
+    drop(scene);
     drop(cookd);
     Ok(())
 }
@@ -298,4 +392,16 @@ fn forget_images(frames: &mut FrameContext, swapchain: &Swapchain) {
     for i in 0..swapchain.image_count() {
         frames.forget_texture(swapchain.texture(i));
     }
+}
+
+/// Writes RGBA8 rows to a PNG at `path`.
+fn save_png(path: &str, width: u32, height: u32, rgba: &[u8]) -> Result<(), String> {
+    let file = std::fs::File::create(path).map_err(|e| format!("{path}: {e}"))?;
+    let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().map_err(|e| format!("{path}: {e}"))?;
+    writer
+        .write_image_data(rgba)
+        .map_err(|e| format!("{path}: {e}"))
 }

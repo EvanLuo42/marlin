@@ -19,6 +19,7 @@ marlin-input.workspace = true
 marlin-jobs.workspace = true
 marlin-math.workspace = true
 marlin-mem.workspace = true
+png.workspace = true
 marlin-render-graph.workspace = true
 marlin-rhi.workspace = true
 marlin-rt.workspace = true
