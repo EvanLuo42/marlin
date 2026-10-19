@@ -3,6 +3,7 @@
 //! Cornell box with its sphere light's soft shadows.
 
 use marlin_gpu_test_support::{Image, assert_image};
+use marlin_render::scene::LightUpdate;
 use marlin_test_scenes::reference::direct_lighting;
 use marlin_test_scenes::scenes::{cornell_box, light_hall, lit_wall};
 
@@ -121,5 +122,106 @@ fn the_cost_does_not_grow_with_the_lights() {
     assert!(
         many < few * 1.5 + 0.05,
         "10 lights {few:.3} ms, 1000 lights {many:.3} ms"
+    );
+}
+
+/// The root mean square of `frame` against `mean`, over the pixels `mean` lights.
+fn rms(frame: &[[f32; 3]], mean: &[[f32; 3]]) -> f32 {
+    let (mut sum, mut n) = (0.0f32, 0usize);
+    for (f, m) in frame.iter().zip(mean) {
+        if m[1] > 0.0 {
+            sum += (f[1] - m[1]).powi(2);
+            n += 1;
+        }
+    }
+    (sum / n.max(1) as f32).sqrt()
+}
+
+#[test]
+fn temporal_reuse_lowers_the_noise() {
+    let scene = light_hall(256);
+    // The picture's mean: many frames without reuse (each one unbiased).
+    let mut h = Harness::new();
+    h.load(&scene);
+    h.restir.temporal = false;
+    let mean = average(&mut h, 256);
+    let alone = h.restir_frame(1000);
+    // With reuse, a frame once the history has filled.
+    let mut h = Harness::new();
+    h.load(&scene);
+    for seed in 0..40 {
+        h.restir_frame(seed);
+    }
+    let reused = h.restir_frame(1000);
+    let (alone, reused) = (rms(&alone, &mean), rms(&reused, &mean));
+    eprintln!("one frame's error: {alone:.4} alone, {reused:.4} with temporal reuse");
+    assert!(reused < 0.5 * alone, "{reused} with reuse, {alone} alone");
+}
+
+#[test]
+fn lights_removed_or_moved_leave_no_trace_the_next_frame() {
+    let scene = lit_wall();
+    let mut h = Harness::new();
+    h.load(&scene);
+    for seed in 0..30 {
+        h.restir_frame(seed);
+    }
+    // Every light moved 0.6 m to the right: the next frame is the reference of the moved scene.
+    let mut moved = scene.clone();
+    for l in &mut moved.lights {
+        l.position[0] += 0.6;
+    }
+    for (row, l) in moved.lights.iter().enumerate() {
+        let id = h.light_id(row);
+        h.updates.lights.push(id, LightUpdate::Set(*l));
+    }
+    let frame = h.restir_frame(100);
+    let reference = direct_lighting(&moved, WIDTH, HEIGHT, 1);
+    let (after, _) = errors(&frame, &reference, 0.0);
+    // No worse than a first frame of the moved scene: last frame's samples of the moved lights
+    // were dropped, not trusted.
+    let mut fresh = Harness::new();
+    fresh.load(&moved);
+    let (first, _) = errors(&fresh.restir_frame(100), &reference, 0.0);
+    eprintln!("error after the move {after:.4}, a first frame {first:.4}");
+    assert!(
+        after < first * 1.2 + 0.01,
+        "after the move {after}, a first frame {first}"
+    );
+    // Then removed: black.
+    for row in 0..moved.lights.len() {
+        let id = h.light_id(row);
+        h.updates.lights.push(id, LightUpdate::Remove);
+    }
+    let frame = h.restir_frame(101);
+    assert!(
+        frame.iter().all(|p| p[1] == 0.0),
+        "a removed light still lights"
+    );
+}
+
+#[test]
+fn history_follows_the_camera() {
+    let scene = lit_wall();
+    let mut h = Harness::new();
+    h.load(&scene);
+    for seed in 0..30 {
+        h.restir_frame(seed);
+    }
+    // The camera steps 0.4 m right and up: last frame's reservoirs are found through the motion
+    // vectors, so the frame is better than a first one; found at the wrong pixels they would
+    // carry other surfaces' weights.
+    let mut moved = scene.clone();
+    moved.camera.0.translation += marlin_math::Vec3::new(0.4, 0.3, 0.0);
+    h.camera = moved.camera;
+    let reference = direct_lighting(&moved, WIDTH, HEIGHT, 1);
+    let (after, _) = errors(&h.restir_frame(100), &reference, 0.0);
+    let mut fresh = Harness::new();
+    fresh.load(&moved);
+    let (first, _) = errors(&fresh.restir_frame(100), &reference, 0.0);
+    eprintln!("error after the step {after:.4}, a first frame {first:.4}");
+    assert!(
+        after < 0.6 * first,
+        "after the step {after}, a first frame {first}"
     );
 }

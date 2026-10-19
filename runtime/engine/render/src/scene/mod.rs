@@ -166,6 +166,9 @@ pub struct RenderScene {
     /// appeared, vanished, were hidden or shown, or changed mesh (or their mesh its GPU copy),
     /// at their old places and their new ones.
     shadow_changes: Vec<[f32; 4]>,
+    /// Light rows added, changed or removed in the last applied frame: what reused samples of
+    /// them must not trust (0010 §2.4).
+    light_changes: Vec<u32>,
     /// Rows changed this frame, whose new spheres join `shadow_changes` once the frame's
     /// updates are in; per row, the frame it last changed in.
     shadow_rows: Vec<u32>,
@@ -209,6 +212,7 @@ impl RenderScene {
             moved: Vec::new(),
             moved_last: Vec::new(),
             shadow_changes: Vec::new(),
+            light_changes: Vec::new(),
             shadow_rows: Vec::new(),
             shadow_at: Vec::new(),
         }
@@ -238,6 +242,7 @@ impl RenderScene {
         self.frame += 1;
         self.moved_last = core::mem::take(&mut self.moved);
         self.shadow_changes.clear();
+        self.light_changes.clear();
         for updates in sets {
             for (id, update) in updates.meshes.iter() {
                 self.apply_mesh(*id, update);
@@ -369,15 +374,20 @@ impl RenderScene {
                     }
                     self.light_desc[i] = desc;
                     self.lights_dirty.mark(id.index, dirty::DATA);
+                    self.light_changes.push(id.index);
                 }
             }
             LightUpdate::Set(desc) if self.light_rows.live(id) => {
                 self.light_desc[i] = desc;
                 self.lights_dirty.mark(id.index, dirty::DATA);
+                self.light_changes.push(id.index);
             }
             LightUpdate::Remove if self.light_rows.live(id) => {
                 self.light_rows.alive[i] = false;
                 self.ids.lights.release(id);
+                // The GPU row reads as no light from now on.
+                self.lights_dirty.mark(id.index, dirty::DATA);
+                self.light_changes.push(id.index);
             }
             _ => {}
         }
@@ -529,6 +539,11 @@ impl RenderScene {
     /// The world spheres whose shadow changed in the last applied frame (see the field).
     pub fn shadow_changes(&self) -> &[[f32; 4]] {
         &self.shadow_changes
+    }
+
+    /// The light rows added, changed or removed in the last applied frame.
+    pub fn light_changes(&self) -> &[u32] {
+        &self.light_changes
     }
 
     /// The world spheres of the drawable instances of the renderer meshes `meshes`.

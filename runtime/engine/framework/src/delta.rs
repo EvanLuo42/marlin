@@ -245,6 +245,7 @@ impl RenderSide {
         let seed = *frame as u32;
         let tiles = light_tiles.add_passes(g, scene, seed);
         let scene: &'g RenderScene = scene;
+        let changed_lights = scene.light_changes();
         let visibility: &'g Visibility = visibility;
         let env = *scene.environment();
         let lit = camera.map(|camera| {
@@ -256,9 +257,8 @@ impl RenderSide {
                 height,
             };
             let vis = visibility.add_passes(g, meshes, scene, gpu, pool, &view);
-            let material = materials
-                .add_passes(g, gpu, &vis, camera, *previous, width, height)
-                .material;
+            let out = materials.add_passes(g, gpu, &vis, camera, *previous, width, height);
+            let material = out.material;
             let shadow = vsm.add_passes(
                 g,
                 MAIN_VIEW,
@@ -283,13 +283,16 @@ impl RenderSide {
                     g.readback(shadow.used),
                 ],
             ));
-            (material, shadow.mask, vis.depth, camera)
+            (material, shadow.mask, vis.depth, out.velocity, camera)
         });
         let mut scene =
             lighting.add_passes(g, lit.map(|l| l.0), lit.map(|l| l.1), &env, width, height);
         // The local lights, if there are any to draw.
-        if let (Some((material, _, depth, camera)), Some(tiles)) = (lit, tiles) {
+        if let (Some((material, _, depth, velocity, camera)), Some(tiles)) = (lit, tiles) {
             let inputs = RestirInputs {
+                view: MAIN_VIEW,
+                changed_lights,
+                velocity,
                 material,
                 depth,
                 lights: gpu.lights,

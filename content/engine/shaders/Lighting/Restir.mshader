@@ -6,10 +6,17 @@ namespace Marlin.Engine.Lighting;
 // 1. `RestirInitial`: every pixel draws `Candidates` lights from one presampled light tile (the
 //    same tile for its 8×8 screen tile, `LightTiles.mshader`) and keeps one by resampled
 //    importance sampling (RIS): weight = target / source pdf, the target the unshadowed
-//    contribution (no visibility).
-// 2. `RestirShade`: the kept light's contribution, its visibility from one shadow ray to a point
+//    contribution. With `InitialVisibility`, one shadow ray tests the one kept: an occluded one
+//    keeps its confidence but no weight, so occluded lights do not spread through reuse.
+// 2. `RestirTemporal` (0010 §2.4): the pixel's reservoir last frame, found through the motion
+//    vector, unless its surface changed (distance to the eye, normal); its sample's target
+//    evaluated here, its confidence capped at `MaxHistory`; the two reservoirs merged by RIS
+//    weighted by confidence. Into this frame's history.
+// 3. `RestirShade`: the kept light's contribution, its visibility from one shadow ray to a point
 //    of its sphere (a ray query against the TLAS), times the reservoir's weight `W`, added to
 //    the HDR scene.
+// 4. `RestirDuplication`: the duplication map of the frame's reservoirs, which lowers the next
+//    frame's temporal cap where one sample has spread (PTE §5).
 //
 // Lambert diffuse for now, like the sun (`Lighting.mshader`): the exact BSDF comes with the
 // final shading (0010 §2.6). Light units: candela times color (`LightDesc`); a light fades out
@@ -17,10 +24,10 @@ namespace Marlin.Engine.Lighting;
 
 using Marlin.Substrate;
 
-/// A row of the light table (`marlin_render::scene::gpu`).
+/// A row of the light table (`marlin_render::scene::gpu`); a removed light's row is all zero.
 public struct LightRow
 {
-    /// 0 directional, 1 point, 2 spot.
+    /// 0 directional (or none), 1 point, 2 spot.
     public uint Kind;
     public float Range;
     /// Spot: cosines of the inner and outer half angles.
@@ -45,11 +52,15 @@ public struct DiReservoir
     public uint Sample;
     /// The unbiased contribution weight: Σ weights / (M · target of the kept sample).
     public float W;
-    /// Confidence: candidates' worth of samples behind it.
+    /// Confidence: frames' (candidate sets') worth of samples behind it.
     public float M;
     /// The target of the kept sample at this pixel.
     public float Target;
-    public uint3 Spare;
+    /// The pixel's surface, for the next frame to tell whether it is the same: its normal
+    /// (octahedral) and its distance to the eye (0: no surface).
+    public uint Normal;
+    public float Distance;
+    public uint Spare;
 }
 
 public struct RestirConstants
@@ -66,7 +77,19 @@ public struct RestirConstants
     public uint Seed;
     public uint TileCount;
     public uint TileSize;
-    public uint2 Spare;
+    /// 1: test the initial sample's visibility.
+    public uint InitialVisibility;
+    /// 1: last frame's reservoirs are there.
+    public uint HasHistory;
+    /// The most confidence a reservoir carries from last frame, where its sample is not
+    /// duplicated around it.
+    public float MaxHistory;
+    /// 1: the duplication map lowers that cap (PTE §5): `lerp(MaxHistory, 1, d^DuplicationPower)`,
+    /// d the pixel's duplication last frame.
+    public uint Duplication;
+    public float DuplicationPower;
+    /// Words of `ChangedLights`.
+    public uint ChangedWords;
 }
 
 public struct RestirArgs
@@ -75,10 +98,22 @@ public struct RestirArgs
     public Texture2D<uint4> MaterialBuffer;
     /// The camera's depth (`R32Float`, reverse-Z, 0 where nothing is).
     public Texture2D<float> Depth;
+    /// Screen motion since last frame, in UV units (y down): current minus last.
+    public Texture2D<float2> Velocity;
     public ReadOnlyBuffer<LightRow> Lights;
     /// Presampled light tiles: per entry the light's row and its probability (float bits).
     public ReadOnlyBuffer<uint2> Tiles;
-    public Buffer<DiReservoir> Reservoirs;
+    /// The pass's input reservoirs, and its output.
+    public ReadOnlyBuffer<DiReservoir> Input;
+    public Buffer<DiReservoir> Output;
+    /// Last frame's reservoirs.
+    public ReadOnlyBuffer<DiReservoir> Previous;
+    /// A float per pixel: the share of its 17×17 neighbors (of 288) holding its reservoir's
+    /// sample. The temporal pass reads last frame's; `RestirDuplication` writes this frame's.
+    public Buffer<float> DuplicationMap;
+    /// A bit per light row: added, changed or removed this frame (its reused samples are not
+    /// trusted); `ChangedWords` words.
+    public ReadOnlyBuffer<uint> ChangedLights;
     public AccelerationStructure Tlas;
     /// The HDR scene the shading adds to.
     public StorageTexture2D<float4> Scene;
@@ -120,8 +155,32 @@ float3 Contribution(in LightRow l, float3 x, float3 n, float3 albedo)
     return albedo * 0.31830989 * l.Intensity * (falloff * spot * cosine);
 }
 
+/// Whether the surface at `x` (facing `n`) sees the point of light `l`'s sphere that `sample`
+/// names (on the half facing `x`): one shadow ray.
+bool Visible(in RestirConstants c, in RestirArgs a, in LightRow l, float3 x, float3 n, uint sample)
+{
+    float u = (float)(sample & 0xFFFF) / 65536.0;
+    float v = (float)(sample >> 16) / 65536.0;
+    float3 toward = Normalize(x - l.Position);
+    float ring = Sqrt(Max(1 - u * u, 0));
+    float phi = v * 6.2831853;
+    float3 t = Normalize(Cross(Abs(toward.y) < 0.99 ? float3(0, 1, 0) : float3(1, 0, 0), toward));
+    float3 b = Cross(toward, t);
+    float3 point = l.Position + l.Radius * (toward * u + t * (ring * Cos(phi)) + b * (ring * Sin(phi)));
+    // From just off the surface, scaled with the distance to the eye.
+    float3 origin = x + n * (0.001 + 0.0005 * Length(x - c.Eye.xyz));
+    float3 d = point - origin;
+    float dist = Length(d);
+    Ray ray = Ray { Origin = origin, TMin = 0, Direction = d / Max(dist, 0.0001), TMax = dist * 0.999 };
+    return !a.Tlas.TraceAny(ray);
+}
+
 /// `x` as a float in [0, 1), from a hash.
 float Random(uint x) => Unit(Hash(x));
+
+/// A reservoir without a sample, for the surface `normal` at `distance` (0: none).
+DiReservoir Empty(uint normal, float distance) =>
+    DiReservoir { Light = NoLight, Sample = 0, W = 0, M = 0, Target = 0, Normal = normal, Distance = distance, Spare = 0 };
 
 [Compute(8, 8, 1)]
 public void RestirInitial([DispatchThreadId] uint3 id, [Push] in RestirArgs a)
@@ -130,15 +189,15 @@ public void RestirInitial([DispatchThreadId] uint3 id, [Push] in RestirArgs a)
     if (id.x >= c.Width || id.y >= c.Height)
         return;
     uint pixel = id.y * c.Width + id.x;
-    DiReservoir r = DiReservoir { Light = NoLight, Sample = 0, W = 0, M = 0, Target = 0, Spare = uint3(0, 0, 0) };
     float depth = a.Depth.Load((int2)id.xy);
     Proxy p = UnpackProxy(a.MaterialBuffer.Load((int2)id.xy));
     if (depth <= 0 || p.Count == 0)
     {
-        a.Reservoirs[pixel] = r;
+        a.Output[pixel] = Empty(0, 0);
         return;
     }
     float3 x = WorldAt(c, id.xy, depth);
+    DiReservoir r = Empty(PackOct(p.Normal), Length(x - c.Eye.xyz));
     // One tile per 8×8 screen tile, a new one each frame.
     uint seed = Hash(c.Seed ^ Hash(pixel));
     uint tile = Hash(c.Seed ^ Hash((id.y / 8) * 65536 + id.x / 8)) % c.TileCount;
@@ -159,13 +218,73 @@ public void RestirInitial([DispatchThreadId] uint3 id, [Push] in RestirArgs a)
             r.Target = target;
         }
     }
+    r.M = 1;
     if (r.Light != NoLight)
     {
-        r.M = 1;
         r.W = sum / ((float)c.Candidates * r.Target);
         r.Sample = Hash(seed ^ 0xB5297A4D);
+        if (c.InitialVisibility != 0 && !Visible(c, a, a.Lights[r.Light], x, p.Normal, r.Sample))
+            r.W = 0;
     }
-    a.Reservoirs[pixel] = r;
+    a.Output[pixel] = r;
+}
+
+[Compute(8, 8, 1)]
+public void RestirTemporal([DispatchThreadId] uint3 id, [Push] in RestirArgs a)
+{
+    RestirConstants c = a.Constants.Value;
+    if (id.x >= c.Width || id.y >= c.Height)
+        return;
+    uint pixel = id.y * c.Width + id.x;
+    DiReservoir r = a.Input[pixel];
+    if (c.HasHistory == 0 || r.Distance <= 0)
+    {
+        a.Output[pixel] = r;
+        return;
+    }
+    // Where the surface was last frame.
+    float2 size = float2((float)c.Width, (float)c.Height);
+    float2 uv = ((float2)id.xy + 0.5) / size - a.Velocity.Load((int2)id.xy);
+    if (uv.x < 0 || uv.y < 0 || uv.x >= 1 || uv.y >= 1)
+    {
+        a.Output[pixel] = r;
+        return;
+    }
+    uint2 at = (uint2)(uv * size);
+    DiReservoir q = a.Previous[at.y * c.Width + at.x];
+    float3 n = UnpackOct(r.Normal);
+    // The same surface: about as far from the eye, facing about the same way.
+    bool same = q.Distance > 0 && Abs(q.Distance - r.Distance) < 0.1 * r.Distance && Dot(UnpackOct(q.Normal), n) > 0.9;
+    // A light added, changed or removed this frame: last frame's weight for it is stale.
+    bool changed = q.Light != NoLight && q.Light / 32 < c.ChangedWords
+        && (a.ChangedLights[q.Light / 32] & ((uint)1 << (q.Light % 32))) != 0;
+    if (!same || changed || q.Light == NoLight || q.M <= 0)
+    {
+        a.Output[pixel] = r;
+        return;
+    }
+    float depth = a.Depth.Load((int2)id.xy);
+    Proxy p = UnpackProxy(a.MaterialBuffer.Load((int2)id.xy));
+    float3 x = WorldAt(c, id.xy, depth);
+    // Last frame's sample, weighed at this frame's surface (its light may have moved or gone).
+    float qTarget = Luminance(Contribution(a.Lights[q.Light], x, p.Normal, p.Albedo));
+    float cap = c.MaxHistory;
+    if (c.Duplication != 0)
+        cap = Lerp(c.MaxHistory, 1, Pow(Saturate(a.DuplicationMap[pixel]), c.DuplicationPower));
+    float qM = Min(q.M, cap);
+    float rWeight = r.W * r.Target * r.M;
+    float qWeight = qTarget * q.W * qM;
+    float sum = rWeight + qWeight;
+    DiReservoir s = r;
+    if (qWeight > 0 && Random(Hash(c.Seed ^ 0x2545F491) ^ pixel) * sum < qWeight)
+    {
+        s.Light = q.Light;
+        s.Sample = q.Sample;
+        s.Target = qTarget;
+    }
+    s.M = r.M + qM;
+    s.W = s.Target > 0 ? sum / (s.M * s.Target) : 0;
+    a.Output[pixel] = s;
 }
 
 [Compute(8, 8, 1)]
@@ -174,31 +293,64 @@ public void RestirShade([DispatchThreadId] uint3 id, [Push] in RestirArgs a)
     RestirConstants c = a.Constants.Value;
     if (id.x >= c.Width || id.y >= c.Height)
         return;
-    DiReservoir r = a.Reservoirs[id.y * c.Width + id.x];
+    DiReservoir r = a.Input[id.y * c.Width + id.x];
     if (r.Light == NoLight || r.W <= 0)
         return;
     float depth = a.Depth.Load((int2)id.xy);
     Proxy p = UnpackProxy(a.MaterialBuffer.Load((int2)id.xy));
     float3 x = WorldAt(c, id.xy, depth);
     LightRow l = a.Lights[r.Light];
-    // A point of the light's sphere, on the half facing the surface.
-    float u = (float)(r.Sample & 0xFFFF) / 65536.0;
-    float v = (float)(r.Sample >> 16) / 65536.0;
-    float3 toward = Normalize(x - l.Position);
-    float z = u;
-    float ring = Sqrt(Max(1 - z * z, 0));
-    float phi = v * 6.2831853;
-    float3 t = Normalize(Cross(Abs(toward.y) < 0.99 ? float3(0, 1, 0) : float3(1, 0, 0), toward));
-    float3 b = Cross(toward, t);
-    float3 target = l.Position + l.Radius * (toward * z + t * (ring * Cos(phi)) + b * (ring * Sin(phi)));
-    // From just off the surface, scaled with the distance to the eye.
-    float3 origin = x + p.Normal * (0.001 + 0.0005 * Length(x - c.Eye.xyz));
-    float3 d = target - origin;
-    float dist = Length(d);
-    Ray ray = Ray { Origin = origin, TMin = 0, Direction = d / Max(dist, 0.0001), TMax = dist * 0.999 };
-    if (a.Tlas.TraceAny(ray))
+    if (!Visible(c, a, l, x, p.Normal, r.Sample))
         return;
     float3 radiance = Contribution(l, x, p.Normal, p.Albedo) * r.W;
     float4 scene = a.Scene[(int2)id.xy];
     a.Scene[(int2)id.xy] = float4(scene.xyz + radiance, scene.w);
+}
+
+/// What tells an initial sample from every other: its light and the random numbers it was drawn
+/// with (each pixel's own, each frame's own).
+uint SampleId(in DiReservoir r) => Hash(r.Light) ^ r.Sample;
+
+/// The sample ids of a 32×32 tile: a 16×16 group and 8 pixels around it.
+[GroupShared] uint[1024] DuplicationIds;
+
+/// Ids no sample has: outside the screen, or no sample.
+const uint NoId = 4294967295;
+
+/// The duplication map (PTE §5): for every pixel, how many of the 288 others in its 17×17
+/// neighborhood hold the same initial sample, over 288.
+[Compute(16, 16, 1)]
+public void RestirDuplication([GroupId] uint3 group, [GroupThreadId] uint3 thread, [Push] in RestirArgs a)
+{
+    RestirConstants c = a.Constants.Value;
+    int2 origin = int2((int)group.x * 16 - 8, (int)group.y * 16 - 8);
+    for (uint k = thread.y * 16 + thread.x; k < 1024; k += 256)
+    {
+        int2 p = origin + int2((int)(k % 32), (int)(k / 32));
+        uint id = NoId;
+        if (p.x >= 0 && p.y >= 0 && p.x < (int)c.Width && p.y < (int)c.Height)
+        {
+            DiReservoir r = a.Input[(uint)p.y * c.Width + (uint)p.x];
+            if (r.Light != NoLight && r.W > 0)
+                id = SampleId(r);
+        }
+        DuplicationIds[k] = id;
+    }
+    Barrier.Group();
+    uint2 px = group.xy * 16 + thread.xy;
+    if (px.x >= c.Width || px.y >= c.Height)
+        return;
+    uint me = DuplicationIds[(thread.y + 8) * 32 + thread.x + 8];
+    uint same = 0;
+    if (me != NoId)
+    {
+        for (uint dy = 0; dy < 17; dy++)
+        {
+            for (uint dx = 0; dx < 17; dx++)
+                same += DuplicationIds[(thread.y + dy) * 32 + thread.x + dx] == me ? (uint)1 : (uint)0;
+        }
+        // Not itself.
+        same -= 1;
+    }
+    a.DuplicationMap[px.y * c.Width + px.x] = (float)same / 288.0;
 }

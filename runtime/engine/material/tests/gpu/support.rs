@@ -46,6 +46,8 @@ pub struct Harness {
     pub tlas: Tlas,
     light_tiles: LightTiles,
     pub restir: RestirDi,
+    /// The lights [`load`](Self::load) added, in the scene's order.
+    loaded_lights: Vec<marlin_render::scene::LightId>,
     pub updates: SceneUpdates,
     pub camera: (Transform, Camera),
     /// The camera of the last frame.
@@ -152,6 +154,7 @@ impl Harness {
             tlas,
             light_tiles,
             restir,
+            loaded_lights: Vec::new(),
             updates: SceneUpdates {
                 environment: Some(relative_environment()),
                 ..SceneUpdates::default()
@@ -183,9 +186,15 @@ impl Harness {
             self.updates
                 .lights
                 .push(id, marlin_render::scene::LightUpdate::Add(light));
+            self.loaded_lights.push(id);
         }
         self.updates.environment = Some(scene.environment);
         self.camera = scene.camera;
+    }
+
+    /// The id of the scene's light `i` that [`load`](Self::load) added.
+    pub fn light_id(&self, i: usize) -> marlin_render::scene::LightId {
+        self.loaded_lights[i]
     }
 
     pub fn upload(&mut self, mesh: &cook::Cooked) -> MeshId {
@@ -448,6 +457,9 @@ impl Harness {
                 let mut lit = lighting.add_passes(g, Some(out.material), None, &env, width, height);
                 if let Some(tiles) = drawn {
                     let inputs = RestirInputs {
+                        view: 0,
+                        changed_lights: scene.light_changes(),
+                        velocity: out.velocity,
                         material: out.material,
                         depth: v.depth,
                         lights: gpu.lights,

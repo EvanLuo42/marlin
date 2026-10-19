@@ -365,6 +365,9 @@ impl RenderScene {
         for row in rows {
             let i = row as usize;
             if !self.light_rows.alive[i] {
+                // Removed: no light (kind 0 lights nothing local), so a reservoir still naming it
+                // gives nothing.
+                ops.push(WRITE, row, &[0u32; 16]);
                 continue;
             }
             let l = self.light_desc[i];
