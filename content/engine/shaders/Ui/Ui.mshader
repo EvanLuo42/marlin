@@ -1543,7 +1543,8 @@ public void Blur([DispatchThreadId] uint3 id, [Push] in BlurArgs a)
 public struct EncodeArgs
 {
     public Texture2D<float4> Ui;
-    /// 1: the target encodes sRGB on write (an `…Srgb` view), so this writes linear values.
+    /// 1: the target encodes sRGB on write (an `…Srgb` view), so this writes linear values; 2:
+    /// the same, blended over the target (`UiRenderer::overlay`).
     public uint Decode;
 }
 
@@ -1567,7 +1568,10 @@ public float4 EncodePs(in EncodeVertex i, [Push] in EncodeArgs a)
     float4 c = a.Ui.Load((int2)i.Pos.xy);
     if (a.Decode == 0)
         return c;
-    return float4(SrgbToLinear(c.x), SrgbToLinear(c.y), SrgbToLinear(c.z), c.w);
+    // 2: blended over the target (premultiplied): decoded unmultiplied, multiplied again.
+    float alpha = a.Decode == 2 ? c.w : 1;
+    float3 s = c.xyz / Max(alpha, 0.0001);
+    return float4(float3(SrgbToLinear(s.x), SrgbToLinear(s.y), SrgbToLinear(s.z)) * alpha, c.w);
 }
 
 public struct GlyphUploadArgs

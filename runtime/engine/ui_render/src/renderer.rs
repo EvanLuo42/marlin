@@ -31,11 +31,12 @@ use marlin_render_graph::{
     TextureDesc, TextureHandle,
 };
 use marlin_rhi::{
-    AddressMode, Buffer, BufferUsage, ColorTargetState, ComputePipeline, ComputePipelineDesc,
+    AddressMode, BlendState, Buffer, BufferUsage, ColorTargetState, ComputePipeline, ComputePipelineDesc,
     CullMode, Device, Error, ErrorKind, Format, FormatFeatures, GraphicsPipeline,
     GraphicsPipelineDesc, LoadOp, MemoryLocation, MultisampleState, PrimitiveTopology, RasterState,
     Result, Sampler, SamplerDesc, ShaderModule, ShaderView, StoreOp, Texture, TextureUsage,
     TextureViewDesc,
+    Rect,
 };
 use marlin_serial::cooked::Pod;
 use marlin_shader::asset::ShaderLibrary;
@@ -552,6 +553,8 @@ pub struct UiRenderer {
     blur: ComputePipeline,
     path_tiles: ComputePipeline,
     encode: Option<(GraphicsPipeline, bool)>,
+    /// [`UiRenderer::overlay`]'s: the encode blended over the target, premultiplied.
+    overlay: Option<GraphicsPipeline>,
     sampler: Sampler,
     glyphs: GlyphCache,
     pages: Texture,
@@ -573,25 +576,31 @@ impl UiRenderer {
                 cache: None,
             })
         };
-        let encode = match desc.output_format {
-            None => None,
-            Some(format) => Some((
-                device.create_graphics_pipeline(&GraphicsPipelineDesc {
-                    vertex: shaders.encode_vs,
-                    pixel: Some(shaders.encode_ps),
-                    topology: PrimitiveTopology::TriangleList,
-                    raster: RasterState {
-                        cull: CullMode::None,
-                        ..RasterState::default()
-                    },
-                    depth: None,
-                    color_targets: &[ColorTargetState::new(format)],
-                    multisample: MultisampleState::NONE,
-                    primitive_restart: None,
-                    cache: None,
-                })?,
-                format.is_srgb(),
-            )),
+        let encode_pipeline = |target: ColorTargetState| {
+            device.create_graphics_pipeline(&GraphicsPipelineDesc {
+                vertex: shaders.encode_vs,
+                pixel: Some(shaders.encode_ps),
+                topology: PrimitiveTopology::TriangleList,
+                raster: RasterState {
+                    cull: CullMode::None,
+                    ..RasterState::default()
+                },
+                depth: None,
+                color_targets: &[target],
+                multisample: MultisampleState::NONE,
+                primitive_restart: None,
+                cache: None,
+            })
+        };
+        let (encode, overlay) = match desc.output_format {
+            None => (None, None),
+            Some(format) => (
+                Some((encode_pipeline(ColorTargetState::new(format))?, format.is_srgb())),
+                Some(encode_pipeline(ColorTargetState {
+                    blend: Some(BlendState::PREMULTIPLIED),
+                    ..ColorTargetState::new(format)
+                })?),
+            ),
         };
         let size = desc.glyph_cache.page_size;
         // At least two layers, so the view is an array whatever the page count.
@@ -617,6 +626,7 @@ impl UiRenderer {
             blur: compute(shaders.blur)?,
             path_tiles: compute(shaders.path_tiles)?,
             encode,
+            overlay,
             sampler: device.create_sampler(&SamplerDesc {
                 address_u: AddressMode::ClampToEdge,
                 address_v: AddressMode::ClampToEdge,
@@ -1405,6 +1415,38 @@ impl UiRenderer {
             let src = b.read_texture(ui, Access::PixelRead);
             (out, move |ctx: &mut PassContext<'_>| {
                 ctx.set_pipeline(pipeline);
+                ctx.push(&EncodeArgs {
+                    ui: ctx.srv(src),
+                    decode,
+                });
+                ctx.draw(3, 1, 0, 0);
+            })
+        })
+    }
+
+    /// Blends the UI target `ui` (premultiplied, over transparent) onto what `target` holds,
+    /// within `rect` (pixels of both), and returns it: a UI drawn over a frame, such as a debug
+    /// overlay. Only `rect`'s pixels are read and written.
+    pub fn overlay<'g>(
+        &'g self,
+        g: &mut RenderGraph<'g>,
+        ui: TextureHandle<'g>,
+        target: TextureHandle<'g>,
+        rect: Rect,
+    ) -> TextureHandle<'g> {
+        let pipeline = self
+            .overlay
+            .as_ref()
+            .expect("a renderer made with an output format");
+        let (_, srgb) = self.encode.as_ref().expect("made with the overlay");
+        // An sRGB target blends linear values: the premultiplied color is decoded unmultiplied.
+        let decode = if *srgb { 2 } else { 0 };
+        g.add_raster("UiOverlay", |b| {
+            let out = b.color(target, LoadOp::Load, StoreOp::Store);
+            let src = b.read_texture(ui, Access::PixelRead);
+            (out, move |ctx: &mut PassContext<'_>| {
+                ctx.set_pipeline(pipeline);
+                ctx.set_scissor(&rect);
                 ctx.push(&EncodeArgs {
                     ui: ctx.srv(src),
                     decode,

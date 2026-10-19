@@ -204,6 +204,7 @@ impl Painter<'_> {
 
 - 最后一个 pass 把 UI 目标转换成 swapchain 的格式：sRGB、PQ 或 scRGB（§8）。swapchain 支持 UAV 时用 compute，否则用一个全屏三角形。
 - swapchain 的图像每帧轮换，所以即使 UI 没有脏 tile，只要这一帧要 present，就要做这一次拷贝。
+- **叠加**（`UiRenderer::overlay`，2026-10-18）：UI 画在已有画面之上（游戏的统计面板 `r.stats`，marlin-framework 的 `hud`），而不是整窗口的 UI。同一对 shader，管线换成预乘 alpha 混合、`LoadOp::Load`，用 scissor 只碰给定的矩形。目标是 sRGB 视图时，预乘的颜色先除回 alpha 再解码、再乘回去（`Decode = 2`），在线性空间里混合；否则直接在 sRGB 编码上混合。面板画进一张只覆盖窗口左上角到面板右下角的纹理 surface（texel 就是窗口的像素），每 100 ms 重画一次，其余帧只做这一次混合：开着面板的代价约为帧时间的 1%。
 
 ## 6. 文字
 
