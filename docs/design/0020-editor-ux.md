@@ -6,8 +6,9 @@
 - [0003](0003-asset-pipeline.md)：`.masset`、cook、项目和挂载（§4.5）
 - [0012](0012-ui-renderer.md)：UI renderer
 - [0019](0019-engine-framework-and-world.md)：Editor/PIE/Preview World（§13）、输入 action 和路由（§9）、Prefab 和子关卡（§5）
+- [0021](0021-tool-ui-architecture.md)：工具 UI 架构（UI 框架、launcher、资源）；它修改了本文的 §10.7 和 §11.3
 
-本文写 editor **要有什么、用起来是什么样**，细到交互规则，作为 UI 设计和 editor UI 框架（`editor/ui_core`、`ui_widgets`、`ui_theme`）的需求。实现分工仍以 0019 §13 为准。
+本文写 editor **要有什么、用起来是什么样**，细到交互规则，作为 UI 设计和 UI 框架（`ui/core`、`ui/widgets`、`ui/theme`，0021）的需求。实现分工仍以 0019 §13 为准。
 
 ## 0. 决定摘要
 
@@ -364,8 +365,8 @@
 
 ### 10.7 启动
 
-- 不带参数启动：项目浏览器（最近项目卡片、新建、打开 `.mproject`）。
-- 带项目参数或双击 `.mproject`：直接进入，恢复上次打开的关卡和资产 tab。
+- editor 只从 `.mproject` 启动（命令行参数，或双击 `.mproject` 经 launcher 转过来）；不带参数时报错并提示用 launcher。项目浏览器、新建项目和引擎版本选择在独立的 `marlin-launcher` 里（0021 §13）。
+- 进入后恢复上次打开的关卡和资产 tab。
 - 启动进度显示在 splash 上。
 
 ## 11. 资产编辑器
@@ -388,7 +389,7 @@
 
 ### 11.3 材质
 
-- 材质本身写 Marlin shader 代码，不做节点图。编辑器内嵌代码视图（带错误标注，可做小改动），主要编辑在外部 IDE；保存即重新编译并热重载。
+- 材质本身写 Marlin shader 代码，不做节点图。代码只在外部 IDE 写，editor 里没有代码视图（0021 §9.4）；Content Browser 双击用外部编辑器打开，保存即重新编译并热重载，错误进 Output Log 并可跳转。
 - 材质实例编辑器：参数面板（由材质参数自动生成）+ 预览球体/网格，改参数实时反映。
 
 ### 11.4 网格和纹理查看器
@@ -442,7 +443,7 @@
 - Message Log 面板、日志的控制台命令输入。
 - 输入 action 编辑器（第一批资产编辑器之外）。
 - 在编辑器里提交 git；Perforce。
-- 材质节点图、可视化脚本、内置代码编辑器（材质的内嵌代码视图除外）。
+- 材质节点图、可视化脚本、任何内置代码编辑器或代码视图（包括材质）。
 
 ## 15. 待定
 
@@ -450,4 +451,4 @@
 - 组件手柄的声明方式（反射元数据还是脚本 API）。
 - 查询语法的完整定义（Outliner 和 Content Browser 共用）。
 - 自动保存间隔的默认值。
-- editor UI 框架（`ui_core`）的 docking 数据结构和序列化。
+- （已定）docking 数据结构和序列化见 0021 §8.3。
