@@ -16,7 +16,6 @@ bench = false
 marlin.workspace = true
 marlin-diag.workspace = true
 marlin-framework.workspace = true
-marlin-io.workspace = true
 marlin-rt.workspace = true
 
 [lints]

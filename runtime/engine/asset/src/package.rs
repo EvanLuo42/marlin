@@ -3,7 +3,7 @@
 //! ```text
 //! header   PackageHeader (64 bytes) at offset 0
 //! data     chunks, each compressed on its own
-//! index    units, blobs, chunks, objects, names; then xxh3_64 of the index
+//! index    units, blobs, chunks, objects, names, config; then xxh3_64 of the index
 //! ```
 //!
 //! A unit is stored as its cooked bytes cut into chunks of at most [`MAX_CHUNK`] raw bytes: the
@@ -15,7 +15,11 @@
 //!
 //! Units appear in the order the packager is given (asset path order), so a patch that changes
 //! a few units leaves the rest of the file's bytes in place. All integers are little-endian.
+//!
+//! The build's config files (0003 §4.6) close the index: `count:u32`, then for each
+//! `layer:u8 name:(len:u32 utf8) text:(len:u32 utf8)`, in the order they apply.
 
+use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
 use core::ops::Range;
@@ -28,7 +32,7 @@ use crate::cooked::BULK_ALIGN;
 use crate::le::{u16_at, u32_at, u64_at, u128_at};
 
 pub const PACKAGE_MAGIC: [u8; 4] = *b"MPK1";
-pub const PACKAGE_VERSION: u16 = 3;
+pub const PACKAGE_VERSION: u16 = 4;
 /// Largest raw chunk: big enough for good ratios and few IO requests, small enough that a
 /// texture mip or mesh page decodes in parallel pieces.
 pub const MAX_CHUNK: u32 = 256 << 10;
@@ -36,6 +40,13 @@ pub const MAX_CHUNK: u32 = 256 << 10;
 pub const BLOB_FILE_ALIGN: u64 = BULK_ALIGN;
 /// Alignment of everything else in the file.
 pub const CHUNK_FILE_ALIGN: u64 = 16;
+
+/// Where a staged game keeps its packages, relative to its executable's directory (0003 §4.6).
+pub const PAKS_DIR: &str = "content/paks";
+/// The build's package in [`PAKS_DIR`]: mounted first.
+pub const BASE_PACKAGE: &str = "base.mpak";
+/// Patches in [`PAKS_DIR`] end in this; they mount above the base in file name order.
+pub const PATCH_SUFFIX: &str = "_p.mpak";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct PackageHeader {
@@ -128,6 +139,65 @@ impl NameRecord {
     pub const SIZE: usize = 24;
 }
 
+/// The config layer a file of the build belongs to (marlin-config's `Source`; 0003 §4.6).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ConfigLayer {
+    /// `<engine>/config/*.toml`.
+    Engine,
+    /// `<engine>/config/<platform>/*.toml`.
+    Platform,
+    /// The project's `config/*.toml`, then `config/<platform>/*.toml`.
+    Project,
+}
+
+impl ConfigLayer {
+    pub fn id(self) -> u8 {
+        self as u8
+    }
+
+    pub fn from_id(id: u8) -> Option<Self> {
+        [Self::Engine, Self::Platform, Self::Project]
+            .get(id as usize)
+            .copied()
+    }
+}
+
+/// A config file of a build: TOML whose keys are cvars, applied to `layer` in build order.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ConfigFile {
+    pub layer: ConfigLayer,
+    /// Where it came from, for messages (`Game/config/windows/engine.toml`).
+    pub name: String,
+    pub text: String,
+}
+
+impl ConfigFile {
+    /// Appends `files` in the form the index and the build manifest hold them.
+    pub fn write_all(files: &[ConfigFile], out: &mut crate::wire::Writer) {
+        out.u32(files.len() as u32);
+        for f in files {
+            out.u8(f.layer.id()).str(&f.name).str(&f.text);
+        }
+    }
+
+    /// Reads what [`ConfigFile::write_all`] wrote.
+    pub fn read_all(
+        r: &mut crate::wire::Reader<'_>,
+    ) -> Result<Vec<ConfigFile>, crate::wire::WireError> {
+        let count = r.u32()? as usize;
+        let mut files = Vec::with_capacity(count.min(r.remaining() / 9));
+        for _ in 0..count {
+            let layer = ConfigLayer::from_id(r.u8()?).ok_or(crate::wire::WireError::Malformed)?;
+            files.push(ConfigFile {
+                layer,
+                name: r.str()?,
+                text: r.str()?,
+            });
+        }
+        Ok(files)
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PackageError {
     BadMagic,
@@ -206,6 +276,8 @@ pub struct PackageIndex {
     pub objects: Vec<ObjectRecord>,
     /// Sorted by name hash; every object is in `objects`.
     pub names: Vec<NameRecord>,
+    /// The build's config files, in the order they apply.
+    pub config: Vec<ConfigFile>,
 }
 
 impl PackageIndex {
@@ -220,13 +292,19 @@ impl PackageIndex {
             (header.name_count as u64, NameRecord::SIZE as u64),
         ];
         let tables: u64 = counts.iter().map(|(n, s)| n * s).sum();
-        if index.len() as u64 != header.index_size || header.index_size != tables + 8 {
+        // The config section follows the tables: at least its count.
+        if index.len() as u64 != header.index_size || header.index_size < tables + 4 + 8 {
             return Err(PackageError::Truncated);
         }
-        let body = &index[..tables as usize];
-        if xxh3_64(body) != u64_at(index, tables as usize) {
+        let end = index.len() - 8;
+        if xxh3_64(&index[..end]) != u64_at(index, end) {
             return Err(PackageError::IndexChecksum);
         }
+        let mut reader = crate::wire::Reader::new(&index[tables as usize..end]);
+        let config = ConfigFile::read_all(&mut reader)
+            .and_then(|c| reader.end().map(|()| c))
+            .map_err(|_| PackageError::Malformed)?;
+        let body = &index[..tables as usize];
         let mut at = 0usize;
         let mut units = Vec::with_capacity(header.unit_count as usize);
         for _ in 0..header.unit_count {
@@ -287,6 +365,7 @@ impl PackageIndex {
             chunks,
             objects,
             names,
+            config,
         };
         index.check()?;
         Ok(index)
@@ -489,8 +568,8 @@ pub mod write {
     use alloc::vec::Vec;
 
     use super::{
-        BlobRecord, ChunkRecord, NameRecord, ObjectRecord, PACKAGE_MAGIC, PACKAGE_VERSION,
-        PackageHeader, UnitRecord,
+        BlobRecord, ChunkRecord, ConfigFile, NameRecord, ObjectRecord, PACKAGE_MAGIC,
+        PACKAGE_VERSION, PackageHeader, UnitRecord,
     };
 
     pub fn header(h: &PackageHeader) -> [u8; PackageHeader::SIZE] {
@@ -547,13 +626,14 @@ pub mod write {
         out.extend_from_slice(&n.uuid.as_u128().to_le_bytes());
     }
 
-    /// The index: tables in order, then the checksum.
+    /// The index: tables in order, the config files, then the checksum.
     pub fn index(
         units: &[UnitRecord],
         blobs: &[BlobRecord],
         chunks: &[ChunkRecord],
         objects: &[ObjectRecord],
         names: &[NameRecord],
+        config: &[ConfigFile],
     ) -> Vec<u8> {
         let mut out = Vec::new();
         units.iter().for_each(|u| unit(&mut out, u));
@@ -561,6 +641,9 @@ pub mod write {
         chunks.iter().for_each(|c| chunk(&mut out, c));
         objects.iter().for_each(|o| object(&mut out, o));
         names.iter().for_each(|n| name(&mut out, n));
+        let mut w = crate::wire::Writer::new();
+        ConfigFile::write_all(config, &mut w);
+        out.extend_from_slice(&w.finish());
         let checksum = marlin_hash::xxh3_64(&out);
         out.extend_from_slice(&checksum.to_le_bytes());
         out

@@ -34,7 +34,7 @@ impl fmt::Display for ShaderError {
                 f,
                 "no mounted content has the shader package `{ENGINE_SHADERS}`: cook and package \
                  the project (its build includes the engine's content/engine) and mount the \
-                 package (content.package)"
+                 package"
             ),
             Self::Load(e) => write!(f, "loading `{ENGINE_SHADERS}`: {e:?}"),
         }

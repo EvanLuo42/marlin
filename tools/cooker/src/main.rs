@@ -7,11 +7,16 @@
 //!   brings the indexes up to date, cooks every unit whose inputs changed (the rest come from the
 //!   local cache in `<project>/.marlin/ddc`) and publishes the build manifest to
 //!   `<project>/.marlin/build/<platform>.manifest`. Fails if any unit fails. `--shipping` cooks
-//!   for a shipping build (shaders without `Debug.*` and debug information).
+//!   for a shipping build (shaders without `Debug.*` and debug information). The build holds the
+//!   engine's and the project's config files for the platform (0003 §4.6).
 //! - `marlin-cook package <project> [--platform <name>] [--store <addr>] [--out <file>] [--head-codec <codec>]
 //!   [--bulk-codec <codec>] [--level <1-9>]`: packs the last cooked build of the platform into a
 //!   `.mpak` (default `<project>/.marlin/build/<platform>.mpak`). Codecs: none, lz4, zstd,
 //!   gdeflate.
+//! - `marlin-cook stage <project> [--platform <name>] [--game <exe>]`: lays out the game as it ships
+//!   (0003 §4.6) in `<project>/.marlin/staged/<platform>/<Name>/`: the game executable, renamed
+//!   `<Name>`, and the last package of the platform as `content/paks/base.mpak`. The executable is
+//!   `--game`, or the `marlin-game` next to this tool.
 //! - `marlin-cook index <project>`: brings the asset index of every mount up to date and saves it.
 //! - `marlin-cook validate <project>`: the same, then reports content problems (dangling and stale
 //!   links, UUID collisions, parse errors, missing source files, shader package names given
@@ -28,7 +33,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
 
-use marlin_asset_db::{Content, GAME_MOUNT, Options, Project, UpdateReport};
+use marlin_asset_db::{ConfigScope, Content, GAME_MOUNT, Options, Project, UpdateReport};
 use marlin_cook_core::{
     CookOptions, Manifest, PackageOptions, Platform, Profile, cook_all, named_objects,
     publish_manifest, write_package,
@@ -43,6 +48,7 @@ fn main() -> ExitCode {
     match args.split_first() {
         Some((command, rest)) if command == "cook" && !rest.is_empty() => cook(rest),
         Some((command, rest)) if command == "package" && !rest.is_empty() => package(rest),
+        Some((command, rest)) if command == "stage" && !rest.is_empty() => stage(rest),
         Some((command, paths)) if command == "check" && !paths.is_empty() => check(paths),
         Some((command, [root])) if command == "index" => index(root, Validate::No),
         Some((command, [root])) if command == "validate" => index(root, Validate::All),
@@ -342,7 +348,14 @@ fn cook(args: &[String]) -> ExitCode {
         }
     };
     let cookers = engine_cookers();
-    let (report, manifest) = cook_all(&content, &cookers, ddc.as_ref(), &options);
+    let (report, mut manifest) = cook_all(&content, &cookers, ddc.as_ref(), &options);
+    manifest.config = match project.config_files(options.platform.name, ConfigScope::Build) {
+        Ok(config) => config,
+        Err(e) => {
+            eprintln!("error: {}", marlin_error_chain(&e));
+            return ExitCode::FAILURE;
+        }
+    };
     for unit in &report.units {
         for warning in &unit.warnings {
             eprintln!("warning: {}: {warning}", unit.path);
@@ -473,6 +486,89 @@ fn package(args: &[String]) -> ExitCode {
         }
         Err(e) => {
             eprintln!("{}", marlin_error_chain(&e));
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn stage(args: &[String]) -> ExitCode {
+    let project = match Project::open(&args[0]) {
+        Ok(project) => project,
+        Err(e) => {
+            eprintln!("{}", marlin_error_chain(&e));
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut platform = Platform::host();
+    let mut game: Option<PathBuf> = None;
+    let mut rest = args[1..].iter();
+    while let Some(flag) = rest.next() {
+        match (flag.as_str(), rest.next()) {
+            ("--platform", Some(p)) => match Platform::find(p) {
+                Ok(p) => platform = p,
+                Err(e) => {
+                    eprintln!("--platform: {e}");
+                    return ExitCode::from(2);
+                }
+            },
+            ("--game", Some(p)) => game = Some(PathBuf::from(p)),
+            _ => {
+                eprintln!("{USAGE}");
+                return ExitCode::from(2);
+            }
+        }
+    }
+    let package = project.build_dir().join(format!("{}.mpak", platform.name));
+    if !package.is_file() {
+        eprintln!(
+            "{}: no package (run `marlin-cook cook` and `marlin-cook package` first)",
+            package.display()
+        );
+        return ExitCode::FAILURE;
+    }
+    // The game executable every Marlin game shares, built for the platform: next to this tool
+    // by default (cargo's target directory, or an installed engine's `bin/`).
+    let game = match game {
+        Some(game) => game,
+        None => match std::env::current_exe() {
+            Ok(exe) => exe.with_file_name(format!("marlin-game{}", std::env::consts::EXE_SUFFIX)),
+            Err(e) => {
+                eprintln!("finding this tool: {e}");
+                return ExitCode::FAILURE;
+            }
+        },
+    };
+    if !game.is_file() {
+        eprintln!(
+            "{}: no game executable (build marlin-game, or name one with --game)",
+            game.display()
+        );
+        return ExitCode::FAILURE;
+    }
+    let root = project.staged_dir(platform.name).join(&project.name);
+    let mut exe_name = project.name.clone();
+    if let Some(ext) = game.extension() {
+        exe_name.push('.');
+        exe_name.push_str(&ext.to_string_lossy());
+    }
+    let paks = root.join(marlin_asset::package::PAKS_DIR);
+    // A fresh directory: nothing from an earlier stage (an old executable name, stale patches).
+    let staged = (|| {
+        if root.exists() {
+            std::fs::remove_dir_all(&root)?;
+        }
+        std::fs::create_dir_all(&paks)?;
+        std::fs::copy(&game, root.join(&exe_name))?;
+        std::fs::copy(&package, paks.join(marlin_asset::package::BASE_PACKAGE))?;
+        Ok::<_, std::io::Error>(())
+    })();
+    match staged {
+        Ok(()) => {
+            println!("{}", root.join(&exe_name).display());
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("{}: {e}", root.display());
             ExitCode::FAILURE
         }
     }

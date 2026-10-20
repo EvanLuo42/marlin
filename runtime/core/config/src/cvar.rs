@@ -149,7 +149,7 @@ pub enum Source {
     Platform,
     /// Values a scalability group applies (see [`load_scalability`](crate::load_scalability)).
     Scalability,
-    /// The project's config files (`boot.toml`).
+    /// The project's config files (`config/*.toml`, 0003 §4.6).
     Project,
     /// The device profile chosen at boot (see
     /// [`load_device_profile`](crate::load_device_profile)).

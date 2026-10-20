@@ -2,8 +2,9 @@
 //! GPU, the engine's modules and the frame loop. It defines no components: those are the
 //! modules'.
 //!
-//! - [`boot`]: `boot.toml` cvars → mounted content (packages, the cook service) and the entry
-//!   level. The modules register before it reads the configuration, so their cvars exist.
+//! - [`boot`]: a staged game's packages (by convention, next to the executable), the config
+//!   cooked into them and the entry level (0003 §4.6); [`mount`] for the editor and tests.
+//!   The modules register before it applies the config, so their cvars exist.
 //! - [`Engine`]: the simulation side: the modules ([`marlin_world::Modules`]), the asset server
 //!   and the engine resources. Worlds are made by it and run a frame at a time through it.
 //! - [`host`]: the host loop every application runs in ([`run_app`]): one window and device, the
@@ -29,7 +30,10 @@ pub mod hud;
 pub mod input;
 pub mod scalability;
 
-pub use boot::{Boot, BootError, ContentSettings, boot, mount, register_cvars};
+pub use boot::{
+    Boot, BootError, ContentSettings, apply_config_files, boot, default_level, level_ref, mount,
+    register_cvars, staged_packages,
+};
 #[cfg(not(marlin_build = "shipping"))]
 pub use dev::{DevToolsModule, R_STATS};
 pub use engine::{Engine, EngineError};

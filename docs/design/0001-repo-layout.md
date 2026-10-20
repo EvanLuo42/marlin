@@ -311,7 +311,7 @@ runtime/engine/
 ├── audio/         混音、DSP、空间化（输出走 audio_device）
 ├── nav/           寻路
 ├── vfx/           粒子
-└── framework/     游戏框架（marlin-framework，避免与 apps/game 的 marlin-game 重名）：主循环、帧流水线、子系统注册、启动时读取 boot 配置 → 加载 VM 模块与初始关卡
+└── framework/     游戏框架（marlin-framework，避免与 apps/game 的 marlin-game 重名）：主循环、帧流水线、子系统注册、启动时挂载包、应用 config（0003 §4.6）→ 加载 VM 模块与初始关卡
 
 （2026-10-19）world 与 framework 的分工、模块机制、新增的 `input_action/` 和 `gameplay/` 以 [0019](0019-engine-framework-and-world.md) 为准。
 ```
@@ -363,7 +363,7 @@ tools/
 ```
 apps/
 ├── game/      #![no_std] #![no_main]；只做一件事：marlin_rt::game_entry!(game_main)，
-│              main 读取包内 boot.toml → marlin::run()。所有游戏共用这一份源码，
+│              main 按约定挂载 exe 旁的 content/paks/，应用包内 config → run()（0003 §4.6）。所有游戏共用这一份源码，
 │              发行时每个游戏/平台各构建一次（产物相同，只是打包的资源不同）。
 └── editor/    std 的 fn main()；#[global_allocator] = MarlinHeap；marlin_rt::hosted::init() → editor 启动
 ```
@@ -433,7 +433,7 @@ mod ps5;
 **开发工具的编译期隔离**（2026-10-18）：开发工具只在 `marlin_build` 不是 `"shipping"` 的构建里存在，shipping 里连代码、cvar、按键和字符串都不进二进制，而不是运行期关掉（`marlin_config` 的 `Flags::DEV_ONLY` 只是运行期拒绝外部修改，玩家仍能看到它）。不经 xtask 的 `cargo build`（包括 `--release`）没有 `marlin_build`，按开发构建对待；给玩家的包只用 `cargo xtask build --config shipping`。目前属于开发工具的：
 
 - 统计面板（`r.stats`、F3，`marlin_framework::hud`）和窗口标题里的帧率：游戏循环只通过 marlin-framework 内部的 `dev::DevTools` 用它们，shipping 里是同名的空实现，循环本身没有 `cfg`。
-- cook service 流送（`content.cookd`、`game.platform`、`DevSource` 的挂载）：shipping 只读包，`ContentSettings::cookd` 有值时 `mount` 报 `BootError::NoCookd`。
+- cook service 流送（`DevSource` 的挂载）：2026-10-19 起游戏在任何构建里都不连 cookd，只有 editor 用（0003 §4.6）；shipping 里 `ContentSettings::cookd` 有值时 `mount` 报 `BootError::NoCookd`。
 - render graph 的逐 pass GPU 时间戳（只给 profiler 和 plan dump 用）；`profile_scope!`、`marlin_diag` 的日志和断言本来就按同一个 cfg 去掉。
 
 新的调试工具照此办理：放在 `cfg(not(marlin_build = "shipping"))` 之后，给调用方一个 shipping 下什么都不做的同名接口，而不是让调用方到处写 `cfg`。

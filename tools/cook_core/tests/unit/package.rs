@@ -4,7 +4,7 @@ use std::fs;
 use std::time::Duration;
 
 use marlin_asset::cooked::{BulkKind, Encoding, UnitView, unit_id};
-use marlin_asset::package::PackageError;
+use marlin_asset::package::{ConfigFile, ConfigLayer, PackageError};
 use marlin_asset::{
     AssetError, AssetRef, AssetServer, Link, LoadState, Loaders, MemorySource, Package,
     SourceError, SourceFile, Uuid, Vfs,
@@ -539,4 +539,49 @@ fn streamed_blobs_load_on_their_own() {
     let request = streamer.request(unit, loaded.streamed.index);
     streamer.update_blocking(&vfs);
     assert_eq!(request.take().unwrap().unwrap().as_slice(), pattern());
+}
+
+#[test]
+fn config_files_travel_with_the_build() {
+    let p = Project::new("config");
+    let (ddc, mut manifest) = cooked(&p);
+    assert!(manifest.config.is_empty(), "the caller adds the config");
+    manifest.config = vec![
+        ConfigFile {
+            layer: ConfigLayer::Engine,
+            name: "Engine/config/engine.toml".into(),
+            text: "[r]\nvsync = true\n".into(),
+        },
+        ConfigFile {
+            layer: ConfigLayer::Project,
+            name: "Game/config/game.toml".into(),
+            text: "[game]\ndefault_level = \"</Game/levels/main:Main #…>\"\n".into(),
+        },
+    ];
+    // The config is part of the build: it changes the build's key.
+    let bare = Manifest {
+        config: Vec::new(),
+        ..manifest.clone()
+    };
+    assert_ne!(manifest.key(), bare.key());
+    assert_eq!(
+        Manifest::from_bytes(&manifest.to_bytes()).unwrap(),
+        manifest
+    );
+
+    let out = p.root.join("config.mpak");
+    write_package(&manifest, &ddc, &PackageOptions::default(), &out).unwrap();
+    let package = Package::open(out.to_str().unwrap()).unwrap();
+    assert_eq!(package.index().config, manifest.config);
+    assert_eq!(package.index().header.build, manifest.key());
+
+    // A damaged config section is caught by the index checksum like any table.
+    let mut bytes = fs::read(&out).unwrap();
+    let at = bytes
+        .windows(b"default_level".len())
+        .position(|w| w == b"default_level")
+        .unwrap();
+    bytes[at] ^= 1;
+    fs::write(&out, &bytes).unwrap();
+    assert!(Package::open(out.to_str().unwrap()).is_err());
 }

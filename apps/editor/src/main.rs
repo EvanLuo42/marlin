@@ -1,13 +1,15 @@
 //! The Marlin editor.
 //!
-//! `marlin-editor <project directory> [--level <uuid>] [--frames N]`: opens the project, runs
-//! its cook service in-process (the engine's content with the project's, cooked on demand and
-//! reloaded live), and opens the editor's window, drawn by the UI renderer
-//! (docs/design/0012-ui-renderer.md), on the engine's host like the game (0019 §13): the editor is
-//! [`EditorApp`]. Its viewport shows `--level`, read from the project's sources, through its own
-//! camera; Alt+P plays it in editor and Shift+F1 frees the mouse while playing. Panels, widgets and
-//! docking come with the editor UI framework. `--frames N` quits after N frames (smoke tests);
-//! `--screenshot <png>` saves the last of them.
+//! `marlin-editor <project> [--level <uuid>] [--frames N]`: opens the project (its directory or
+//! `.mproject` file), applies the engine's and the project's `config/` from source
+//! (`editor.toml` included; 0003 §4.6), runs its cook service in-process (the engine's content
+//! with the project's, cooked on demand and reloaded live), and opens the editor's window, drawn
+//! by the UI renderer (docs/design/0012-ui-renderer.md), on the engine's host like the game
+//! (0019 §13): the editor is [`EditorApp`]. Its viewport shows `--level`, else
+//! `editor.startup_level`, else `game.default_level`, read from the project's sources, through
+//! its own camera; Alt+P plays it in editor and Shift+F1 frees the mouse while playing. Panels,
+//! widgets and docking come with the editor UI framework. `--frames N` quits after N frames
+//! (smoke tests); `--screenshot <png>` saves the last of them.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -15,13 +17,17 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 
 use marlin_asset::Uuid;
-use marlin_asset_db::{Options, Project};
+use marlin_asset_db::{ConfigScope, Options, Project};
+use marlin_config::CvarString;
 use marlin_cookd::{Cookd, CookdOptions, bind};
 use marlin_cooker::{engine_cookers, open_ddc};
-use marlin_diag::{error, info};
+use marlin_diag::{error, info, warn};
 use marlin_editor::app::{EditorApp, EditorStart};
 use marlin_editor_core::SourceContent;
-use marlin_framework::{ContentSettings, HostOptions, mount, run_app};
+use marlin_framework::boot::GAME_DEFAULT_LEVEL;
+use marlin_framework::{
+    ContentSettings, HostOptions, apply_config_files, level_ref, mount, run_app,
+};
 use marlin_world::Modules;
 
 // Link the whole runtime and every editor library.
@@ -31,6 +37,27 @@ use marlin_editor_ui_core as _;
 use marlin_editor_ui_theme as _;
 use marlin_editor_ui_widgets as _;
 use marlin_editor_world_tools as _;
+
+/// The level the editor opens (UE's EditorStartupMap), in the project's `config/editor.toml`.
+static EDITOR_STARTUP_LEVEL: CvarString = CvarString::new(
+    "editor.startup_level",
+    "",
+    "The level the editor opens: a link (</Game/levels/main:Main #<uuid>>) or a UUID; \
+     game.default_level when empty.",
+);
+
+/// `editor.startup_level`, else `game.default_level`; `None` when neither is set.
+fn startup_level() -> Result<Option<Uuid>, String> {
+    for cvar in [&EDITOR_STARTUP_LEVEL, &GAME_DEFAULT_LEVEL] {
+        let text = cvar.get();
+        if !text.trim().is_empty() {
+            return level_ref(&text)
+                .map(Some)
+                .ok_or_else(|| format!("{}: not a link or a UUID: {text:?}", cvar.name()));
+        }
+    }
+    Ok(None)
+}
 
 #[global_allocator]
 static HEAP: marlin_mem::MarlinHeap = marlin_mem::MarlinHeap::new();
@@ -110,9 +137,7 @@ impl Drop for CookService {
 }
 
 fn usage() -> ! {
-    eprintln!(
-        "usage: marlin-editor <project directory> [--level <uuid>] [--frames N [--screenshot <png>]]"
-    );
+    eprintln!("usage: marlin-editor <project> [--level <uuid>] [--frames N [--screenshot <png>]]");
     std::process::exit(2);
 }
 
@@ -123,6 +148,22 @@ fn run(
     screenshot: Option<&str>,
 ) -> Result<(), String> {
     let project = Project::open(project_dir).map_err(|e| format!("{project_dir}: {e}"))?;
+    // The game's modules (the editor's join them with the editor UI framework), registered
+    // before the config applies so their cvars take its values.
+    let modules = Modules::new(marlin::game_modules()).map_err(|e| format!("{e}"))?;
+    marlin_framework::register_cvars();
+    let _ = marlin_config::register(&EDITOR_STARTUP_LEVEL);
+    let config = project
+        .config_files(marlin_rt::PLATFORM, ConfigScope::Editor)
+        .map_err(|e| format!("{e}"))?;
+    for warning in apply_config_files(&config) {
+        warn!("config: {warning}");
+    }
+    let level = match level {
+        Some(level) => Some(level),
+        None => startup_level()?,
+    };
+
     let cookd = CookService::start(&project)?;
     let boot = mount(&ContentSettings {
         packages: Vec::new(),
@@ -134,8 +175,6 @@ fn run(
     // The level is read from the project's sources; the engine's assets come cooked on demand.
     let sources = SourceContent::open(&project, engine_cookers())?;
 
-    // The game's modules; the editor's join them with the editor UI framework.
-    let modules = Modules::new(marlin::game_modules()).map_err(|e| format!("{e}"))?;
     let options = HostOptions {
         title: "Marlin Editor",
         width: 1600,

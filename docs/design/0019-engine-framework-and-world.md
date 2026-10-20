@@ -382,7 +382,7 @@ pub enum ViewTarget {
 
 `marlin-framework` 只剩下 Host：
 
-1. **boot**：读 `boot.toml` 和 cvar，挂载包或 cookd（0003 §4.5，现有代码保留）。
+1. **boot**：游戏从 stage 出来的目录按约定挂载 `content/paks/` 里的包，应用包里 cook 好的 config，加载 `game.default_level`；editor 读工程的 `config/`，挂载 cookd（0003 §4.6，2026-10-19 修订，原来是 `boot.toml`）。
 2. **平台**：`App`、窗口、surface。`Surface → SurfaceHandle` 的转换移到 L1（`marlin-app` 和 `marlin-rhi` 之间），Host 里不再出现 `unreachable!("only Win32")`。
 3. **device**：RHI instance、device、每个窗口的 swapchain、`FrameContext`。
 4. **模块**：注册 → 启动 → 每个 World 的 `init_world`。
@@ -551,7 +551,7 @@ W6 之后再回到 render（R4f 剩下的部分、R5）。physics、audio、anim
   - `Registry`：组件（`ComponentRegistry`）、按 tick group 登记的 system 工厂（每个 World 一份 system）、loader 工厂（可以拿到引擎资源，例如 blob streamer）、cvar。
   - `Modules::new`：按依赖排序（不受依赖约束时保持给定顺序）；重名、缺少依赖、循环依赖都会报错；所有登记冻结成 `ModuleTable`，再登记 cvar。
   - `EngineContext`（资产服务器、vfs、job、`Resources`）和 `Resources`（按类型存放的引擎级资源）。
-  - **注册必须在 boot 之前**：boot 读 `boot.toml` 时，遇到未知的 cvar 会报错，所以 host 先调用 `Modules::new`，再 boot，最后 `Engine::new(vfs, modules)` 启动各模块。
+  - **注册必须在 boot 之前**：boot 应用 config 时，未知的 cvar 会被报出来（2026-10-19 起是警告，0003 §4.6），而且模块的 cvar 要先存在才收得到值，所以 host 先调用 `Modules::new`，再 boot，最后 `Engine::new(vfs, modules)` 启动各模块。
 - **`WorldModule`**（world）：
   - 登记 `CookedLevel` 的 loader 和 `t.*`、`w.*` cvar。
   - 在 `pre_world_frame` 里替子关卡的请求加载资产并交给 World。
@@ -580,7 +580,7 @@ W6 之后再回到 render（R4f 剩下的部分、R5）。physics、audio、anim
   - `Engine` 持有模块、资产服务器、blob streamer 和引擎资源；World 归调用方。`create_world`、`frame(world, dt, input, jobs)`、`is_ready(world)`、`loaders()`（给另外的资产服务器用）。
   - `run(boot, title, modules)`：建一个 Game World，加载入口关卡；世界帧在 job 上跑，`WorldRenderer` 同时画上一帧。
   - `DevToolsModule` 登记 `r.stats`。build 里有这个模块时，host 才画 stats overlay；shipping 的模块列表里没有它。
-  - framework 不再定义任何组件。`boot` 只登记 content、game、window 相关的 cvar。
+  - framework 不再定义任何组件。`boot` 只登记 game、window 相关的 cvar（2026-10-19 起没有 content 的了，0003 §4.6）。
 - **umbrella `marlin::game_modules()`**：World、Anim、Ui、Render、Gameplay，以及（非 shipping 时的）DevTools。
   - `apps/game`、editor、cooker（`game_components()`，cook 时和游戏用同一个组件表）都从这里取模块。
   - editor 改用 `Engine` + World + `WorldRenderer`；UI 的 shader 和字体用它自己的资产服务器加载。

@@ -1,6 +1,7 @@
 //! Project files and where the engine is found.
 
-use marlin_asset_db::{ENGINE_MOUNT, GAME_MOUNT, Options, Project, ProjectError};
+use marlin_asset::package::ConfigLayer;
+use marlin_asset_db::{ConfigScope, ENGINE_MOUNT, GAME_MOUNT, Options, Project, ProjectError};
 use marlin_test_support::TempDir;
 
 fn engine_at(dir: &TempDir, rel: &str) {
@@ -105,4 +106,69 @@ fn bad_project_files_are_reported() {
     // A project without its content directory is reported when its content is opened.
     let p = Project::open(base.join("engine/e/One.mproject")).unwrap();
     assert!(p.build_content(&options()).is_err());
+}
+
+#[test]
+fn config_files_come_by_layer_platform_and_name() {
+    let base = TempDir::new("asset-db-config");
+    engine_at(&base, "engine");
+    base.write("engine/config/engine.toml", "[r]\nvsync = true\n");
+    base.write("engine/config/windows/engine.toml", "[r]\nvsync = false\n");
+    base.write("engine/config/linux/engine.toml", "[r]\nvsync = false\n");
+    base.write("engine/game/Game.mproject", "[project]\nname = \"Game\"\n");
+    base.write("engine/game/content/a.masset", "!Version 1\n");
+    base.write("engine/game/config/input.toml", "");
+    base.write(
+        "engine/game/config/game.toml",
+        "game.default_level = \"x\"\n",
+    );
+    base.write(
+        "engine/game/config/editor.toml",
+        "editor.startup_level = \"y\"\n",
+    );
+    base.write("engine/game/config/notes.txt", "not config");
+    base.write(
+        "engine/game/config/windows/engine.toml",
+        "window.width = 1024\n",
+    );
+    let project = Project::open(base.join("engine/game")).unwrap();
+
+    let names = |scope| -> Vec<(ConfigLayer, String)> {
+        project
+            .config_files("windows", scope)
+            .unwrap()
+            .into_iter()
+            .map(|f| (f.layer, f.name))
+            .collect()
+    };
+    let built = names(ConfigScope::Build);
+    assert_eq!(
+        built,
+        [
+            (ConfigLayer::Engine, "Engine/config/engine.toml".to_owned()),
+            (
+                ConfigLayer::Platform,
+                "Engine/config/windows/engine.toml".to_owned()
+            ),
+            (ConfigLayer::Project, "Game/config/game.toml".to_owned()),
+            (ConfigLayer::Project, "Game/config/input.toml".to_owned()),
+            (
+                ConfigLayer::Project,
+                "Game/config/windows/engine.toml".to_owned()
+            ),
+        ]
+    );
+    // The editor reads its own file too; a build never has it.
+    let editor = names(ConfigScope::Editor);
+    assert_eq!(editor.len(), built.len() + 1);
+    assert!(editor.contains(&(ConfigLayer::Project, "Game/config/editor.toml".to_owned())));
+    let text = &project.config_files("linux", ConfigScope::Build).unwrap()[1].text;
+    assert_eq!(text, "[r]\nvsync = false\n");
+
+    // Bad TOML stops a cook, naming the file.
+    base.write("engine/game/config/game.toml", "[game\n");
+    match project.config_files("windows", ConfigScope::Build) {
+        Err(ProjectError::Invalid { path, .. }) => assert!(path.ends_with("game.toml"), "{path}"),
+        other => panic!("{other:?}"),
+    }
 }

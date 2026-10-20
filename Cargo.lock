@@ -576,6 +576,7 @@ dependencies = [
  "marlin-app",
  "marlin-asset",
  "marlin-asset-db",
+ "marlin-config",
  "marlin-cook-core",
  "marlin-cook-font",
  "marlin-cookd",
@@ -748,7 +749,6 @@ dependencies = [
  "marlin",
  "marlin-diag",
  "marlin-framework",
- "marlin-io",
  "marlin-rt",
 ]
 

@@ -258,7 +258,7 @@ pub fn write_package(
         .collect();
     names.sort_by_key(|n| n.name);
 
-    let index = write::index(&units, &blobs, &chunks, &objects, &names);
+    let index = write::index(&units, &blobs, &chunks, &objects, &names, &manifest.config);
     let index_offset = at.next_multiple_of(CHUNK_FILE_ALIGN);
     file.write_all(&vec![0u8; (index_offset - at) as usize])?;
     file.write_all(&index)?;

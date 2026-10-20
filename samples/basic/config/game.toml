@@ -1,0 +1,4 @@
+# The sample's game settings (docs/design/0003-asset-pipeline.md §4.6): cvars, cooked into the
+# build. The editor opens this level too (no config/editor.toml).
+[game]
+default_level = "</Game/levels/main:Main #01992d00-0000-7000-8000-000000000001>"

@@ -4,8 +4,10 @@
 //! ```text
 //! MyGame/
 //!   MyGame.mproject     [project] name = "MyGame", optionally engine = "<dir>"
+//!   config/             the project's settings: cvars in TOML, `<platform>/` overrides (0003 §4.6)
 //!   content/            the `Game` mount
-//!   .marlin/            per machine: index/<mount>/, ddc/, build/<platform>.{manifest,mpak}
+//!   .marlin/            per machine: index/<mount>/, ddc/, build/<platform>.{manifest,mpak},
+//!                       staged/<platform>/
 //! ```
 //!
 //! The engine is, in this order: the directory the file's `engine` names (relative to the
@@ -15,12 +17,25 @@
 
 use std::path::{Path, PathBuf};
 
+use marlin_asset::package::{ConfigFile, ConfigLayer};
 use toml::de::DeTable;
 
 use crate::{AssetDb, Content, ENGINE_MOUNT, GAME_MOUNT, Mount, Options, UpdateReport};
 
 /// Extension of project files.
 pub const PROJECT_EXT: &str = "mproject";
+
+/// The directory of an engine's or a project's config files (0003 §4.6).
+pub const CONFIG_DIR: &str = "config";
+/// The config file only the editor reads (`editor.toml`): not cooked into builds.
+pub const EDITOR_CONFIG: &str = "editor";
+
+/// Who reads config files: a build has every file but the editor's.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ConfigScope {
+    Build,
+    Editor,
+}
 
 /// A project, as found by [`Project::open`].
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -175,6 +190,74 @@ impl Project {
     /// Where builds are published: `<platform>.manifest` and `<platform>.mpak`.
     pub fn build_dir(&self) -> PathBuf {
         self.data_dir().join("build")
+    }
+
+    /// Where `marlin-cook stage` puts the game's directory for `platform` (0003 §4.6).
+    pub fn staged_dir(&self, platform: &str) -> PathBuf {
+        self.data_dir().join("staged").join(platform)
+    }
+
+    /// The config files for `platform` (0003 §4.6), in the order they apply: the engine's
+    /// `config/*.toml` (layer `Engine`) and `config/<platform>/*.toml` (`Platform`), then the
+    /// project's `config/*.toml` and `config/<platform>/*.toml` (`Project`), each directory by
+    /// file name. `editor.toml` only for [`ConfigScope::Editor`]. Each is checked for TOML
+    /// syntax; which cvars it sets is the runtime's to check.
+    pub fn config_files(
+        &self,
+        platform: &str,
+        scope: ConfigScope,
+    ) -> Result<Vec<ConfigFile>, ProjectError> {
+        let mut files = Vec::new();
+        let dirs = [
+            (&self.engine, ENGINE_MOUNT, None, ConfigLayer::Engine),
+            (
+                &self.engine,
+                ENGINE_MOUNT,
+                Some(platform),
+                ConfigLayer::Platform,
+            ),
+            (&self.dir, GAME_MOUNT, None, ConfigLayer::Project),
+            (&self.dir, GAME_MOUNT, Some(platform), ConfigLayer::Project),
+        ];
+        for (root, mount, platform, layer) in dirs {
+            let mut rel = PathBuf::from(CONFIG_DIR);
+            rel.extend(platform);
+            let dir = root.join(&rel);
+            let io = |p: &Path| {
+                let path = p.display().to_string();
+                move |source| ProjectError::Io { path, source }
+            };
+            let entries = match std::fs::read_dir(&dir) {
+                Ok(entries) => entries,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(io(&dir)(e)),
+            };
+            let mut paths = Vec::new();
+            for entry in entries {
+                let path = entry.map_err(io(&dir))?.path();
+                let editor_only = path.file_stem().is_some_and(|s| s == EDITOR_CONFIG);
+                if path.is_file()
+                    && path.extension().is_some_and(|e| e == "toml")
+                    && (scope == ConfigScope::Editor || !editor_only)
+                {
+                    paths.push(path);
+                }
+            }
+            paths.sort();
+            for path in paths {
+                let text = std::fs::read_to_string(&path).map_err(io(&path))?;
+                if let Err(e) = DeTable::parse(&text) {
+                    return Err(ProjectError::Invalid {
+                        path: path.display().to_string(),
+                        message: e.to_string(),
+                    });
+                }
+                let file = rel.join(path.file_name().unwrap_or_default());
+                let name = format!("{mount}/{}", file.display()).replace('\\', "/");
+                files.push(ConfigFile { layer, name, text });
+            }
+        }
+        Ok(files)
     }
 
     /// The mounts, bottom first, as (name, root).

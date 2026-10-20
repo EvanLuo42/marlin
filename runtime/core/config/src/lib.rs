@@ -22,7 +22,7 @@
 //! for e in marlin_config::load_layer(Source::Engine, &engine_toml) { log(e) }
 //! for e in marlin_config::load_platform(&platforms_toml, "windows") { log(e) }
 //! for e in marlin_config::load_scalability(&scalability_toml) { log(e) }
-//! for e in marlin_config::load_layer(Source::Project, &boot_toml) { log(e) }
+//! for e in marlin_config::load_layer(Source::Project, &project_toml) { log(e) }
 //! for e in marlin_config::load_device_profile(&profiles_toml, "desktop-high") { log(e) }
 //! for e in marlin_config::load_layer(Source::User, &user_toml) { log(e) }
 //! for e in marlin_config::apply_command_line(args) { log(e) }

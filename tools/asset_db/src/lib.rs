@@ -46,7 +46,7 @@ pub use content::{
     MountLinks, split_qualified,
 };
 pub use db::{FileId, ObjectId};
-pub use project::{PROJECT_EXT, Project, ProjectError};
+pub use project::{CONFIG_DIR, ConfigScope, EDITOR_CONFIG, PROJECT_EXT, Project, ProjectError};
 pub use validate::{Issue, IssueKind};
 
 /// Extension of source text files.

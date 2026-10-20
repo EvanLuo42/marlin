@@ -9,6 +9,7 @@ publish.workspace = true
 marlin.workspace = true
 marlin-asset.workspace = true
 marlin-asset-db.workspace = true
+marlin-config.workspace = true
 marlin-cookd = { path = "../../tools/cookd" }
 marlin-cooker.workspace = true
 marlin-diag.workspace = true

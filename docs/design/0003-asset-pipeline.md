@@ -27,6 +27,7 @@
 | 主循环 | 模拟与渲染重叠：渲染数据抽取成快照，两侧都以 job 图运行 |
 | Shader | `ShaderPackage`（`!Name` 即包名）cook 成整包的库，含全部 public 入口；运行时按包名查名字表，再按入口全名取；入口、stage 和 push 大小由用它的子系统声明，framework 只加载；`Marlin.*` 包名留给引擎；材质 shader 只经链接取；包依赖和 `Shader` 变体都是构建依赖，可以跨挂载（§4.1、§4.4、§4.5，2026-10-18） |
 | 工程与挂载 | `<Name>.mproject` 工程文件，内容在 `content/`；引擎内容 `/Engine` 和工程内容 `/Game` 是同一构建的两个挂载，引擎随工程一起从源码 cook 进同一个包；发行版 editor 只读地带着引擎内容的源文件（§4.5，2026-10-18） |
+| 配置与启动 | 照 UE：工程设置是 `config/` 里按类别分的 TOML（cvar），平台覆盖放 `config/<platform>/`；入口关卡是 `game.default_level` 和 `editor.startup_level`；config cook 进包；游戏只从 stage 出来的目录（`<Name>.exe` 加 `content/paks/`）按约定启动，不接受任何内容参数，没有 `boot.toml`；cookd 只给 editor 用（§4.6，2026-10-19） |
 | 世界数据 | 用同一种文本格式：entity 是对象，component 是嵌套块，prefab、关卡、流式 cell 都通过链接组织 |
 | 第三方 | 核心算法自研：压缩、BCn 编码、网格优化、meshlet；外部格式的解析用成熟 crate（png/jpeg/exr/glTF） |
 | 首批导入格式 | glTF 2.0，PNG/TGA/JPEG，EXR/HDR |
@@ -280,9 +281,9 @@ bulk        GPU 数据（顶点、纹理 mip），对齐到 4 KiB，直接上传
   ```text
   MyGame/
     MyGame.mproject
-    boot.toml
+    config/           工程设置（§4.6）
     content/          /Game 挂载
-    .marlin/          只在本机：index/<挂载>/、ddc/、build/<platform>.{manifest,mpak}
+    .marlin/          只在本机：index/<挂载>/、ddc/、build/<platform>.{manifest,mpak}、staged/<platform>/
   ```
   `marlin_asset_db::Project::open` 接受目录或文件。工具的命令行都接受工程（`marlin-cook cook samples/basic`）。
 - **引擎在哪**：按下面的顺序找，"引擎根"指含有 `content/engine/` 的目录。
@@ -308,10 +309,63 @@ bulk        GPU 数据（顶点、纹理 mip），对齐到 4 KiB，直接上传
     bin/                 marlin-editor、marlin-cook、marlin-cookd、marlin-store
     bin/<platform>/<config>/marlin-game   预编译好；所有游戏共用这一个可执行文件（0001 §6.3）
     content/engine/      引擎内容的源文件：.masset、.mshader
+    config/              引擎的配置（§4.6）
   ```
   - shader 编译器链接在 cook 工具里，平台描述在构建时编进去（`platforms/*/platform.toml`）。所以发行版不带任何 cook 好的引擎数据，引擎 shader 按工程的平台和 profile 从源码 cook。
   - 主机平台的 cooker 插件随对应平台仓库编进工具。
-  - 发布一个游戏的流程：`marlin-cook cook <工程> --platform p --shipping`，再 `package`，然后把 `.mpak` 和预编译的 `marlin-game`、`boot.toml` 放到一起。
+  - 发布一个游戏的流程：`marlin-cook cook <工程> --platform p --shipping`，再 `package`，再 `stage`（§4.6）。
+
+### 4.6 配置与启动
+
+2026-10-19 定下来的（照 UE，用户要求），取代原来的 `boot.toml`。
+
+- **原先的问题**：游戏从 `boot.toml` 启动，里面用 `content.package` 写包路径，用 `game.level` 写入口关卡，命令行还能改成连 cookd。
+  - 启动参数和工程设置混在一起，发行目录也没有约定，什么都要在文件里写明。
+  - 同一个游戏可以有几种启动方式（包、cookd、包加 cookd），开发期跑的和玩家拿到的不是同一种东西。
+  - editor 要在命令行上给关卡。
+- **工程设置放在 `config/`**（UE 的 `Config/Default*.ini`）：TOML，键就是 cvar 名（marlin-config 的格式），按类别分文件。
+  ```text
+  MyGame/
+    MyGame.mproject   只有 name 和 engine，没有启动参数
+    config/
+      engine.toml     r.*、window.* 等
+      game.toml       game.default_level 等
+      input.toml
+      editor.toml     editor.*：只有 editor 读，不 cook 进包（UE 的 DefaultEditor.ini）
+      windows/        平台覆盖：同名的文件，盖在上面
+        engine.toml
+  ```
+  - 引擎也有 `<引擎>/config/`（UE 的 `Engine/Config/Base*.ini`），结构相同。
+  - 文件名只用来分类，除 `editor.toml` 以外没有特殊含义。
+  - 层（marlin-config 的 `Source`）：`<引擎>/config/*.toml` 进 `Engine`；`<引擎>/config/<platform>/*.toml` 进 `Platform`；工程的 `config/*.toml` 再加 `config/<platform>/*.toml` 进 `Project`。同一层里按上面的顺序、文件名的顺序应用，后面的覆盖前面的。再往上依次是 scalability、device profile、用户设置、命令行。
+  - config 文件里有问题（未知的 cvar、类型不对）只报警告，不让启动失败：shipping 里没有开发用的 cvar，同一份 config 要两边都能用。命令行上的问题仍然是错误。
+- **入口关卡**是 cvar：`game.default_level`（UE 的 GameDefaultMap）和 `editor.startup_level`（EditorStartupMap，写在 `editor.toml`）。
+  - 值是链接：`"</Game/levels/main:Main #01992d00-…>"`，以 UUID 为准，路径和名字给人看；也可以只写 UUID。
+  - 这不是按路径加载：运行时只取 UUID。
+- **config cook 进构建**：
+  - `marlin-cook cook` 读引擎和工程的 config（不含 `editor.toml`，平台子目录只取目标平台的），检查 TOML 语法，按层、按顺序存进构建清单。config 改了，构建键也跟着变。
+  - `package` 把它们写进 `.mpak` 的索引（包格式 v4）。
+  - 运行时按挂载顺序应用每个包里的 config：补丁包也能带 config，后挂的盖在前面的上面。
+  - 发行目录里没有零散的 config 文件，玩家改不了。
+- **发行目录**（UE 的 `<Project>/Content/Paks`），由 `marlin-cook stage <工程> [--platform p] [--game <exe>]` 生成：
+  ```text
+  <工程>/.marlin/staged/<platform>/MyGame/
+    MyGame.exe          预编译的 marlin-game，改成工程名
+    content/paks/
+      base.mpak         这次 package 出来的构建
+      *_p.mpak          补丁，按文件名顺序挂在 base 上面
+  ```
+  - `stage` 拷贝上一次 `package` 的包，不会自己 cook。
+  - `--game` 不给时，找和 `marlin-cook` 在同一目录的 `marlin-game`（cargo 的 target 目录，或发行版的 `bin/`）。
+- **游戏只从发行目录启动**：`marlin-game` 不接受工程、包路径或启动文件，在任何构建里都一样。
+  - 从 exe 所在的目录找 `content/paks/`，挂载 `base.mpak` 和补丁，应用包里的 config，再加载 `game.default_level`。
+  - 命令行只剩 `+cvar value`。
+  - 开发期也一样：要跑游戏，就 cook、package、stage，再运行 stage 出来的 exe。
+  - 游戏里没有 cookd：`content.package`、`content.cookd`、`game.level`、`game.platform` 都删了。改了内容要看效果，用 editor（PIE），或者重新 cook 一遍。
+- **editor 只要工程**：`marlin-editor <工程>`。
+  - 读引擎和工程的 `config/`（包括 `editor.toml`，平台取本机），不经 cook。
+  - 起 cookd，打开 `editor.startup_level`；没设时打开 `game.default_level`。`--level` 仍可覆盖。
+  - cookd 只给 editor 和 PIE 用。
 
 ## 5. 缓存
 
@@ -323,6 +377,8 @@ bulk        GPU 数据（顶点、纹理 mip），对齐到 4 KiB，直接上传
 - **构建清单**：一个构建 = 一张从单元 ID 到 cook 键的表，这张表本身也存进 store，只用一个 ID 就能指代整个构建。有了它，就能实现"加载任意一个构建"、把自己的本地改动分享给同事，以及分布式烘焙。
 
 ## 6. 开发期加载：cook 服务
+
+> 已修订（2026-10-19）：游戏不再连 cookd，只从 stage 出来的包启动；cookd 只服务 editor 和 PIE（§4.6）。下面的 dev source 和热重载照旧，用户换成了 editor。
 
 - `marlin-cookd`（`tools/cookd`）在每台工作站上常驻。它持有索引、监听文件改动、按需 cook，并为游戏提供数据。
 - 游戏的 asset 系统有一个 **dev source** 后端，用 marlin-net TCP 连接 cookd（本机或开发机）。按单元 ID 请求时，cookd 用索引做依赖检查，cook 缺失的部分（命中缓存就不用再 cook），然后把结果串流给游戏。
@@ -356,7 +412,7 @@ bulk        GPU 数据（顶点、纹理 mip），对齐到 4 KiB，直接上传
 
 > 已修订（2026-10-19）：framework 的职责以 [0019](0019-engine-framework-and-world.md) §12 为准：只剩 Host，组件、extract 和 loader 归各自的模块。
 
-- 负责启动：
+- 负责启动（已修订，见 §4.6：config 来自包，内容按发行目录的约定找）：
   - 读取启动配置（marlin-config 的 cvar 加一个启动用 `.masset`）。
   - 注册各个子系统。
   - 挂载包或连接 cookd。
@@ -500,7 +556,7 @@ bulk        GPU 数据（顶点、纹理 mip），对齐到 4 KiB，直接上传
     - 全工作区 548 个测试通过。
 - **P6 · framework、game 与 samples 完成**：
   - `marlin-framework`（no_std）：
-    - `boot`：读 `boot.toml` 里的 cvar（`content.package`、`content.cookd`、`game.level`、`game.platform`、`r.vsync`、`window.*`），命令行 `+cvar value` 可以覆盖。先挂载包，cookd 挂在包的上层。入口关卡按 UUID 指定，没有按路径加载。`ContentSettings` 是这些 cvar 解析后的纯数据，`mount` 直接用它，不读全局状态。`game.platform` 默认是构建目标平台（`marlin_rt::PLATFORM`），包路径里的 `{platform}` 会替换成它；包头的平台和它不一致时 `mount` 报 `WrongPlatform`。
+    - `boot`（已修订，2026-10-19 起见 §4.6）：读 `boot.toml` 里的 cvar（`content.package`、`content.cookd`、`game.level`、`game.platform`、`r.vsync`、`window.*`），命令行 `+cvar value` 可以覆盖。先挂载包，cookd 挂在包的上层。入口关卡按 UUID 指定，没有按路径加载。`ContentSettings` 是这些 cvar 解析后的纯数据，`mount` 直接用它，不读全局状态。`game.platform` 默认是构建目标平台（`marlin_rt::PLATFORM`），包路径里的 `{platform}` 会替换成它；包头的平台和它不一致时 `mount` 报 `WrongPlatform`。
     - `Level` 资产：实体加引擎组件（`StaticMesh`、`Camera`、`Spin`、`FlyCamera`）和环境。关卡链接到网格，网格靠 import 闭包随关卡加载。关卡重载会重建它生成的实体。
     - `loaders`：`Mesh` 解码 LOD 0，产出 `Arc<MeshGeometry>`；`Texture`、`Skeleton`、`AnimationClip` 校验一次后原地保留在单元字节里（`InPlace<T>`），不拷贝。
     - `Engine`（模拟侧）与 `RenderSide`（渲染侧）完全不共享状态，每帧之间只传一份不可变的 `RenderDelta`：要上传或替换的网格（按 UUID 加版本）、要释放的网格、相机、环境和实例。GPU 上的旧网格要等在途帧都结束后才释放。目前每帧整份发送，GPU Scene 到位后再缩成只发变化量。
@@ -570,6 +626,20 @@ bulk        GPU 数据（顶点、纹理 mip），对齐到 4 KiB，直接上传
   - `marlin_shader::bind`（`EntryDesc`、`check`、`bind`、`bind_one`、`BindError`；模块在 `rhi` feature 后面）。
   - 入口表从 framework 的 `shaders.rs` 搬进 marlin-render、marlin-material、marlin-ui-render，push 大小改为取自 push 结构体（原来大多是手写的 `*_PUSH_BYTES`，都删了；只有 resolve 的 128 字节保留成 `push_bytes`）。framework 不再依赖 marlin-ui-render。
   - 测试：marlin-shader 单元测试覆盖顺序、缺入口、stage 和 push 不对；framework 单元测试只测按名字加载，再让一个子系统绑定；各子系统和编辑器的 GPU 测试经 `engine_shaders` 对比每个入口和编译出的 shader（原来只有 UI 有这个测试）。
+- **配置与启动完成**（§4.6，2026-10-19）：
+  - `marlin_asset::package`：`ConfigLayer`、`ConfigFile`，以及发行目录的约定 `PAKS_DIR`、`BASE_PACKAGE`、`PATCH_SUFFIX`。包格式升到 v4，config 跟在名字表后面，受索引校验和保护。
+  - `marlin_asset_db::Project::config_files(platform, ConfigScope)`：引擎和工程的 `config/`，按层、按平台、按文件名排好，检查 TOML 语法；`ConfigScope::Editor` 才带 `editor.toml`。`staged_dir(platform)`。
+  - 构建清单升到 v3，带 config；`cook_all` 不管 config，由 `marlin-cook cook` 填进清单，`write_package` 写进包。
+  - `marlin-cook stage <工程> [--platform p] [--game <exe>]`：每次重建 `<工程>/.marlin/staged/<platform>/<Name>/`，内容是改名后的 exe 和 `content/paks/base.mpak`。
+  - `marlin_framework`：`boot(dir, args)` 挂载 `staged_packages(dir)`，`apply_config_files` 应用包里的 config（有问题只记警告），然后应用命令行（有问题报错），再取 `default_level()`。`level_ref` 解析链接或 UUID。`content.package`、`content.cookd`、`game.level`、`game.platform` 都删了；editor 和测试用的 `mount(&ContentSettings)` 保留。
+  - `marlin-game` 只认 exe 所在目录，窗口标题用 exe 名。`marlin-editor <工程>` 应用 `config/`（含 `editor.toml`），依次取 `--level`、`editor.startup_level`、`game.default_level`。
+  - samples：`boot.toml` 换成 `config/game.toml`，README 改成 cook → package → stage → 运行。
+  - 测试：
+    - framework 单元测试：链接和 UUID 的解析、config 的分层和顺序、未知 cvar 只报告、重新应用时替换整层、发行目录的包顺序、缺 base 包时报错。
+    - asset-db：config 文件的层、顺序、平台、`editor.toml`，以及坏 TOML。
+    - cook-core：config 进清单（改变构建键）、进包，损坏能查出来。
+    - cooker CLI：包里有工程的 config 但没有 `editor.toml`；`stage` 的目录布局，并清掉上次的补丁。
+  - 手动验证：stage 出来的 `Basic.exe` 在别的工作目录下启动，从包里的 config 找到关卡并加载（RTX 5060）。`marlin-editor samples/basic` 不带 `--level` 也能打开这个关卡。
 - **待做**：
   - Linux 和 macOS 的变更源（fanotify、FSEvents）。
   - 共享缓存中的 extract；store 的 LRU 与容量上限；store 的鉴权与 TLS（目前只适合可信局域网）。
@@ -578,7 +648,8 @@ bulk        GPU 数据（顶点、纹理 mip），对齐到 4 KiB，直接上传
     - 发行版自带的只读 DDC 层（预先 cook 好的引擎内容，相当于 UE 的 DDP），以及用户目录下多个工程共用的引擎缓存；
     - 按可达性 cook：入口关卡和按名字找的对象加上引用闭包，引擎内容不再整体 cook；
     - 插件挂载；
-    - staging：把包、预编译的 game 和 `boot.toml` 放到一起。
+    - 用户设置（UE 的 `Saved/Config`）：`Source::User` 层存到哪里、何时写（开发期 `<工程>/.marlin/saved/`，shipping 在系统的用户目录）；
+    - cook 时检查 `game.default_level` 指向构建里的关卡（现在到运行时才报）。
   - shader：
     - 按入口、按实际用到的源文件缓存（0005 §8 的 manifest 模式，cooker 需要能访问 DDC）；现在改一个文件，整个包都重编；
     - 变体共享前端：同一个包闭包的大量 `Shader` 变体现在各建一个 session，各做一遍前端分析。3A 规模（成千上万个材质变体）要在 cooker 里按闭包的键缓存长期存活的 session，cookd 也保留它（0005 §5 的 Session 本来就是为长期存活设计的）；

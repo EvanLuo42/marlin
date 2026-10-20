@@ -441,7 +441,7 @@ fn package_of(units: &[(u64, &Vec<u8>)]) -> Vec<u8> {
         }
     }
     objects.sort_by_key(|o| o.uuid);
-    let index = package::write::index(&unit_records, &blob_records, &chunks, &objects, &[]);
+    let index = package::write::index(&unit_records, &blob_records, &chunks, &objects, &[], &[]);
     let index_offset = file.len().next_multiple_of(16);
     file.resize(index_offset, 0);
     file.extend_from_slice(&index);

@@ -623,6 +623,8 @@ pub fn cook_all(
         units,
         objects,
         names,
+        // The project's config is the caller's to add (`Project::config_files`).
+        config: Vec::new(),
     };
     (report, manifest)
 }

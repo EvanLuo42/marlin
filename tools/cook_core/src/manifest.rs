@@ -7,14 +7,16 @@
 //! units:u32   [unit:u64 key:u128 path:(len:u32 utf8)]   sorted by unit
 //! objects:u32 [uuid:u128 unit:u64]                       sorted by uuid
 //! names:u32   [name:(len:u32 utf8) uuid:u128]            sorted by name
+//! config:u32  [layer:u8 name:(len:u32 utf8) text:(len:u32 utf8)]   in the order they apply
 //! ```
 
 use marlin_asset::Uuid;
+use marlin_asset::package::ConfigFile;
 use marlin_asset::wire::{Reader, WireError, Writer};
 use marlin_hash::xxh3_128;
 
 const MAGIC: &[u8; 4] = b"MMAN";
-const VERSION: u32 = 2;
+const VERSION: u32 = 3;
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ManifestUnit {
@@ -31,6 +33,8 @@ pub struct Manifest {
     /// The named objects (types a cooker registers as named, 0003 §4.4): `!Name` and UUID,
     /// sorted by name, unique, every one among `objects`.
     pub names: Vec<(String, Uuid)>,
+    /// The config files cooked into the build (0003 §4.6), in the order they apply.
+    pub config: Vec<ConfigFile>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, marlin_error::Error)]
@@ -53,6 +57,7 @@ impl Manifest {
         for (name, uuid) in &self.names {
             w.str(name).uuid(*uuid);
         }
+        ConfigFile::write_all(&self.config, &mut w);
         w.finish()
     }
 
@@ -84,6 +89,7 @@ impl Manifest {
         for _ in 0..count {
             names.push((r.str()?, r.uuid()?));
         }
+        let config = ConfigFile::read_all(r)?;
         if !r.rest().is_empty() {
             return Err(WireError::Malformed);
         }
@@ -92,6 +98,7 @@ impl Manifest {
             units,
             objects,
             names,
+            config,
         })
     }
 

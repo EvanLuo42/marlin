@@ -1,4 +1,4 @@
-//! `marlin-cook cook` on a small project: cook, cache, fail.
+//! `marlin-cook` on a small project: cook, cache, fail, package, stage.
 
 use std::io::Cursor;
 use std::process::Command;
@@ -38,6 +38,8 @@ fn cooks_then_hits_the_cache_then_reports_failures() {
     let mut png = Cursor::new(Vec::new());
     image.write_to(&mut png, image::ImageFormat::Png).unwrap();
     root.write("content/tex/ramp.png", png.into_inner());
+    root.write("config/game.toml", "[game]\ndefault_level = \"x\"\n");
+    root.write("config/editor.toml", "[editor]\nstartup_level = \"y\"\n");
     root.write(
         "content/tex/ramp.masset",
         format!(
@@ -72,8 +74,43 @@ fn cooks_then_hits_the_cache_then_reports_failures() {
     // the two device profiles, and the input bindings: the spectator's, the host's and the
     // editor's) is in the build with the project's.
     assert_eq!(package.index().units.len(), 13);
+    // The project's config is in the build (the editor's is not).
+    let config: Vec<&str> = package
+        .index()
+        .config
+        .iter()
+        .map(|f| f.name.as_str())
+        .collect();
+    assert!(config.contains(&"Game/config/game.toml"), "{config:?}");
+    assert!(
+        !config.iter().any(|n| n.ends_with("editor.toml")),
+        "{config:?}"
+    );
     let (ok, text) = run(&["package", r, "--bulk-codec", "brotli"]);
     assert!(!ok && text.contains("usage"), "{text}");
+
+    // Staged as it ships: the executable renamed after the project, the package as the base.
+    root.write("bin/game.exe", "not really a game");
+    let staged = root.join(format!(".marlin/staged/{}/Test", Platform::host().name));
+    root.write(staged.join("content/paks/old_p.mpak"), "stale");
+    let game = root.join("bin/game.exe");
+    let (ok, text) = run(&["stage", r, "--game", game.to_str().unwrap()]);
+    assert!(ok, "{text}");
+    assert_eq!(
+        std::fs::read(staged.join("Test.exe")).unwrap(),
+        b"not really a game"
+    );
+    assert_eq!(
+        std::fs::read(staged.join("content/paks/base.mpak")).unwrap(),
+        std::fs::read(&package_path).unwrap()
+    );
+    let paks: Vec<_> = std::fs::read_dir(staged.join("content/paks"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(paks, ["base.mpak"], "a stage starts afresh");
+    let (ok, text) = run(&["stage", r, "--game", "missing.exe"]);
+    assert!(!ok && text.contains("no game executable"), "{text}");
 
     let manifest = std::fs::read(&manifest_path).unwrap();
     root.write(

@@ -9,29 +9,34 @@ sphere, a spinning torus and a ring of spinning cubes, plus a texture that is co
 
 The project lives inside the engine's tree, so the tools find the engine above it. Its build holds
 the engine's content (`content/engine`, mounted as `/Engine`) with its own; one package has both.
+Its settings are in `config/` (`game.toml` names the entry level); they are cooked into the build
+(docs/design/0003-asset-pipeline.md §4.6).
 
-From a packaged build:
+The game runs only as it ships: cooked, packaged and staged next to its executable. On Windows:
 
 ```
+cargo build -p marlin-game
 cargo run -p marlin-cooker --bin marlin-cook -- cook samples/basic
 cargo run -p marlin-cooker --bin marlin-cook -- package samples/basic
-cargo run -p marlin-game -- samples/basic/boot.toml
+cargo run -p marlin-cooker --bin marlin-cook -- stage samples/basic
+samples/basic/.marlin/staged/windows/Basic/Basic.exe
 ```
 
-Live, from the cook service (edits to the `.masset` files and their sources show up in the
-running game, the engine's included):
+(`stage` takes the `marlin-game` built next to `marlin-cook`, in the same cargo profile.)
+
+Live, in the editor (edits to the `.masset` files and their sources show up as you make them, the
+engine's included; Alt+P plays the level):
 
 ```
-cargo run -p marlin-cookd -- samples/basic
-cargo run -p marlin-game -- samples/basic/boot.toml +content.package "" +content.cookd 127.0.0.1:47200
+cargo run -p marlin-editor -- samples/basic
 ```
 
 Right mouse button + mouse, or the right stick: look. WASD or the left stick: move. Q/E or the
 triggers: down/up. Shift: faster. V: vsync. F3: the stats overlay (`+r.stats true` starts with it).
 F11 or Alt+Enter: fullscreen. Esc: quit.
 
-The stats overlay and the cook service are development tools: shipping builds
-(`cargo xtask build --config shipping`) have neither, nor their cvars.
+The stats overlay is a development tool: shipping builds (`cargo xtask build --config shipping`)
+have neither it nor its cvar.
 
 ## Where the binary files come from
 
