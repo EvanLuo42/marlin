@@ -326,23 +326,25 @@ runtime/engine/
 
 ## 6. `editor/`、`tools/`、`apps/`
 
-### 6.1 `editor/`（std，仅桌面）
+### 6.1 `ui/` 和 `editor/`（std，仅桌面）
+
+（2026-10-19）工具 UI 的架构以 [0021](0021-tool-ui-architecture.md) 为准：UI 框架从 `editor/` 搬到顶层 `ui/`，由 editor 和 launcher 共用。
 
 ```
+ui/
+├── core/          保留模式 UI 框架核心：细粒度 Signal / Memo / Effect、控件树、自研布局（flex + 专用容器）、
+│                  hit-test、焦点、输入路由、IME、多窗口根、动画、拖放、无头测试驱动
+├── widgets/       控件：虚拟化列表/树/表格/网格、属性编辑器（由 reflect 生成）、docking、菜单、弹出层、对话框
+└── theme/         token、控件样式、深色/浅色主题、图标表（图标和字体是引擎目录 resources/ 下的裸文件）
 editor/
-├── ui_core/       保留模式 UI 框架核心
-│                  · 细粒度响应式 Signal / Memo / Effect 作为 MVVM 绑定机制
-│                  · 保留的 widget 树、flexbox 布局（taffy）、hit-test、焦点、输入路由
-│                  · 每帧把脏区域转成 ui_render 的立即模式绘制命令
-├── ui_widgets/    控件：树、虚拟化列表/表格、属性面板（由 reflect 自动生成）、docking、节点图画布、代码编辑
-├── ui_theme/      主题、图标、字体资源
-├── core/          项目模型、undo/redo 事务、选择集、命令系统、源资源数据库（GUID/依赖）、editor 插件注册
+├── core/          文档、反射属性差分事务和 undo/redo、选择集、命令系统、源资源数据库、editor 模块注册
+├── shell/         Level Editor 外壳、顶层 tab、面板注册
 ├── viewport/      场景视口、gizmo、相机、PIE（进程内运行 world）
 ├── world_tools/   关卡编辑：放置、地形、流式 cell 编辑
 └── asset_tools/   资源浏览器、导入（直接调用 tools/cook_* 的库）、热重新 cook
 ```
 
-建议 `ui_core` 只用 `core + alloc` 编写。虽然 editor 允许 std，但这样以后游戏内 UI 也能复用同一套保留模式框架，成本几乎为零。
+`ui/` 是 std 的，不为游戏复用做 no_std 的妥协。正式游戏 UI 以后单独定，游戏的调试 UI 用 `ui_render::imm`（0021 §1.3、§15）。
 
 ### 6.2 `tools/`（std）
 
@@ -365,7 +367,8 @@ apps/
 ├── game/      #![no_std] #![no_main]；只做一件事：marlin_rt::game_entry!(game_main)，
 │              main 按约定挂载 exe 旁的 content/paks/，应用包内 config → run()（0003 §4.6）。所有游戏共用这一份源码，
 │              发行时每个游戏/平台各构建一次（产物相同，只是打包的资源不同）。
-└── editor/    std 的 fn main()；#[global_allocator] = MarlinHeap；marlin_rt::hosted::init() → editor 启动
+├── editor/    std 的 fn main()；#[global_allocator] = MarlinHeap；marlin_rt::hosted::init() → editor 启动
+└── launcher/  std；项目浏览器、新建项目、引擎版本管理、.mproject 关联（0021 §13）
 ```
 
 ---
