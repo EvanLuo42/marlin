@@ -467,6 +467,7 @@ runtime/<layer>/<name>/
 
 - 命名：目录 `snake_case`，package `marlin-<name>`，代码中 `marlin_<name>`。
 - 公共第三方依赖全部写在 `[workspace.dependencies]`，并带 `default-features = false`。
+- rustdoc 和代码注释按 [0024](0024-code-documentation.md)（照 Rust 标准库的写法）。
 
 ---
 
@@ -552,7 +553,7 @@ runtime/<layer>/<name>/
   - **Other input:** IME composition (`InputState::composition`, `Input::set_text_input` places or disables the IME), touch and pen from `WM_POINTER*`, keyboards and mice told apart through raw input (`DeviceId`, `InputState::devices`), and `TEXT_CAPACITY` raised to 1024 bytes.
   - **Unverified parts:** the HID drivers were written from the published report layouts and are tested against hand-built reports only, because no PlayStation or Switch controller was connected. Switch Pro stick and IMU scales are nominal (its factory calibration in SPI flash is not read yet). Pen translation has no real-backend test, because synthetic pen injection delivers nothing without pen hardware. Touch is tested through `InjectTouchInput`.
 - **Desktop backend decisions for L1** (made 2026-10-16, not implemented yet): Linux uses Wayland first with an X11 fallback, with `libwayland-client` and `libX11`/`libXi` loaded through `dlopen`, and gamepads from evdev. macOS uses hand-written objc runtime calls (no objc2), a `CAMetalLayer` surface and GameController.framework.
-- **Error convention** (`marlin-error`, `#[derive(Error)]` / `#[derive(ErrorKind)]`): OS/API errors are a `Copy` `{ kind, raw }`, and each subsystem has its own kind enum. Wrapper errors only describe their own layer and carry the cause through `source`. An error is logged once, where it is handled (`marlin_diag::chain`). Fatal errors go through `fatal!`/`or_fatal`, and the panic handler doesn't log them a second time. Sinks must not panic: the panic handler logs through the sinks, so a panic inside a sink can hang it.
+- **Error convention** (`marlin-error`, `#[derive(Error)]` / `#[derive(ErrorKind)]`): OS/API errors are a `Copy` `{ kind, raw }`, and each subsystem has its own kind enum. Wrapper errors only describe their own layer and carry the cause through `source`. An error is logged once, where it is handled (`marlin_diag::chain`). Fatal errors go through `fatal!`/`or_fatal`, and the panic handler doesn't log them a second time. Sinks must not panic: the panic handler logs through the sinks, so a panic inside a sink can hang it. The full error and logging rules (failure kinds, `Issue`, levels, mandatory log points, sinks per program, checks) are in [0023](0023-errors-and-logging.md).
 - **RHI bindless slice**:
   - **Resources:** buffers in three memory locations (GPU-only, upload, readback; the latter two stay mapped) and 2D/array textures, including D32 depth and BC formats.
   - **Views:** RTV/DSV come from CPU-side heaps. Buffer and texture views (`ShaderView`) and samplers occupy slots in device-wide shader-visible tables, and shaders index them through SM 6.6 `ResourceDescriptorHeap[i]` / `SamplerDescriptorHeap[i]`.
